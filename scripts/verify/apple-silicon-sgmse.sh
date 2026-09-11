@@ -10,6 +10,8 @@ PARITY_TOOL="$PARITY_PROJECT/sgmse_native_score_parity.py"
 ENHANCEMENT_TOOL="$PARITY_PROJECT/sgmse_native_enhancement_parity.py"
 TEST_NAME="sgmse_apple_cpu_metal_score_matches_reference"
 ENHANCEMENT_TEST_NAME="sgmse_apple_cpu_metal_enhancement_matches_reference"
+SCORE_PARITY_SENTINEL='SGMSE_APPLE_SCORE_PARITY backend=cpu+metal'
+ENHANCEMENT_PARITY_SENTINEL='SGMSE_APPLE_ENHANCEMENT_PARITY backend=cpu+metal'
 MIN_MEMORY_BYTES=16000000000
 MIN_FREE_DISK_KIB=5000000
 
@@ -47,15 +49,23 @@ require_host() {
 
 run_self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
+  local enhancement_test_source="$VOKRA_ROOT/crates/vokra-models/tests/sgmse_apple_score.rs"
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' \
     'sgmse_native_score_parity.py' '--verify-reference-only' 'SGMSE_REFERENCE_VERIFIED' \
     'sgmse_native_enhancement_parity.py' '--verify-reference-portable' '4096-sample crop' '60 sampler calls' \
-    'CARGO_BUILD_JOBS=1' 'SGMSE_APPLE_SCORE_PARITY' \
-    'SGMSE_APPLE_ENHANCEMENT_PARITY' 'backend=cpu,metal' 'metal_device=present' 'atol=0.01' \
+    'CARGO_BUILD_JOBS=1' "$SCORE_PARITY_SENTINEL" \
+    "$ENHANCEMENT_PARITY_SENTINEL" 'metal_device=present' 'atol=0.01' \
     'cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score' \
     '-- --ignored --exact --show-output' 'shasum -a 256' 'no download' 'no upload'; do
     grep -Fq -- "$token" "$script" || { log "self-test missing contract token: $token"; fail=1; }
   done
+  [[ -f "$enhancement_test_source" ]] || { log "self-test missing Apple SGMSE test source: $enhancement_test_source"; fail=1; }
+  grep -Fq -- "$ENHANCEMENT_PARITY_SENTINEL" "$enhancement_test_source" 2>/dev/null || {
+    log 'self-test Rust enhancement sentinel drifted'; fail=1
+  }
+  [[ "$(grep -Fc -- 'grep -Fq "$ENHANCEMENT_PARITY_SENTINEL" "$enhancement_log_file"' "$script")" == 2 ]] || {
+    log 'self-test shell enhancement sentinel check drifted'; fail=1
+  }
   local score_verify_line enhancement_verify_line score_cargo_line
   local score_verify_pattern="\"\$PARITY_TOOL\" --verify-reference-only --reference-dir \"\$REFERENCE\""
   local enhancement_verify_pattern="\"\$ENHANCEMENT_TOOL\" --verify-reference-portable --reference-dir \"\$ENHANCEMENT_REFERENCE\" --vokra-root \"\$VOKRA_ROOT\""
@@ -121,7 +131,7 @@ CARGO_BUILD_JOBS=1 cargo test --locked --release --features metal -p vokra-model
 [[ "$(grep -Ec '^test [^ ]+ \.\.\.' "$log_file" || true)" == 1 ]] || die 'Apple SGMSE Cargo emitted more than one test line'
 [[ "$(grep -Ec '^test result:' "$log_file" || true)" == 1 ]] || die 'Apple SGMSE Cargo emitted more than one result line'
 [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out' "$log_file" || true)" == 1 ]] || die 'Apple SGMSE Cargo result was not exactly one pass'
-grep -Fq 'SGMSE_APPLE_SCORE_PARITY backend=cpu+metal' "$log_file" || die 'Apple SGMSE parity sentinel missing'
+grep -Fq "$SCORE_PARITY_SENTINEL" "$log_file" || die 'Apple SGMSE parity sentinel missing'
 [[ -d "$EVIDENCE" ]] || die 'evidence directory was not created'
 [[ "$(find "$EVIDENCE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')" == 'backend.txt cpu_score_imag.f32 cpu_score_real.f32 metal_score_imag.f32 metal_score_real.f32 ' ]] || die 'evidence file set is not exact'
 for evidence_file in cpu_score_real.f32 cpu_score_imag.f32 metal_score_real.f32 metal_score_imag.f32; do [[ "$(wc -c < "$EVIDENCE/$evidence_file" | tr -d '[:space:]')" == 65536 && ! -L "$EVIDENCE/$evidence_file" ]] || die "invalid evidence score file: $evidence_file"; done
@@ -132,7 +142,7 @@ trap 'rm -f -- "$log_file" "$enhancement_log_file"' EXIT
 CARGO_BUILD_JOBS=1 cargo test --locked --release --features metal -p vokra-models --test sgmse_apple_score "$ENHANCEMENT_TEST_NAME" -- --ignored --exact --show-output 2>&1 | tee "$enhancement_log_file"
 [[ "$(grep -Ec "^test $ENHANCEMENT_TEST_NAME \.\.\. ok$" "$enhancement_log_file" || true)" == 1 ]] || die 'Apple SGMSE enhancement test did not pass exactly once'
 [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out' "$enhancement_log_file" || true)" == 1 ]] || die 'Apple SGMSE enhancement result was not exactly one pass'
-grep -Fq 'SGMSE_APPLE_ENHANCEMENT_PARITY backend=cpu,metal' "$enhancement_log_file" || die 'Apple SGMSE enhancement sentinel missing'
+grep -Fq "$ENHANCEMENT_PARITY_SENTINEL" "$enhancement_log_file" || die 'Apple SGMSE enhancement sentinel missing'
 [[ -d "$ENHANCEMENT_EVIDENCE" ]] || die 'enhancement evidence directory was not created'
 [[ "$(find "$ENHANCEMENT_EVIDENCE" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')" == 'backend.txt cpu_enhanced_pcm.f32 metal_enhanced_pcm.f32 ' ]] || die 'enhancement evidence file set is not exact'
 for evidence_file in cpu_enhanced_pcm.f32 metal_enhanced_pcm.f32; do [[ "$(wc -c < "$ENHANCEMENT_EVIDENCE/$evidence_file" | tr -d '[:space:]')" == 16384 && ! -L "$ENHANCEMENT_EVIDENCE/$evidence_file" ]] || die "invalid enhancement evidence file: $evidence_file"; done
