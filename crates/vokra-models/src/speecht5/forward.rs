@@ -536,6 +536,10 @@ fn generate(
         }
 
         let spectrum = weights.postnet.feat_out.forward(compute, &hidden, 1)?;
+        require_finite(
+            &format!("decoder step {steps} before_postnet spectrum"),
+            &spectrum,
+        )?;
         before_postnet.extend_from_slice(&spectrum);
         last_mel.copy_from_slice(&spectrum[NUM_MEL_BINS..NUM_MEL_BINS * REDUCTION_FACTOR]);
         let stop_logits = weights.postnet.prob_out.forward(compute, &hidden, 1)?;
@@ -549,11 +553,6 @@ fn generate(
 
     let frames = steps * REDUCTION_FACTOR;
     let values = postnet(&before_postnet, frames, &weights.postnet.layers, compute)?;
-    if values.iter().any(|value| !value.is_finite()) {
-        return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: generated non-finite postnet values"
-        )));
-    }
     Ok(SpeechT5Mel {
         before_postnet,
         values,
@@ -768,8 +767,9 @@ fn postnet(
             "{LABEL}: postnet input shape mismatch"
         )));
     }
+    require_finite("postnet input (before_postnet)", frame_major)?;
     let mut hidden = frame_to_channel_major(frame_major, frames, NUM_MEL_BINS);
-    for layer in layers {
+    for (layer_index, layer) in layers.iter().enumerate() {
         let mut convolved = vec![0.0f32; layer.output_channels * frames];
         compute.conv1d_f32(
             &hidden,
@@ -783,19 +783,46 @@ fn postnet(
             (SPEECH_DECODER_POSTNET_KERNEL - 1) / 2,
             &mut convolved,
         )?;
+        require_finite(
+            &format!("postnet layer {layer_index} conv1d output"),
+            &convolved,
+        )?;
         apply_batch_norm(layer, &mut convolved, frames)?;
+        require_finite(
+            &format!("postnet layer {layer_index} BatchNorm output"),
+            &convolved,
+        )?;
         if layer.activation {
             let mut activated = vec![0.0f32; convolved.len()];
             compute.tanh_f32(&convolved, &mut activated)?;
+            require_finite(
+                &format!("postnet layer {layer_index} tanh output"),
+                &activated,
+            )?;
             hidden = activated;
         } else {
             hidden = convolved;
         }
     }
     let residual = channel_to_frame_major(&hidden, frames, NUM_MEL_BINS);
+    require_finite("postnet residual", &residual)?;
     let mut output = frame_major.to_vec();
     add_in_place(&mut output, &residual)?;
+    require_finite("postnet residual-add output", &output)?;
     Ok(output)
+}
+
+fn require_finite(stage: &str, values: &[f32]) -> Result<()> {
+    if let Some((index, value)) = values
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: non-finite value at {stage}, index {index}: {value}"
+        )));
+    }
+    Ok(())
 }
 
 fn apply_batch_norm(layer: &BatchNormConv, values: &mut [f32], frames: usize) -> Result<()> {
@@ -950,5 +977,22 @@ mod tests {
         assert_eq!(sigmoid(1_000.0), 1.0);
         assert_eq!(sigmoid(-1_000.0), 0.0);
         assert_eq!(sigmoid(0.0), 0.5);
+    }
+
+    #[test]
+    fn non_finite_diagnostic_preserves_stage_and_first_index() {
+        let error = require_finite(
+            "postnet layer 3 tanh output",
+            &[1.0, f32::NAN, f32::INFINITY],
+        )
+        .unwrap_err();
+        match error {
+            VokraError::InvalidArgument(message) => {
+                assert!(message.contains("postnet layer 3 tanh output"));
+                assert!(message.contains("index 1"));
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        require_finite("finite output", &[0.0, -1.0, f32::MAX]).unwrap();
     }
 }

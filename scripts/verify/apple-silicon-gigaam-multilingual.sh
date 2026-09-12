@@ -51,6 +51,7 @@ if [[ "${1:-}" == --self-test ]]; then
   contract_search 'backend=[$]EXPECTED_BACKEND_SENTINEL|backend=\{backend:\?\}' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" "$ROOT/crates/vokra-models/tests/parity_gigaam_multilingual_real.rs" || die "backend sentinel gate missing"
   contract_search 'uv run --no-project --python 3.12 python' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "stdlib-only approval parser environment missing"
   contract_search 'cargo test .*--exact --ignored --nocapture --test-threads=1' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "serial exact parity command missing"
+  contract_search 'named_line|ok_line|result_line|standalone ok' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "standalone test result binding gate missing"
   echo "apple-silicon-gigaam-multilingual contract self-test: OK (authenticated CPU/Metal; no upload)"
   exit 0
 fi
@@ -165,13 +166,28 @@ export GIGAAM_MULTILINGUAL_GGUF GIGAAM_MULTILINGUAL_REFERENCE_DIR
 CARGO_BUILD_JOBS=1 cargo test --locked --features metal -p vokra-models --test parity_gigaam_multilingual_real real_gigaam_multilingual_trace_matches_official -- --exact --ignored --nocapture --test-threads=1 > "$PARITY_LOG" 2>&1
 
 metric='[+-]?[0-9]+(\.[0-9]+)?e[+-][0-9]+'
-[[ "$(grep -Ec '^test [^ ]*real_gigaam_multilingual_trace_matches_official \.\.\. ' "$PARITY_LOG")" == 1 ]] || die "named parity test mismatch"
+named_match="$(grep -nE '^test [^ ]*real_gigaam_multilingual_trace_matches_official \.\.\.($| )' "$PARITY_LOG" || true)"
+named_count="$(grep -Ec '^test [^ ]*real_gigaam_multilingual_trace_matches_official \.\.\.($| )' "$PARITY_LOG" || true)"
+[[ "$named_count" == 1 ]] || die "named parity test mismatch"
+named_line="${named_match%%:*}"
+result_match="$(grep -nE '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$PARITY_LOG" || true)"
+[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$PARITY_LOG" || true)" == 1 ]] || die "parity result mismatch"
+result_line="${result_match%%:*}"
+[[ "$named_line" -lt "$result_line" ]] || die "parity result is not after named test"
+inline_pass="$(grep -Ec '^test [^ ]*real_gigaam_multilingual_trace_matches_official \.\.\. ok$' "$PARITY_LOG" || true)"
+if [[ "$inline_pass" != 1 ]]; then
+  ok_match="$(grep -nE '^ok$' "$PARITY_LOG" || true)"
+  [[ "$(grep -Ec '^ok$' "$PARITY_LOG" || true)" == 1 ]] || die "named parity test did not pass"
+  ok_line="${ok_match%%:*}"
+  [[ "$named_line" -lt "$ok_line" && "$ok_line" -lt "$result_line" ]] || die "standalone ok is not bound to the named test"
+fi
 EXPECTED_BACKEND_SENTINEL="Cpu"
 [[ "$BACKEND" == metal ]] && EXPECTED_BACKEND_SENTINEL="Metal"
 [[ "$(grep -Ec "^GIGAAM_MULTILINGUAL_PARITY backend=$EXPECTED_BACKEND_SENTINEL PASS$" "$PARITY_LOG")" == 1 ]] || die "Apple backend sentinel mismatch"
-[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$PARITY_LOG")" == 1 ]] || die "parity result mismatch"
-[[ "$(grep -Ec "^GIGAAM_MULTILINGUAL_PARITY encoded max_abs=${metric} index=[0-9]+ mean_abs=${metric}$" "$PARITY_LOG")" == 1 ]] || die "encoded metric sentinel mismatch"
-[[ "$(grep -Ec "^GIGAAM_MULTILINGUAL_PARITY logits max_abs=${metric} index=[0-9]+ mean_abs=${metric}$" "$PARITY_LOG")" == 1 ]] || die "logits metric sentinel mismatch"
+encoded_metric_count="$(grep -Ec "^(test [^ ]*real_gigaam_multilingual_trace_matches_official \.\.\. )?GIGAAM_MULTILINGUAL_PARITY encoded max_abs=${metric} index=[0-9]+ mean_abs=${metric}$" "$PARITY_LOG" || true)"
+[[ "$encoded_metric_count" == 1 ]] || die "encoded metric sentinel mismatch"
+logits_metric_count="$(grep -Ec "^(test [^ ]*real_gigaam_multilingual_trace_matches_official \.\.\. )?GIGAAM_MULTILINGUAL_PARITY logits max_abs=${metric} index=[0-9]+ mean_abs=${metric}$" "$PARITY_LOG" || true)"
+[[ "$logits_metric_count" == 1 ]] || die "logits metric sentinel mismatch"
 [[ "$(grep -Ec '^GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS$' "$PARITY_LOG")" == 1 ]] || die "token sentinel mismatch"
 
 if [[ "$BACKEND" == cpu ]]; then STATUS=CPU_PARITY_PASS; else STATUS=METAL_PARITY_PASS; fi

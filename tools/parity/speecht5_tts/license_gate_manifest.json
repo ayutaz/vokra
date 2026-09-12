@@ -47,9 +47,9 @@
     "sha256": "f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0"
   },
   "operator_approval": {
-    "decision": "PENDING_REVIEW",
-    "signer": null,
-    "digest": null
+    "decision": "APPROVED",
+    "signer": "yousan",
+    "digest": "99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba"
   },
   "dependency_reviews": [
     {

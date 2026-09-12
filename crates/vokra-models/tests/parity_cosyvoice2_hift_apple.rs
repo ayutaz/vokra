@@ -456,7 +456,7 @@ fn compare(label: &str, actual: &[f32], expected: &[f32]) -> f32 {
     diff
 }
 #[test]
-#[ignore]
+#[ignore = "requires an Apple Silicon macOS worker and provisioned CPU/Metal parity fixtures"]
 fn cosyvoice2_hift_apple_cpu_metal_parity() {
     assert_eq!(
         std::env::consts::OS,

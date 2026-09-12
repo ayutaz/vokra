@@ -123,13 +123,6 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "but the public artifact and production Japanese G2P remain explicit "
         "boundaries",
     ),
-    "vokra/bicodec": (
-        "no-runtime-binder",
-        "the live 840-tensor GGUF has no runtime binder and stamps Apache-2.0/"
-        "permissive provenance, while the pinned SparkAudio weight audit classifies "
-        "the released weights as CC-BY-NC-SA-4.0 research-only. Refuse the public "
-        "artifact pending a gated provenance-correct replacement",
-    ),
     "vokra/xy-tokenizer": (
         "no-runtime-binder",
         "the live GGUF has an empty tensor manifest and contains metadata only, so "
@@ -150,14 +143,6 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "the strict complete CPU/Metal runtime requires the released four-layer AED "
         "decoder, 5,248-piece aggregate tokenizer and authenticated 1,374-tensor "
         "manifest prepared from the pinned .nemo checkpoint",
-    ),
-    "vokra/reazonspeech-nemo-v2": (
-        "partial",
-        "the live 965-tensor GGUF has the authenticated complete F32 encoder/RNN-T "
-        "manifest, but predates the embedded 3,000-piece tokenizer vocabulary and "
-        "the pinned runtime-axis metadata. Native CPU/Metal token inference is bound; "
-        "CLI/C ASR text output rejects the legacy artifact before weight decode until "
-        "an authorized gated replacement is converted from the fixed NeMo revision",
     ),
     "vokra/moss-audio-tokenizer-nano": (
         "partial",
@@ -214,12 +199,6 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "the public 8.9 MB file is an adapter only, not the verified 1B "
         "backbone, and its topology/license stamp is incompatible",
     ),
-    "vokra/voice-gender-classifier": (
-        "partial",
-        "the public file is mis-stamped as canonical SpeechBrain ECAPA but carries a distinct "
-        "202-tensor conv1/layer1-3/attention/fc6/fc7 gender-classifier topology; the strict "
-        "200-tensor speaker binder refuses it instead of misrouting",
-    ),
     "vokra/speechbrain-spkrec-ecapa-voxceleb": (
         "partial",
         "the 83,239,904-byte public restamped GGUF has tensor data out of bounds at "
@@ -256,6 +235,68 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "encoder, HuBERT/RepCodec semantic path, fusion projection and RVQ search "
         "are independently bound; no simpler codec or CPU fallback is substituted",
     ),
+}
+
+# The three repositories below have a verified replacement revision. Keep the
+# historical blocker attached to the exact old commit: a repo-level blocker
+# would incorrectly keep the replacement partial forever, while an open-ended
+# exception would make an unreviewed future commit look complete.
+PUBLIC_ARTIFACT_CPU_REVISION_BLOCKERS = {
+    "vokra/reazonspeech-nemo-v2": {
+        "9b72cc988397a02b9d3561fe4a40979a61d4cf8d": (
+            "partial",
+            "the live 965-tensor GGUF has the authenticated complete F32 encoder/RNN-T "
+            "manifest, but predates the embedded 3,000-piece tokenizer vocabulary and "
+            "the pinned runtime-axis metadata. Native CPU/Metal token inference is bound; "
+            "CLI/C ASR text output rejects the legacy artifact before weight decode until "
+            "an authorized gated replacement is converted from the fixed NeMo revision",
+        ),
+    },
+    "vokra/voice-gender-classifier": {
+        "94c8d0ba41cfe2f7b8a773eb4a7982cf4facbc84": (
+            "partial",
+            "the public file is mis-stamped as canonical SpeechBrain ECAPA but carries a distinct "
+            "202-tensor conv1/layer1-3/attention/fc6/fc7 gender-classifier topology; the strict "
+            "200-tensor speaker binder refuses it instead of misrouting",
+        ),
+    },
+    "vokra/bicodec": {
+        "2c8d12edb7fec5a95173f5b2ef4970949e936c6c": (
+            "no-runtime-binder",
+            "the live 840-tensor GGUF has no runtime binder and stamps Apache-2.0/"
+            "permissive provenance, while the pinned SparkAudio weight audit classifies "
+            "the released weights as CC-BY-NC-SA-4.0 research-only. Refuse the public "
+            "artifact pending a gated provenance-correct replacement",
+        ),
+    },
+}
+
+# Only these exact replacement commits may clear their historical artifact
+# blocker. The digest and byte count are recorded alongside the filename so
+# this audit keeps the reviewed live-artifact identity visible without ever
+# downloading model data.
+PUBLIC_ARTIFACT_CPU_REVISION_ALLOWLIST = {
+    "vokra/reazonspeech-nemo-v2": {
+        "d626a5dc5ca3bf17ea4582f8f1641f93e35477c4": (
+            "reazonspeech-nemo-v2.gguf",
+            "ff761a7bc04bed0f45d47535fcfc54a929d4b6aa2fb04c03160be60ec75ca35a",
+            2477292896,
+        ),
+    },
+    "vokra/voice-gender-classifier": {
+        "f1bb0985d62504dcead1012460ee045220f821a3": (
+            "voice-gender-classifier.restamped.gguf",
+            "afb03696d8a640d5d701ea0c136bb065cac648cbfe905a5dcc4eae04e0769b1a",
+            61899328,
+        ),
+    },
+    "vokra/bicodec": {
+        "9760a082df544265b2b6410581c5e4a3945c93e8": (
+            "model.gguf",
+            "ed0ba92cac023a4bc8cb20d9c8328272e03336c9b9da0dfe1c97ec2f41092f84",
+            625491648,
+        ),
+    },
 }
 
 # Conservative code-path inventory. Every entry must also be a full routed
@@ -430,6 +471,38 @@ def parse_engine_arches(source: str) -> tuple[set[str], set[str]]:
     return routed, bound
 
 
+def _revision_scoped_artifact_coverage(record: RepoRecord) -> Coverage | None:
+    """Apply the exact-revision gate for repositories with corrected artifacts."""
+    blockers = PUBLIC_ARTIFACT_CPU_REVISION_BLOCKERS.get(record.repo)
+    allowlist = PUBLIC_ARTIFACT_CPU_REVISION_ALLOWLIST.get(record.repo)
+    if blockers is None or allowlist is None:
+        return None
+
+    public_blocker = blockers.get(record.revision)
+    if public_blocker is not None:
+        cpu_code, reason = public_blocker
+        return Coverage(cpu_code, "blocked-by-cpu", reason)
+
+    contract = allowlist.get(record.revision)
+    if contract is None:
+        return Coverage(
+            "unknown",
+            "blocked-by-cpu",
+            "artifact revision is not in the verified public revision allowlist; "
+            "refusing to infer CPU coverage",
+        )
+
+    expected_filename, _sha256, _size = contract
+    if record.gguf_files != (expected_filename,):
+        return Coverage(
+            "unknown",
+            "blocked-by-cpu",
+            "verified artifact revision has an unexpected GGUF filename set; "
+            "refusing to infer CPU coverage",
+        )
+    return None
+
+
 def classify(
     record: RepoRecord, routed: set[str], bound: set[str]
 ) -> Coverage:
@@ -442,6 +515,9 @@ def classify(
             "unknown",
             "GGUF repo card has no machine-readable Architecture row",
         )
+    revision_coverage = _revision_scoped_artifact_coverage(record)
+    if revision_coverage is not None:
+        return revision_coverage
     public_blocker = PUBLIC_ARTIFACT_CPU_BLOCKERS.get(record.repo)
     if public_blocker is not None:
         cpu_code, reason = public_blocker
