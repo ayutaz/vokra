@@ -9714,7 +9714,7 @@ mod tests {
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
         assert!(err.contains(
             "--codec-mode is only supported for standalone \
-             mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/qwen3_tts_tokenizer_12hz/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
+             mimi/bicodec/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/qwen3_tts_tokenizer_12hz/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
         ));
     }
 
