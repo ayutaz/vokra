@@ -91,16 +91,16 @@ import zipfile
 wheel = sys.argv[1]
 with zipfile.ZipFile(wheel) as archive:
     names = archive.namelist()
-for name in names:
-    lowered = name.casefold()
-    if "numpy.libs/" in lowered or any(token in lowered for token in ("libgfortran", "libquadmath", "openblas")):
-        raise SystemExit(f"forbidden NumPy wheel payload: {name}")
-    if any(token in lowered for token in ("gpl", "lgpl")):
-        raise SystemExit(f"GPL/LGPL NumPy wheel payload: {name}")
-    if name.casefold().split("/")[-1] in {"license", "licence", "copying", "notice"}:
-        body = archive.read(name).casefold()
-        if b"gnu general public license" in body or b"gnu lesser general public license" in body:
-            raise SystemExit(f"GPL/LGPL NumPy license payload: {name}")
+    for name in names:
+        lowered = name.casefold()
+        if "numpy.libs/" in lowered or any(token in lowered for token in ("libgfortran", "libquadmath", "openblas")):
+            raise SystemExit(f"forbidden NumPy wheel payload: {name}")
+        if any(token in lowered for token in ("gpl", "lgpl")):
+            raise SystemExit(f"GPL/LGPL NumPy wheel payload: {name}")
+        if name.casefold().split("/")[-1] in {"license", "licence", "copying", "notice"}:
+            body = archive.read(name).casefold()
+            if b"gnu general public license" in body or b"gnu lesser general public license" in body:
+                raise SystemExit(f"GPL/LGPL NumPy license payload: {name}")
 PY
 }
 
@@ -228,7 +228,7 @@ PY
 }
 
 prepare() {
-  local output="$1" output_real sdist src wheel_dir wheel environment wheel_path builder
+  local output="$1" output_real sdist src wheel_dir wheel environment wheel_path builder vendored_meson vendored_meson_version
   require_vast || return 2
   require_contract || return 2
   [[ "$output" == /* && ! -e "$output" && ! -L "$output" ]] || { die 'preparation output must be an absent absolute path'; return 2; }
@@ -249,6 +249,8 @@ prepare() {
   [[ -d "$output_real/numpy-2.2.5" ]] || { die 'NumPy sdist extracted to an unexpected directory'; return 2; }
   mv "$output_real/numpy-2.2.5" "$src"
   assert_build_requirements "$src"
+  vendored_meson="$src/vendored-meson/meson/meson.py"
+  [[ -f "$vendored_meson" && ! -L "$vendored_meson" ]] || { die 'NumPy vendored Meson engine is missing or symlinked'; return 2; }
   log 'Installing every locked dependency except NumPy'
   UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 UV_CACHE_DIR="${DIA_REFERENCE_UV_CACHE_DIR:-/tmp/vokra-dia-reference-uv-cache}" \
   uv sync --project "$PROJECT" --frozen --no-install-project --no-install-package numpy --python 3.12
@@ -256,6 +258,7 @@ prepare() {
   uv venv --python 3.12 "$builder"
   UV_NO_CACHE=1 uv pip install --python "$builder/bin/python" --require-hashes --no-deps -r "$BUILD_CONSTRAINTS"
   write_build_dependency_evidence "$builder" "$output_real/build-dependency-evidence.json"
+  vendored_meson_version="$("$builder/bin/python" "$vendored_meson" --version)"
   log 'Building exact NumPy sdist with BLAS/LAPACK disabled'
   PATH="$builder/bin:$PATH" uv build --no-build-isolation --python "$builder/bin/python" --wheel --out-dir "$wheel_dir" \
     -C setup-args=-Dblas=none -C setup-args=-Dlapack=none -C setup-args=-Dallow-noblas=true "$src"
@@ -272,7 +275,7 @@ prepare() {
   compiler_version="$(cc --version | head -n 1)"
   meson_version="$("$builder/bin/meson" --version)"
   ninja_version="$(ninja --version)"
-  UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 uv run --project "$PROJECT" --frozen --no-sync --python 3.12 python - "$output_real/preparation.json" "$wheel_path" "$wheel" "$environment" "$NUMPY_SDIST_URL" "$NUMPY_SDIST_SHA256" "$NUMPY_SDIST_BYTES" "$uv_version" "$compiler_version" "$meson_version" "$ninja_version" <<'PY'
+  UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 uv run --project "$PROJECT" --frozen --no-sync --python 3.12 python - "$output_real/preparation.json" "$wheel_path" "$wheel" "$environment" "$NUMPY_SDIST_URL" "$NUMPY_SDIST_SHA256" "$NUMPY_SDIST_BYTES" "$uv_version" "$compiler_version" "$meson_version" "$ninja_version" "$vendored_meson" "$vendored_meson_version" <<'PY'
 import json
 import os
 import platform
@@ -280,14 +283,14 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
-destination, wheel_path, wheel_sha, environment, sdist_url, sdist_sha, sdist_bytes, uv_version, compiler_version, meson_version, ninja_version = sys.argv[1:]
+destination, wheel_path, wheel_sha, environment, sdist_url, sdist_sha, sdist_bytes, uv_version, compiler_version, meson_version, ninja_version, vendored_meson, vendored_meson_version = sys.argv[1:]
 dist = metadata.distribution("numpy")
 payload = {
     "schema": "vokra-dia-reference-preparation-v1",
     "status": "PREPARED_NO_BLAS",
     "publication": "NO_UPLOAD",
     "sdist": {"name": "numpy", "version": "2.2.5", "url": sdist_url, "sha256": sdist_sha, "bytes": int(sdist_bytes)},
-    "build": {"arguments": ["-C", "setup-args=-Dblas=none", "-C", "setup-args=-Dlapack=none", "-C", "setup-args=-Dallow-noblas=true"], "python": sys.version, "platform": platform.platform(), "uv": uv_version, "compiler": compiler_version, "meson": meson_version, "ninja": ninja_version, "isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"},
+    "build": {"arguments": ["-C", "setup-args=-Dblas=none", "-C", "setup-args=-Dlapack=none", "-C", "setup-args=-Dallow-noblas=true"], "python": sys.version, "platform": platform.platform(), "uv": uv_version, "compiler": compiler_version, "ninja": ninja_version, "meson": {"builder_dependency": {"executable": "build-venv/bin/meson", "version": meson_version}, "actual_vendored_engine": {"path": "src/vendored-meson/meson/meson.py", "version": vendored_meson_version, "regular_non_symlink": True, "observed_path": vendored_meson}}, "isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"},
     "wheel": {"path": wheel_path, "sha256": wheel_sha, "bytes": Path(wheel_path).stat().st_size},
     "installed_distribution": {"name": dist.metadata["Name"], "version": dist.version, "location": str(dist.locate_file("")), "files": len(tuple(dist.files or ()))},
     "runtime": {"environment": environment, "uv_run_mode": "--no-sync", "soundfile_installed": False, "torchaudio_installed": False},
@@ -304,7 +307,7 @@ PY
 }
 
 self_test() {
-  local failed=0 required_tools_line
+  local failed=0 required_tools_line temp_root
   for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'build-dependency-evidence.json' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
@@ -312,9 +315,31 @@ self_test() {
   [[ "$required_tools_line" == '  for tool in uv sha256sum tar readelf cc ninja; do command -v "$tool" >/dev/null 2>&1 || { die "$tool is required"; return 2; }; done' ]] || failed=1
   grep -Fq -- 'PATH="$builder/bin:$PATH" uv build --no-build-isolation' "$0" || failed=1
   grep -Fq -- '"$builder/bin/meson" --version' "$0" || failed=1
+  grep -Fq -- 'vendored-meson/meson/meson.py' "$0" || failed=1
   grep -Fq -- 'no-build-isolation; builder venv preinstalled from hash-pinned constraints' "$0" || failed=1
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   if grep -En 'snapshot_download|git[[:space:]]+clone|cargo[[:space:]]+(build|test|check|clippy)|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
+  if temp_root="$(mktemp -d "${TMPDIR:-/tmp}/dia-reference-wheel-self-test.XXXXXXXX")"; then
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temp_root" <<'PY' || failed=1
+import pathlib
+import sys
+import zipfile
+
+root = pathlib.Path(sys.argv[1])
+with zipfile.ZipFile(root / "valid.whl", "w") as archive:
+    archive.writestr("numpy/core/_multiarray_umath.so", b"ELF")
+with zipfile.ZipFile(root / "native-bad.whl", "w") as archive:
+    archive.writestr("numpy.libs/libgfortran.so.5", b"ELF")
+with zipfile.ZipFile(root / "license-bad.whl", "w") as archive:
+    archive.writestr("numpy-2.2.5.dist-info/licenses/LICENSE", b"GNU GENERAL PUBLIC LICENSE")
+PY
+    if ! inspect_wheel "$temp_root/valid.whl"; then failed=1; fi
+    if inspect_wheel "$temp_root/native-bad.whl" >/dev/null 2>&1; then failed=1; fi
+    if inspect_wheel "$temp_root/license-bad.whl" >/dev/null 2>&1; then failed=1; fi
+    rm -rf "$temp_root"
+  else
+    failed=1
+  fi
   (( failed == 0 )) || { log 'self-test FAIL'; return 1; }
   echo 'prepare-dia-1-6b-reference.sh self-test: PASS (model-free, VAST-only, NO_UPLOAD)'
 }
