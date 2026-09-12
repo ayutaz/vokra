@@ -175,7 +175,7 @@ require_path_c_sentinel() {
   local log_path="$1"
   local sentinel='Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4'
   [[ "$(grep -Fxc -- "$sentinel" "$log_path" || true)" == 1 ]] || die "Path C authenticated sentinel must occur exactly once"
-  [[ "$(grep -Ec '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_path" || true)" == 1 ]] || die "Path C test result is not the exact 4/0/0/0/0 success line"
+  [[ "$(grep -Ec '^test result: ok\. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_path" || true)" == 1 ]] || die "Path C test result is not the exact 5/0/0/0/0 success line"
 }
 
 cleanup_validation_workdir() {
@@ -604,7 +604,7 @@ self_test() {
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: model inspector missing" >&2; fail=1; }
   [[ -f "$root/tools/parity/microwakeword-reference/inspect.py" ]] || { echo "self-test FAIL: reference inspector missing" >&2; fail=1; }
-  for needle in "REFERENCE_PROJECT/inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
+  for needle in "REFERENCE_PROJECT/inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
   local stale_sha_name='DEPENDENCY_EVIDENCE_'
@@ -692,13 +692,13 @@ self_test() {
     fail=1
   fi
   missing_sentinel_log="$worker_probe/missing.log"
-  printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' >"$missing_sentinel_log"
+  printf 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' >"$missing_sentinel_log"
   if (require_path_c_sentinel "$missing_sentinel_log") 2>/dev/null; then
     echo 'self-test FAIL: missing Path C sentinel was accepted' >&2
     fail=1
   fi
   bad_result_log="$worker_probe/bad-result.log"
-  printf '%s\n4 passed; 0 failed\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$bad_result_log"
+  printf '%s\n5 passed; 0 failed\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$bad_result_log"
   if (require_path_c_sentinel "$bad_result_log") 2>/dev/null; then
     echo 'self-test FAIL: abbreviated Path C result line was accepted' >&2
     fail=1
@@ -720,7 +720,7 @@ PY
     fail=1
   fi
   good_sentinel_log="$worker_probe/good.log"
-  printf '%s\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$good_sentinel_log"
+  printf '%s\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$good_sentinel_log"
   require_path_c_sentinel "$good_sentinel_log" || fail=1
   cleanup_root="$(mktemp -d /tmp/vokra-mww-cleanup-selftest.XXXXXX)"
   cleanup_work="$(mktemp -d /tmp/vokra-mww-validation.XXXXXX)"

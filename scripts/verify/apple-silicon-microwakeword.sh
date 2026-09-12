@@ -167,8 +167,8 @@ if verification.get("reset_replay_invocations") != 4 or verification.get("stress
     raise ValueError("VAST Path-C contract drift")
 log = path_log.read_text(encoding="utf-8")
 sentinel = "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4"
-if log.count(sentinel) != 1 or log.count("test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;") != 1:
-    raise ValueError("VAST Path-C log is not the exact four-test PASS")
+if log.count(sentinel) != 1 or log.count("test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;") != 1:
+    raise ValueError("VAST Path-C log is not the exact five-test PASS")
 d = read_json(dependency, "dependency evidence")
 if digest(dependency) != v.get("dependency_evidence_sha256"):
     raise ValueError("dependency evidence SHA drift")
@@ -259,7 +259,8 @@ self_test() {
     'PATH_C_PASS' 'NO_UPLOAD' 'VALIDATED_EXACT_OWNER_REVIEWED' \
     'CARGO_BUILD_JOBS=1' 'CARGO_NET_OFFLINE=true' '--offline' '--locked' \
     'xcrun -sdk macosx metal -v' 'source_tflite_sha256' 'reviewed_topology_sha256' \
-    'fresh_interpreter_reset_replay' 'stage_tensor_indices' 'CPU_REFERENCE_PASS_METAL_UNSUPPORTED'; do
+    'fresh_interpreter_reset_replay' 'stage_tensor_indices' 'CPU_REFERENCE_PASS_METAL_UNSUPPORTED' \
+    'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; do
     grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
   done
   if grep -En '(^|[;&|[:space:]])(curl|wget|git[[:space:]]+(clone|fetch|pull|push)|publish-one\.sh|upload\.sh|--push|--upload)([[:space:]]|$)' "$self" >/dev/null; then
