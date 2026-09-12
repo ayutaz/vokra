@@ -9,17 +9,21 @@ remains ``BLOCKED_UNREVIEWED_TRANSITIVE`` and every publication disposition is
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.metadata
 import json
+import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import tempfile
 import tomllib
-from pathlib import Path
+import urllib.request
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -209,6 +213,7 @@ def _lock_rows() -> list[dict[str, Any]]:
                     if isinstance(dependency, dict) and isinstance(dependency.get("marker"), str)
                 ),
                 "dependencies": package.get("dependencies", []),
+                "sdist": package.get("sdist"),
                 "license_conclusion": LICENSE_CONCLUSIONS[normalized_name],
             }
         )
@@ -419,6 +424,110 @@ def _native_record(path: Path, root: Path, failures: list[str]) -> dict[str, Any
     }
 
 
+def _sdist_license_fallback(
+    name: str,
+    row: dict[str, Any],
+    archive_root: Path | None,
+    failures: list[str],
+) -> list[dict[str, Any]]:
+    """Recover publisher bytes from the lock-pinned sdist when wheel metadata omits them."""
+    sdist = row.get("sdist")
+    if not isinstance(sdist, dict):
+        failures.append(f"publisher LICENSE/NOTICE evidence missing and no locked sdist: {name}")
+        return []
+    url = sdist.get("url")
+    locked_hash = sdist.get("hash")
+    locked_size = sdist.get("size")
+    if (
+        not isinstance(url, str)
+        or not isinstance(locked_hash, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", locked_hash)
+        or not isinstance(locked_size, int)
+        or locked_size < 0
+    ):
+        failures.append(f"locked sdist identity is malformed: {name}")
+        return []
+    expected_sha = locked_hash.removeprefix("sha256:")
+    temporary_fd, temporary_name = tempfile.mkstemp(prefix=f"zonos-{name}-", suffix=".tar.gz")
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
+    try:
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as output:
+                for block in iter(lambda: response.read(1 << 20), b""):
+                    digest.update(block)
+                    size += len(block)
+                    output.write(block)
+        except (OSError, ValueError) as error:
+            failures.append(f"locked sdist download failed for {name}: {error}")
+            return []
+        if size != locked_size or digest.hexdigest() != expected_sha:
+            failures.append(f"locked sdist bytes/hash mismatch: {name}")
+            return []
+        recovered: list[dict[str, Any]] = []
+        try:
+            with tarfile.open(temporary, "r:*") as package:
+                for member in sorted(package.getmembers(), key=lambda item: item.name):
+                    member_path = PurePosixPath(member.name)
+                    basename = member_path.name.lower()
+                    if not basename.startswith(("license", "licence", "notice", "copying")):
+                        continue
+                    if member.issym() or member.islnk() or not member.isfile() or member_path.is_absolute() or ".." in member_path.parts:
+                        failures.append(f"unsafe publisher member in locked sdist: {name}:{member.name}")
+                        continue
+                    source = package.extractfile(member)
+                    if source is None:
+                        failures.append(f"publisher member cannot be read: {name}:{member.name}")
+                        continue
+                    archive_relative = Path(name) / "sdist" / Path(*member_path.parts)
+                    payload_size = 0
+                    payload_digest = hashlib.sha256()
+                    destination = archive_root / archive_relative if archive_root is not None else None
+                    if destination is not None:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        if destination.exists() or destination.is_symlink():
+                            failures.append(f"publisher archive destination already exists: {destination}")
+                            continue
+                        target = destination.open("xb")
+                    else:
+                        target = None
+                    try:
+                        with source:
+                            for block in iter(lambda: source.read(1 << 20), b""):
+                                payload_digest.update(block)
+                                payload_size += len(block)
+                                if target is not None:
+                                    target.write(block)
+                    finally:
+                        if target is not None:
+                            target.close()
+                    row_value: dict[str, Any] = {
+                        "distribution": name,
+                        "path": member.name,
+                        "bytes": payload_size,
+                        "sha256": payload_digest.hexdigest(),
+                        "source": {
+                            "kind": "locked-sdist",
+                            "url": url,
+                            "sha256": expected_sha,
+                            "bytes": locked_size,
+                        },
+                    }
+                    if destination is not None:
+                        row_value["archive_path"] = str(archive_relative)
+                    recovered.append(row_value)
+        except (OSError, tarfile.TarError) as error:
+            failures.append(f"locked sdist publisher archive failed for {name}: {error}")
+            return []
+        if not recovered:
+            failures.append(f"locked sdist has no publisher LICENSE/NOTICE member: {name}")
+        return recovered
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
     """Collect exact installed distribution/native/license evidence on VAST."""
     if sys.platform != "linux" or platform.machine() != "x86_64":
@@ -482,6 +591,7 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
     archive_root = _prepare_archive(publisher_archive)
     publisher_files: list[dict[str, Any]] = []
     archived_files: list[dict[str, Any]] = []
+    active_rows_by_name = {pep503_name(row["name"]): row for row in active_rows}
     for name, distribution in sorted(distributions.items()):
         matched = 0
         for item in distribution.files or ():
@@ -526,8 +636,13 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
                 }
             )
         if matched == 0:
-            publisher_files.append({"distribution": name, "status": "MISSING"})
-            failures.append(f"missing publisher LICENSE/LICENCE/NOTICE/COPYING evidence: {name}")
+            recovered = _sdist_license_fallback(name, active_rows_by_name.get(name, {}), archive_root, failures)
+            if recovered:
+                publisher_files.extend(recovered)
+                archived_files.extend(row for row in recovered if "archive_path" in row)
+            else:
+                publisher_files.append({"distribution": name, "status": "MISSING"})
+                failures.append(f"missing publisher LICENSE/LICENCE/NOTICE/COPYING evidence: {name}")
     publisher_files.sort(key=lambda row: (row["distribution"], row.get("path", "")))
     archive_manifest: dict[str, Any] | None = None
     if archive_root is not None:
@@ -730,6 +845,9 @@ def validate_report(path: Path) -> None:
         (row.get("distribution"), row.get("path"), row.get("bytes"), row.get("sha256"))
         for row in manifest_rows
     }
+    lock_rows_by_name = {
+        pep503_name(row["name"]): row for row in lock.get("rows", []) if isinstance(row, dict)
+    }
     expected_digests = {
         "installed_closure_sha256": _digest(installed_rows),
         "native_files_sha256": _digest(native),
@@ -745,13 +863,29 @@ def validate_report(path: Path) -> None:
             raise RuntimeError("native file hash evidence is malformed")
     for row in publisher:
         if not isinstance(row, dict) or row.get("status") == "MISSING":
-            if not isinstance(row, dict) or row.get("status") != "MISSING":
-                raise RuntimeError("publisher evidence row is malformed")
-            continue
+            raise RuntimeError("publisher LICENSE/NOTICE evidence is missing")
         if not isinstance(row.get("sha256"), str) or not hex64.fullmatch(row["sha256"]):
             raise RuntimeError("publisher LICENSE/NOTICE hash evidence is malformed")
         if (row.get("distribution"), row.get("path"), row.get("bytes"), row.get("sha256")) not in archived_identities:
             raise RuntimeError("publisher evidence is absent from the legal archive")
+        source = row.get("source")
+        if source is not None:
+            if not isinstance(source, dict) or source.get("kind") != "locked-sdist":
+                raise RuntimeError("publisher fallback source identity is malformed")
+            locked = lock_rows_by_name.get(pep503_name(str(row.get("distribution", ""))))
+            locked_sdist = locked.get("sdist") if locked is not None else None
+            expected_source = {
+                "kind": "locked-sdist",
+                "url": locked_sdist.get("url") if isinstance(locked_sdist, dict) else None,
+                "sha256": (
+                    locked_sdist.get("hash", "").removeprefix("sha256:")
+                    if isinstance(locked_sdist, dict) and isinstance(locked_sdist.get("hash"), str)
+                    else None
+                ),
+                "bytes": locked_sdist.get("size") if isinstance(locked_sdist, dict) else None,
+            }
+            if source != expected_source or "archive_path" not in row:
+                raise RuntimeError("publisher fallback is not bound to the locked sdist")
 
 
 def self_test() -> None:
@@ -799,18 +933,82 @@ def self_test() -> None:
     assert (size, digest, is_elf) == (synthetic_native.stat().st_size, sha256(synthetic_native), True)
     calls: list[Path] = []
     original_elf_needed = globals()["_elf_needed"]
-    globals()["_elf_needed"] = lambda path: calls.append(path) or ["libgfortran.so.5"]
+    globals()["_elf_needed"] = lambda path: calls.append(path) or sorted(
+        ["libgfortran.so.5", "libquadmath.so.0", "libopenblas.so.0"]
+    )
     native_failures: list[str] = []
     try:
         native_record = _native_record(synthetic_native, synthetic_native.parent, native_failures)
         assert native_record["format"] == "ELF"
-        assert native_record["needed"] == ["libgfortran.so.5"]
+        assert native_record["needed"] == [
+            "libgfortran.so.5", "libopenblas.so.0", "libquadmath.so.0"
+        ]
     finally:
         globals()["_elf_needed"] = original_elf_needed
         synthetic_native.unlink(missing_ok=True)
         synthetic_native.parent.rmdir()
     assert calls == [synthetic_native]
     assert any("policy-review" in failure for failure in native_failures)
+    assert all(
+        token in " ".join(native_failures)
+        for token in ("libgfortran", "libquadmath", "libopenblas")
+    )
+    synthetic_sdist_fd, synthetic_sdist_name = tempfile.mkstemp(
+        prefix="vokra-zonos-sdist-", suffix=".tar.gz"
+    )
+    os.close(synthetic_sdist_fd)
+    synthetic_sdist = Path(synthetic_sdist_name)
+    archive_root = Path(tempfile.mkdtemp(prefix="vokra-zonos-sdist-archive-"))
+    try:
+        with tarfile.open(synthetic_sdist, "w:gz") as package:
+            payload = b"synthetic Apache license bytes\n"
+            member = tarfile.TarInfo("safetensors-0.5.3/LICENSE")
+            member.size = len(payload)
+            package.addfile(member, io.BytesIO(payload))
+        sdist_bytes = synthetic_sdist.stat().st_size
+        sdist_sha = sha256(synthetic_sdist)
+        safetensors_row = next(row for row in report["lock"]["rows"] if row["name"] == "safetensors")
+        synthetic_row = dict(safetensors_row)
+        synthetic_row["sdist"] = {
+            "url": safetensors_row["sdist"]["url"],
+            "hash": f"sha256:{sdist_sha}",
+            "size": sdist_bytes,
+        }
+
+        class SyntheticResponse:
+            def __init__(self, value: bytes):
+                self.value = value
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size: int = -1) -> bytes:
+                value, self.value = self.value[:size], self.value[size:]
+                return value
+
+        original_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = lambda _url, timeout=60: SyntheticResponse(synthetic_sdist.read_bytes())
+        fallback_failures: list[str] = []
+        recovered = _sdist_license_fallback(
+            "safetensors", synthetic_row, archive_root, fallback_failures
+        )
+        urllib.request.urlopen = original_urlopen
+        assert not fallback_failures
+        assert len(recovered) == 1
+        assert recovered[0]["source"] == {
+            "kind": "locked-sdist",
+            "url": safetensors_row["sdist"]["url"],
+            "sha256": sdist_sha,
+            "bytes": sdist_bytes,
+        }
+        assert (archive_root / recovered[0]["archive_path"]).is_file()
+    finally:
+        urllib.request.urlopen = original_urlopen
+        synthetic_sdist.unlink(missing_ok=True)
+        shutil.rmtree(archive_root, ignore_errors=True)
     complete = json.loads(json.dumps(report))
     archive_dir = Path(tempfile.mkdtemp(prefix="vokra-zonos-publisher-"))
     archive_manifest = archive_dir / "manifest.json"
