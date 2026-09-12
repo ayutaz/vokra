@@ -9,6 +9,7 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PROJECT="$VOKRA_ROOT/tools/parity/dia_1_6b_reference"
 AUDITOR="$PROJECT/dependency_audit.py"
+OWNER_SCOPE="$PROJECT/owner_review_scope.py"
 PREPARER="$VOKRA_ROOT/scripts/publish/vast-ai/prepare-dia-1-6b-reference.sh"
 LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
 PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
@@ -64,7 +65,7 @@ require_contract() {
   local path
   [[ -d "$VOKRA_ROOT/.git" || -f "$VOKRA_ROOT/.git" ]] || { die 'VOKRA_ROOT is not a Vokra checkout'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
-  for path in pyproject.toml uv.lock dependency_audit.py; do
+  for path in pyproject.toml uv.lock dependency_audit.py owner_review_scope.py; do
     [[ -f "$PROJECT/$path" && ! -L "$PROJECT/$path" ]] || { die "missing or symlinked Dia audit input: $path"; return 2; }
   done
   [[ -x "$PREPARER" && ! -L "$PREPARER" ]] || { die 'missing or symlinked Dia preparation helper'; return 2; }
@@ -73,7 +74,7 @@ require_contract() {
 }
 
 run_audit() {
-  local output="$1" out log_path rc environment preparation
+  local output="$1" out log_path rc scope_rc head environment preparation scope
   require_vast || return 2
   require_contract || return 2
   require_absent_output "$output" || { die 'output must be an absent absolute path outside the checkout/project'; return 2; }
@@ -97,18 +98,30 @@ run_audit() {
       --project "$PROJECT" --output "$out" 2>&1 | tee -a "$log_path"
   rc="${PIPESTATUS[0]}"
   set -e
-  [[ -f "$out" && -f "$log_path" ]] && (cd "$(canonicalize_uncreated "$output")" && sha256sum audit.log dependency-audit.json preparation/preparation.json preparation/build-dependency-evidence.json preparation/numpy-config.json preparation/numpy-2.2.5.tar.gz preparation/wheelhouse/*.whl > SHA256SUMS)
+  [[ -f "$out" && -f "$log_path" ]] || { log 'dependency audit did not emit its report'; return 2; }
+  scope="$(canonicalize_uncreated "$output")/owner-review-scope.json"
+  head="$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  set +e
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$OWNER_SCOPE" \
+    --report "$out" --preparation "$(canonicalize_uncreated "$preparation")/preparation.json" --expected-head "$head" --output "$scope" 2>&1 | tee -a "$log_path"
+  scope_rc="${PIPESTATUS[0]}"
+  set -e
+  (( scope_rc == 0 )) || { log "owner-review scope generation failed (rc=$scope_rc)"; return 2; }
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$OWNER_SCOPE" \
+    --validate --report "$out" --preparation "$(canonicalize_uncreated "$preparation")/preparation.json" --expected-head "$head" --output "$scope" >>"$log_path" 2>&1 || { log 'owner-review scope validation failed'; return 2; }
+  (cd "$(canonicalize_uncreated "$output")" && sha256sum audit.log dependency-audit.json owner-review-scope.json preparation/preparation.json preparation/build-dependency-evidence.json preparation/numpy-config.json preparation/numpy-2.2.5.tar.gz preparation/wheelhouse/*.whl > SHA256SUMS)
   return "$rc"
 }
 
 self_test() {
   local temp_root fake_repo fake_project fake_output fake_log rc temp_parent failed=0
-  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'prepare-dia-1-6b-reference.sh' '--no-install-package numpy' '--no-sync' 'dependency_audit.py' 'dependency-audit.json' 'publisher LICENSE/NOTICE bytes' 'native payload facts' 'NO_UPLOAD'; do
+  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'prepare-dia-1-6b-reference.sh' '--no-install-package numpy' '--no-sync' 'dependency_audit.py' 'owner_review_scope.py' 'owner-review-scope.json' 'dependency-audit.json' 'publisher LICENSE/NOTICE bytes' 'native payload facts' 'NO_UPLOAD'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   if grep -En 'snapshot_download|git[[:space:]]+clone|cargo[[:space:]]+(build|test|check|clippy)|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$AUDITOR" --self-test >/dev/null 2>&1 || failed=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$OWNER_SCOPE" --self-test >/dev/null 2>&1 || failed=1
   temp_parent="${TMPDIR:-/tmp}"
   [[ -d /private/tmp && ! -L /private/tmp ]] && temp_parent=/private/tmp
   if temp_root="$(mktemp -d "$temp_parent/dia-dependency-wrapper.XXXXXXXX")"; then
