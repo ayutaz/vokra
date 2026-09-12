@@ -181,6 +181,69 @@ if build.get("build-backend") != "mesonpy" or set(build.get("requires", ())) != 
 PY
 }
 
+write_preparation_json() {
+  local output_root="$1" sdist="$2" wheel="$3" environment="$4" wheel_sha="$5"
+  local wheel_bytes="$6" preparer_sha="$7" venv_identity="$8"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --python 3.12 python - \
+    "$output_root" "$sdist" "$wheel" "$environment" "$wheel_sha" "$wheel_bytes" \
+    "$preparer_sha" "$venv_identity" "$PYPROJECT_SHA256" "$LOCK_SHA256" \
+    "$CONSTRAINTS_SHA256" "$NUMPY_SDIST_URL" "$NUMPY_SDIST_SHA256" "$NUMPY_SDIST_BYTES" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+(
+    output, sdist, wheel, venv, wheel_sha, wheel_bytes, preparer_sha,
+    identity, project_sha, lock_sha, constraints_sha, sdist_url,
+    sdist_sha, sdist_size,
+) = sys.argv[1:]
+for value, label in (
+    (wheel_sha, "wheel"), (preparer_sha, "preparer"),
+    (project_sha, "project"), (lock_sha, "lock"),
+    (constraints_sha, "constraints"), (sdist_sha, "sdist"),
+):
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise SystemExit(f"NumPy preparation {label} identity is malformed")
+if not wheel_bytes.isdigit() or int(wheel_bytes) <= 0:
+    raise SystemExit("NumPy preparation wheel byte count is malformed")
+if not sdist_size.isdigit() or int(sdist_size) <= 0:
+    raise SystemExit("NumPy preparation sdist byte count is malformed")
+if "__" in sdist_url or "__" in sdist_sha or "__" in sdist_size:
+    raise SystemExit("NumPy preparation identity contains an unresolved placeholder")
+venv_path = pathlib.Path(venv).resolve()
+root = pathlib.Path(output).resolve()
+if venv_path.parent != root:
+    raise SystemExit("prepared venv is outside preparation output")
+document = {
+    "schema": "vokra-zonos-numpy-no-blas-preparation-v2",
+    "status": "PREPARED_NO_BLAS",
+    "publication": "NO_UPLOAD",
+    "project": {
+        "name": pathlib.Path("tools/parity/zonos_v0_1_reference").name,
+        "pyproject_sha256": project_sha,
+        "uv_lock_sha256": lock_sha,
+        "constraints_sha256": constraints_sha,
+    },
+    "preparer_sha256": preparer_sha,
+    "sdist": {"url": sdist_url, "sha256": sdist_sha, "bytes": int(sdist_size)},
+    "wheel": {
+        "basename": pathlib.Path(wheel).name,
+        "sha256": wheel_sha,
+        "bytes": int(wheel_bytes),
+    },
+    "build": {
+        "no_build_isolation": True,
+        "arguments": ["-Dblas=none", "-Dlapack=none", "-Dallow-noblas=true"],
+    },
+    "venv": {"path": str(venv_path), "interpreter": json.loads(identity)},
+}
+(root / "preparation.json").write_text(
+    json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+}
+
 prepare() {
   local output="$1" output_real sdist src wheel_dir environment builder wheel_path
   require_vast || return 2
@@ -231,58 +294,8 @@ print(json.dumps({
 }, sort_keys=True, separators=(",", ":")))
 PY
 )"
-  UV_NO_CACHE=1 uv run --no-cache --no-project --python 3.12 python - "$output_real" "$sdist" "$wheel_path" "$environment" "$wheel_sha" "$wheel_bytes" "$preparer_sha" "$venv_identity" <<'PY'
-import json
-import pathlib
-import sys
-
-output, sdist, wheel, venv, wheel_sha, wheel_bytes, preparer_sha, identity = sys.argv[1:]
-root = pathlib.Path(output).resolve()
-venv_path = pathlib.Path(venv).resolve()
-if venv_path.parent != root:
-    raise SystemExit("prepared venv is outside preparation output")
-document = {
-    "schema": "vokra-zonos-numpy-no-blas-preparation-v2",
-    "status": "PREPARED_NO_BLAS",
-    "publication": "NO_UPLOAD",
-    "project": {
-        "name": pathlib.Path("tools/parity/zonos_v0_1_reference").name,
-        "pyproject_sha256": "__PYPROJECT_SHA256__",
-        "uv_lock_sha256": "__LOCK_SHA256__",
-        "constraints_sha256": "__CONSTRAINTS_SHA256__",
-    },
-    "preparer_sha256": preparer_sha,
-    "sdist": {
-        "url": "__SDIST_URL__",
-        "sha256": "__SDIST_SHA256__",
-        "bytes": int("__SDIST_BYTES__"),
-    },
-    "wheel": {
-        "basename": pathlib.Path(wheel).name,
-        "sha256": wheel_sha,
-        "bytes": int(wheel_bytes),
-    },
-    "build": {
-        "no_build_isolation": True,
-        "arguments": ["-Dblas=none", "-Dlapack=none", "-Dallow-noblas=true"],
-    },
-    "venv": {
-        "path": str(venv_path),
-        "interpreter": json.loads(identity),
-    },
-}
-(root / "preparation.json").write_text(
-    json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-)
-PY
-  sed -i \
-    -e "s/__PYPROJECT_SHA256__/$PYPROJECT_SHA256/" \
-    -e "s/__LOCK_SHA256__/$LOCK_SHA256/" \
-    -e "s/__CONSTRAINTS_SHA256__/$CONSTRAINTS_SHA256/" \
-    -e "s#__SDIST_URL__#$NUMPY_SDIST_URL#" \
-    -e "s/__SDIST_SHA256__/$NUMPY_SDIST_SHA256/" \
-    -e "s/__SDIST_BYTES__/$NUMPY_SDIST_BYTES/" \
-    "$output_real/preparation.json"
+  write_preparation_json "$output_real" "$sdist" "$wheel_path" "$environment" \
+    "$wheel_sha" "$wheel_bytes" "$preparer_sha" "$venv_identity"
   {
     sha256sum preparation.json "$(basename "$sdist")" "wheelhouse/$(basename "$wheel_path")"
   } > "$output_real/SHA256SUMS"
@@ -295,6 +308,38 @@ self_test() {
     grep -Fq -- "$token" "$0" || failed=1
   done
   if temporary="$(mktemp -d "${TMPDIR:-/tmp}/zonos-numpy-selftest.XXXXXX")"; then
+    local fake_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    mkdir "$temporary/preparation"
+    write_preparation_json "$temporary/preparation" "$temporary/numpy-2.2.2.tar.gz" \
+      "$temporary/preparation/wheelhouse/numpy-2.2.2-cp312-cp312-linux_x86_64.whl" \
+      "$temporary/preparation/venv" "$fake_sha" 1 "$fake_sha" \
+      "{\"executable\":\"$temporary/preparation/venv/bin/python\",\"prefix\":\"$temporary/preparation/venv\",\"implementation\":\"CPython\",\"version\":\"3.12.0\"}" || failed=1
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
+      "$temporary/preparation/preparation.json" "$PYPROJECT_SHA256" "$LOCK_SHA256" \
+      "$CONSTRAINTS_SHA256" "$NUMPY_SDIST_URL" "$NUMPY_SDIST_SHA256" "$NUMPY_SDIST_BYTES" <<'PY' || failed=1
+import json
+import pathlib
+import sys
+
+path, project, lock, constraints, url, digest, size = sys.argv[1:]
+document = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+assert document["project"] == {
+    "name": "zonos_v0_1_reference",
+    "pyproject_sha256": project,
+    "uv_lock_sha256": lock,
+    "constraints_sha256": constraints,
+}
+assert document["sdist"] == {"url": url, "sha256": digest, "bytes": int(size)}
+assert "__" not in pathlib.Path(path).read_text(encoding="utf-8")
+PY
+    if grep -Fq -- '__' "$temporary/preparation/preparation.json"; then failed=1; fi
+    mkdir "$temporary/malformed"
+    if write_preparation_json "$temporary/malformed" "$temporary/numpy-2.2.2.tar.gz" \
+      "$temporary/malformed/numpy.whl" "$temporary/malformed/venv" "$fake_sha" \
+      'not-an-int' "$fake_sha" \
+      "{\"executable\":\"$temporary/malformed/venv/bin/python\",\"prefix\":\"$temporary/malformed/venv\",\"implementation\":\"CPython\",\"version\":\"3.12.0\"}"; then
+      failed=1
+    fi
     UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temporary" <<'PY' || failed=1
 import pathlib
 import sys
