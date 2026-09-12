@@ -158,7 +158,7 @@ fn max_abs(actual: &[f32], expected: &[f32]) -> f32 {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires a provisioned Apple Silicon or VAST worker with the official reference fixture"]
 fn real_voice_gender_classifier_matches_official_reference() {
     if cfg!(target_os = "macos") {
         assert_eq!(

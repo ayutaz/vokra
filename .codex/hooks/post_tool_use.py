@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -67,16 +68,13 @@ def resolve(root: Path, raw: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def main() -> int:
-    try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, OSError):
-        return 0
-
-    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+def feedback_for_payload(payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    cwd = payload.get("cwd")
     root = git_root(cwd if isinstance(cwd, str) else os.getcwd())
     if root is None:
-        return 0
+        return []
 
     paths = [resolve(root, path) for path in changed_paths(payload.get("tool_input"))]
     feedback: list[str] = []
@@ -114,6 +112,32 @@ def main() -> int:
                     "zero-dependency check failed after Cargo metadata changed"
                     + (f": {detail[-1200:]}" if detail else "")
                 )
+    return feedback
+
+
+def self_test() -> int:
+    root = Path(__file__).resolve().parents[2]
+    patch = "*** Update File: docs/example.md\n+@@\n+"
+    assert changed_paths({"command": patch}) == ["docs/example.md"]
+    assert changed_paths({"file_path": "docs/example.md", "path": "docs/example.md"}) == [
+        "docs/example.md"
+    ]
+    with tempfile.TemporaryDirectory(prefix="vokra-post-hook-"):
+        # A documentation-only patch is a safe no-op and must not invoke
+        # rustfmt or the Cargo dependency gate.
+        assert feedback_for_payload({"cwd": str(root), "tool_input": {"command": patch}}) == []
+    print("post_tool_use --self-test: OK")
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        return self_test()
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return 0
+    feedback = feedback_for_payload(payload)
 
     if feedback:
         print(
