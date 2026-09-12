@@ -82,8 +82,12 @@ impl DenoiseBenchModel {
             "frcrn" => vokra_models::frcrn::Frcrn::from_gguf_with_backend(gguf, backend)
                 .map(Self::Frcrn)
                 .map_err(|error| error.to_string()),
+            "sgmse_voicebank" => Err(
+                "bench (denoise): arch `sgmse_voicebank` has no benchmark contract yet; the stochastic predictor/corrector requires a recorded-noise fixture and fixed parity window — use `vokra-cli run --model <sgmse.gguf> --input <16k-mono.wav> --output <clean.wav>`"
+                    .to_owned(),
+            ),
             other => Err(format!(
-                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, facebook_denoiser, or frcrn"
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, facebook_denoiser, frcrn, or sgmse_voicebank"
             )),
         }
     }
@@ -1420,6 +1424,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 "bench: arch `mimi` uses explicit encode/decode modes and a versioned code \
                  container; no standalone codec benchmark contract is defined yet — use \
                  `vokra-cli run --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::Bicodec => {
+            return Err(
+                "bench: arch `bicodec` consumes a VKRBCODE semantic/global-token container rather than timed PCM; use `vokra-cli run --model <bicodec.gguf> --codec-mode decode --input <tokens.vbc> --output <out.wav>`"
                     .to_owned(),
             );
         }

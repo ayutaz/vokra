@@ -404,6 +404,10 @@ pub(crate) enum ModelTask {
     /// effective RVQ tables, and neural decoder from the same GGUF and uses
     /// the versioned portable code container between the two modes.
     MimiCodec,
+    /// SparkAudio BiCodec decode-only semantic/global-token detokenizer.
+    /// The run arm binds the authenticated decoder once and consumes its
+    /// self-describing VKRBCODE v2 token container with checkpoint identity.
+    Bicodec,
     /// Descript DAC offline token-to-PCM decode. The released SEANet is
     /// non-causal, so this is deliberately a whole-code-matrix task rather
     /// than the causal generic streaming codec handle.
@@ -677,6 +681,8 @@ const ARCH_MP_SENET: &str = "mp_senet";
 const ARCH_FACEBOOK_DENOISER: &str = "facebook_denoiser";
 /// Alibaba FRCRN-SE-16K two-complex-U-Net/FSMN waveform enhancer.
 const ARCH_FRCRN: &str = "frcrn";
+/// SGMSE VoiceBank native score/sampler denoiser.
+const ARCH_SGMSE: &str = "sgmse_voicebank";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
@@ -709,6 +715,8 @@ const ARCH_CT_PUNC: &str = "ct_punc";
 /// Standalone Kyutai Mimi codec — mirror of what
 /// `vokra-cli convert --model mimi` writes.
 const ARCH_MIMI: &str = "mimi";
+/// SparkAudio BiCodec semantic/global-token decoder.
+const ARCH_BICODEC: &str = "bicodec";
 /// Descript DAC 16/24/44.1 kHz codec family.
 const ARCH_DAC: &str = "dac";
 /// WavTokenizer large-speech 75 token/s codec.
@@ -1549,7 +1557,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
         | ARCH_METRICGAN_PLUS
         | ARCH_MP_SENET
         | ARCH_FACEBOOK_DENOISER
-        | ARCH_FRCRN => {
+        | ARCH_FRCRN
+        | ARCH_SGMSE => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
@@ -1671,6 +1680,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // codec components and a versioned codes container, none of which
             // belongs in the ASR/TTS/S2S session slots.
             Ok((session, ModelTask::MimiCodec))
+        }
+        ARCH_BICODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_BICODEC}`"
+                ));
+            }
+            // Bare session: BiCodec's concrete decode-only API takes two
+            // explicitly separated token streams and the selected backend.
+            // Bind exactly once in the run arm after the portable container
+            // has passed its CLI shape/range gate.
+            Ok((session, ModelTask::Bicodec))
         }
         ARCH_DAC => {
             if hint.is_some() {
@@ -2153,7 +2174,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_NISQA}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_FRCRN}` / `{ARCH_PYANNOTE_SEGMENTATION}` / `{ARCH_PYANNOTE_DIARIZATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_FRCRN}` / `{ARCH_SGMSE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / `{ARCH_PYANNOTE_DIARIZATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -2274,12 +2295,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| {
             vokra_models::firered_asr_aed::FireredAsrAed::from_gguf(g).map(|_| ())
         }),
-    },
-    BoundArch {
-        arch: "sgmse_voicebank",
-        module: "vokra_models::sgmse",
-        entry: "SgmseModel::from_gguf → VAST native CPU score+4,096-sample enhancement parity PASS; Apple CPU/reference+Metal/reference+Metal/CPU no-fallback PASS; CLI task remains bounded",
-        probe: Some(|g: &GgufFile| vokra_models::sgmse::SgmseModel::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "kyutai-stt",
@@ -2593,14 +2608,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // BigVGAN and Vocos left this registry on 2026-08-21 after strict
     // loaders, real forwards, parity, and explicit feature-file CLI
     // contracts landed.
-    BoundArch {
-        // Keep this literal in sync with `vokra_models::bicodec::ARCH`: the
-        // bound-arch coverage gate intentionally scans registry literals.
-        arch: "bicodec",
-        module: "vokra_models::bicodec",
-        entry: "Bicodec::from_gguf → Bicodec::decode",
-        probe: Some(|g: &GgufFile| vokra_models::bicodec::Bicodec::from_gguf(g).map(|_| ())),
-    },
     // --- Text / alignment side-cars ---------------------------------------
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
@@ -3868,24 +3875,19 @@ mod tests {
         );
     }
 
-    /// SGMSE is discoverable through its typed binder. An arch-only synthetic
-    /// GGUF still fails closed at the typed-manifest boundary because it has
-    /// no authenticated tensor metadata.
+    /// SGMSE routes through the shared denoise task. The concrete binder is
+    /// opened in `run_denoise`, after the strict WAV/backend gates.
     #[test]
-    fn load_session_binds_sgmse_arch_fail_closed() {
-        let err = assert_bound_arch(
-            "sgmse_voicebank",
-            "sgmse-voicebank-arch",
-            "vokra_models::sgmse",
-            "VAST native CPU score+4,096-sample enhancement parity PASS; Apple CPU/reference+Metal/reference+Metal/CPU no-fallback PASS; CLI task remains bounded",
-        );
+    fn load_session_routes_sgmse_to_denoise_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SGMSE, "sgmse-voicebank-arch", |path| {
+            load_session(path).expect("SGMSE session builds as a bare denoise route")
+        });
+        assert_eq!(task, ModelTask::Denoise);
         assert!(
-            err.contains("typed tensor manifest metadata is missing"),
-            "arch-only SGMSE must fail at the missing typed manifest boundary: {err}"
-        );
-        assert!(
-            !err.contains("SOURCE_PLAN_ONLY") && !err.contains("VAST-reviewed tensor digest"),
-            "SGMSE must not report the retired pre-compiled-manifest blocker: {err}"
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_SGMSE),
+            "routed SGMSE must not retain a bound-only row"
         );
     }
 
@@ -4294,6 +4296,20 @@ mod tests {
         assert!(
             BOUND_ARCHES.iter().all(|b| b.arch != ARCH_MIMI),
             "the routed standalone codec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_bicodec_to_the_standalone_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_BICODEC, "bicodec-routed", |path| {
+            load_session(path).expect("BiCodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Bicodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_BICODEC),
+            "the routed BiCodec must not retain a registry row"
         );
     }
 

@@ -59,6 +59,8 @@ USAGE:
                   --text <string> [--language ja|en] [--output <out.wav>]
     vokra-cli run --model <speecht5.gguf> --vocoder <speecht5-hifigan.gguf> \
                   --speaker-embedding <xvector-512.f32> --text <string> [--output <out.wav>]
+    vokra-cli run --model <bicodec.gguf> --codec-mode decode \
+                  --input <tokens.vbc> --output <out.wav>
     vokra-cli run --model <melotts.gguf> --input <features.vmf> [--length-scale <s>] \
                   [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
@@ -212,6 +214,11 @@ OPTIONS:
                                 signal and must be paired with --far-end.
                                 For Mimi encode it is a mono WAV; for Mimi
                                 decode it is a `VKRMCODE` v1 code container.
+                                For BiCodec decode it is a `VKRBCODE` v2
+                                container: semantic u32 ids followed by exactly
+                                32 global u32 ids, with explicit vocabulary and
+                                sample-rate fields; raw ambiguous streams are
+                                rejected.
                                 For DAC decode it is raw time-major
                                 `[frames,n_codebooks]` little-endian u32.
                                 For WavTokenizer decode it is one raw
@@ -261,6 +268,9 @@ OPTIONS:
                                 For MOSS-Audio it is a non-empty 16 kHz mono
                                 WAV; the corrected GGUF embeds the exact
                                 tokenizer/chat/processor sidecars.
+                                For SGMSE VoiceBank it is a mono 16 kHz WAV;
+                                the route uses a fixed reproducible Gaussian
+                                noise seed and never resamples.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -422,6 +432,10 @@ OPTIONS:
                                 The v1 container pins time-major `[frame,cb]`
                                 order, u32 little-endian codes, mono rate,
                                 frame rate, topology, and codebook SHA-256.
+                                bicodec: `decode` only, from a VKRBCODE v2
+                                semantic/global-token container. CPU and Metal
+                                emit mono 16 kHz WAV; encode is an explicit
+                                unsupported operation.
                                 dac: `decode` only, from raw time-major u32le
                                 codes; unsupported encode is an explicit error.
                                 wavtokenizer: `decode` only, from one raw u32le
@@ -1573,6 +1587,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::DeepfakeClassification
         | ModelTask::WatermarkAudioseal
         | ModelTask::MimiCodec
+        | ModelTask::Bicodec
         | ModelTask::DacCodec
         | ModelTask::WavTokenizerCodec
         | ModelTask::NeuCodec
@@ -1619,6 +1634,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         .then_some(engine::TaskHint::CsmFixtureTokenizer);
     let (session, task) =
         engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
+
+    if task == ModelTask::Bicodec {
+        validate_bicodec_args(&a)?;
+    }
 
     if a.tokenizer.is_some()
         && task != ModelTask::AsrNemotron
@@ -1792,6 +1811,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
     if a.codec_mode.is_some()
         && task != ModelTask::MimiCodec
+        && task != ModelTask::Bicodec
         && task != ModelTask::DacCodec
         && task != ModelTask::WavTokenizerCodec
         && task != ModelTask::NeuCodec
@@ -1807,7 +1827,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/qwen3_tts_tokenizer_12hz/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
+            "run: --codec-mode is only supported for standalone mimi/bicodec/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/qwen3_tts_tokenizer_12hz/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
@@ -2263,6 +2283,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::MimiCodec => {
             run_mimi_codec(&session, &a)?;
+        }
+        ModelTask::Bicodec => {
+            run_bicodec(&session, &a)?;
         }
         ModelTask::DacCodec => {
             run_dac_codec(&session, &a)?;
@@ -3137,7 +3160,40 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// The native NSNet2 / RNNoise / DeepFilterNet3 / MetricGAN+ enhancement path.
+/// Reproducible Gaussian noise source for the SGMSE predictor/corrector.
+///
+/// `GaussianSplitMix64` is deliberately only a deterministic local source;
+/// this does not claim equality with an upstream RNG. Independent recorded
+/// noise fixtures remain the parity oracle for that separate concern.
+struct SgmseGaussianNoise {
+    rng: vokra_core::rng::GaussianSplitMix64,
+}
+
+impl SgmseGaussianNoise {
+    const DEFAULT_SEED: u64 = 0x5347_4d53_455f_5631;
+
+    fn new() -> Self {
+        Self {
+            rng: vokra_core::rng::GaussianSplitMix64::new(Self::DEFAULT_SEED),
+        }
+    }
+}
+
+impl vokra_models::sgmse::SgmseNoise for SgmseGaussianNoise {
+    fn fill(
+        &mut self,
+        _step: usize,
+        _corrector: bool,
+        output: &mut [f32],
+    ) -> vokra_core::Result<()> {
+        for value in output {
+            *value = self.rng.next_gaussian();
+        }
+        Ok(())
+    }
+}
+
+/// The native NSNet2 / RNNoise / DeepFilterNet3 / MetricGAN+ / SGMSE enhancement path.
 ///
 /// `--input` is a mono WAV at the model's trained rate; the denoised PCM goes
 /// to `--output` (or its duration is reported when the flag is absent, the
@@ -3256,9 +3312,27 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             (rate, output)
         }
+        "sgmse_voicebank" => {
+            let rate = vokra_models::sgmse::SgmseConfig::voicebank().sample_rate;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let compute = vokra_models::compute::Compute::for_backend(
+                a.backend,
+                vokra_models::sgmse::SGMSE_HOT_OPS,
+            )
+            .map_err(|error| format!("run (denoise/sgmse): backend preflight: {error}"))?;
+            let mut model = vokra_models::sgmse::SgmseModel::from_gguf(session.gguf())
+                .map_err(|error| format!("run (denoise/sgmse): bind: {error}"))?;
+            let mut noise = SgmseGaussianNoise::new();
+            let output = model
+                .enhance(&compute, &clip.samples, &mut noise)
+                .map_err(|error| format!("run (denoise/sgmse): forward: {error}"))?;
+            (rate, output)
+        }
         other => {
             return Err(format!(
-                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, facebook_denoiser, or frcrn"
+                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, facebook_denoiser, frcrn, or sgmse_voicebank"
             ));
         }
     };
@@ -4291,6 +4365,356 @@ fn run_moss_audio(a: &RunArgs) -> Result<(), String> {
     } else {
         println!("moss-audio: {}", response.text());
     }
+    Ok(())
+}
+
+/// BiCodec token container magic and fixed v2 header size.
+///
+/// The payload is explicitly ordered as `semantic[u32]` followed by
+/// `global[u32]`; the two streams are never inferred from one raw matrix.
+/// Header fields carry the model-facing shape/range contract and the exact
+/// checkpoint SHA-256. The digest is copied from the authenticated GGUF
+/// metadata at generation time; external producers must not substitute a
+/// digest from another release.
+///
+/// External producers should write the 72-byte little-endian header in this
+/// order: magic[8], version u16, header_len u16, sample_rate u32,
+/// frame_hop u32, semantic_count u32, global_count u32, semantic_vocab u32,
+/// global_vocab u32, reserved u32, checkpoint_sha256[32], then the two u32
+/// payloads. There is intentionally no encoder in this CLI; producers must
+/// obtain semantic/global ids from the official upstream pipeline and copy
+/// the checkpoint digest from the converted GGUF metadata.
+const BICODEC_MAGIC: &[u8; 8] = b"VKRBCODE";
+const BICODEC_VERSION: u16 = 2;
+const BICODEC_HEADER_LEN: usize = 72;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BicodecTokensV2 {
+    semantic: Vec<u32>,
+    global: Vec<u32>,
+    checkpoint_sha256: [u8; 32],
+}
+
+impl BicodecTokensV2 {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < BICODEC_HEADER_LEN {
+            return Err(format!(
+                "BiCodec token container is truncated: {} bytes, need at least {BICODEC_HEADER_LEN}",
+                bytes.len()
+            ));
+        }
+        if &bytes[..8] != BICODEC_MAGIC {
+            return Err("BiCodec token container has wrong magic; expected `VKRBCODE`".to_owned());
+        }
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        if version != BICODEC_VERSION {
+            return Err(format!(
+                "BiCodec token container version {version} is unsupported; this build reads version {BICODEC_VERSION}"
+            ));
+        }
+        let header_len = u16::from_le_bytes([bytes[10], bytes[11]]) as usize;
+        if header_len != BICODEC_HEADER_LEN {
+            return Err(format!(
+                "BiCodec token container v2 header length {header_len} != {BICODEC_HEADER_LEN}"
+            ));
+        }
+        let read_u32 = |offset: usize| -> Result<u32, String> {
+            let end = offset
+                .checked_add(4)
+                .ok_or("BiCodec header offset overflow")?;
+            let raw = bytes
+                .get(offset..end)
+                .ok_or("BiCodec token container header is truncated")?;
+            Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+        };
+        let sample_rate = read_u32(12)?;
+        let frame_hop = read_u32(16)?;
+        let semantic_count = usize::try_from(read_u32(20)?)
+            .map_err(|_| "BiCodec semantic token count does not fit this host".to_owned())?;
+        let global_count = usize::try_from(read_u32(24)?)
+            .map_err(|_| "BiCodec global token count does not fit this host".to_owned())?;
+        let semantic_vocab = read_u32(28)?;
+        let global_vocab = read_u32(32)?;
+        if read_u32(36)? != 0 {
+            return Err("BiCodec token container v2 has non-zero reserved fields".to_owned());
+        }
+        if sample_rate != vokra_models::bicodec::SAMPLE_RATE
+            || frame_hop != vokra_models::bicodec::FRAME_HOP as u32
+            || semantic_vocab != vokra_models::bicodec::SEMANTIC_VOCAB
+            || global_vocab != vokra_models::bicodec::GLOBAL_VOCAB
+        {
+            return Err(format!(
+                "BiCodec token container contract mismatch: expected sample_rate={}, frame_hop={}, semantic_vocab={}, global_vocab={}",
+                vokra_models::bicodec::SAMPLE_RATE,
+                vokra_models::bicodec::FRAME_HOP,
+                vokra_models::bicodec::SEMANTIC_VOCAB,
+                vokra_models::bicodec::GLOBAL_VOCAB,
+            ));
+        }
+        if semantic_count == 0 {
+            return Err("BiCodec token container has an empty semantic stream".to_owned());
+        }
+        if global_count != vokra_models::bicodec::GLOBAL_TOKENS {
+            return Err(format!(
+                "BiCodec token container global count {global_count} != {}",
+                vokra_models::bicodec::GLOBAL_TOKENS
+            ));
+        }
+        let token_count = semantic_count
+            .checked_add(global_count)
+            .ok_or("BiCodec token container token count overflow")?;
+        let payload_len = token_count
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or("BiCodec token container payload length overflow")?;
+        let expected_len = BICODEC_HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or("BiCodec token container length overflow")?;
+        if bytes.len() != expected_len {
+            return Err(format!(
+                "BiCodec token container length {} != declared payload length {expected_len}",
+                bytes.len()
+            ));
+        }
+        let mut checkpoint_sha256 = [0u8; 32];
+        checkpoint_sha256.copy_from_slice(&bytes[40..72]);
+        if checkpoint_sha256.iter().all(|&byte| byte == 0) {
+            return Err("BiCodec token container has an empty checkpoint SHA-256".to_owned());
+        }
+        let mut tokens = bytes[BICODEC_HEADER_LEN..].chunks_exact(4);
+        let mut semantic = Vec::with_capacity(semantic_count);
+        for _ in 0..semantic_count {
+            let raw = tokens
+                .next()
+                .ok_or("BiCodec semantic payload is truncated")?;
+            semantic.push(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]));
+        }
+        let mut global = Vec::with_capacity(global_count);
+        for _ in 0..global_count {
+            let raw = tokens.next().ok_or("BiCodec global payload is truncated")?;
+            global.push(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]));
+        }
+        if tokens.next().is_some() {
+            return Err("BiCodec token container has trailing token payload".to_owned());
+        }
+        Ok(Self {
+            semantic,
+            global,
+            checkpoint_sha256,
+        })
+    }
+
+    fn validate_ranges(&self) -> Result<(), String> {
+        if let Some((position, value)) = self
+            .semantic
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| *value >= vokra_models::bicodec::SEMANTIC_VOCAB)
+        {
+            return Err(format!(
+                "run (bicodec): semantic token [{position}]={value} outside 0..{}",
+                vokra_models::bicodec::SEMANTIC_VOCAB
+            ));
+        }
+        if let Some((position, value)) = self
+            .global
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| *value >= vokra_models::bicodec::GLOBAL_VOCAB)
+        {
+            return Err(format!(
+                "run (bicodec): global token [{position}]={value} outside 0..{}",
+                vokra_models::bicodec::GLOBAL_VOCAB
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn parse_bicodec_checkpoint_sha256(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32], String> {
+    let value = file
+        .get("vokra.bicodec.checkpoint_sha256")
+        .and_then(|value| value.as_str())
+        .ok_or("bicodec GGUF is missing `vokra.bicodec.checkpoint_sha256`")?;
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "bicodec GGUF `vokra.bicodec.checkpoint_sha256` is not a 64-character hex SHA-256"
+                .to_owned(),
+        );
+    }
+    let mut digest = [0u8; 32];
+    for (index, slot) in digest.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|error| format!("invalid bicodec checkpoint SHA-256: {error}"))?;
+    }
+    Ok(digest)
+}
+
+fn validate_bicodec_checkpoint_identity(
+    file: &vokra_core::gguf::GgufFile,
+    container_digest: &[u8; 32],
+) -> Result<(), String> {
+    let expected = parse_bicodec_checkpoint_sha256(file)?;
+    if &expected != container_digest {
+        return Err(
+            "run (bicodec): token container checkpoint SHA-256 does not match the GGUF `vokra.bicodec.checkpoint_sha256`; refusing cross-release codebook decode"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_bicodec_args(a: &RunArgs) -> Result<(), String> {
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (bicodec): encode is unsupported; the bounded route only decodes the authenticated semantic/global token container"
+                    .to_owned(),
+            )
+        }
+        None => return Err("run (bicodec): --codec-mode decode is required".to_owned()),
+    }
+    if a.input.is_none() {
+        return Err("run (bicodec): --input <tokens.vbc> is required".to_owned());
+    }
+    if a.output.is_none() {
+        return Err("run (bicodec): --output <out.wav> is required".to_owned());
+    }
+
+    let unsupported = [
+        ("--segmentation-model", a.segmentation_model.is_some()),
+        ("--embedding-model", a.embedding_model.is_some()),
+        ("--audio-tokenizer", a.audio_tokenizer.is_some()),
+        ("--vocoder", a.vocoder.is_some()),
+        ("--qwen3-tts-decoder", a.qwen3_tts_decoder.is_some()),
+        ("--qwen3-tts-speaker", a.qwen3_tts_speaker.is_some()),
+        ("--qwen3-tts-instruction", a.qwen3_tts_instruction.is_some()),
+        (
+            "--qwen3-tts-max-new-tokens",
+            a.qwen3_tts_max_new_tokens.is_some(),
+        ),
+        ("--qwen3-tts-greedy", a.qwen3_tts_greedy),
+        ("--tokenizer", a.tokenizer.is_some()),
+        ("--text", a.text.is_some()),
+        ("--tokens", a.tokens.is_some()),
+        ("--token-ids", a.token_ids.is_some()),
+        (
+            "--music-unconditional-token-ids",
+            a.music_unconditional_token_ids.is_some(),
+        ),
+        ("--musicgen-companion", a.musicgen_companion.is_some()),
+        ("--music-frames", a.music_frames.is_some()),
+        ("--max-new-frames", a.max_new_frames.is_some()),
+        ("--music-seed", a.music_seed.is_some()),
+        (
+            "--bark-max-semantic-tokens",
+            a.bark_max_semantic_tokens.is_some(),
+        ),
+        ("--bark-seed", a.bark_seed.is_some()),
+        (
+            "--parler-description-token-ids",
+            a.parler_description_token_ids.is_some(),
+        ),
+        (
+            "--parler-prompt-token-ids",
+            a.parler_prompt_token_ids.is_some(),
+        ),
+        ("--parler-max-frames", a.parler_max_frames.is_some()),
+        ("--parler-seed", a.parler_seed.is_some()),
+        ("--neutts-companion", a.neutts_companion.is_some()),
+        ("--neutts-max-new-tokens", a.neutts_max_new_tokens.is_some()),
+        ("--neutts-min-new-tokens", a.neutts_min_new_tokens.is_some()),
+        ("--neutts-seed", a.neutts_seed.is_some()),
+        ("--neutts-greedy", a.neutts_greedy),
+        ("--ultravox-companion", a.ultravox_companion.is_some()),
+        ("--ultravox-audio-start", a.ultravox_audio_start.is_some()),
+        (
+            "--ultravox-stop-token-ids",
+            a.ultravox_stop_token_ids.is_some(),
+        ),
+        (
+            "--ultravox-max-new-tokens",
+            a.ultravox_max_new_tokens.is_some(),
+        ),
+        (
+            "--moss-audio-max-new-tokens",
+            a.moss_audio_max_new_tokens.is_some(),
+        ),
+        ("--num-quantizers", a.num_quantizers.is_some()),
+        ("--bandwidth-id", a.bandwidth_id.is_some()),
+        ("--compare", a.compare.is_some()),
+        ("--far-end", a.far_end.is_some()),
+        ("--word-timestamps", a.word_timestamps),
+        ("--language", a.language.is_some()),
+        ("--target-language", a.target_language.is_some()),
+        ("--bare-prompt", a.bare_prompt),
+        ("--fixture-tokenizer", a.fixture_tokenizer),
+        ("--interrupt-after", a.interrupt_after.is_some()),
+        ("--deterministic", a.deterministic),
+        ("--duplex", a.duplex),
+        ("--echo-sim", a.echo_sim.is_some()),
+        ("--mimi", a.mimi.is_some()),
+        ("--voice", a.voice.is_some()),
+        ("--style", a.style.is_some()),
+        ("--bert-ja", a.bert_ja.is_some()),
+        ("--bert-en", a.bert_en.is_some()),
+        ("--speaker-embedding", a.speaker_embedding.is_some()),
+        ("--watermark-mode", a.watermark_mode.is_some()),
+        ("--watermark-variant", a.watermark_variant.is_some()),
+        ("--watermark-message", a.watermark_message.is_some()),
+        ("--watermark-alpha", a.watermark_alpha.is_some()),
+    ];
+    if let Some((flag, _)) = unsupported.into_iter().find(|(_, present)| *present) {
+        return Err(format!("run (bicodec): {flag} is not a codec input flag"));
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err("run (bicodec): beam-search flags are not supported".to_owned());
+    }
+    if a.length_scale.to_bits() != 1.0f32.to_bits() {
+        return Err("run (bicodec): --length-scale is not supported".to_owned());
+    }
+    Ok(())
+}
+
+fn check_bicodec_weight_license(
+    gguf: &vokra_core::gguf::GgufFile,
+    policy: &vokra_core::CompliancePolicy,
+) -> Result<(), String> {
+    vokra_core::check_weight_license(gguf, policy)
+        .map(|_| ())
+        .map_err(|error| format!("run (bicodec): weight license: {error}"))
+}
+
+fn run_bicodec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let input_path = a.input.as_deref().expect("validated BiCodec input path");
+    let output_path = a.output.as_deref().expect("validated BiCodec output path");
+    let policy = vokra_core::CompliancePolicy::from_env();
+    check_bicodec_weight_license(session.gguf(), &policy)?;
+    if let Some(info) = vokra_core::resolve_attribution(session.gguf()) {
+        eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
+    }
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (bicodec): --input {input_path}: {error}"))?;
+    let tokens = BicodecTokensV2::from_bytes(&bytes)?;
+    tokens.validate_ranges()?;
+    validate_bicodec_checkpoint_identity(session.gguf(), &tokens.checkpoint_sha256)?;
+    let model = vokra_models::bicodec::Bicodec::from_gguf_with_backend(session.gguf(), a.backend)
+        .map_err(|error| format!("run (bicodec) bind: {error}"))?;
+    let pcm = model
+        .decode(&tokens.semantic, &tokens.global)
+        .map_err(|error| format!("run (bicodec) decode: {error}"))?;
+    wav::write_wav(output_path, &pcm, vokra_models::bicodec::SAMPLE_RATE)
+        .map_err(|error| format!("run (bicodec): --output {output_path}: {error}"))?;
+    println!(
+        "bicodec decode: {} semantic + {} global tokens -> {} samples @ {} Hz -> {output_path}",
+        tokens.semantic.len(),
+        tokens.global.len(),
+        pcm.len(),
+        vokra_models::bicodec::SAMPLE_RATE
+    );
     Ok(())
 }
 
@@ -7619,6 +8043,136 @@ mod tests {
         parts.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    #[test]
+    fn bicodec_v2_container_keeps_identity_and_streams_distinct() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(BICODEC_MAGIC);
+        bytes.extend_from_slice(&BICODEC_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(BICODEC_HEADER_LEN as u16).to_le_bytes());
+        for value in [
+            vokra_models::bicodec::SAMPLE_RATE,
+            vokra_models::bicodec::FRAME_HOP as u32,
+            1,
+            vokra_models::bicodec::GLOBAL_TOKENS as u32,
+            vokra_models::bicodec::SEMANTIC_VOCAB,
+            vokra_models::bicodec::GLOBAL_VOCAB,
+            0,
+        ] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend(std::iter::repeat(0xabu8).take(32));
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        for value in 0..vokra_models::bicodec::GLOBAL_TOKENS as u32 {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let parsed = BicodecTokensV2::from_bytes(&bytes).expect("valid VKRBCODE v2");
+        assert_eq!(parsed.semantic, [7]);
+        assert_eq!(parsed.global.len(), vokra_models::bicodec::GLOBAL_TOKENS);
+        assert_eq!(parsed.global[31], 31);
+        assert!(parsed.checkpoint_sha256.iter().all(|&byte| byte == 0xab));
+        parsed.validate_ranges().expect("fixture ids are in range");
+
+        let mut wrong_identity = bytes.clone();
+        wrong_identity[40] ^= 1;
+        assert!(BicodecTokensV2::from_bytes(&wrong_identity).is_ok());
+        let mut invalid_semantic = bytes.clone();
+        invalid_semantic[BICODEC_HEADER_LEN..BICODEC_HEADER_LEN + 4]
+            .copy_from_slice(&vokra_models::bicodec::SEMANTIC_VOCAB.to_le_bytes());
+        let parsed_invalid = BicodecTokensV2::from_bytes(&invalid_semantic).unwrap();
+        assert!(
+            parsed_invalid
+                .validate_ranges()
+                .unwrap_err()
+                .contains("semantic token")
+        );
+        assert!(
+            BicodecTokensV2::from_bytes(&bytes[..bytes.len() - 1])
+                .unwrap_err()
+                .contains("length")
+        );
+
+        let mut swapped = bytes.clone();
+        swapped[20..24].copy_from_slice(&(32u32).to_le_bytes());
+        swapped[24..28].copy_from_slice(&1u32.to_le_bytes());
+        let error = BicodecTokensV2::from_bytes(&swapped).unwrap_err();
+        assert!(error.contains("global count"));
+    }
+
+    #[test]
+    fn bicodec_v2_container_rejects_wrong_contract_and_trailing_data() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(BICODEC_MAGIC);
+        bytes.extend_from_slice(&BICODEC_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(BICODEC_HEADER_LEN as u16).to_le_bytes());
+        for value in [16_000, 320, 1, 32, 8_192, 4_096, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend(std::iter::repeat(0xabu8).take(32));
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend(std::iter::repeat(0u8).take(32 * 4));
+        bytes.push(1);
+        let error = BicodecTokensV2::from_bytes(&bytes).unwrap_err();
+        assert!(error.contains("length"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn bicodec_v2_identity_must_match_authenticated_gguf_metadata() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            "vokra.bicodec.checkpoint_sha256",
+            "abababababababababababababababababababababababababababababababab",
+        );
+        let file = vokra_core::gguf::GgufFile::parse(
+            builder.to_bytes().expect("serialize identity fixture"),
+        )
+        .expect("parse identity fixture");
+        let matching = [0xabu8; 32];
+        validate_bicodec_checkpoint_identity(&file, &matching).expect("identity matches");
+        let mut wrong = matching;
+        wrong[31] ^= 1;
+        let error = validate_bicodec_checkpoint_identity(&file, &wrong).unwrap_err();
+        assert!(
+            error.contains("checkpoint SHA-256"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn bicodec_research_license_fixture() -> vokra_core::gguf::GgufFile {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE,
+            "CC-BY-NC-SA-4.0",
+        );
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID,
+            "spark-tts-bicodec",
+        );
+        vokra_core::gguf::GgufFile::parse(
+            builder
+                .to_bytes()
+                .expect("serialize BiCodec license fixture"),
+        )
+        .expect("parse BiCodec license fixture")
+    }
+
+    #[test]
+    fn bicodec_runtime_license_gate_requires_explicit_research_opt_in() {
+        let file = bicodec_research_license_fixture();
+        let error = check_bicodec_weight_license(&file, &vokra_core::CompliancePolicy::strict())
+            .expect_err("Standard/strict policy must reject research-only BiCodec weights");
+        assert!(error.contains("research license required"), "got: {error}");
+
+        check_bicodec_weight_license(
+            &file,
+            &vokra_core::CompliancePolicy::strict().with_research_license(true),
+        )
+        .expect("explicit research opt-in must unlock the BiCodec route");
+        assert!(
+            vokra_core::resolve_attribution(&file).is_some(),
+            "CC-BY-NC-SA requires the existing attribution display surface"
+        );
+    }
+
     fn silero_fixture() -> String {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/parity/silero_vad/silero-vad-v5.gguf")
@@ -9074,6 +9628,8 @@ mod tests {
         assert!(USAGE.contains("vokra-ct-punc-tsv-v1"));
         assert!(USAGE.contains("--codec-mode encode"));
         assert!(USAGE.contains("VKRMCODE"));
+        assert!(USAGE.contains("bicodec.gguf"));
+        assert!(USAGE.contains("VKRBCODE"));
         assert!(USAGE.contains("snac.gguf"));
         assert!(USAGE.contains("VKRSNAC1"));
         assert!(USAGE.contains("naturalspeech3-facodec-v2.gguf"));
