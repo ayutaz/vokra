@@ -44,7 +44,7 @@ const ENHANCEMENT_NOISE_CALLS: usize = 61;
 const ENHANCEMENT_BYTES: usize = ENHANCEMENT_SAMPLES * 4;
 const ENHANCEMENT_CROP_SHA256: &str =
     "2835819987e0858b231dc51ac4aeefe659e24648502cef07a2540f130c47b6ff";
-const ARTIFACTS: &[(&str, &str)] = &[
+const INPUT_ARTIFACTS: &[(&str, &str)] = &[
     (
         "input_condition_imag",
         "d28f163358e5f7c555c96e0e0760fbbedda913a652c1a171411cdc36e294c85c",
@@ -61,15 +61,42 @@ const ARTIFACTS: &[(&str, &str)] = &[
         "input_noisy_real",
         "71899e72e26fe669e8c97ed1cdc905956e77fbb10f5dfb790cbad74b0d2d0429",
     ),
-    (
-        "score_imag",
-        "616928ecba2045245562f48b7c62ab769094a08833a6ab4870bf0bd75025ea20",
-    ),
-    (
-        "score_real",
-        "a147ef7a8ad29d52fc55e164732c13b719c27b5c6895cfd45ebef0ca3e7658e4",
-    ),
 ];
+
+struct ReviewedScoreArtifacts {
+    score_real: &'static str,
+    score_imag: &'static str,
+}
+
+// Keep the producer identity and its complete score pair inseparable. The
+// manifest may report any reviewed VAST producer, but it cannot choose its own
+// payload hashes; verify_reference selects this fixed pair before checking
+// every score artifact.
+fn reviewed_score_artifacts(
+    cpu_model: &str,
+    torch_version: &str,
+    numpy_version: &str,
+) -> ReviewedScoreArtifacts {
+    match (cpu_model, torch_version, numpy_version) {
+        ("1" | "49", "2.13.0+cu130", "2.3.5") => ReviewedScoreArtifacts {
+            score_real: "a147ef7a8ad29d52fc55e164732c13b719c27b5c6895cfd45ebef0ca3e7658e4",
+            score_imag: "616928ecba2045245562f48b7c62ab769094a08833a6ab4870bf0bd75025ea20",
+        },
+        ("62", "2.13.0+cu130", "2.3.5") => ReviewedScoreArtifacts {
+            score_real: "04ec8984f6840317f9c9676d0a56c5cf7768b87171715ac4e5fe767277848788",
+            score_imag: "d8dcfb188f4e30e042da2eda6fefb63af7f6fcd2383565ea6f25ffc85ae20692",
+        },
+        ("63" | "79", "2.13.0+cu130", "2.3.5") => ReviewedScoreArtifacts {
+            score_real: "df5a0d9185852da2a969ceeb02ebf82098f589354775e3cc3d99eccaeee3278f",
+            score_imag: "78369b2727d24f9745529e3e21116060b0713d1e50ca04dc7d240af08d8ec4ed",
+        },
+        ("97", "2.13.0+cu130", "2.3.5") => ReviewedScoreArtifacts {
+            score_real: "7b8c1c5d97b18679645bc62cbd351173f9e25e7a31e072bc7a5d1c0687823f01",
+            score_imag: "78fe19492c08f0a8213b68cc47388d6b219670c1ba8de765a4116bb59e1cdf7d",
+        },
+        _ => panic!("reference CPU/library score provenance is not reviewed"),
+    }
+}
 
 fn env_path(name: &str) -> PathBuf {
     std::env::var_os(name)
@@ -285,7 +312,7 @@ fn read_plane(path: &Path, expected_sha: &str) -> Vec<f32> {
     values
 }
 
-fn verify_reference(reference: &Path) {
+fn verify_reference(reference: &Path) -> ReviewedScoreArtifacts {
     assert_eq!(
         fs::read_dir(reference)
             .unwrap()
@@ -294,7 +321,16 @@ fn verify_reference(reference: &Path) {
         ["manifest.json", "run.log"]
             .into_iter()
             .map(str::to_owned)
-            .chain(ARTIFACTS.iter().map(|(name, _)| format!("{name}.f32")))
+            .chain(
+                INPUT_ARTIFACTS
+                    .iter()
+                    .map(|(name, _)| format!("{name}.f32")),
+            )
+            .chain(
+                ["score_real.f32", "score_imag.f32"]
+                    .into_iter()
+                    .map(str::to_owned)
+            )
             .collect::<BTreeSet<String>>()
     );
     let root = json::parse(&fs::read(reference.join("manifest.json")).unwrap())
@@ -418,9 +454,11 @@ fn verify_reference(reference: &Path) {
     );
     assert!(!string_field(runtime, "platform_node").is_empty());
     assert!(u64_field(runtime, "nproc") > 0);
-    assert_eq!(string_field(runtime, "cpu_model"), "49");
-    assert_eq!(string_field(runtime, "torch_version"), "2.13.0+cu130");
-    assert_eq!(string_field(runtime, "numpy_version"), "2.3.5");
+    let score_artifacts = reviewed_score_artifacts(
+        &string_field(runtime, "cpu_model"),
+        &string_field(runtime, "torch_version"),
+        &string_field(runtime, "numpy_version"),
+    );
     let input_generator = field(runtime, "input_generator");
     assert_eq!(input_generator.as_object().unwrap().len(), 3);
     assert_eq!(
@@ -446,11 +484,14 @@ fn verify_reference(reference: &Path) {
     let artifacts = field(&root, "artifacts")
         .as_object()
         .expect("manifest artifacts object");
-    assert_eq!(artifacts.len(), ARTIFACTS.len());
-    for (name, expected_sha) in ARTIFACTS {
+    assert_eq!(artifacts.len(), INPUT_ARTIFACTS.len() + 2);
+    for (name, expected_sha) in INPUT_ARTIFACTS.iter().copied().chain([
+        ("score_real", score_artifacts.score_real),
+        ("score_imag", score_artifacts.score_imag),
+    ]) {
         let metadata = artifacts
             .iter()
-            .find(|(key, _)| key.as_str() == *name)
+            .find(|(key, _)| key.as_str() == name)
             .map(|(_, value)| value)
             .unwrap_or_else(|| panic!("missing artifact {name}"));
         assert_eq!(string_field(metadata, "path"), format!("{name}.f32"));
@@ -477,6 +518,7 @@ fn verify_reference(reference: &Path) {
     ] {
         assert!(text.contains(marker), "run log missing {marker}");
     }
+    score_artifacts
 }
 
 #[test]
@@ -513,6 +555,38 @@ fn sha256_known_vectors() {
     assert_eq!(
         hash.finish(),
         "f13b2d724659eb3bf47f2dd6af1accc87b81f09f59f2b75e5c0bed6589dfe8c6"
+    );
+}
+
+#[test]
+fn reviewed_sgmse_score_provenance_accepts_cpu_79_and_rejects_unknown() {
+    let old = reviewed_score_artifacts("49", "2.13.0+cu130", "2.3.5");
+    let current = reviewed_score_artifacts("79", "2.13.0+cu130", "2.3.5");
+    assert_ne!(old.score_real, current.score_real);
+    assert_ne!(old.score_imag, current.score_imag);
+    assert_ne!(
+        (old.score_real, old.score_imag),
+        (current.score_real, current.score_imag)
+    );
+    assert_eq!(
+        current.score_real,
+        "df5a0d9185852da2a969ceeb02ebf82098f589354775e3cc3d99eccaeee3278f"
+    );
+    assert_eq!(
+        current.score_imag,
+        "78369b2727d24f9745529e3e21116060b0713d1e50ca04dc7d240af08d8ec4ed"
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            reviewed_score_artifacts("unreviewed", "2.13.0+cu130", "2.3.5");
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            reviewed_score_artifacts("79", "drifted", "2.3.5");
+        })
+        .is_err()
     );
 }
 
@@ -626,10 +700,10 @@ fn sgmse_apple_cpu_metal_score_matches_reference() {
         sha256_file(&reference.join("manifest.json")),
         expected_manifest
     );
-    verify_reference(&reference);
+    let score_artifacts = verify_reference(&reference);
     let noisy_real = read_plane(
         &reference.join("input_noisy_real.f32"),
-        ARTIFACTS
+        INPUT_ARTIFACTS
             .iter()
             .find(|(n, _)| *n == "input_noisy_real")
             .unwrap()
@@ -637,7 +711,7 @@ fn sgmse_apple_cpu_metal_score_matches_reference() {
     );
     let noisy_imag = read_plane(
         &reference.join("input_noisy_imag.f32"),
-        ARTIFACTS
+        INPUT_ARTIFACTS
             .iter()
             .find(|(n, _)| *n == "input_noisy_imag")
             .unwrap()
@@ -645,7 +719,7 @@ fn sgmse_apple_cpu_metal_score_matches_reference() {
     );
     let cond_real = read_plane(
         &reference.join("input_condition_real.f32"),
-        ARTIFACTS
+        INPUT_ARTIFACTS
             .iter()
             .find(|(n, _)| *n == "input_condition_real")
             .unwrap()
@@ -653,7 +727,7 @@ fn sgmse_apple_cpu_metal_score_matches_reference() {
     );
     let cond_imag = read_plane(
         &reference.join("input_condition_imag.f32"),
-        ARTIFACTS
+        INPUT_ARTIFACTS
             .iter()
             .find(|(n, _)| *n == "input_condition_imag")
             .unwrap()
@@ -679,19 +753,11 @@ fn sgmse_apple_cpu_metal_score_matches_reference() {
         .expect("Metal score");
     let ref_real = read_plane(
         &reference.join("score_real.f32"),
-        ARTIFACTS
-            .iter()
-            .find(|(n, _)| *n == "score_real")
-            .unwrap()
-            .1,
+        score_artifacts.score_real,
     );
     let ref_imag = read_plane(
         &reference.join("score_imag.f32"),
-        ARTIFACTS
-            .iter()
-            .find(|(n, _)| *n == "score_imag")
-            .unwrap()
-            .1,
+        score_artifacts.score_imag,
     );
     assert_parity("cpu_score_real", &cpu_out[..COUNT], &ref_real);
     assert_parity("cpu_score_imag", &cpu_out[COUNT..], &ref_imag);

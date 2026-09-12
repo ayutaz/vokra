@@ -17,8 +17,8 @@ TTS_REVISION="30fcde30f19b87502b8435427b5f5068e401d5f6"
 TTS_SOURCE_SHA256="d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
 VOCODER_REVISION="bb6f429406e86a9992357a972c0698b22043307d"
 VOCODER_SOURCE_SHA256="b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b"
-LOCK_SHA256="418fb6b6516e0284b503ed20872e2dc6dd375aff918e253f3e7f9d27b62f904c"
-PYPROJECT_SHA256="1e61ad26749c1ad5ba05fe139ef8bfcf4698e3b030cad6182e18309789779346"
+LOCK_SHA256="3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
+PYPROJECT_SHA256="b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=30000000
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -29,6 +29,19 @@ die() { log "ERROR: $*"; return 2; }
 
 sha256_file() {
   sha256sum "$1" | awk '{print $1}'
+}
+
+write_sha256_manifest() {
+  local evidence="$1"
+  (cd "$evidence" && find . -type f ! -path './SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+}
+
+require_project_hashes() {
+  local lock_digest project_digest
+  lock_digest="$(sha256_file "$PARITY_PROJECT/uv.lock")"
+  project_digest="$(sha256_file "$PARITY_PROJECT/pyproject.toml")"
+  [[ "$lock_digest" == "$LOCK_SHA256" ]] || { die "uv.lock SHA-256 drifted: $lock_digest"; return 2; }
+  [[ "$project_digest" == "$PYPROJECT_SHA256" ]] || { die "pyproject SHA-256 drifted: $project_digest"; return 2; }
 }
 
 paths_overlap() {
@@ -136,16 +149,20 @@ require_sentinel() {
 }
 
 run_self_test() {
-  local script_path="${BASH_SOURCE[0]}" tmp fail=0
+  local script_path="${BASH_SOURCE[0]}" tmp fail=0 manifest_dir manifest_call_count
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/speecht5-api-smoke-self-test.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   UV_NO_CACHE=1 UV_CACHE_DIR="$tmp/cache" uv run --no-cache --no-project --offline --python 3.12 python "$API_SMOKE" --self-test >/dev/null || fail=1
+  require_project_hashes || fail=1
   for required in "$TTS_REVISION" "$TTS_SOURCE_SHA256" "$VOCODER_REVISION" "$VOCODER_SOURCE_SHA256" \
     "$LOCK_SHA256" "$PYPROJECT_SHA256" 'VOKRA_PUBLISH_ON_VAST=1' 'clean' 'Linux x86_64' \
     'preflight_gate.py' 'run_preflight_gate' '--manifest' '--evidence' '--approval-evidence' '--vokra-root' 'NO_UPLOAD' 'uv sync --project' '--frozen --python 3.12' \
-    'post_sync_audit.py' 'SPEECHT5_API_SMOKE status=PASS' 'SPEECHT5_API_SMOKE status=FAIL' 'require_absent_dir' 'require_disjoint_paths'; do
+    'post_sync_audit.py' 'SPEECHT5_API_SMOKE status=PASS' 'SPEECHT5_API_SMOKE status=FAIL' 'require_absent_dir' 'require_disjoint_paths' 'require_project_hashes' \
+    'write_sha256_manifest' "find . -type f ! -path './SHA256SUMS' -print0" 'sha256sum -c SHA256SUMS'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; fail=1; }
   done
+  manifest_call_count="$(grep -Fc 'write_sha256_manifest "$evidence"' "$script_path" || true)"
+  [[ "$manifest_call_count" == 3 ]] || { log "self-test requires PASS, FAIL, and self-test manifest writes (found $manifest_call_count)"; fail=1; }
   local preflight_call mkdir_line sync_line
   preflight_call="$(grep -nF "  preflight_gate \"\$approval\"" "$script_path" | tail -1 | cut -d: -f1 || true)"
   mkdir_line="$(grep -nF "  mkdir -p \"\$checkpoint\" \"\$controller\"" "$script_path" | tail -1 | cut -d: -f1 || true)"
@@ -172,6 +189,13 @@ run_self_test() {
   require_sentinel "$tmp/sentinel" || fail=1
   printf '%s\n%s\n' "$(cat "$tmp/sentinel")" "$(cat "$tmp/sentinel")" > "$tmp/duplicate"
   require_sentinel "$tmp/duplicate" >/dev/null 2>&1 && fail=1 || :
+  manifest_dir="$tmp/manifest"
+  mkdir -p "$manifest_dir/nested"
+  printf '%s\n' 'speech t5 evidence' > "$manifest_dir/input.txt"
+  printf '%s\n' 'deterministic manifest' > "$manifest_dir/nested/output.txt"
+  write_sha256_manifest "$manifest_dir" || fail=1
+  grep -Fxq './SHA256SUMS' "$manifest_dir/SHA256SUMS" && fail=1 || :
+  (cd "$manifest_dir" && sha256sum -c SHA256SUMS >/dev/null) || fail=1
   rm -rf "$tmp"; trap - EXIT
   (( fail == 0 )) || return 1
   echo 'run-speecht5-tts-api-smoke.sh self-test: PASS (NO_UPLOAD)'
@@ -206,6 +230,7 @@ EOF
   require_absent_dir "$work" work-dir
   require_absent_dir "$evidence" evidence-dir
   require_disjoint_paths "$work" "$evidence" "$approval"
+  require_project_hashes
   require_vast_host "$(dirname "$work")"
   require_clean_checkout
   require_tooling
@@ -237,7 +262,7 @@ EOF
       --validate-evidence --output-dir "$evidence" --status FAIL
     printf 'execution_status=FAIL\napi_smoke_exit_code=%s\nevidence_sha256=%s\n' \
       "$api_rc" "$(sha256_file "$evidence/evidence.json")" > "$controller/failure-summary.txt"
-    (cd "$evidence" && find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+    write_sha256_manifest "$evidence"
     log "FAIL: preserved failure evidence at $evidence; destroy the disposable VAST instance"
     return "$api_rc"
   fi
@@ -260,7 +285,7 @@ EOF
     uname -a
     awk '$1 == "MemTotal:" {print "mem_total_kib=" $2; exit}' /proc/meminfo
   } > "$env_log"
-  (cd "$evidence" && find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+  write_sha256_manifest "$evidence"
   log "PASS: pull only $evidence; destroy the disposable VAST instance; do not pull checkpoint artifacts"
 }
 

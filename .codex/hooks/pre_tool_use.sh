@@ -38,13 +38,43 @@ if [ "${1:-}" = --self-test ]; then
         fi
     }
 
+    expected_model_dispatch() {
+        # Keep the production guard's host check authoritative: this helper
+        # only makes the Darwin/non-Darwin expectation explicit in the
+        # dispatcher regression test and does not provide an override.
+        if [ "$1" = Darwin ]; then
+            printf 'block'
+        else
+            printf 'allow'
+        fi
+    }
+
+    test_repo="$(mktemp -d "${TMPDIR:-/tmp}/vokra-pre-tool.XXXXXX")"
+    trap 'rm -rf "$test_repo"' EXIT
+    test_manifest="$test_repo/tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json"
+    mkdir -p "$(dirname "$test_manifest")" "$test_repo/docs"
+    printf 'baseline\n' > "$test_manifest"
+    git -C "$test_repo" init -q
+    git -C "$test_repo" add tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json
+    git -C "$test_repo" -c user.name=self-test -c user.email=self-test@example.invalid commit -qm baseline
+    printf 'dirty\n' > "$test_manifest"
+    dirty_broad_add_payload="$(jq -cn --arg cwd "$test_repo/docs" '{cwd:$cwd,tool_input:{command:"git add ."}}')"
+
     echo 'pre_tool_use dispatcher --self-test'
-    check 'dispatcher blocks local model run' block \
+    if [ "$(expected_model_dispatch Darwin)" = block ] \
+        && [ "$(expected_model_dispatch Linux)" = allow ]; then
+        printf '  ok    %-56s %s\n' 'OS expectation matrix (Darwin block / Linux allow)' 'pass'
+    else
+        printf '  FAIL  %-56s\n' 'OS expectation matrix (Darwin block / Linux allow)'
+        fails=$((fails + 1))
+    fi
+    current_os="$(uname -s 2>/dev/null || echo unknown)"
+    check "dispatcher local model run ($current_os OS contract)" "$(expected_model_dispatch "$current_os")" \
         '{"tool_input":{"command":"vokra-cli run --model ./tiny.gguf"}}'
     check 'dispatcher blocks direct VAST mutation' block \
         '{"tool_input":{"command":"vastai destroy instance 123"}}'
     check 'dispatcher blocks dirty broad add' block \
-        '{"tool_input":{"command":"git add ."}}'
+        "$dirty_broad_add_payload"
     check 'dispatcher allows hash inspection' allow \
         '{"tool_input":{"command":"sha256sum ./tiny.gguf"}}'
     check 'dispatcher allows VAST status' allow \

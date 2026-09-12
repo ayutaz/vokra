@@ -37,6 +37,18 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "UV_CACHE_DIR=\"${TMPDIR:-/tmp}/vokra-uv-cache\" uv run --no-project --python 3.12 python \"$(git rev-parse --show-toplevel)/.codex/hooks/prompt-secret-guard.py\"",
+            "statusMessage": "Checking prompt for exposed credentials",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

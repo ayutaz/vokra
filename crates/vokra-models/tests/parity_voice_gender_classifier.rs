@@ -18,6 +18,7 @@ const GGUF_ENV: &str = "VOKRA_VOICE_GENDER_GGUF";
 const EVIDENCE_ENV: &str = "VOKRA_VOICE_GENDER_EVIDENCE_DIR";
 const ARGMAX_ENV: &str = "VOKRA_VOICE_GENDER_ARGMAX";
 const REMOTE_ENV: &str = "VOKRA_REMOTE_APPLE_SILICON";
+const VAST_ENV: &str = "VOKRA_REMOTE_VAST";
 // The PCM is the fixed synthetic tone emitted by the pinned independent
 // upstream dumper, not caller voice data; its aggregate errors are safe to
 // record as deterministic parity metrics.
@@ -157,15 +158,29 @@ fn max_abs(actual: &[f32], expected: &[f32]) -> f32 {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires a provisioned Apple Silicon or VAST worker with the official reference fixture"]
 fn real_voice_gender_classifier_matches_official_reference() {
-    assert_eq!(std::env::consts::OS, "macos", "Apple worker requires macOS");
-    assert_eq!(
-        std::env::consts::ARCH,
-        "aarch64",
-        "Apple worker requires arm64"
-    );
-    assert_eq!(std::env::var(REMOTE_ENV).as_deref(), Ok("1"));
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            std::env::consts::ARCH,
+            "aarch64",
+            "Apple worker requires arm64"
+        );
+        assert_eq!(std::env::var(REMOTE_ENV).as_deref(), Ok("1"));
+    } else {
+        assert_eq!(std::env::consts::OS, "linux", "VAST worker requires Linux");
+        assert_eq!(
+            std::env::consts::ARCH,
+            "x86_64",
+            "VAST worker requires x86_64"
+        );
+        assert_eq!(std::env::var(VAST_ENV).as_deref(), Ok("1"));
+        assert_eq!(
+            std::env::var("VOKRA_PUBLISH_ON_VAST").as_deref(),
+            Ok("1"),
+            "VAST worker requires the explicit publish-on-VAST marker"
+        );
+    }
     let gguf = env_path(GGUF_ENV);
     required_file(&gguf, "GGUF");
     assert_eq!(std::env::var(GGUF_SHA_ENV).as_deref(), Ok(GGUF_SHA256));
@@ -319,6 +334,9 @@ fn real_voice_gender_classifier_matches_official_reference() {
     let probability_error = max_abs(&actual_probabilities, &expected_probabilities);
     assert!(probability_error.is_finite());
     assert!(actual_probabilities.iter().all(|value| value.is_finite()));
+    // libtest may print its `test ...` preamble without a trailing newline
+    // before replaying captured stderr; keep the canonical marker line-based.
+    eprintln!();
     eprintln!(
         "VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs={feature_error:.9} embedding_max_abs={embedding_error:.9} logits_max_abs={logit_error:.9} probability_max_abs={probability_error:.9} bound={FP32_PARITY_BOUND:.9} fixture={FIXTURE_KIND}"
     );

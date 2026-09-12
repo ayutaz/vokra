@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-09-11 execution update:** PR #79 was merged as
+> `1787818e702bdaba488d52aa1666fd5f08c5ae16`; the bounded, authorized
+> post-merge VAST and Scaleway results are recorded in
+> [the dated Apple results](mac-cpu-metal-scaleway-results-2026-09-11.md).
+> Those results close only the exact rows and heads named there. This plan's
+> broader 63-row unresolved-public scope, fail-closed owner/legal and upstream
+> blockers, UTMOS boundary, and separate artifact-publication approval remain
+> unchanged.
+
 > **2026-09-09 audit-start snapshot:** PR #79 was at `9efcd16e`
 > (`CLEAN` / `MERGEABLE`), with 110 successful checks, 13 intentional skips
 > and 0 failures. Exact implementation VAST replay is `caf70eb1` (305 suites /

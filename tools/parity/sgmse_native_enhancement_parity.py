@@ -99,6 +99,38 @@ EXPECTED_NATIVE_FILES = {"enhanced_pcm.f32"}
 ENHANCEMENT_SOURCE_FILE = "speechbrain/inference/enhancement.py"
 ENHANCEMENT_SOURCE_MARKERS = ("class SGMSEEnhancement", "enhance_batch")
 OFFICIAL_CALL_IDENTITY = "SGMSEEnhancement.enhance_batch -> ScoreModel.enhance"
+# These are the source identities emitted by the authenticated VAST reference.
+# Portable verification can authenticate the frozen attestation without
+# pretending that the disposable VAST checkout is present on Apple Silicon.
+PORTABLE_SPEECHBRAIN_SOURCE_FILES = {
+    ENHANCEMENT_SOURCE_FILE: {
+        "sha256": "019e79bb489ba4c7f1ddd681e0cc007d7034386636ffd156128ec85058476995",
+        "size": 11693,
+        "markers": {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS},
+    },
+    "speechbrain/integrations/models/sgmse_plus.py": {
+        "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935",
+        "size": 21777,
+    },
+}
+PORTABLE_SPEECHBRAIN_EMA_SOURCE_FILES = {
+    "score_model": {
+        "path": "speechbrain/integrations/models/sgmse_plus.py",
+        "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935",
+        "size": 21777,
+        "markers": {"class ScoreModel": True},
+    },
+    "parameter_transfer": {
+        "path": "speechbrain/utils/parameter_transfer.py",
+        "sha256": "9ef59c7141e6aad15d11dd184957054e758baf3537bc71ffe3079753715d4f65",
+        "size": 11973,
+        "markers": {
+            "class Pretrainer": True,
+            "def load_collected": True,
+            "filename = name + PARAMFILE_EXT": True,
+        },
+    },
+}
 SAMPLING_KEYS = (
     "sampler_type", "predictor", "corrector", "N", "corrector_steps", "snr"
 )
@@ -150,15 +182,59 @@ def verify_speechbrain_source_manifest(
     runtime: dict[str, Any],
     *,
     allow_missing_source_for_self_test: bool,
+    portable_source_manifest: bool = False,
 ) -> None:
-    """Re-hash the exact clean SpeechBrain checkout named by the packet.
+    """Re-hash or attest the exact clean SpeechBrain source named by the packet.
 
     The model-free self-test explicitly opts into synthetic source rows. A
     generated VAST packet must carry a real clean checkout; its
     three executable source files are re-hashed at verification time rather
-    than trusting hashes copied into the manifest.
+    than trusting hashes copied into the manifest. Portable verification is a
+    separate, read-only Apple-side mode: it requires the canonical source
+    identities and attested file rows in the frozen manifest, but does not
+    dereference the disposable VAST checkout. It must never be used to
+    generate a reference or to replace the full source re-hash on VAST.
     """
     source_path = Path(speechbrain["path"])
+    if portable_source_manifest:
+        if not source_path.is_absolute() or source_path.is_symlink():
+            raise ValueError("portable SpeechBrain source identity must name an absolute non-symlink path")
+        if speechbrain.get("clean") is not True:
+            raise ValueError("portable SpeechBrain source identity is not marked clean")
+        if speechbrain.get("repository") != "https://github.com/speechbrain/speechbrain.git":
+            raise ValueError("portable SpeechBrain source repository is not pinned")
+
+        # The packet is the only source material available on Apple Silicon.
+        # Require the exact reviewed rows and hashes; do not downgrade to a
+        # mere revision/path check when the source checkout is absent.
+        source_rows = speechbrain.get("files")
+        expected_enhancement = PORTABLE_SPEECHBRAIN_SOURCE_FILES[ENHANCEMENT_SOURCE_FILE]
+        if (
+            not isinstance(source_rows, list)
+            or len(source_rows) != 1
+            or not isinstance(source_rows[0], dict)
+            or set(source_rows[0]) != {"path", "sha256", "size", "markers"}
+            or source_rows[0].get("path") != ENHANCEMENT_SOURCE_FILE
+            or source_rows[0].get("sha256") != expected_enhancement["sha256"]
+            or source_rows[0].get("size") != expected_enhancement["size"]
+            or source_rows[0].get("markers") != expected_enhancement["markers"]
+        ):
+            raise ValueError("portable SpeechBrain enhancement source attestation mismatch")
+
+        ema_files = ema_route.get("source_files")
+        score_source = ema_files.get("score_model") if isinstance(ema_files, dict) else None
+        transfer_source = ema_files.get("parameter_transfer") if isinstance(ema_files, dict) else None
+        expected_ema_files = PORTABLE_SPEECHBRAIN_EMA_SOURCE_FILES
+        if (
+            not isinstance(ema_files, dict)
+            or set(ema_files) != {"score_model", "parameter_transfer"}
+            or not isinstance(score_source, dict)
+            or score_source != expected_ema_files["score_model"]
+            or not isinstance(transfer_source, dict)
+            or transfer_source != expected_ema_files["parameter_transfer"]
+        ):
+            raise ValueError("portable SpeechBrain EMA source attestation mismatch")
+        return
     if allow_missing_source_for_self_test and not source_path.exists():
         return
     if not source_path.is_absolute() or source_path.is_symlink():
@@ -583,6 +659,7 @@ def verify_reference(
     vokra_root: Path | None = None,
     *,
     allow_missing_source_for_self_test: bool = False,
+    portable_source_manifest: bool = False,
 ) -> dict[str, Any]:
     require_exact_files(packet, EXPECTED_PACKET_FILES, "reference packet")
     manifest = json.loads(
@@ -709,6 +786,7 @@ def verify_reference(
         ema_route,
         runtime,
         allow_missing_source_for_self_test=allow_missing_source_for_self_test,
+        portable_source_manifest=portable_source_manifest,
     )
     vokra = manifest["vokra"]
     if not isinstance(vokra, dict) or set(vokra) != {
@@ -720,7 +798,10 @@ def verify_reference(
     if vokra_root is not None:
         current = require_vokra_checkout(vokra_root)
         if (
-            Path(vokra["path"]).resolve(strict=False) != vokra_root.resolve(strict=False)
+            (
+                not portable_source_manifest
+                and Path(vokra["path"]).resolve(strict=False) != vokra_root.resolve(strict=False)
+            )
             or vokra["commit"] != current["commit"]
             or vokra["tool_sha256"] != sha256(vokra_root / "tools/parity/sgmse_native_enhancement_parity.py")
             or vokra["uv_lock_sha256"] != sha256(vokra_root / "tools/parity/uv.lock")
@@ -1231,7 +1312,7 @@ def self_test() -> int:
             "source": {"path": "/source", "revision": SOURCE_REVISION, "clean": True, "repository": "https://github.com/sp-uhh/sgmse.git", "license_spdx": SOURCE_LICENSE_SPDX, "license_sha256": SOURCE_LICENSE_SHA256, "files": []},
             "speechbrain_source": {"path": "/speechbrain", "revision": SPEECHBRAIN_REVISION, "clean": True, "repository": "https://github.com/speechbrain/speechbrain.git", "license_spdx": SPEECHBRAIN_LICENSE_SPDX, "license_sha256": SPEECHBRAIN_LICENSE_SHA256, "files": [{"path": ENHANCEMENT_SOURCE_FILE, "sha256": "019e79bb489ba4c7f1ddd681e0cc007d7034386636ffd156128ec85058476995", "size": 11693, "markers": {marker: True for marker in ENHANCEMENT_SOURCE_MARKERS}}]},
             "licenses": {"algorithm": {"spdx": SOURCE_LICENSE_SPDX, "sha256": SOURCE_LICENSE_SHA256}, "speechbrain": {"spdx": SPEECHBRAIN_LICENSE_SPDX, "sha256": SPEECHBRAIN_LICENSE_SHA256}, "checkpoint": CHECKPOINT_LICENSE_SPDX},
-            "ema_route": {"status": EMA_ROUTE_STATUS, "loadable": "score_model_ema", "checkpoint_filename": CHECKPOINT_NAME, "parameter_load": "strict_state_dict", "unsafe_pickle_fallback": False, "source_files": {"score_model": {"path": "speechbrain/integrations/models/sgmse_plus.py", "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777}, "parameter_transfer": {"path": "speechbrain/utils/parameter_transfer.py", "sha256": "0" * 64, "size": 1}}},
+            "ema_route": {"status": EMA_ROUTE_STATUS, "loadable": "score_model_ema", "checkpoint_filename": CHECKPOINT_NAME, "parameter_load": "strict_state_dict", "unsafe_pickle_fallback": False, "source_files": {"score_model": {"path": "speechbrain/integrations/models/sgmse_plus.py", "sha256": "b70ecde1d7326282b339348c739e91413c6dbac07ef98d34b540be07d8e70935", "size": 21777, "markers": {"class ScoreModel": True}}, "parameter_transfer": {"path": "speechbrain/utils/parameter_transfer.py", "sha256": "9ef59c7141e6aad15d11dd184957054e758baf3537bc71ffe3079753715d4f65", "size": 11973, "markers": {"class Pretrainer": True, "def load_collected": True, "filename = name + PARAMFILE_EXT": True}}}},
             "model": {"load": "torch.load(weights_only=True)+load_state_dict(strict=True)", "tensor_count": 647, "parameter_count": 65_590_822},
             "input": {"wav_filename": "ref-clip.wav", "wav_size": INPUT_WAV_SIZE, "wav_sha256": INPUT_WAV_SHA256, "sample_rate": SAMPLE_RATE, "channels": CHANNELS, "sample_width": SAMPLE_WIDTH, "pcm_filename": INPUT_NAME, "crop": {"sample_start": CROP_SAMPLE_START, "sample_count": CROP_SAMPLE_COUNT, "pcm_filename": INPUT_NAME, "pcm_dtype": "float32", "pcm_bytes": CROP_PCM_BYTES, "pcm_sha256": sha256(packet / INPUT_NAME), "stft": {"n_fft": 510, "hop_length": 128, "center": True, "frames_before_reflection_pad": CROP_STFT_FRAMES}, "reflection_pad": {"mode": "reflect", "target_frames": CROP_PADDED_FRAMES, "added_frames": CROP_REFLECTION_PAD, "padding_less_than_source": True}}},
             "runtime": {"platform_system": "Linux", "platform_machine": "x86_64", "platform_node": "self-test", "cpu_model": "self-test", "nproc": 1, "torch_version": "self-test", "numpy_version": "self-test"},
@@ -1260,6 +1341,33 @@ def self_test() -> int:
             pass
         else:
             return 1
+        assert verify_reference(
+            candidate,
+            allow_missing_source_for_self_test=True,
+            portable_source_manifest=True,
+        )["status"] == PACKET_STATUS
+        portable_mutations = {
+            "hash": lambda manifest: manifest["ema_route"]["source_files"]["parameter_transfer"].update(sha256="0" * 64),
+            "size": lambda manifest: manifest["ema_route"]["source_files"]["parameter_transfer"].update(size=11974),
+            "markers": lambda manifest: manifest["ema_route"]["source_files"]["score_model"].update(markers={"class ScoreModel": False}),
+            "revision": lambda manifest: manifest["speechbrain_source"].update(revision="0" * 40),
+        }
+        for mutation, apply_mutation in portable_mutations.items():
+            portable_tamper = root / f"portable-source-{mutation}-tamper"
+            shutil.copytree(candidate, portable_tamper)
+            portable_manifest = json.loads((portable_tamper / MANIFEST_NAME).read_text())
+            apply_mutation(portable_manifest)
+            (portable_tamper / MANIFEST_NAME).write_text(json.dumps(portable_manifest), encoding="utf-8")
+            try:
+                verify_reference(
+                    portable_tamper,
+                    allow_missing_source_for_self_test=True,
+                    portable_source_manifest=True,
+                )
+            except ValueError:
+                pass
+            else:
+                return 1
         for field in ("ema_route", "model"):
             candidate = root / f"missing-{field}"
             shutil.copytree(packet, candidate)
@@ -1353,6 +1461,7 @@ def main() -> int:
     parser.add_argument("--generate-reference", action="store_true")
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--verify-reference", action="store_true")
+    parser.add_argument("--verify-reference-portable", action="store_true")
     parser.add_argument("--source-dir", type=Path)
     parser.add_argument("--speechbrain-source-dir", type=Path)
     parser.add_argument("--checkpoint", type=Path)
@@ -1365,12 +1474,12 @@ def main() -> int:
     parser.add_argument("--vokra-root", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.reference_dir, args.native_dir, args.vokra_root)) or args.generate_reference or args.compare or args.verify_reference:
+        if any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.reference_dir, args.native_dir, args.vokra_root)) or args.generate_reference or args.compare or args.verify_reference or args.verify_reference_portable:
             parser.error("--self-test accepts no other arguments")
         return self_test()
     if args.generate_reference:
         values = (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.vokra_root)
-        if any(value is None for value in values) or args.compare or args.verify_reference:
+        if any(value is None for value in values) or args.compare or args.verify_reference or args.verify_reference_portable:
             parser.error("--generate-reference requires its complete input set and cannot combine with --compare")
         try:
             manifest = _run_official_reference(*values)  # type: ignore[arg-type]
@@ -1379,17 +1488,22 @@ def main() -> int:
             return 2
         print(json.dumps({"status": manifest["status"], "output_dir": str(args.output_dir)}, sort_keys=True))
         return 0
-    if args.verify_reference:
+    if args.verify_reference or args.verify_reference_portable:
         if (
             args.reference_dir is None
             or args.vokra_root is None
             or args.compare
             or args.generate_reference
+            or (args.verify_reference and args.verify_reference_portable)
             or any(value is not None for value in (args.source_dir, args.speechbrain_source_dir, args.checkpoint, args.hyperparams, args.inspection_manifest, args.input_wav, args.output_dir, args.native_dir))
         ):
-            parser.error("--verify-reference requires --reference-dir and --vokra-root only")
+            parser.error("--verify-reference/--verify-reference-portable require --reference-dir and --vokra-root only")
         try:
-            manifest = verify_reference(args.reference_dir, args.vokra_root)
+            manifest = verify_reference(
+                args.reference_dir,
+                args.vokra_root,
+                portable_source_manifest=args.verify_reference_portable,
+            )
         except Exception as error:
             print(f"sgmse enhancement verifier BLOCKED: {type(error).__name__}: {error}", file=sys.stderr)
             return 2
@@ -1410,7 +1524,7 @@ def main() -> int:
             return 2
         print(json.dumps(result, sort_keys=True))
         return 0 if result["status"] == "CPU_ENHANCEMENT_PARITY_PASS" else 1
-    parser.error("choose exactly one of --self-test, --generate-reference, --verify-reference, or --compare")
+    parser.error("choose exactly one of --self-test, --generate-reference, --verify-reference, --verify-reference-portable, or --compare")
 
 
 if __name__ == "__main__":

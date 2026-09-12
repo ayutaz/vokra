@@ -172,6 +172,28 @@ fn softmax_metal_matches_cpu() {
 }
 
 #[test]
+fn log_softmax_metal_matches_stable_reference_without_underflow() {
+    let ctx = ctx_or_skip!("log_softmax");
+    let input = [1_000.0f32, -1_000.0, 999.0, -999.0];
+    let mut gpu = vec![f32::NAN; input.len()];
+    ctx.log_softmax_f32(&input, &mut gpu, 2, 2)
+        .expect("metal log-softmax");
+    let mut reference = vec![0.0f32; input.len()];
+    for (src, dst) in input.chunks_exact(2).zip(reference.chunks_exact_mut(2)) {
+        let max = src.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let sum = src.iter().map(|value| (*value - max).exp()).sum::<f32>();
+        let log_sum = max + sum.ln();
+        for (dst, &value) in dst.iter_mut().zip(src) {
+            *dst = value - log_sum;
+        }
+    }
+    assert!(gpu.iter().all(|value| value.is_finite()));
+    let delta = max_abs_diff(&gpu, &reference);
+    eprintln!("log_softmax Metal vs stable reference: max|Δ|={delta:.3e}");
+    assert!(delta <= ATOL, "log-softmax max|Δ| {delta} > {ATOL}");
+}
+
+#[test]
 fn layer_norm_metal_matches_cpu() {
     let ctx = ctx_or_skip!("layer_norm");
     let eps = cpu::LAYER_NORM_DEFAULT_EPS;
@@ -345,8 +367,10 @@ fn tanh_metal_matches_cpu() {
             .into_iter()
             .map(|value| value * 8.0)
             .collect();
-        if n >= 5 {
-            x[..5].copy_from_slice(&[-20.0, -0.0, 0.0, 1.0, 20.0]);
+        if n >= 11 {
+            x[..11].copy_from_slice(&[
+                -1000.0, -100.0, -88.0, -20.0, -0.0, 0.0, 1.0, 20.0, 88.0, 100.0, 1000.0,
+            ]);
         }
         let mut gpu = vec![f32::NAN; n];
         ctx.tanh_f32(&x, &mut gpu).expect("metal tanh");

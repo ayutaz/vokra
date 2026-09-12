@@ -1,0 +1,8 @@
+{
+  "decision": "APPROVED",
+  "digest": "99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba",
+  "manifest_sha256": "db929b5cd22428d4d10ca07c1468dac372ee1d0e03d6e6e5fac9590a6c04f532",
+  "scope_sha256": "99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba",
+  "schema": "vokra-speecht5-owner-approval-v1",
+  "signer": "yousan"
+}

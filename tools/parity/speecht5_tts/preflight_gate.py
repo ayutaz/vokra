@@ -389,7 +389,9 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     if manifest.get("approval_scope_sha256") != scope_sha:
         return blocked("approval scope is not bound to exact closure")
     approval = manifest.get("operator_approval")
-    if not isinstance(approval, dict) or approval.get("decision") != "APPROVED" or not isinstance(approval.get("signer"), str) or not approval["signer"] or approval.get("digest") != scope_sha or not HEX64.fullmatch(str(approval.get("digest"))):
+    if not isinstance(approval, dict) or set(approval) != {"decision", "signer", "digest"}:
+        return blocked("operator approval schema is not exact")
+    if approval.get("decision") != "APPROVED" or not isinstance(approval.get("signer"), str) or not approval["signer"] or approval.get("digest") != scope_sha or not HEX64.fullmatch(str(approval.get("digest"))):
         return blocked("operator approval is pending or invalid")
     evidence_path = evidence_path or manifest_path.with_name("license_gate_evidence.json")
     if evidence_path.is_symlink() or not evidence_path.is_file():
@@ -398,7 +400,11 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         evidence = strict_json_loads(evidence_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return blocked(f"approval evidence is unreadable: {exc}")
-    if not isinstance(evidence, dict) or evidence.get("scope_sha256") != scope_sha or evidence.get("manifest_sha256") != digest(manifest_path.read_bytes()) or evidence.get("signer") != approval["signer"] or evidence.get("digest") != approval["digest"] or evidence.get("decision") != "APPROVED":
+    if not isinstance(evidence, dict) or set(evidence) != {"decision", "digest", "manifest_sha256", "schema", "scope_sha256", "signer"}:
+        return blocked("approval evidence schema is not exact")
+    if evidence.get("schema") != "vokra-speecht5-owner-approval-v1":
+        return blocked("approval evidence schema version is unsupported")
+    if evidence.get("scope_sha256") != scope_sha or evidence.get("manifest_sha256") != digest(manifest_path.read_bytes()) or evidence.get("signer") != approval["signer"] or evidence.get("digest") != approval["digest"] or evidence.get("decision") != "APPROVED":
         return blocked("approval evidence is not authenticated to this manifest and scope")
     return True, "PASS"
 
@@ -434,12 +440,12 @@ def self_test() -> int:
     if manifest_data.get("approval_scope_sha256") != canonical(expected_scope):
         print("speecht5 preflight gate: manifest scope is stale", file=sys.stderr)
         return 1
-    if manifest_data.get("operator_approval", {}).get("decision") != "PENDING_REVIEW":
-        print("speecht5 preflight gate: operator approval is not pending", file=sys.stderr)
+    if manifest_data.get("operator_approval", {}).get("decision") != "APPROVED":
+        print("speecht5 preflight gate: operator approval is not approved", file=sys.stderr)
         return 1
     ok, reason = validate(project, manifest)
-    if ok or not any(token in reason for token in ("unresolved", "canonicalization", "compact", "approval")):
-        print(f"speecht5 preflight gate: expected pending review, got {reason}", file=sys.stderr)
+    if not ok:
+        print(f"speecht5 preflight gate: approved baseline failed: {reason}", file=sys.stderr)
         return 1
     with tempfile.TemporaryDirectory(prefix="speecht5-gate-") as directory:
         root = Path(directory); test_project = root / "project"; test_project.mkdir()
@@ -473,10 +479,38 @@ def self_test() -> int:
         scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": base["package_rows_sha256"], "dependency_reviews": base["dependency_reviews"], "dependency_reviews_sha256": base["dependency_reviews_sha256"], "build_dependency_reviews": base["build_dependency_reviews"], "build_dependency_reviews_sha256": base["build_dependency_reviews_sha256"], "dependency_audit_evidence": base["dependency_audit_evidence"], "model_reviews": base["model_reviews"], "tts_identity": base["tts_identity"], "vocoder_identity": base["vocoder_identity"], "public_tts_identity": base["public_tts_identity"], "transformers_route": base["transformers_route"]}
         base["approval_scope_sha256"] = canonical(scope); base["operator_approval"] = {"decision":"APPROVED", "signer":"self-test", "digest":base["approval_scope_sha256"]}
         approved = root / "manifest.json"; approved.write_text(json.dumps(base), encoding="utf-8")
-        evidence = root / "license_gate_evidence.json"; evidence.write_text(json.dumps({"scope_sha256":base["approval_scope_sha256"], "manifest_sha256":digest(approved.read_bytes()), "signer":"self-test", "digest":base["approval_scope_sha256"], "decision":"APPROVED"}), encoding="utf-8")
+        evidence = root / "license_gate_evidence.json"; evidence.write_text(json.dumps({"schema":"vokra-speecht5-owner-approval-v1", "scope_sha256":base["approval_scope_sha256"], "manifest_sha256":digest(approved.read_bytes()), "signer":"self-test", "digest":base["approval_scope_sha256"], "decision":"APPROVED"}), encoding="utf-8")
         ok, reason = validate(test_project, approved, evidence)
         if not ok:
             print(f"speecht5 preflight gate: approved baseline failed: {reason}", file=sys.stderr); return 1
+        pending = json.loads(approved.read_text(encoding="utf-8"))
+        pending["operator_approval"] = {"decision": "PENDING_REVIEW", "signer": None, "digest": None}
+        pending_path = root / "pending-manifest.json"
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        ok, _ = validate(test_project, pending_path, evidence)
+        if ok:
+            print("speecht5 preflight gate: pending operator approval accepted", file=sys.stderr); return 1
+        extra_operator = json.loads(approved.read_text(encoding="utf-8"))
+        extra_operator["operator_approval"]["extra"] = "rejected"
+        extra_operator_path = root / "extra-operator-manifest.json"
+        extra_operator_path.write_text(json.dumps(extra_operator), encoding="utf-8")
+        ok, _ = validate(test_project, extra_operator_path, evidence)
+        if ok:
+            print("speecht5 preflight gate: extra operator key accepted", file=sys.stderr); return 1
+        extra_evidence = json.loads(evidence.read_text(encoding="utf-8"))
+        extra_evidence["extra"] = "rejected"
+        extra_evidence_path = root / "extra-evidence.json"
+        extra_evidence_path.write_text(json.dumps(extra_evidence), encoding="utf-8")
+        ok, _ = validate(test_project, approved, extra_evidence_path)
+        if ok:
+            print("speecht5 preflight gate: extra evidence key accepted", file=sys.stderr); return 1
+        wrong_schema = json.loads(evidence.read_text(encoding="utf-8"))
+        wrong_schema["schema"] = "wrong-schema"
+        wrong_schema_path = root / "wrong-schema-evidence.json"
+        wrong_schema_path.write_text(json.dumps(wrong_schema), encoding="utf-8")
+        ok, _ = validate(test_project, approved, wrong_schema_path)
+        if ok:
+            print("speecht5 preflight gate: wrong evidence schema accepted", file=sys.stderr); return 1
         duplicate_manifest = root / "duplicate-manifest.json"
         duplicate_manifest.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")
         ok, _ = validate(test_project, duplicate_manifest, evidence)
