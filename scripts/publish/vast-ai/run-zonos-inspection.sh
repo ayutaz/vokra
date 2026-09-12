@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSPECTOR="$ROOT/tools/parity/zonos_inspect.py"
+DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
 HF_REPOSITORY="vokra/zonos-v0.1-transformer"
 HF_REVISION="b1bf5c56d470eb9097e9b04f9deca364576574ba"
 UPSTREAM_HF_REPOSITORY="Zyphra/Zonos-v0.1-transformer"
@@ -167,6 +168,7 @@ self_test() {
       failed=1
     fi
   done
+  bash "$DEPENDENCY_AUDIT_WRAPPER" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
     uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$INSPECTOR" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
@@ -195,6 +197,20 @@ require_approval_binding "$approval" "$approval_sha"
 [[ "${VOKRA_ZONOS_VAST_VALIDATION:-0}" == 1 ]] || die 'VOKRA_ZONOS_VAST_VALIDATION=1 is absent'
 [[ -n "${ZONOS_CONDITIONING_PACKET:-}" ]] || die 'ZONOS_CONDITIONING_PACKET must name a v1 packet from zonos_prepare_conditioning_packet.py (--phoneme-ids, --speaker, --emotion)'
 [[ -f "$ZONOS_CONDITIONING_PACKET" && ! -L "$ZONOS_CONDITIONING_PACKET" ]] || die 'ZONOS_CONDITIONING_PACKET must be a regular non-symlink file'
+
+# The installed/native/publisher closure is an independent exact-owner fact.
+# A project/lock hash approval alone cannot authorize source or checkpoint
+# acquisition.  The dedicated wrapper intentionally returns 2 while the
+# owner/legal decision remains WITHHOLD, so this worker must stop here.
+dependency_output="${ZONOS_DEPENDENCY_AUDIT_OUTPUT:-/dev/shm/vokra-zonos-dependency-audit-${expected_head}.json}"
+set +e
+VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash "$DEPENDENCY_AUDIT_WRAPPER" \
+  --expected-head "$expected_head" --output "$dependency_output"
+dependency_status=$?
+set -e
+[[ "$dependency_status" == 2 ]] || die 'Zonos dependency audit did not fail closed before acquisition'
+die 'Zonos installed/native/publisher facts are not exact-owner-approved; acquisition is blocked'
+
 for command in git uv awk cp sha256sum cargo; do command -v "$command" >/dev/null || die "missing tool: $command"; done
 UV_NO_CACHE=1 uv run --no-cache --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \
   --preflight-only --approval-evidence "$approval" || die 'Zonos license/preflight gate blocked before acquisition'
@@ -211,14 +227,6 @@ UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   --manifest-output "$WORK/evidence/upstream-tensor-manifest.json" \
   --public-gguf "$WORK/public/zonos-v0.1-transformer.gguf" \
   --public-manifest-output "$WORK/evidence/public-tensor-manifest.json"
-UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --python 3.12 python \
-  "$ROOT/tools/parity/zonos_v0_1_reference/dependency_audit.py" --installed \
-  --output "$WORK/evidence/dependency-audit.json" || die 'installed Zonos dependency audit blocked'
-grep -Fq '"status": "BLOCKED_UNREVIEWED_TRANSITIVE"' "$WORK/evidence/dependency-audit.json" \
-  || die 'dependency audit status marker missing'
-grep -Fq '"publication": "NO_UPLOAD"' "$WORK/evidence/dependency-audit.json" \
-  || die 'dependency audit NO_UPLOAD marker missing'
 cp -- "$ZONOS_CONDITIONING_PACKET" "$WORK/evidence/conditioning.packet"
 git clone --filter=blob:none --no-checkout "$SOURCE_REPOSITORY" "$WORK/source"
 git -C "$WORK/source" checkout --detach "$SOURCE_REVISION"

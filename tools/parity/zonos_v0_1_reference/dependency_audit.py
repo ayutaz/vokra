@@ -85,6 +85,12 @@ OWNER_CANDIDATE_SCOPE = (
 )
 
 
+def _digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -166,11 +172,32 @@ def lock_audit() -> dict[str, Any]:
         "publication": PUBLICATION,
         "owner_candidate_scope": OWNER_CANDIDATE_SCOPE,
         "package_count": len(rows),
-        "rows_sha256": hashlib.sha256(
-            json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
+        "rows_sha256": _digest(rows),
         "rows": rows,
     }
+
+
+def _active_lock_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select the exact Linux x86_64 lock closure, not every platform fork."""
+    active: list[dict[str, Any]] = []
+    for name in sorted({row["name"] for row in rows}):
+        candidates = [row for row in rows if row["name"] == name]
+        if all(row["source"].get("virtual") is not None for row in candidates):
+            continue
+        candidates = [row for row in candidates if row["source"].get("virtual") is None]
+        if name in {"torch", "torchaudio"}:
+            candidates = [
+                row
+                for row in candidates
+                if row["version"] == "2.6.0+cpu"
+                and row["source"].get("registry") == "https://download.pytorch.org/whl/cpu"
+            ]
+        elif len(candidates) != 1:
+            raise RuntimeError(f"active Linux lock resolution is ambiguous: {name}")
+        if len(candidates) != 1:
+            raise RuntimeError(f"active Linux lock resolution is missing: {name}")
+        active.append(candidates[0])
+    return active
 
 
 def _elf_needed(path: Path) -> list[str]:
@@ -188,60 +215,148 @@ def installed_audit() -> dict[str, Any]:
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise RuntimeError("installed closure audit requires Linux x86_64")
     lock_rows = _lock_rows()
-    lock_versions: dict[str, set[str]] = {}
-    for row in lock_rows:
-        lock_versions.setdefault(row["name"], set()).add(row["version"])
-    actual_versions: dict[str, str] = {}
+    active_rows = _active_lock_rows(lock_rows)
+    expected_versions = {
+        row["name"].lower().replace("_", "-"): row["version"] for row in active_rows
+    }
+    failures: list[str] = []
     distributions: dict[str, importlib.metadata.Distribution] = {}
-    for package, expected in DIRECT_DEPENDENCIES.items():
-        try:
-            distribution = importlib.metadata.distribution(package)
-        except importlib.metadata.PackageNotFoundError as error:
-            raise RuntimeError(f"required distribution is not installed: {package}") from error
-        actual = distribution.version
-        if package in {"torch", "torchaudio"} and actual == "2.6.0":
-            actual = "2.6.0+cpu"
-        if actual != expected:
-            raise RuntimeError(f"installed version mismatch: {package}={actual!r}")
-        actual_versions[package] = actual
-        distributions[package] = distribution
+    duplicate_distributions: set[str] = set()
     for distribution in importlib.metadata.distributions():
         name = distribution.metadata.get("Name")
         if not isinstance(name, str):
+            failures.append("installed distribution has no canonical Name metadata")
             continue
         normalized = name.lower().replace("_", "-")
-        if normalized in FORBIDDEN_PACKAGES:
-            raise RuntimeError(f"forbidden installed distribution: {name}")
-        if normalized not in lock_versions:
-            raise RuntimeError(f"installed distribution is outside the locked closure: {name}")
-        if distribution.version not in lock_versions[normalized]:
-            raise RuntimeError(f"installed transitive version is not locked: {name}={distribution.version!r}")
+        if normalized in distributions:
+            duplicate_distributions.add(normalized)
         distributions.setdefault(normalized, distribution)
+    if duplicate_distributions:
+        failures.append("duplicate installed distributions: " + ",".join(sorted(duplicate_distributions)))
+    actual_names = set(distributions)
+    expected_names = set(expected_versions)
+    for name in sorted(expected_names - actual_names):
+        failures.append(f"missing active locked distribution: {name}")
+    for name in sorted(actual_names - expected_names):
+        failures.append(f"unexpected installed distribution: {name}")
+    installed_rows: list[dict[str, Any]] = []
+    for name, distribution in sorted(distributions.items()):
+        version = distribution.version
+        if name in {"torch", "torchaudio"} and version == "2.6.0":
+            version = "2.6.0+cpu"
+        expected = expected_versions.get(name)
+        if expected is not None and version != expected:
+            failures.append(f"installed version mismatch: {name}={version!r}, expected {expected!r}")
+        if name in FORBIDDEN_PACKAGES:
+            failures.append(f"forbidden installed distribution: {name}")
+        installed_rows.append(
+            {
+                "name": name,
+                "version": version,
+                "metadata_license": distribution.metadata.get("License", ""),
+            }
+        )
     roots = {Path(sysconfig.get_paths()[key]).resolve() for key in ("purelib", "platlib") if sysconfig.get_paths().get(key)}
     native: list[dict[str, Any]] = []
+    native_extensions = re.compile(r"(?:\.so(?:\..*)?|\.dylib|\.dll|\.pyd|\.a)$", re.IGNORECASE)
     for root in sorted(roots):
         if not root.is_dir() or root.is_symlink():
-            raise RuntimeError(f"site-packages root is unsafe: {root}")
-        for path in sorted(root.rglob("*.so")):
-            if not path.is_file() or path.is_symlink():
-                raise RuntimeError(f"native file is unsafe: {path}")
-            native.append({"path": str(path.relative_to(root)), "bytes": path.stat().st_size, "sha256": sha256(path), "needed": _elf_needed(path)})
+            failures.append(f"site-packages root is unsafe: {root}")
+            continue
+        for path in sorted(root.rglob("*")):
+            if not native_extensions.search(path.name):
+                continue
+            if path.is_symlink() or not path.is_file():
+                failures.append(f"native file is unsafe: {path}")
+                continue
+            raw = path.read_bytes()
+            is_elf = raw.startswith(b"\\x7fELF")
+            needed: list[str] = []
+            if is_elf:
+                try:
+                    needed = _elf_needed(path)
+                except RuntimeError as error:
+                    failures.append(str(error))
+            forbidden_needed = [
+                item
+                for item in needed
+                if any(token in item.lower() for token in ("gpl", "lgpl", "soxr", "espeak", "sndfile"))
+            ]
+            if forbidden_needed:
+                failures.append(
+                    f"forbidden native NEEDED for {path}: {','.join(sorted(set(forbidden_needed)))}"
+                )
+            native.append(
+                {
+                    "root": str(root),
+                    "path": str(path.relative_to(root)),
+                    "kind": (
+                        ".so.*" if re.search(r"\.so\.", path.name, re.IGNORECASE)
+                        else path.suffix.lower()
+                    ),
+                    "bytes": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "format": "ELF" if is_elf else "non-ELF",
+                    "needed": needed,
+                }
+            )
     publisher_files: list[dict[str, Any]] = []
     for name, distribution in sorted(distributions.items()):
+        matched = 0
         for item in distribution.files or ():
             base = Path(item).name.lower()
             path = Path(distribution.locate_file(item))
-            if base.startswith(("license", "licence", "notice")) and path.is_file():
-                if path.is_symlink() or not path.is_file():
-                    raise RuntimeError(f"publisher file is unsafe: {path}")
-                publisher_files.append({"distribution": name, "path": str(item), "bytes": path.stat().st_size, "sha256": sha256(path)})
-    return {"platform": {"system": "Linux", "machine": "x86_64"}, "versions": actual_versions, "native_elf": native, "publisher_license_notice_files": publisher_files}
+            if not base.startswith(("license", "licence", "notice")):
+                continue
+            if path.is_symlink() or not path.is_file():
+                failures.append(f"publisher file is unsafe: {path}")
+                continue
+            matched += 1
+            publisher_files.append(
+                {
+                    "distribution": name,
+                    "path": str(item),
+                    "bytes": path.stat().st_size,
+                    "sha256": sha256(path),
+                }
+            )
+        if matched == 0:
+            publisher_files.append({"distribution": name, "status": "MISSING"})
+            failures.append(f"missing publisher LICENSE/NOTICE evidence: {name}")
+    publisher_files.sort(key=lambda row: (row["distribution"], row.get("path", "")))
+    return {
+        "platform": {"system": "Linux", "machine": "x86_64"},
+        "active_lock_packages": active_rows,
+        "installed_distributions": installed_rows,
+        "failures": sorted(set(failures)),
+        "native_files": native,
+        "publisher_license_notice_files": publisher_files,
+        "digests": {
+            "installed_closure_sha256": _digest(installed_rows),
+            "native_files_sha256": _digest(native),
+            "publisher_files_sha256": _digest(publisher_files),
+        },
+    }
 
 
 def audit(output: Path | None = None, installed: bool = False) -> dict[str, Any]:
     identity = project_identity()
     report: dict[str, Any] = {"schema": "vokra-zonos-dependency-audit-v1", "status": AUDIT_STATUS, "publication": PUBLICATION, "project": identity, "lock": lock_audit()}
     report["installed"] = installed_audit() if installed else {"status": "NOT_COLLECTED_PRE_ACQUISITION"}
+    installed_report = report["installed"]
+    report["candidate_scope"] = {
+        "schema": "vokra-zonos-dependency-approval-scope-v1",
+        "lock_rows_sha256": report["lock"]["rows_sha256"],
+        "installed_closure_sha256": installed_report.get("digests", {}).get("installed_closure_sha256"),
+        "native_files_sha256": installed_report.get("digests", {}).get("native_files_sha256"),
+        "publisher_files_sha256": installed_report.get("digests", {}).get("publisher_files_sha256"),
+        "failures": installed_report.get("failures", []),
+        "model_access": False,
+        "source_access": False,
+        "checkpoint_access": False,
+        "publication": PUBLICATION,
+    }
+    report["failures"] = installed_report.get("failures", [])
     if output is not None:
         if output.exists() or output.is_symlink():
             raise RuntimeError(f"dependency audit output already exists or is symlinked: {output}")
@@ -258,6 +373,21 @@ def self_test() -> None:
     assert report["publication"] == PUBLICATION
     assert report["lock"]["package_count"] == 29
     assert not set(row["name"].lower() for row in report["lock"]["rows"]) & FORBIDDEN_PACKAGES
+    active = _active_lock_rows(report["lock"]["rows"])
+    assert len(active) == 26
+    assert all(row["source"].get("virtual") is None for row in active)
+    assert {row["version"] for row in active if row["name"] in {"torch", "torchaudio"}} == {"2.6.0+cpu"}
+    ambiguous = list(report["lock"]["rows"])
+    ambiguous.append(dict(next(row for row in ambiguous if row["name"] == "numpy"), version="2.2.3"))
+    try:
+        _active_lock_rows(ambiguous)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("ambiguous active lock closure must fail closed")
+    assert report["candidate_scope"]["model_access"] is False
+    assert report["candidate_scope"]["publication"] == PUBLICATION
+    assert report["candidate_scope"]["installed_closure_sha256"] is None
     try:
         original = set(FORBIDDEN_PACKAGES)
         globals()["FORBIDDEN_PACKAGES"] = frozenset((*original, "torch"))
@@ -290,12 +420,34 @@ def main() -> int:
     if args.preflight_only and (args.installed or args.output is not None):
         parser.error("--preflight-only accepts no installed scan or output")
     try:
-        audit(args.output, installed=args.installed)
+        report = audit(args.output, installed=args.installed)
     except (OSError, RuntimeError, ValueError) as error:
+        if args.output is not None and not args.output.exists() and not args.output.is_symlink():
+            failure = {
+                "schema": "vokra-zonos-dependency-audit-v1",
+                "status": AUDIT_STATUS,
+                "publication": PUBLICATION,
+                "failures": [str(error)],
+                "candidate_scope": {
+                    "schema": "vokra-zonos-dependency-approval-scope-v1",
+                    "lock_rows_sha256": None,
+                    "installed_closure_sha256": None,
+                    "native_files_sha256": None,
+                    "publisher_files_sha256": None,
+                    "failures": [str(error)],
+                    "model_access": False,
+                    "source_access": False,
+                    "checkpoint_access": False,
+                    "publication": PUBLICATION,
+                },
+            }
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with args.output.open("x", encoding="utf-8") as handle:
+                handle.write(json.dumps(failure, indent=2, sort_keys=True) + "\n")
         print(f"zonos dependency audit BLOCKED: {error}", file=sys.stderr)
         return 2
     print(f"zonos dependency audit: {AUDIT_STATUS}; publication={PUBLICATION}")
-    return 0
+    return 2 if args.installed and report.get("failures") else 0
 
 
 if __name__ == "__main__":
