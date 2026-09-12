@@ -170,22 +170,27 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def marker_active(marker: str | None, *, extra: str | None = None) -> bool:
+def marker_context() -> dict[str, str]:
+    """Return the actual host/interpreter values used for lock markers."""
+    return {
+        "sys_platform": sys.platform,
+        "platform_machine": platform.machine().lower(),
+        "platform_system": platform.system(),
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "python_full_version": platform.python_version(),
+        "implementation_name": sys.implementation.name,
+    }
+
+
+def marker_active(marker: str | None, *, extra: str | None = None, context: dict[str, str] | None = None) -> bool:
     """Evaluate the small PEP 508 marker subset emitted by uv for this host."""
     if marker is None or not marker.strip():
         return True
-    context = {
-        "sys_platform": "linux",
-        "platform_machine": "x86_64",
-        "platform_system": "Linux",
-        "python_version": "3.12",
-        "python_full_version": "3.12.14",
-        "implementation_name": "cpython",
-        "extra": extra or "",
-    }
+    values = marker_context() if context is None else dict(context)
+    values["extra"] = extra or ""
     for disjunction in re.split(r"\s+or\s+", marker.strip()):
         terms = re.split(r"\s+and\s+", disjunction)
-        if all(_marker_term(term, context) for term in terms):
+        if all(_marker_term(term, values) for term in terms):
             return True
     return False
 
@@ -198,21 +203,29 @@ def _marker_term(term: str, context: dict[str, str]) -> bool:
     actual = context.get(variable)
     if actual is None:
         raise AuditError(f"unknown uv marker variable: {variable}")
+    if variable in {"python_version", "python_full_version"}:
+        try:
+            actual_value = tuple(int(part) for part in actual.split(".")[:3])
+            expected_value = tuple(int(part) for part in expected.split(".")[:3])
+        except ValueError as error:
+            raise AuditError(f"invalid Python version marker: {term!r}") from error
+    else:
+        actual_value, expected_value = actual, expected
     if operator == "==":
-        return actual == expected
+        return actual_value == expected_value
     if operator == "!=":
-        return actual != expected
+        return actual_value != expected_value
     if operator == "in":
-        return actual in expected
+        return actual_value in expected_value
     if operator == "not in":
-        return actual not in expected
+        return actual_value not in expected_value
     if operator == "<":
-        return actual < expected
+        return actual_value < expected_value
     if operator == ">":
-        return actual > expected
+        return actual_value > expected_value
     if operator == "<=":
-        return actual <= expected
-    return actual >= expected
+        return actual_value <= expected_value
+    return actual_value >= expected_value
 
 
 def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
@@ -480,7 +493,7 @@ def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, d
     return project_bytes, lock_bytes, project, rows, inactive, failures
 
 
-def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: str, output: Path, archive_dir: Path, expected_project_sha256: str | None, expected_lock_sha256: str | None, expected_audit_sha256: str | None) -> None:
+def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: str, output: Path, archive_dir: Path, wrapper_path: Path, expected_project_sha256: str | None, expected_lock_sha256: str | None, expected_audit_sha256: str | None, expected_wrapper_sha256: str | None, write_sums: bool = True) -> None:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise AuditError("Canary dependency audit requires Linux x86_64 VAST")
     if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
@@ -496,7 +509,9 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
     project_sha256 = sha256_bytes(project_bytes)
     lock_sha256 = sha256_bytes(lock_bytes)
     audit_sha256 = sha256_file(Path(__file__).resolve())
-    for label, actual, expected in (("project", project_sha256, expected_project_sha256), ("lock", lock_sha256, expected_lock_sha256), ("audit", audit_sha256, expected_audit_sha256)):
+    wrapper_source = regular_file(wrapper_path, "executed audit wrapper")
+    wrapper_sha256 = sha256_file(wrapper_source)
+    for label, actual, expected in (("project", project_sha256, expected_project_sha256), ("lock", lock_sha256, expected_lock_sha256), ("audit", audit_sha256, expected_audit_sha256), ("wrapper", wrapper_sha256, expected_wrapper_sha256)):
         if expected is not None and (not HEX64.fullmatch(expected) or expected != actual):
             raise AuditError(f"{label} SHA-256 binding mismatch")
     git = git_identity(repo_root, expected_head)
@@ -506,7 +521,7 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
         {path.name: {"path": path.name, "bytes": path.stat().st_size, "sha256": sha256_file(path)} for path in archive_dir.iterdir() if path.is_file()}.values(),
         key=lambda item: item["path"],
     )
-    package_scope = {"active_rows": rows, "active_facts": facts, "inactive_rows": inactive, "collector_failures": collector_failures, "project_sha256": project_sha256, "lock_sha256": lock_sha256, "audit_script_sha256": audit_sha256, "model_free": MODEL_FREE_FIELDS}
+    package_scope = {"active_rows": rows, "active_facts": facts, "inactive_rows": inactive, "collector_failures": collector_failures, "project_sha256": project_sha256, "lock_sha256": lock_sha256, "audit_script_sha256": audit_sha256, "wrapper_sha256": wrapper_sha256, "model_free": MODEL_FREE_FIELDS}
     report: dict[str, Any] = {
         "schema": SCHEMA,
         "status": STATUS,
@@ -515,6 +530,7 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
         "project_sha256": project_sha256,
         "lock_sha256": lock_sha256,
         "audit_script_sha256": audit_sha256,
+        "wrapper_sha256": wrapper_sha256,
         **git,
         "project_environment": "linux-x86_64-python3.12",
         "memory_bytes": available,
@@ -547,26 +563,26 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
         "pyproject.toml": project_bytes,
         "uv.lock": lock_bytes,
         "dependency_audit.py": Path(__file__).read_bytes(),
+        "audit-canary-1b-dependencies.sh": wrapper_source.read_bytes(),
     }
     for name, payload in snapshots.items():
         write_no_replace(output.parent / name, payload)
     write_no_replace(output, (canonical(report) + "\n").encode("utf-8"))
-    sums = output.parent / "SHA256SUMS"
-    sum_lines = [
-        f"{sha256_file(output.parent / 'pyproject.toml')}  pyproject.toml\n",
-        f"{sha256_file(output.parent / 'uv.lock')}  uv.lock\n",
-        f"{sha256_file(output.parent / 'dependency_audit.py')}  dependency_audit.py\n",
-        f"{sha256_file(output)}  {output.name}\n",
-    ]
-    archive_root = archive_dir.relative_to(output.parent)
-    for path in sorted(archive_dir.iterdir(), key=lambda item: item.name):
-        if not path.is_file() or path.is_symlink():
-            raise AuditError(f"license archive contains an unexpected entry: {path}")
-        sum_lines.append(f"{sha256_file(path)}  {(archive_root / path.name).as_posix()}\n")
-    write_no_replace(
-        sums,
-        "".join(sum_lines).encode("utf-8"),
-    )
+    if write_sums:
+        sums = output.parent / "SHA256SUMS"
+        sum_lines = [
+            f"{sha256_file(output.parent / 'pyproject.toml')}  pyproject.toml\n",
+            f"{sha256_file(output.parent / 'uv.lock')}  uv.lock\n",
+            f"{sha256_file(output.parent / 'dependency_audit.py')}  dependency_audit.py\n",
+            f"{sha256_file(output.parent / 'audit-canary-1b-dependencies.sh')}  audit-canary-1b-dependencies.sh\n",
+            f"{sha256_file(output)}  {output.name}\n",
+        ]
+        archive_root = archive_dir.relative_to(output.parent)
+        for path in sorted(archive_dir.iterdir(), key=lambda item: item.name):
+            if not path.is_file() or path.is_symlink():
+                raise AuditError(f"license archive contains an unexpected entry: {path}")
+            sum_lines.append(f"{sha256_file(path)}  {(archive_root / path.name).as_posix()}\n")
+        write_no_replace(sums, "".join(sum_lines).encode("utf-8"))
 
 
 def validate_report_semantics(report: dict[str, Any]) -> None:
@@ -575,7 +591,7 @@ def validate_report_semantics(report: dict[str, Any]) -> None:
         raise AuditError("report is not permanently blocked/no-upload")
     if report.get("clean") is not True or report.get("expected_head") != report.get("head"):
         raise AuditError("report does not bind a clean exact HEAD")
-    for field in ("project_sha256", "lock_sha256", "audit_script_sha256", "package_rows_sha256", "package_facts_sha256", "license_archive_sha256", "candidate_owner_scope_sha256"):
+    for field in ("project_sha256", "lock_sha256", "audit_script_sha256", "wrapper_sha256", "package_rows_sha256", "package_facts_sha256", "license_archive_sha256", "candidate_owner_scope_sha256"):
         if not isinstance(report.get(field), str) or not HEX64.fullmatch(report[field]):
             raise AuditError(f"report has missing/null digest: {field}")
     environment = report.get("environment")
@@ -601,10 +617,23 @@ def self_test() -> None:
     assert license_flags("LGPL-3.0", [], []) == ["LGPL"]
     assert license_flags("", [], []) == ["UNKNOWN"]
     assert normalized_name("Demo_pkg-1") == "demo-pkg-1"
-    assert marker_active("sys_platform == 'linux'")
-    assert marker_active("platform_machine == 'x86_64'")
-    assert not marker_active("sys_platform == 'darwin'")
-    assert not marker_active("platform_machine == 'aarch64'")
+    assert marker_active(f"sys_platform == '{sys.platform}'")
+    linux_context = {
+        "sys_platform": "linux", "platform_machine": "x86_64", "platform_system": "Linux",
+        "python_version": "3.12", "python_full_version": "3.12.10", "implementation_name": "cpython",
+    }
+    assert marker_active("sys_platform == 'linux'", context=linux_context)
+    assert marker_active("platform_machine == 'x86_64'", context=linux_context)
+    assert not marker_active("sys_platform == 'darwin'", context=linux_context)
+    assert not marker_active("platform_machine == 'aarch64'", context=linux_context)
+    assert marker_active("python_full_version > '3.12.9'", context=linux_context)
+    assert not marker_active("python_full_version < '3.12.9'", context=linux_context)
+    try:
+        marker_active("unsupported_marker == 'value'", context=linux_context)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted an unsupported marker")
     synthetic_lock = {
         "version": 1,
         "revision": 3,
@@ -673,19 +702,22 @@ def main() -> int:
     parser.add_argument("--expected-head")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--archive-dir", type=Path)
+    parser.add_argument("--wrapper", type=Path)
     parser.add_argument("--project-sha256")
     parser.add_argument("--lock-sha256")
     parser.add_argument("--audit-sha256")
+    parser.add_argument("--wrapper-sha256")
+    parser.add_argument("--defer-sums", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.project_sha256, args.lock_sha256, args.audit_sha256)):
+        if args.defer_sums or any(value is not None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.wrapper, args.project_sha256, args.lock_sha256, args.audit_sha256, args.wrapper_sha256)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
-    if any(value is None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.project_sha256, args.lock_sha256, args.audit_sha256)):
-        parser.error("normal runs require project, lock, repo-root, expected-head, output, archive-dir, and three SHA-256 bindings")
+    if any(value is None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.wrapper, args.project_sha256, args.lock_sha256, args.audit_sha256, args.wrapper_sha256)):
+        parser.error("normal runs require project, lock, repo-root, expected-head, output, archive-dir, wrapper, and four SHA-256 bindings")
     try:
-        audit(args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.project_sha256, args.lock_sha256, args.audit_sha256)
+        audit(args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.wrapper, args.project_sha256, args.lock_sha256, args.audit_sha256, args.wrapper_sha256, write_sums=not args.defer_sums)
     except (AuditError, OSError, ValueError) as error:
         print(f"canary_1b_reference dependency audit: BLOCKED: {error}", file=sys.stderr)
         return 2

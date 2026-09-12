@@ -24,10 +24,6 @@ Cargo, git push, or an upload command.
 EOF
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT_DEFAULT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-PROJECT_DIR="$REPO_ROOT_DEFAULT/tools/parity/canary_1b_reference"
-AUDITOR="$PROJECT_DIR/dependency_audit.py"
 HEX40='^[0-9a-f]{40}$'
 HEX64='^[0-9a-f]{64}$'
 MIN_MEMORY_KIB=67108864
@@ -52,7 +48,10 @@ run_self_test() {
     'tools/parity/canary_1b_reference' \
     'uv sync --frozen' \
     'dependency_audit.py' \
-    '--archive-dir' '--project-sha256' '--lock-sha256' '--audit-sha256' \
+    '--archive-dir' '--project-sha256' '--lock-sha256' '--audit-sha256' '--wrapper-sha256' '--defer-sums' \
+    'WRAPPER_PATH="$repo_root/scripts/publish/vast-ai/audit-canary-1b-dependencies.sh"' \
+    'require_absent "$evidence_dir"' 'sha256sum dependency-audit.log' \
+    'SHA256SUMS' 'dependency-audit.log' \
     'BLOCKED_UNREVIEWED_TRANSITIVE' 'NO_UPLOAD' 'audit_exit=2' \
     'git status --porcelain --untracked-files=all'; do
     grep -Fq -- "$required" "$script_path" || die "self-test contract token missing: $required"
@@ -88,18 +87,21 @@ if (( self_test )); then
 fi
 
 [[ -n "$repo_root" && -n "$expected_head" && -n "$evidence_dir" ]] || die "normal run requires repo-root, expected-head, and evidence-dir"
+[[ "$repo_root" = /* && "$evidence_dir" = /* ]] || die "repo-root and evidence-dir must be absolute paths"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+WRAPPER_PATH="$repo_root/scripts/publish/vast-ai/audit-canary-1b-dependencies.sh"
+[[ "$SCRIPT_PATH" == "$WRAPPER_PATH" ]] || die "executed wrapper is not the repository wrapper: $SCRIPT_PATH != $WRAPPER_PATH"
+PROJECT_DIR="$repo_root/tools/parity/canary_1b_reference"
+AUDITOR="$PROJECT_DIR/dependency_audit.py"
 [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || die "audit requires Linux x86_64"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] || die "VOKRA_PUBLISH_ON_VAST=1 is required"
 memory_kib="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo)"
 [[ "$memory_kib" =~ ^[0-9]+$ && "$memory_kib" -ge "$MIN_MEMORY_KIB" ]] || die "VAST RAM is below 64 GiB"
 require_clean_head "$repo_root" "$expected_head"
-if [[ -e "$evidence_dir" || -L "$evidence_dir" ]]; then
-  [[ -d "$evidence_dir" && ! -L "$evidence_dir" ]] || die "evidence-dir is not a regular directory"
-else
-  evidence_parent="$(dirname "$evidence_dir")"
-  [[ -d "$evidence_parent" && ! -L "$evidence_parent" ]] || die "evidence-dir parent is missing or symlinked"
-  mkdir "$evidence_dir"
-fi
+require_absent "$evidence_dir"
+evidence_parent="$(dirname "$evidence_dir")"
+[[ -d "$evidence_parent" && ! -L "$evidence_parent" ]] || die "evidence-dir parent is missing or symlinked"
+mkdir "$evidence_dir"
 project_file="$PROJECT_DIR/pyproject.toml"
 lock_file="$PROJECT_DIR/uv.lock"
 for path in "$project_file" "$lock_file" "$AUDITOR"; do
@@ -115,6 +117,7 @@ mkdir "$archive_dir"
 project_sha256="$(sha256sum "$project_file" | awk '{print $1}')"
 lock_sha256="$(sha256sum "$lock_file" | awk '{print $1}')"
 audit_sha256="$(sha256sum "$AUDITOR" | awk '{print $1}')"
+wrapper_sha256="$(sha256sum "$WRAPPER_PATH" | awk '{print $1}')"
 
 # This is the only environment synchronization in the wrapper. It occurs
 # after all host/head/output guards and targets no project except the dedicated
@@ -127,15 +130,33 @@ UV_CACHE_DIR="${UV_CACHE_DIR:-/root/.cache/uv}" /root/.local/bin/uv run \
   --project "$PROJECT_DIR" --frozen --offline --python 3.12 python "$AUDITOR" \
   --project "$project_file" --lock "$lock_file" --repo-root "$repo_root" \
   --expected-head "$expected_head" --output "$output" --archive-dir "$archive_dir" \
+  --wrapper "$WRAPPER_PATH" \
   --project-sha256 "$project_sha256" --lock-sha256 "$lock_sha256" \
-  --audit-sha256 "$audit_sha256" > "$audit_log" 2>&1
+  --audit-sha256 "$audit_sha256" --wrapper-sha256 "$wrapper_sha256" --defer-sums > "$audit_log" 2>&1
 audit_exit=$?
 set -e
 [[ "$audit_exit" == 2 ]] || die "audit_exit=$audit_exit (expected 2)"
 grep -Fq 'BLOCKED_UNREVIEWED_TRANSITIVE' "$output" || die "audit status is not blocked"
 grep -Fq 'NO_UPLOAD' "$output" || die "audit publication is not NO_UPLOAD"
 grep -Fq '"clean":true' "$output" || die "audit did not bind clean HEAD"
-[[ -s "$output" && -s "$audit_log" && -f "$evidence_dir/SHA256SUMS" ]] || die "small audit evidence is incomplete"
+[[ -s "$output" && -s "$audit_log" && ! -e "$evidence_dir/SHA256SUMS" && ! -L "$evidence_dir/SHA256SUMS" ]] || die "small audit evidence is incomplete or already finalized"
+(
+  set -o noclobber
+  cd "$evidence_dir"
+  {
+    sha256sum pyproject.toml
+    sha256sum uv.lock
+    sha256sum dependency_audit.py
+    sha256sum audit-canary-1b-dependencies.sh
+    sha256sum dependency-audit.json
+    sha256sum dependency-audit.log
+    for archive_file in dependency-licenses/*; do
+      [[ -f "$archive_file" && ! -L "$archive_file" ]] || die "unexpected archive entry: $archive_file"
+      sha256sum "$archive_file"
+    done
+  } > SHA256SUMS
+) || die "could not create no-clobber SHA256SUMS"
+[[ -s "$evidence_dir/SHA256SUMS" ]] || die "SHA256SUMS is empty"
 echo "audit_exit=2"
 echo "status=BLOCKED_UNREVIEWED_TRANSITIVE"
 echo "publication=NO_UPLOAD"
