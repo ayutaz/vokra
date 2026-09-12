@@ -12,8 +12,8 @@ SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
 DEPENDENCY_AUDIT="$REFERENCE_PROJECT/dependency_audit.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
-REFERENCE_LOCK_SHA256="ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
-REFERENCE_PYPROJECT_SHA256="56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
+REFERENCE_LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
+REFERENCE_PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 # dedicated locked-reference project; its uv.lock is a hard pre-download gate
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SHM_KIB=$((40 * 1024 * 1024))

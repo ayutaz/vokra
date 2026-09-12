@@ -46,8 +46,8 @@ COMPACT_SCHEMA = "vokra-dia-dependency-audit-compact-v1"
 PROJECT_NAME = "vokra-dia-1-6b-reference"
 PROJECT_VERSION = "0.1.0"
 LOCK_SCHEMA = "uv-lock-v1-python312"
-LOCK_SHA256 = "ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
-PYPROJECT_SHA256 = "56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
+LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
+PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 GATE_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 PUBLICATION = "NO_UPLOAD"
 ALLOWED_REGISTRIES = {
@@ -60,9 +60,7 @@ EXPECTED_DIRECT_DEPENDENCIES = {
     "huggingface-hub": "0.30.2",
     "numpy": "2.2.5",
     "pydantic": "2.11.3",
-    "soundfile": "0.13.1",
     "torch": "2.6.0",
-    "torchaudio": "2.6.0",
 }
 EXPECTED_LINUX_DIRECT_IDS = {
     "einops==0.8.2",
@@ -70,9 +68,7 @@ EXPECTED_LINUX_DIRECT_IDS = {
     "huggingface-hub==0.30.2",
     "numpy==2.2.5",
     "pydantic==2.11.3",
-    "soundfile==0.13.1",
     "torch==2.6.0+cpu",
-    "torchaudio==2.6.0+cpu",
 }
 LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".a"}
@@ -793,8 +789,8 @@ def self_test() -> int:
     assert synthetic_report["dependency_license_audit"] == GATE_STATUS
     assert isinstance(synthetic_report["native_facts"]["files"], list)
     assert set(EXPECTED_LINUX_DIRECT_IDS).issubset({identity(row["name"], row["version"]) for row in active})
-    assert len(rows) == 34
-    assert len(active) == 30
+    assert len(rows) == 29
+    assert len(active) == 26
     assert "colorama==0.4.6" not in {identity(row["name"], row["version"]) for row in active}
     assert all(row["source"].get("registry") in ALLOWED_REGISTRIES for row in active)
     assert identity("Torch", "2.6.0+CPU") == "torch==2.6.0+cpu"

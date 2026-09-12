@@ -42,13 +42,13 @@ SOURCE_ROLE_BLOBS = {
 }
 FORMAT = "vokra-dia-1-6b-official-reference-v1"
 COMPARISON_STATUS = "NOT_RUN_OFFICIAL_ONLY"
-REFERENCE_PROJECT_LOCK_SHA256 = "ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
-REFERENCE_PROJECT_PYPROJECT_SHA256 = "56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
+REFERENCE_PROJECT_LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
+REFERENCE_PROJECT_PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 DEPENDENCY_LICENSE_AUDIT_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 DIRECT_DEPENDENCY_VERSIONS = {
     "einops": "0.8.2", "gguf": "0.19.0", "huggingface-hub": "0.30.2",
-    "numpy": "2.2.5", "pydantic": "2.11.3", "soundfile": "0.13.1",
-    "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu",
+    "numpy": "2.2.5", "pydantic": "2.11.3",
+    "torch": "2.6.0+cpu",
 }
 # Conclusions are deliberately conservative.  A package may have an
 # otherwise permissive top-level license while its native/bundled components
@@ -70,7 +70,7 @@ DEPENDENCY_LICENSE_CONCLUSIONS = {
     "markupsafe": "BSD-3-Clause_REVIEWED",
     "mpmath": "BSD_STYLE_PRIMARY_REVIEW_REQUIRED",
     "networkx": "BSD-3-Clause_REVIEWED",
-    "numpy": "BSD-3-Clause_NATIVE_BUNDLE_REVIEW_REQUIRED",
+    "numpy": "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED",
     "packaging": "Apache-2.0_REVIEWED",
     "pycparser": "BSD-3-Clause_REVIEWED",
     "pydantic": "MIT_REVIEWED",
@@ -78,10 +78,8 @@ DEPENDENCY_LICENSE_CONCLUSIONS = {
     "pyyaml": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED",
     "requests": "Apache-2.0_REVIEWED",
     "setuptools": "MIT_REVIEWED",
-    "soundfile": "BSD-3-Clause_NATIVE_LIBSNDFILE_REVIEW_REQUIRED",
     "sympy": "BSD-3-Clause_REVIEWED",
     "torch": "BSD-3-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
-    "torchaudio": "BSD-2-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
     "tqdm": "MPL-2.0_OR_MIT_POLICY_REVIEW_REQUIRED",
     "typing-extensions": "PSF-2.0_BLOCKED_BY_POLICY",
     "typing-inspection": "MIT_REVIEWED",
@@ -94,6 +92,42 @@ REQUIRED_ARTIFACTS = {
     "decoder_logits", "decoder_sampling_probability", "selected_ids",
     "delayed_codes", "reverted_codes", "dac_latent", "pcm",
 }
+TORCHAUDIO_STUB_MARKER = "dia-reference-torchaudio-audio-prompt-none-stub-v1"
+
+
+def install_torchaudio_fail_closed_stub() -> dict[str, Any]:
+    """Install the only permitted torchaudio seam before importing official Dia.
+
+    Torchaudio is intentionally absent from the frozen project.  The pinned
+    upstream modules retain their optional audio-loader import, so a module
+    seam is installed rather than editing or mirroring those modules.  Any
+    actual audio load/use raises immediately; the fixed reference binds
+    ``audio_prompt=None`` and therefore never crosses the seam.
+    """
+    import sys
+
+    def abort(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("torchaudio audio load/use is forbidden; audio_prompt must be None")
+
+    stub = types.ModuleType("torchaudio")
+    stub.__file__ = f"<{TORCHAUDIO_STUB_MARKER}>"
+    stub.__version__ = TORCHAUDIO_STUB_MARKER
+    stub.load = abort
+    stub.save = abort
+    stub.__getattr__ = abort
+    sys.modules["torchaudio"] = stub
+    return {
+        "module": "torchaudio",
+        "marker": TORCHAUDIO_STUB_MARKER,
+        "installed_distribution": False,
+        "audio_prompt": None,
+        "policy": "every audio load/use aborts loudly",
+    }
+
+
+def call_official_generate(engine: Any, text: str, max_tokens: int) -> Any:
+    """Call the pinned upstream engine with the fixed no-audio prompt."""
+    return engine.generate(text, audio_prompt=None, max_tokens=max_tokens, verbose=False)
 
 
 def sha256(path: Path) -> str:
@@ -439,6 +473,7 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
     project_evidence = reference_project_identity()
     if project_evidence["dependency_license_audit"] != "AUDITED_ALLOW":
         raise RuntimeError("Dia reference dependency license/provenance audit is blocked")
+    torchaudio_seam = install_torchaudio_fail_closed_stub()
     source_evidence = authenticate_source(source)
     # Execute the official source-only contract before touching any checkpoint.
     # This imports only the fixed source helpers and is deliberately separate
@@ -570,7 +605,7 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
         engine._prepare_generation = types.MethodType(prepare, engine)
         if text.count("[S1]") != 1 or text.count("[S2]") != 1 or text.index("[S1]") >= text.index("[S2]"):
             raise RuntimeError("the evidence input must contain exactly one ordered [S1] then [S2] marker")
-        generated = engine.generate(text, max_tokens=min(config.data.audio_length, 32), verbose=False)
+        generated = call_official_generate(engine, text, max_tokens=min(config.data.audio_length, 32))
         if not isinstance(generated, (list, tuple)):
             generated = [generated]
         if not generated or generated[0] is None:
@@ -598,6 +633,7 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
             "approval_sha256": approval_sha256,
             "status": "REFERENCE_COMPLETE",
             "reference_project": project_evidence,
+            "audio_dependency_seam": torchaudio_seam,
             "source": source_evidence,
             "source_contract": source_contract_evidence,
             "hf": model_evidence,
@@ -635,8 +671,31 @@ def self_test() -> None:
     assert DIRECT_DEPENDENCY_VERSIONS["torch"] == "2.6.0+cpu"
     assert set(DIRECT_DEPENDENCY_VERSIONS) == {
         "einops", "gguf", "huggingface-hub", "numpy", "pydantic",
-        "soundfile", "torch", "torchaudio",
+        "torch",
     }
+    assert "soundfile" not in DIRECT_DEPENDENCY_VERSIONS
+    assert "torchaudio" not in DIRECT_DEPENDENCY_VERSIONS
+    seam = install_torchaudio_fail_closed_stub()
+    assert seam["audio_prompt"] is None and seam["installed_distribution"] is False
+    import sys
+    stub = sys.modules["torchaudio"]
+    for operation in (lambda: stub.load("forbidden"), lambda: stub.unavailable_audio_api):
+        try:
+            operation()
+        except RuntimeError as error:
+            assert "audio_prompt" in str(error)
+        else:
+            raise AssertionError("torchaudio stub permitted an audio operation")
+
+    class FakeEngine:
+        def generate(self, value, **kwargs):
+            assert value == "text"
+            assert kwargs["audio_prompt"] is None
+            assert kwargs["max_tokens"] == 3
+            assert kwargs["verbose"] is False
+            return ["ok"]
+
+    assert call_official_generate(FakeEngine(), "text", 3) == ["ok"]
     assert not set(DIRECT_DEPENDENCY_VERSIONS) & {
         "descript-audio-codec", "gradio", "librosa", "soxr", "triton",
     }

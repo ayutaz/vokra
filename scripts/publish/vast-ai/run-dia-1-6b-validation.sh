@@ -5,8 +5,9 @@ PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
 SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
 DEPENDENCY_AUDIT="$ROOT/tools/parity/dia_1_6b_reference/dependency_audit.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
-LOCK_SHA256="ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
-PYPROJECT_SHA256="56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
+DEPENDENCY_PREPARER="$ROOT/scripts/publish/vast-ai/prepare-dia-1-6b-reference.sh"
+LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
+PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 die(){ echo "dia-validation: ERROR: $*" >&2; exit 2; }
 
 check_project_identity() {
@@ -24,6 +25,9 @@ self_test(){
   grep -Fq 'uv.lock' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'lock contract missing'
   [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || die 'Dia dependency auditor is missing or symlinked'
   [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || die 'Dia dependency audit wrapper is missing or symlinked'
+  [[ -x "$DEPENDENCY_PREPARER" && ! -L "$DEPENDENCY_PREPARER" ]] || die 'Dia dependency preparation helper is missing or symlinked'
+  grep -Fq -- 'preparation="$evidence_real/preparation"' "$0" || die 'shared Dia dependency preparation path missing'
+  grep -Fq -- '--no-sync' "$0" || die 'prepared Dia runtime must use uv --no-sync'
   check_project_identity
   grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$PROJECT/pyproject.toml" || die 'dependency audit gate missing'
   grep -Fq 'duplicate --expected-head' "$0" || die 'duplicate expected-head rejection missing'
@@ -102,7 +106,10 @@ for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_eviden
 done
 mkdir "$evidence"
 ( set -C; : > "$adapter_log" ) || die 'adapter log claim failed (existing path or race)'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256"
+preparation="$evidence_real/preparation"
+VOKRA_PUBLISH_ON_VAST=1 DIA_REFERENCE_UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" "$DEPENDENCY_PREPARER" --output-dir "$preparation" >>"$adapter_log" 2>&1 || die 'Dia dependency preparation failed; inspect adapter log'
+reference_environment="$preparation/venv"
+UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
+UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty during validation'
 [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed during validation'
