@@ -18,11 +18,13 @@ import struct
 import sys
 from pathlib import Path
 
-import numpy as np
-import torch
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
-
 SCHEMA = "vokra-whisper-extras-reference-v1"
+IDENTITY_FILES = {
+    "model.safetensors": ("checkpoint_bytes", "checkpoint_sha256"),
+    "config.json": ("config_bytes", "config_sha256"),
+    "generation_config.json": ("generation_config_bytes", "generation_config_sha256"),
+    "tokenizer.json": ("tokenizer_bytes", "tokenizer_sha256"),
+}
 MODELS = {
     "distil_whisper": {
         "repo": "distil-whisper/distil-large-v3.5",
@@ -73,6 +75,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def identity_keys(name: str) -> tuple[str, str]:
+    try:
+        return IDENTITY_FILES[name]
+    except KeyError as exc:
+        raise SystemExit(f"unknown checkpoint identity filename: {name}") from exc
+
+
 def verify_checkpoint_identity(checkpoint: Path, spec: dict) -> dict[str, int | str]:
     """Fail closed unless every pinned source file is byte-identical."""
     identities: dict[str, int | str] = {}
@@ -81,20 +90,24 @@ def verify_checkpoint_identity(checkpoint: Path, spec: dict) -> dict[str, int | 
         if not path.is_file():
             raise SystemExit(f"checkpoint is missing pinned {name}")
         size = path.stat().st_size
-        expected_size = spec[f"{name.removesuffix('.json').removesuffix('.safetensors')}_bytes"]
-        expected_sha = spec[f"{name.removesuffix('.json').removesuffix('.safetensors')}_sha256"]
+        size_key, sha_key = identity_keys(name)
+        expected_size = spec[size_key]
+        expected_sha = spec[sha_key]
         actual_sha = sha256(path)
         if size != expected_size or actual_sha != expected_sha:
             raise SystemExit(
                 f"{name} identity mismatch: bytes={size} sha256={actual_sha}; "
                 f"expected bytes={expected_size} sha256={expected_sha}"
             )
-        identities[f"{name.removesuffix('.json').removesuffix('.safetensors')}_bytes"] = size
-        identities[f"{name.removesuffix('.json').removesuffix('.safetensors')}_sha256"] = actual_sha
+        identities[size_key] = size
+        identities[sha_key] = actual_sha
     return identities
 
 
 def write_f32(path: Path, values: np.ndarray | torch.Tensor) -> None:
+    import numpy as np
+    import torch
+
     array = values.detach().float().cpu().contiguous().numpy() if isinstance(values, torch.Tensor) else np.asarray(values)
     path.write_bytes(np.asarray(array, dtype="<f4").reshape(-1).tobytes())
 
@@ -105,6 +118,8 @@ def write_u32(path: Path, values: list[int]) -> None:
 
 def load_pcm(path: Path) -> np.ndarray:
     """Read a real, already-normalized 16 kHz mono WAV; never resample/mix."""
+    import numpy as np
+
     data = path.read_bytes()
     if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
         raise SystemExit(f"{path}: expected RIFF/WAVE")
@@ -184,6 +199,8 @@ def special_tokens(processor, checkpoint: Path, spec: dict) -> tuple[list[int], 
 
 
 def greedy(model, encoder_outputs, prefix: list[int], eot: int) -> list[int]:
+    import torch
+
     tokens = list(prefix)
     generated: list[int] = []
     for _ in range(MAX_NEW_TOKENS):
@@ -199,11 +216,38 @@ def greedy(model, encoder_outputs, prefix: list[int], eot: int) -> list[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=sorted(MODELS), required=True)
-    parser.add_argument("--checkpoint-dir", type=Path, required=True)
-    parser.add_argument("--audio", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--model", choices=sorted(MODELS))
+    parser.add_argument("--checkpoint-dir", type=Path)
+    parser.add_argument("--audio", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.self_test:
+        expected = {
+            "model.safetensors": ("checkpoint_bytes", "checkpoint_sha256"),
+            "config.json": ("config_bytes", "config_sha256"),
+            "generation_config.json": ("generation_config_bytes", "generation_config_sha256"),
+            "tokenizer.json": ("tokenizer_bytes", "tokenizer_sha256"),
+        }
+        if IDENTITY_FILES != expected:
+            raise SystemExit("identity filename mapping drift")
+        for name, keys in expected.items():
+            if identity_keys(name) != keys:
+                raise SystemExit(f"identity mapping drift for {name}")
+        try:
+            identity_keys("unexpected.json")
+        except SystemExit as exc:
+            if "unknown checkpoint identity filename" not in str(exc):
+                raise
+        else:
+            raise SystemExit("unknown identity filename was accepted")
+        print("dump_reference self-test: OK")
+        return
+    if not all((args.model, args.checkpoint_dir, args.audio, args.output_dir)):
+        parser.error("--model, --checkpoint-dir, --audio, and --output-dir are required")
+    import torch
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
+
     spec = MODELS[args.model]
     checkpoint = args.checkpoint_dir
     if not (checkpoint.is_dir() and (checkpoint / "config.json").is_file()):

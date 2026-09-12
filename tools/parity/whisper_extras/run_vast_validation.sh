@@ -124,6 +124,8 @@ if ((self_test)); then
     fi
     [[ "$selftest_sha" == "$AUDIO_SHA256" ]] || die "audio fixture SHA-256 drift"
   fi
+  PYTHONDONTWRITEBYTECODE=1 uv run --no-project --python 3.12 python \
+    tools/parity/whisper_extras/dump_reference.py --self-test
   selftest_identity_bytes="$(wc -c < "$0" | tr -d '[:space:]')"
   if command -v sha256sum >/dev/null; then
     selftest_identity_sha="$(sha256sum "$0" | awk '{print $1}')"
