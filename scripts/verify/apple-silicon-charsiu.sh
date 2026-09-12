@@ -180,7 +180,7 @@ require_test_pass() {
     BEGIN {
       named = "test " expected " ..."
       inline = named " ok"
-      prefixed_cpu = "^test " expected " [.][.][.] CHARSIU_APPLE_CPU_REFERENCE_METRICS frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+[.][0-9]{9} index=[0-9]+ atol=0[.]000200000$"
+      prefixed_cpu = "^test " expected " [.][.][.] CHARSIU_APPLE_CPU_REFERENCE_METRICS frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+[.]([0-9][0-9][0-9])([0-9][0-9][0-9])([0-9][0-9][0-9]) index=[0-9]+ atol=0[.]000200000$"
       tests = 0
       results = 0
       standalone_ok = 0
@@ -231,9 +231,9 @@ require_test_pass() {
     die 'Apple log must contain one passing named test in either inline or interleaved libtest form'
     return 2
   fi
-  [[ "$(grep -Ec "^(CHARSIU_APPLE_CPU_REFERENCE_METRICS|test ${TEST_NAME} \.\.\. CHARSIU_APPLE_CPU_REFERENCE_METRICS) frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+\\.[0-9]{9} index=[0-9]+ atol=0\\.000200000$" "$path" || true)" == 1 ]] || { die 'CPU/reference metric is missing or malformed'; return 2; }
-  [[ "$(grep -Ec "^CHARSIU_APPLE_METAL_REFERENCE_METRICS frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+\\.[0-9]{9} index=[0-9]+ atol=${METAL_ATOL_REGEX}$" "$path" || true)" == 1 ]] || { die 'Metal/reference metric is missing or malformed'; return 2; }
-  [[ "$(grep -Ec "^CHARSIU_APPLE_METAL_CPU_METRICS frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+\\.[0-9]{9} index=[0-9]+ atol=${METAL_ATOL_REGEX}$" "$path" || true)" == 1 ]] || { die 'Metal/CPU metric is missing or malformed'; return 2; }
+  [[ "$(grep -Ec "^(CHARSIU_APPLE_CPU_REFERENCE_METRICS|test ${TEST_NAME} \.\.\. CHARSIU_APPLE_CPU_REFERENCE_METRICS) frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+\\.([0-9][0-9][0-9])([0-9][0-9][0-9])([0-9][0-9][0-9]) index=[0-9]+ atol=0\\.000200000$" "$path" || true)" == 1 ]] || { die 'CPU/reference metric is missing or malformed'; return 2; }
+  [[ "$(grep -Ec "^CHARSIU_APPLE_METAL_REFERENCE_METRICS frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+\\.([0-9][0-9][0-9])([0-9][0-9][0-9])([0-9][0-9][0-9]) index=[0-9]+ atol=${METAL_ATOL_REGEX}$" "$path" || true)" == 1 ]] || { die 'Metal/reference metric is missing or malformed'; return 2; }
+  [[ "$(grep -Ec "^CHARSIU_APPLE_METAL_CPU_METRICS frames=[1-9][0-9]* logits=[1-9][0-9]* max_abs=[0-9]+\\.([0-9][0-9][0-9])([0-9][0-9][0-9])([0-9][0-9][0-9]) index=[0-9]+ atol=${METAL_ATOL_REGEX}$" "$path" || true)" == 1 ]] || { die 'Metal/CPU metric is missing or malformed'; return 2; }
   [[ "$(grep -Fxc -- "CHARSIU_APPLE_PARITY PASS frames=1 cpu_reference_atol=${CPU_REFERENCE_ATOL} metal_atol=${METAL_ATOL} reference=transformers.Wav2Vec2ForCTC route=explicit_cpu_and_metal no_fallback=true publication=NO_UPLOAD" "$path" || true)" == 1 ]] || { die 'Apple Charsiu PASS sentinel is missing or malformed'; return 2; }
   awk -v expected="$TEST_NAME" '/^CHARSIU_APPLE_(CPU_REFERENCE|METAL_REFERENCE|METAL_CPU)_METRICS / || $0 ~ ("^test " expected " [.][.][.] CHARSIU_APPLE_CPU_REFERENCE_METRICS ") { for (i = 1; i <= NF; i++) { split($i, pair, "="); if (pair[1] == "max_abs" && (pair[2] + 0) > ((index($0, "CPU_REFERENCE") > 0) ? 0.0002 : 0.01)) exit 1 } }' "$path" || { die 'Apple Charsiu metric exceeds its registered bound'; return 2; }
 }
