@@ -12,7 +12,7 @@ die() { echo "zonos-dependency-audit: ERROR: $*" >&2; exit 2; }
 require_clean_head() {
   local expected="$1" actual
   [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head must be 40 lowercase hexadecimal characters'
-  [[ -d "$ROOT/.git" ]] || die 'checkout is missing .git'
+  [[ ! -L "$ROOT/.git" && ( -d "$ROOT/.git" || -f "$ROOT/.git" ) ]] || die 'checkout is missing a regular .git directory or gitfile'
   [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
   actual="$(git -C "$ROOT" rev-parse HEAD)"
   [[ "$actual" == "$expected" ]] || die "checkout HEAD $actual differs from expected $expected"
@@ -44,10 +44,11 @@ require_host() {
 }
 
 self_test() {
-  local failed=0 temporary output archive
+  local failed=0 temporary output archive test_repo test_worktree test_head saved_root
   [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" ]] || failed=1
   grep -Fq 'zonos_v0_1_reference' "$0" || failed=1
   grep -Fq -- 'uv sync --frozen --no-install-project' "$0" || failed=1
+  grep -Fq -- ' -d "$ROOT/.git" || -f "$ROOT/.git" ' "$0" || failed=1
   for forbidden in \
     'git '"clone" \
     'hugging'"face" \
@@ -61,6 +62,20 @@ self_test() {
     fi
   done
   temporary="$(mktemp -d "$(realpath "${TMPDIR:-/tmp}")/vokra-zonos-audit-selftest.XXXXXX")"
+  test_repo="$temporary/repo"
+  test_worktree="$temporary/worktree"
+  git init -q "$test_repo"
+  git -C "$test_repo" config user.email audit-self-test@example.invalid
+  git -C "$test_repo" config user.name audit-self-test
+  printf '%s\n' gitfile-self-test > "$test_repo/file"
+  git -C "$test_repo" add file
+  git -C "$test_repo" commit -q -m init
+  git -C "$test_repo" worktree add -q --detach "$test_worktree" HEAD
+  test_head="$(git -C "$test_worktree" rev-parse HEAD)"
+  saved_root="$ROOT"
+  ROOT="$test_worktree"
+  (require_clean_head "$test_head") || { echo 'linked worktree gitfile was rejected' >&2; failed=1; }
+  ROOT="$saved_root"
   output="$temporary/evidence.json"
   archive="$temporary/archive"
   (require_absent_canonical_output "$output") || failed=1
