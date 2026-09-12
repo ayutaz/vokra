@@ -62,6 +62,56 @@ verify_file() {
   log "identity OK: $(basename "$path") sha256=$actual_sha256${actual_bytes:+ bytes=$actual_bytes}"
 }
 
+verify_charsiu_license_signoff() {
+  local audit_file="$1"
+  [[ -f "$audit_file" ]] || { die "license audit file missing: $audit_file"; return 2; }
+  # Match one complete Markdown table row only.  Removing lightweight
+  # decoration makes **Charsiu**, `repo`, and plain-text variants equivalent,
+  # while checking the model, license, and approval columns independently.
+  # Identity fragments from notes or separate rows can never combine into
+  # approval, and malformed/duplicate identity rows fail closed.
+  if ! awk -F'|' '
+    function normalized_cell(cell) {
+      # Keep underscores: they are part of the exact checkpoint identity.
+      gsub(/[\`*]/, "", cell)
+      sub(/^[[:space:]]+/, "", cell)
+      sub(/[[:space:]]+$/, "", cell)
+      return cell
+    }
+    /^\|/ {
+      # With leading/trailing separators, the audit schema is $2=model,
+      # $3=license, and $6=Commercial/Research-only/Rejected decision.
+      model = normalized_cell($2)
+      has_name = model ~ /(^|[^[:alnum:]])Charsiu([^[:alnum:]]|$)/
+      has_repo = model ~ /(^|[^[:alnum:]_.-])lingjzhu\/charsiu([^[:alnum:]_.-]|$)/
+      has_checkpoint = model ~ /(^|[^[:alnum:]_.-])charsiu\/en_w2v2_fc_10ms([^[:alnum:]_.-]|$)/
+      # Any row carrying a Charsiu identity fragment is a candidate.  This
+      # catches split/malformed rows instead of allowing a valid row plus a
+      # stray fragment to pass unnoticed.
+      if (has_name || has_repo || has_checkpoint) {
+        identity_rows++
+        if (NF != 8) {
+          malformed = 1
+          next
+        }
+        license = normalized_cell($3)
+        approval = normalized_cell($6)
+        if (has_name && has_repo && has_checkpoint \
+            && license == "MIT" \
+            && approval ~ /☑[[:space:]]+Commercial/ \
+            && approval !~ /☐[[:space:]]+Commercial/) {
+          accepted++
+        }
+      }
+    }
+    END { exit(!malformed && identity_rows == 1 && accepted == 1 ? 0 : 1) }
+  ' "$audit_file"; then
+    die 'existing MIT Charsiu sign-off row is missing'
+    return 2
+  fi
+  log "Charsiu license gate authenticated: exact repo/checkpoint, MIT, and Commercial sign-off share one audit row"
+}
+
 require_vast_host() {
   local memory free_disk scratch
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is required'
@@ -85,8 +135,7 @@ require_tooling() {
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] || die 'locked parity project missing'
   [[ -f "$REFERENCE_DUMPER" && -f "$BRIDGE" ]] || die 'Charsiu parity tools missing'
   [[ -f "$FIXTURE_DIR/manifest.json" && -f "$FIXTURE_DIR/pcm_400.f32.bin" && -f "$FIXTURE_DIR/logits_1x42.f32.bin" ]] || die 'committed Charsiu fixture missing'
-  grep -Fq "Charsiu (\`lingjzhu/charsiu\`; runtime checkpoint \`charsiu/en_w2v2_fc_10ms\`)" "$VOKRA_ROOT/docs/license-audit.md" \
-    || die 'existing MIT Charsiu sign-off row is missing'
+  verify_charsiu_license_signoff "$VOKRA_ROOT/docs/license-audit.md"
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
 }
 
@@ -174,6 +223,7 @@ run_self_test() (
   for required in "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CHECKPOINT_SHA256" "$CONFIG_SHA256" \
     'charsiu_dump_reference.py' 'nemo_pt_to_safetensors.py' 'parity_charsiu' 'FP32_ATOL' \
     'CHARSIU_OFFICIAL_PARITY_METRICS' 'CHARSIU_OFFICIAL_PARITY PASS' 'verify_parity_log' \
+    'verify_charsiu_license_signoff' 'lingjzhu/charsiu' 'charsiu/en_w2v2_fc_10ms' \
     'publication=NO_UPLOAD' 'archive_sha256='; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract: $required"; fail=1; }
   done
@@ -182,6 +232,40 @@ run_self_test() (
   fi
   if grep -En 'git[[:space:]]+(push|clone|fetch|pull)|--(push|upload|publish)' "$script_path" >/dev/null; then
     log 'self-test found forbidden publication/source command'; fail=1
+  fi
+  verify_charsiu_license_signoff "$VOKRA_ROOT/docs/license-audit.md" >/dev/null || {
+    log 'self-test rejected the current Charsiu license row'; fail=1;
+  }
+  printf '%s\n' \
+    '| **Charsiu** (`lingjzhu/charsiu`; runtime checkpoint `charsiu/en_w2v2_fc_10ms`) | MIT | source | signoff | **☑ Commercial** | notes |' \
+    > "$temporary/license-current.md"
+  verify_charsiu_license_signoff "$temporary/license-current.md" >/dev/null || {
+    log 'self-test rejected a valid decorated Charsiu license row'; fail=1;
+  }
+  printf '%s\n' \
+    '| Charsiu (`lingjzhu/charsiu`; runtime checkpoint `charsiu/en_w2v2_fc_10ms`) | Apache-2.0 | notes include an MIT grant | signoff | ☑ Commercial | notes |' \
+    > "$temporary/license-apache-notes-mit.md"
+  if verify_charsiu_license_signoff "$temporary/license-apache-notes-mit.md" >/dev/null 2>&1; then
+    log 'self-test accepted Charsiu row with Apache-2.0 license despite notes mentioning MIT'; fail=1
+  fi
+  printf '%s\n' \
+    '| Charsiu (`lingjzhu/charsiu`; runtime checkpoint `charsiu/en_w2v2_fc_10ms`) | Apache-2.0 | notes | signoff | ☑ Commercial | notes |' \
+    > "$temporary/license-no-mit.md"
+  if verify_charsiu_license_signoff "$temporary/license-no-mit.md" >/dev/null 2>&1; then
+    log 'self-test accepted Charsiu row without MIT'; fail=1
+  fi
+  printf '%s\n' \
+    '| Charsiu (`lingjzhu/charsiu`; runtime checkpoint `charsiu/en_w2v2_fc_10ms`) | MIT | notes | signoff | ☐ Commercial | notes |' \
+    > "$temporary/license-no-commercial.md"
+  if verify_charsiu_license_signoff "$temporary/license-no-commercial.md" >/dev/null 2>&1; then
+    log 'self-test accepted Charsiu row without Commercial sign-off'; fail=1
+  fi
+  printf '%s\n' \
+    '| Charsiu (`lingjzhu/charsiu`) | MIT | notes | signoff | ☐ Commercial | notes |' \
+    '| runtime checkpoint `charsiu/en_w2v2_fc_10ms` | Apache-2.0 | notes | signoff | ☑ Commercial | notes |' \
+    > "$temporary/license-split.md"
+  if verify_charsiu_license_signoff "$temporary/license-split.md" >/dev/null 2>&1; then
+    log 'self-test combined Charsiu license fragments from separate rows'; fail=1
   fi
   printf '%s\n' \
     'CHARSIU_OFFICIAL_PARITY_METRICS frames=1 logits=42 max_abs=0.000199999 index=0 rust=1.000000000 transformers=1.000000000 atol=0.000200000' \
