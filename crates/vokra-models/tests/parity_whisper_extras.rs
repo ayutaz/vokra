@@ -75,11 +75,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use vokra_core::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_core::gguf::chunks;
 use vokra_models::whisper::WhisperModel;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use vokra_models::whisper::greedy::greedy_decode;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use vokra_models::{Compute, HotOp};
 
 const FP32_ATOL: f32 = 0.01;
@@ -756,6 +759,7 @@ fn run_real_cpu_parity(member: &FamilyMember, file: &GgufFile, refdir: &Path) {
 /// dispatcher.  `Compute::for_backend` is a hard backend selection: an
 /// unavailable device is an error here, and the two selected forwards below
 /// do not have a CPU fallback branch.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn run_real_apple_parity(member: &FamilyMember, file: &GgufFile, refdir: &Path) {
     let root = parse_reference_packet(member, refdir);
     let pcm = read_f32(&refdir.join("input_pcm.f32le"));
@@ -1219,9 +1223,8 @@ fn parity_whisper_extras_kotoba_whisper() {
 /// this exact named test once with `--ignored --exact` on Darwin arm64.
 #[test]
 #[ignore = "requires VAST-authenticated Distil-Whisper packet and Apple Silicon Metal"]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn parity_whisper_extras_distil_whisper_apple_cpu_metal() {
-    assert!(cfg!(target_os = "macos"), "Apple parity requires macOS");
-    assert!(cfg!(target_arch = "aarch64"), "Apple parity requires arm64");
     let member = FAMILY
         .iter()
         .find(|m| m.arch_slug == "distil_whisper")
@@ -1249,9 +1252,8 @@ fn parity_whisper_extras_distil_whisper_apple_cpu_metal() {
 /// revision; no family alias or shape inference is accepted.
 #[test]
 #[ignore = "requires VAST-authenticated Kotoba-Whisper packet and Apple Silicon Metal"]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn parity_whisper_extras_kotoba_whisper_apple_cpu_metal() {
-    assert!(cfg!(target_os = "macos"), "Apple parity requires macOS");
-    assert!(cfg!(target_arch = "aarch64"), "Apple parity requires arm64");
     let member = FAMILY
         .iter()
         .find(|m| m.arch_slug == "kotoba_whisper")
