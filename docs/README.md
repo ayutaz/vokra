@@ -2,8 +2,8 @@
 
 **Current-state review:** 2026-09-12
 
-**Reviewed implementation baseline:** GitHub `main` at
-`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
+**Reviewed implementation baseline:** GitHub `main` at `43d127f1` (2026-09-12);
+the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
 documentation/evidence checkpoint was
@@ -17,20 +17,19 @@ was subsequently merged as `1787818e702bdaba488d52aa1666fd5f08c5ae16`.
 The bounded post-merge VAST and Scaleway execution is recorded in the
 [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md).
 Those accepted hardware verdicts apply only to the rows and exact heads named
-there. They do not change the audit-start inventory of 131 Mac-CPU-complete and
-131 Apple-Metal-source-complete repositories or its 63 unresolved public rows,
-and did not themselves authorize an artifact upload. A separate, explicit
+there. They do not make the complete public catalog Apple-complete, and did
+not themselves authorize an artifact upload. A separate, explicit
 publication approval on 2026-09-12 subsequently replaced the reviewed
 ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
 artifacts through the gated publisher; the exact revisions and hashes are in
 the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
-The resulting live audit reports 194 public repositories, 193 repositories
-with GGUFs, and 198 GGUF files. CPU code status is 133 full, 45 partial,
-15 without a runtime binder, and 1 non-artifact; Metal code status is 133 full,
-60 blocked by CPU, and 1 non-artifact. BiCodec and SGMSE remain honestly
-partial at the CLI routing boundary despite successful artifact publication
-and the recorded Apple library-level parity. UTMOS numeric parity remains
-unclaimed.
+The current live audit reports 194 public repositories, 193 repositories with
+GGUFs, and 198 GGUF files. CPU code status is 133 full, 45 partial, 15 without
+a runtime binder, and 1 non-artifact; Metal code status is 133 full, 60 blocked
+by CPU, and 1 non-artifact, leaving 61 unresolved public rows. BiCodec and
+SGMSE remain honestly partial at the CLI routing boundary despite successful
+artifact publication and the recorded Apple library-level parity. UTMOS
+numeric parity remains unclaimed.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -55,7 +54,7 @@ environment they name.
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
-| Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md) and the [pre-Scaleway remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the results close only the named execution batch; the 63-row ledger remains the broader scope) |
+| Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md) and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 61 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

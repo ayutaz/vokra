@@ -14,6 +14,17 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- **2026-09-12 current Apple/public inventory**: at `main` baseline
+  `43d127f1`, the live read-only audit reports 194 public repositories, 193
+  GGUF-bearing repositories and 198 GGUF files. CPU status is `full=133`,
+  `partial=45`, `no-runtime-binder=15`, `not-artifact=1`; Metal status is
+  `full=133`, `blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved
+  public rows. The authorized Scaleway batch passed only for its named Apple
+  CPU/reference, Metal/reference and no-fallback scopes; four separately
+  approved artifacts were published through the gated workflow. This does
+  not constitute full model-catalog completion or a v1.0 release; no tags or
+  GitHub Releases exist yet.
+
 - **2026-08-31 pre-1.0 Rust API line: 0.2.0 → 0.3.0**: this feature line
   intentionally changes the public Rust API while the project remains before
   v1.0. The changes include new model/converter and backend enum variants,

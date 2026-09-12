@@ -63,9 +63,21 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 ## 5. Current 0.3.0 release and Apple verification status
 
-The current release line is workspace version `0.3.0`. At the 2026-09-09 audit
-start, PR #79 was at `9efcd16eb63b857f48fc00d0b83d1113defd578b`; its remote
-checks then reported
+The current release line is workspace version `0.3.0`.
+
+**2026-09-12 current snapshot:** the current `main` baseline is `43d127f1`.
+The live, read-only public audit reports 194 repositories, 193 GGUF-bearing
+repositories and 198 GGUF files. CPU status is `full=133`, `partial=45`,
+`no-runtime-binder=15`, `not-artifact=1`; Metal status is `full=133`,
+`blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved public rows. The
+authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback batch
+passed only for its named scopes; four separately approved artifacts were then
+published through the gated workflow. UTMOS numeric parity remains unclaimed,
+and there are 0 release tags and 0 GitHub Releases. This is not a claim of
+complete public model-catalog support or v1.0 release readiness.
+
+**2026-09-09 audit-start historical snapshot:** PR #79 was at
+`9efcd16eb63b857f48fc00d0b83d1113defd578b`; its remote checks then reported
 110 successful checks, 13 expected skips, and 0 failures. The audit-start
 public audit reported 194 repositories (193 GGUF repositories, 198 GGUF
 files).
@@ -73,19 +85,19 @@ CPU coverage is
 `full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal is
 `full=131`, `blocked-by-cpu=62`, `not-artifact=1`; source-level CPU-only
 coverage is 0.
-There are currently 0 release tags and 0 GitHub Releases.
+At that audit-start snapshot, there were 0 release tags and 0 GitHub Releases.
 
-GigaAM v3 and Multilingual have complete conservative Metal code routes, but
-their Apple-hardware verdicts are not available. The remaining 63 public rows
-are not claimed complete. Scaleway has not started; CI/audit results do not
-substitute for Apple hardware evidence. UTMOS numeric parity is also not
+GigaAM v3 and Multilingual had complete conservative Metal code routes, but
+their Apple-hardware verdicts were not available. The remaining 63 public rows
+were not claimed complete. Scaleway had not started; CI/audit results did not
+substitute for Apple hardware evidence. UTMOS numeric parity was also not
 claimed because its legacy Lightning checkpoint is intentionally refused by
 the restricted `weights_only=True` loader.
 
 ## Keeping this page current
 
-**Last verified: 2026-09-09 — against the audit-start PR #79 head
-`9efcd16eb63b857f48fc00d0b83d1113defd578b` and `include/vokra.h`.** The
+**Last verified: 2026-09-12 — against current `main` baseline `43d127f1` and
+`include/vokra.h`.** The
 pre-alpha Python generator and checked-in `ctypes` table cover all 57 generated
 C functions exactly; the header has 15 typedefs, four enums, two concrete
 structures, and nine opaque handles. The high-level Python package remains a
