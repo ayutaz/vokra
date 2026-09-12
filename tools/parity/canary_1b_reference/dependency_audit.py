@@ -224,6 +224,7 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
         if row.get("source") != {"virtual": "."}:
             by_name.setdefault(str(row["name"]).casefold(), []).append(row)
     active: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    processed_extras: dict[tuple[str, str, str, str], set[str]] = {}
     failures: list[str] = []
     queue: list[tuple[str, list[str], str | None]] = []
     for requirement in root.get("metadata", {}).get("requires-dist", []):
@@ -243,21 +244,27 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
             continue
         row = candidates[0]
         key = (str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", [])))
-        if key in active:
+        first_visit = key not in active
+        if first_visit:
+            active[key] = row
+        known_extras = processed_extras.setdefault(key, set())
+        new_extras = [selected for selected in extras if selected not in known_extras]
+        known_extras.update(new_extras)
+        if not first_visit and not new_extras:
             continue
-        active[key] = row
-        for dependency in row.get("dependencies", []):
-            if marker_active(dependency.get("marker")):
-                target_extras = dependency.get("extra", [])
-                if isinstance(target_extras, str):
-                    target_extras = [target_extras]
-                if not isinstance(target_extras, list) or not all(isinstance(item, str) for item in target_extras):
-                    failures.append(f"dependency extra metadata is malformed for {dependency.get('name')}")
-                    continue
-                queue.append((str(dependency["name"]), target_extras, dependency.get("marker")))
+        if first_visit:
+            for dependency in row.get("dependencies", []):
+                if marker_active(dependency.get("marker")):
+                    target_extras = dependency.get("extra", [])
+                    if isinstance(target_extras, str):
+                        target_extras = [target_extras]
+                    if not isinstance(target_extras, list) or not all(isinstance(item, str) for item in target_extras):
+                        failures.append(f"dependency extra metadata is malformed for {dependency.get('name')}")
+                        continue
+                    queue.append((str(dependency["name"]), target_extras, dependency.get("marker")))
         optional = row.get("optional-dependencies", {})
         if isinstance(optional, dict):
-            for selected_extra in extras:
+            for selected_extra in new_extras:
                 for dependency in optional.get(selected_extra, []):
                     if isinstance(dependency, dict) and marker_active(dependency.get("marker"), extra=selected_extra):
                         queue.append((str(dependency["name"]), [], dependency.get("marker")))
