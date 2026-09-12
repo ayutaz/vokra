@@ -143,12 +143,10 @@ def require_dependency_approval_binding(
         raise ValueError("dependency approval binding is stale, wrong-head, or not NO_UPLOAD")
     if not re.fullmatch(r"[0-9a-f]{40}", expected_head) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256) or not re.fullmatch(r"[0-9a-f]{64}", scope_sha256):
         raise ValueError("dependency approval binding digest format is invalid")
-    try:
-        from dependency_approval import ApprovalError, validate_approval
-    except ImportError:
-        dependency_dir = Path(__file__).parent / "dia_1_6b_reference"
+    dependency_dir = Path(__file__).parent / "dia_1_6b_reference"
+    if str(dependency_dir) not in sys.path:
         sys.path.insert(0, str(dependency_dir))
-        from dependency_approval import ApprovalError, validate_approval
+    from dependency_approval import ApprovalError, validate_approval
     try:
         root_real = root.resolve(strict=True)
         scope_real = scope_path.resolve(strict=True)

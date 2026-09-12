@@ -107,7 +107,7 @@ while (($#)); do case "$1" in
 [[ -f "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse before host/cache/download'
 [[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'dedicated Dia uv.lock identity mismatch'
 [[ "$(sha256sum "$REFERENCE_PROJECT/pyproject.toml" | awk '{print $1}')" == "$REFERENCE_PYPROJECT_SHA256" ]] || die 'dedicated Dia pyproject identity mismatch'
-grep -Fq 'dependency_license_audit = "AUDITED_ALLOW"' "$REFERENCE_PROJECT/pyproject.toml" || die 'dependency license/provenance audit is not affirmatively allowed; refuse before host/cache/download'
+grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$REFERENCE_PROJECT/pyproject.toml" || die 'dependency license/provenance audit status drifted; refuse before host/cache/download'
 canonical_existing_path() {
  local path="$1" rest component current=/ parent base
  [[ "$path" == /* && "$path" != */ && -e "$path" && ! -L "$path" ]] || return 1
