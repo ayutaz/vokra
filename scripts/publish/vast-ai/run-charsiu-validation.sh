@@ -309,16 +309,123 @@ PY
 verify_gguf() {
   local artifact="$1"
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$VOKRA_ROOT" "$artifact" <<'PY'
+import math
+import struct
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(sys.argv[1]) / "tools" / "audit"))
 from gguf_manifest import read_manifest
 metadata, tensors = read_manifest(Path(sys.argv[2]))
-if metadata.get("general.architecture") != "charsiu" or len(tensors) != 211:
-    raise SystemExit("Charsiu GGUF manifest is not the canonical 211-tensor artifact")
-if metadata.get("vokra.charsiu.revision") != "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f" or metadata.get("vokra.charsiu.checkpoint_sha256") != "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1":
-    raise SystemExit("Charsiu GGUF provenance mismatch")
-print("Charsiu GGUF contract authenticated: arch=charsiu tensors=211 pinned provenance=OK")
+expected_revision = "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f"
+expected_checkpoint = "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1"
+expected_vocab = [
+    "[SIL]", "NG", "F", "M", "AE", "R", "UW", "N", "IY", "AW", "V", "UH", "OW",
+    "AA", "ER", "HH", "Z", "K", "CH", "W", "EY", "ZH", "T", "EH", "Y", "AH", "B",
+    "P", "TH", "DH", "AO", "G", "L", "JH", "OY", "SH", "D", "AY", "S", "IH", "[UNK]",
+    "[PAD]",
+]
+expected_metadata = {
+    "general.gguf_version", "vokra.model.arch", "vokra.model.name", "vokra.model.category",
+    "vokra.charsiu.revision", "vokra.charsiu.checkpoint_sha256", "vokra.charsiu.hidden_size",
+    "vokra.charsiu.ffn_dim", "vokra.charsiu.n_layer", "vokra.charsiu.n_head",
+    "vokra.charsiu.vocab_size", "vokra.charsiu.silence_id", "vokra.charsiu.pad_id",
+    "vokra.charsiu.sample_rate", "vokra.charsiu.frame_shift_sec", "vokra.charsiu.layer_norm_eps",
+    "vokra.charsiu.pos_conv_kernel", "vokra.charsiu.pos_conv_groups",
+    "vokra.charsiu.silence_threshold", "vokra.charsiu.vocab", "vokra.provenance.weight_license",
+    "vokra.provenance.license", "vokra.provenance.model_id", "vokra.provenance.source",
+    "vokra.schema.version", "vokra.schema.producer",
+}
+if set(metadata) != expected_metadata:
+    raise SystemExit(
+        "Charsiu GGUF metadata key set mismatch: "
+        f"missing={sorted(expected_metadata - set(metadata))} extra={sorted(set(metadata) - expected_metadata)}"
+    )
+expected_values = {
+    "general.gguf_version": 3,
+    "vokra.model.arch": "charsiu",
+    "vokra.model.name": "charsiu/en_w2v2_fc_10ms",
+    "vokra.model.category": "alignment",
+    "vokra.charsiu.revision": expected_revision,
+    "vokra.charsiu.checkpoint_sha256": expected_checkpoint,
+    "vokra.charsiu.hidden_size": 768,
+    "vokra.charsiu.ffn_dim": 3072,
+    "vokra.charsiu.n_layer": 12,
+    "vokra.charsiu.n_head": 12,
+    "vokra.charsiu.vocab_size": 42,
+    "vokra.charsiu.silence_id": 0,
+    "vokra.charsiu.pad_id": 41,
+    "vokra.charsiu.sample_rate": 16000,
+    "vokra.charsiu.pos_conv_kernel": 128,
+    "vokra.charsiu.pos_conv_groups": 16,
+    "vokra.charsiu.silence_threshold": 4,
+    "vokra.charsiu.vocab": expected_vocab,
+    "vokra.provenance.weight_license": "permissive",
+    "vokra.provenance.license": "MIT",
+    "vokra.provenance.model_id": "charsiu",
+    "vokra.provenance.source": "charsiu/en_w2v2_fc_10ms",
+    "vokra.schema.version": 1,
+    "vokra.schema.producer": "vokra-convert 0.3.0",
+}
+for key, expected in expected_values.items():
+    actual = metadata.get(key)
+    if isinstance(expected, float):
+        if not math.isclose(float(actual), expected, rel_tol=0.0, abs_tol=1e-7):
+            raise SystemExit(f"Charsiu GGUF metadata {key}={actual!r} != {expected!r}")
+    elif actual != expected:
+        raise SystemExit(f"Charsiu GGUF metadata {key}={actual!r} != {expected!r}")
+for key, expected in {
+    "vokra.charsiu.frame_shift_sec": 0.01,
+    "vokra.charsiu.layer_norm_eps": 1e-5,
+}.items():
+    actual = metadata.get(key)
+    if struct.pack("<f", float(actual)) != struct.pack("<f", expected):
+        raise SystemExit(f"Charsiu GGUF metadata {key} has non-canonical F32 bits: {actual!r}")
+
+expected_names = []
+stem_kernels = [10, 3, 3, 3, 3, 2, 2]
+for index, _kernel in enumerate(stem_kernels):
+    expected_names.append(f"wav2vec2.feature_extractor.conv_layers.{index}.conv.weight")
+    if index == 0:
+        expected_names.extend([
+            "wav2vec2.feature_extractor.conv_layers.0.layer_norm.weight",
+            "wav2vec2.feature_extractor.conv_layers.0.layer_norm.bias",
+        ])
+expected_names.extend([
+    "wav2vec2.feature_projection.layer_norm.weight",
+    "wav2vec2.feature_projection.layer_norm.bias",
+    "wav2vec2.feature_projection.projection.weight",
+    "wav2vec2.feature_projection.projection.bias",
+    "charsiu.pos_conv.weight",
+    "charsiu.pos_conv.bias",
+    "wav2vec2.encoder.layer_norm.weight",
+    "wav2vec2.encoder.layer_norm.bias",
+])
+for index in range(12):
+    prefix = f"wav2vec2.encoder.layers.{index}"
+    for projection in ("q_proj", "k_proj", "v_proj", "out_proj"):
+        for suffix in ("weight", "bias"):
+            expected_names.append(f"{prefix}.attention.{projection}.{suffix}")
+    for norm in ("layer_norm", "final_layer_norm"):
+        for suffix in ("weight", "bias"):
+            expected_names.append(f"{prefix}.{norm}.{suffix}")
+    for dense in ("intermediate_dense", "output_dense"):
+        for suffix in ("weight", "bias"):
+            expected_names.append(f"{prefix}.feed_forward.{dense}.{suffix}")
+expected_names.extend(["lm_head.weight", "lm_head.bias"])
+actual_names = [tensor["name"] for tensor in tensors]
+if len(tensors) != 211 or actual_names != expected_names:
+    raise SystemExit(
+        f"Charsiu GGUF tensor manifest mismatch: count={len(tensors)} expected=211 "
+        f"names_match={actual_names == expected_names}"
+    )
+for tensor in tensors:
+    if tensor["ggml_type"] != 0:
+        raise SystemExit(f"Charsiu GGUF tensor {tensor['name']} is not F32")
+print(
+    "CHARSIU_GGUF_VERIFICATION "
+    "status=PASS arch_key=vokra.model.arch arch=charsiu metadata_keys=26 "
+    "metadata_on_disk=25 tensors=211 tensor_dtype=F32 provenance=PINNED"
+)
 PY
 }
 
@@ -345,6 +452,7 @@ run_self_test() (
     'REFERENCE_REGEN_MEASURED_MAX_ABS' 'REFERENCE_REGEN_MEASURED_RMSE' \
     'REFERENCE_REGEN_BOUND_FACTOR' 'REFERENCE_REGEN_MAX_ABS_BOUND' 'REFERENCE_REGEN_RMSE_BOUND' \
     'CHARSIU_REFERENCE_REGEN_METRICS' 'CHARSIU_REFERENCE_REGEN_VERIFICATION' \
+    'vokra.model.arch' 'CHARSIU_GGUF_VERIFICATION' \
     'CHARSIU_OFFICIAL_PARITY_METRICS' 'CHARSIU_OFFICIAL_PARITY PASS' 'verify_parity_log' \
     'verify_charsiu_license_signoff' 'lingjzhu/charsiu' 'charsiu/en_w2v2_fc_10ms' \
     'publication=NO_UPLOAD' 'archive_sha256='; do
@@ -356,6 +464,13 @@ run_self_test() (
   if grep -En 'git[[:space:]]+(push|clone|fetch|pull)|--(push|upload|publish)' "$script_path" >/dev/null; then
     log 'self-test found forbidden publication/source command'; fail=1
   fi
+  local obsolete_arch_key="general."'architecture'
+  if grep -Fq "metadata.get(\"$obsolete_arch_key\")" "$script_path"; then
+    log 'self-test found obsolete GGUF architecture key'; fail=1
+  fi
+  grep -Fq '"vokra.model.arch": "charsiu"' "$script_path" || {
+    log 'self-test missing canonical Vokra architecture key'; fail=1;
+  }
   verify_charsiu_license_signoff "$VOKRA_ROOT/docs/license-audit.md" >/dev/null || {
     log 'self-test rejected the current Charsiu license row'; fail=1;
   }
