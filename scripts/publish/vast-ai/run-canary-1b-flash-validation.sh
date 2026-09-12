@@ -29,6 +29,7 @@ die() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+CANARY_REFERENCE_PROJECT="$REPO_ROOT/tools/parity/canary_1b_reference"
 PREFLIGHT_GATE="$REPO_ROOT/tools/parity/canary_1b/preflight_gate.py"
 PREFLIGHT_MANIFEST="$REPO_ROOT/tools/parity/canary_1b/license_gate_manifest.json"
 
@@ -104,7 +105,7 @@ build_reference_packet() {
   (set -o noclobber; printf '%s\n' "$packet_sha" > "$directory/reference-packet.sha256") \
     || die "reference packet digest already exists; refusing to clobber"
   manifest_sha="$(sha256sum "$directory/reference-manifest.sha256" | awk '{print $1}')"
-  UV_NO_CACHE=1 uv run --frozen --offline --project tools/parity --python 3.12 python \
+  UV_NO_CACHE=1 uv run --frozen --offline --project "$CANARY_REFERENCE_PROJECT" --python 3.12 python \
     "$REFERENCE_PACKET_VERIFIER" --directory "$directory" --variant flash \
     --revision "$UPSTREAM_REVISION" --checkpoint-sha256 "$ARCHIVE_SHA256" \
     --audio-sha256 "$REFERENCE_AUDIO_SHA256" --manifest-sha256 "$manifest_sha" \
@@ -177,7 +178,7 @@ run_self_test() {
     "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
     "tools/parity/canary_1b_flash_prepare_checkpoint.py" \
     "tools/parity/canary_1b_flash_dump_reference.py" \
-    "--frozen --project tools/parity --python 3.12 python" \
+    "--frozen --project tools/parity/canary_1b_reference --python 3.12 python" \
     "--target-language de" "$REFERENCE_PACKET_VERIFIER" \
     "reference-manifest.sha256" "reference-packet.sha256" "apple-transfer-args.txt" "apple-transfer-manifest.txt" \
     "<APPLE_GGUF>" "<APPLE_REFERENCE_DIR>" "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_CPU_EVIDENCE>" \
@@ -427,6 +428,10 @@ run_logged() {
   "$@" 2>&1 | tee -a "$log_path"
 }
 
+# Sync only the dedicated official NeMo closure after all approval, host, and
+# archive gates. The generic parity environment is not part of this worker.
+run_logged uv sync --project "$CANARY_REFERENCE_PROJECT" --frozen --python 3.12
+
 run_cpu_case() {
   local pair="$1" source_language="$2" target_language="$3" log_file="$4"
   export "$REFERENCE_PCM_ENV=$evidence_dir/reference/reference-${pair}.pcm.f32"
@@ -450,7 +455,7 @@ run_logged bash scripts/check-forbidden-symbols.sh
 run_logged bash scripts/check-zero-deps.sh
 run_logged bash scripts/check-bound-arch-coverage.sh
 
-run_logged uv run --frozen --project tools/parity --python 3.12 python \
+run_logged uv run --frozen --offline --project "$CANARY_REFERENCE_PROJECT" --python 3.12 python \
   tools/parity/canary_1b_flash_prepare_checkpoint.py \
   --input "$nemo_path" --output-dir "$prepared_dir"
 
@@ -461,12 +466,12 @@ run_logged target/release/vokra-cli convert \
   --tokenizer "$prepared_dir/canary-1b-flash.aggregate.vocab" \
   --output "$work_dir/canary-1b-flash.gguf"
 
-run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 python \
+run_logged uv run --frozen --offline --project "$CANARY_REFERENCE_PROJECT" --python 3.12 python \
   tools/parity/canary_1b_flash_dump_reference.py \
   --nemo "$nemo_path" \
   --source-language en --target-language en \
   --output "$evidence_dir/reference/reference-en-en.json"
-run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 python \
+run_logged uv run --frozen --offline --project "$CANARY_REFERENCE_PROJECT" --python 3.12 python \
   tools/parity/canary_1b_flash_dump_reference.py \
   --nemo "$nemo_path" \
   --source-language en --target-language de \

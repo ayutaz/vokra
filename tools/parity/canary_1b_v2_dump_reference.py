@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
+#!/usr/bin/env -S uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 python
 """Dump an independent official NVIDIA NeMo Canary-1B-v2 reference.
 
 The oracle is ``EncDecMultiTaskModel.restore_from`` from NVIDIA NeMo. This
@@ -354,8 +354,8 @@ def main() -> int:
         from nemo.collections.asr.models import EncDecMultiTaskModel
     except ImportError as error:
         raise SystemExit(
-            "official NVIDIA NeMo is required; run through tools/parity with "
-            f"--extra titanet. Import failed: {error}"
+            "official NVIDIA NeMo is required; run through the dedicated "
+            f"Canary reference project. Import failed: {error}"
         ) from error
 
     pcm, sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=True)
