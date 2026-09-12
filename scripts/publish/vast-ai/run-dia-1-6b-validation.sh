@@ -36,6 +36,10 @@ self_test(){
   grep -Fq 'duplicate --approval-evidence' "$0" || die 'duplicate approval rejection missing'
   grep -Fq 'duplicate --approval-sha256' "$0" || die 'duplicate approval SHA rejection missing'
   grep -Fq -- '--validate-approval' "$0" || die 'approval validation mode missing'
+  grep -Fq -- '--dependency-approval-sha256' "$0" || die 'dependency approval SHA binding missing'
+  grep -Fq -- '--dependency-scope-sha256' "$0" || die 'dependency scope SHA binding missing'
+  grep -Fq -- '--dependency-approval-status VALIDATED' "$0" || die 'validated dependency result is not passed to dumper'
+  grep -Fq 'dependency_approval' "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" || die 'validator dependency approval binding missing'
   grep -Fq 'canonical_existing_path' "$0" || die 'canonical input path gate missing'
   grep -Fq 'canonical_absent_path' "$0" || die 'canonical evidence path gate missing'
   grep -Fq 'adapter log claim failed' "$0" || die 'adapter log no-clobber gate missing'
@@ -110,6 +114,17 @@ paths_overlap "$dependency_scope_real" "$dependency_approval_real" && die 'depen
 paths_overlap "$approval_real" "$dependency_scope_real" && die 'model/source approval must be separate from dependency scope'
 paths_overlap "$approval_real" "$dependency_approval_real" && die 'model/source approval must be separate from dependency approval'
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_APPROVAL" --scope "$dependency_scope" --approval "$dependency_approval_evidence" --approval-sha256 "$dependency_approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external dependency approval is invalid'
+dependency_scope_sha256="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$PROJECT" "$dependency_scope" "$expected_head" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from dependency_approval import validate_scope
+
+_, scope_sha256 = validate_scope(Path(sys.argv[2]), sys.argv[3])
+print(scope_sha256)
+PY
+)" || die 'dependency scope digest could not be derived'
+[[ "$dependency_scope_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'dependency scope digest is invalid'
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_inspect.py" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
   canonical_existing_path "$input" >/dev/null || die "input path has invalid absolute/canonical/symlink ancestry: $input"
@@ -135,7 +150,7 @@ for protected in "$root_real" "$approval_real" "$source_dir" "$model_dir" "$publ
 done
 VOKRA_PUBLISH_ON_VAST=1 DIA_REFERENCE_UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" "$DEPENDENCY_PREPARER" --output-dir "$preparation" >>"$adapter_log" 2>&1 || die 'Dia dependency preparation failed; inspect adapter log'
 reference_environment="$preparation/venv"
-UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
-UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256"
+UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" --dependency-approval-sha256 "$dependency_approval_sha256" --dependency-scope-sha256 "$dependency_scope_sha256" --dependency-approval-status VALIDATED --dependency-publication NO_UPLOAD >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
+UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" --dependency-scope "$dependency_scope" --dependency-approval-evidence "$dependency_approval_evidence" --dependency-approval-sha256 "$dependency_approval_sha256" --dependency-scope-sha256 "$dependency_scope_sha256"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty during validation'
 [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed during validation'

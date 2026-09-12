@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
@@ -72,6 +73,10 @@ TORCHAUDIO_SEAM = {
     "audio_prompt": None,
     "policy": "every audio load/use aborts loudly",
 }
+DEPENDENCY_BINDING_KEYS = {
+    "status", "approval_sha256", "scope_sha256", "expected_head",
+    "dependency_license_audit", "publication",
+}
 
 
 def unique_pairs(pairs):
@@ -122,6 +127,41 @@ def require_exact_evidence_entries(root: Path, paths: set[str]) -> None:
         raise ValueError("stale/orphan evidence file present")
 
 
+def require_dependency_approval_binding(
+    binding: dict,
+    root: Path,
+    scope_path: Path,
+    approval_path: Path,
+    approval_sha256: str,
+    scope_sha256: str,
+    expected_head: str,
+) -> None:
+    """Revalidate the external approval behind the manifest summary."""
+    if not isinstance(binding, dict) or set(binding) != DEPENDENCY_BINDING_KEYS:
+        raise ValueError("exact external dependency approval binding is missing")
+    if binding.get("status") != "VALIDATED" or binding.get("approval_sha256") != approval_sha256 or binding.get("scope_sha256") != scope_sha256 or binding.get("expected_head") != expected_head or binding.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE" or binding.get("publication") != "NO_UPLOAD":
+        raise ValueError("dependency approval binding is stale, wrong-head, or not NO_UPLOAD")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256) or not re.fullmatch(r"[0-9a-f]{64}", scope_sha256):
+        raise ValueError("dependency approval binding digest format is invalid")
+    try:
+        from dependency_approval import ApprovalError, validate_approval
+    except ImportError:
+        dependency_dir = Path(__file__).parent / "dia_1_6b_reference"
+        sys.path.insert(0, str(dependency_dir))
+        from dependency_approval import ApprovalError, validate_approval
+    try:
+        root_real = root.resolve(strict=True)
+        scope_real = scope_path.resolve(strict=True)
+        approval_real = approval_path.resolve(strict=True)
+        if root_real in scope_real.parents or root_real in approval_real.parents or scope_real == approval_real:
+            raise ValueError("dependency approval evidence must be external and separate")
+        approval = validate_approval(scope_path, approval_path, approval_sha256, expected_head)
+    except (ApprovalError, OSError, RuntimeError) as error:
+        raise ValueError(f"external dependency approval is invalid: {error}") from error
+    if approval.get("scope_sha256") != scope_sha256 or approval.get("expected_head") != expected_head or approval.get("publication") != "NO_UPLOAD" or approval.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE":
+        raise ValueError("external dependency approval does not match manifest binding")
+
+
 def require_reference_project(identity: dict) -> None:
     if not isinstance(identity, dict) or identity.get("project") != "dia_1_6b_reference" or identity.get("python") != "3.12":
         raise ValueError("dedicated Dia reference project identity is missing")
@@ -162,8 +202,8 @@ def require_reference_project(identity: dict) -> None:
     expected_digest = hashlib.sha256(json.dumps(expected_rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if audit["rows"] != expected_rows or audit["rows_sha256"] != expected_digest:
         raise ValueError("manifest lock license-audit rows do not match the dedicated lock")
-    if identity.get("dependency_license_audit") != "AUDITED_ALLOW":
-        raise ValueError("Dia dependency license/provenance audit is not affirmatively allowed")
+    if identity.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE":
+        raise ValueError("Dia dependency license/provenance audit status drifted")
     if identity.get("expected_versions") != DIRECT_DEPENDENCY_VERSIONS or identity.get("actual_versions") != DIRECT_DEPENDENCY_VERSIONS:
         raise ValueError("actual locked dependency versions are not bound to the manifest")
 
@@ -209,7 +249,7 @@ def require_source_contract(contract: dict) -> None:
         raise ValueError("official generation schedule/stop source contract mismatch")
 
 
-def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
+def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None, dependency_scope: Path | None = None, dependency_approval_evidence: Path | None = None, dependency_approval_sha256: str | None = None, dependency_scope_sha256: str | None = None) -> None:
     import numpy as np
     require_canonical_existing_path(root)
     if not (root / "manifest.json").is_file() or (root / "manifest.json").is_symlink():
@@ -219,6 +259,8 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
         raise ValueError("evidence expected HEAD does not match caller")
     if approval_sha256 is not None and manifest.get("approval_sha256") != approval_sha256:
         raise ValueError("evidence approval SHA does not match caller")
+    if None in (expected_head, approval_sha256, dependency_scope, dependency_approval_evidence, dependency_approval_sha256, dependency_scope_sha256):
+        raise ValueError("exact external dependency approval binding is required")
     if manifest.get("format") != "vokra-dia-1-6b-official-reference-v1" or manifest.get("status") != "REFERENCE_COMPLETE":
         raise ValueError("manifest is not a completed official-reference packet")
     if manifest.get("native_status") != "BLOCKED_UNTIL_VAST_AND_APPLE_EVIDENCE" or manifest.get("publication") != "NO_UPLOAD":
@@ -226,6 +268,15 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
     if manifest.get("comparison_status") != "NOT_RUN_OFFICIAL_ONLY":
         raise ValueError("reference-only packet must say native comparison was not run")
     require_audio_dependency_seam(manifest.get("audio_dependency_seam"))
+    require_dependency_approval_binding(
+        manifest.get("dependency_approval"),
+        root,
+        dependency_scope,
+        dependency_approval_evidence,
+        dependency_approval_sha256,
+        dependency_scope_sha256,
+        expected_head,
+    )
     require_reference_project(manifest.get("reference_project"))
     require_source_contract(manifest.get("source_contract"))
     source = manifest.get("source")
@@ -319,9 +370,13 @@ def main() -> int:
     parser.add_argument("evidence", nargs="?", type=Path)
     parser.add_argument("--expected-head")
     parser.add_argument("--approval-sha256")
+    parser.add_argument("--dependency-scope", type=Path)
+    parser.add_argument("--dependency-approval-evidence", type=Path)
+    parser.add_argument("--dependency-approval-sha256")
+    parser.add_argument("--dependency-scope-sha256")
     args = parser.parse_args()
     if args.self_test:
-        if args.evidence is not None or args.expected_head is not None or args.approval_sha256 is not None:
+        if args.evidence is not None or args.expected_head is not None or args.approval_sha256 is not None or args.dependency_scope is not None or args.dependency_approval_evidence is not None or args.dependency_approval_sha256 is not None or args.dependency_scope_sha256 is not None:
             parser.error("--self-test accepts no other arguments")
         assert re.fullmatch(r"[0-9a-f]{40}", "0" * 40)
         assert not re.fullmatch(r"[0-9a-f]{40}", "X" * 40)
@@ -357,9 +412,22 @@ def main() -> int:
             raise AssertionError("incomplete source-only contract accepted")
         except ValueError:
             pass
+        valid_binding = {
+            "status": "VALIDATED", "approval_sha256": "1" * 64,
+            "scope_sha256": "2" * 64, "expected_head": "0" * 40,
+            "dependency_license_audit": "BLOCKED_UNREVIEWED_TRANSITIVE",
+            "publication": "NO_UPLOAD",
+        }
         try:
-            require_reference_project({"project": "dia_1_6b_reference", "python": "3.12", "uv_lock_sha256": REFERENCE_PROJECT_LOCK_SHA256, "pyproject_sha256": REFERENCE_PROJECT_PYPROJECT_SHA256, "lock_schema": "uv-lock-v1-python312", "use_torch_compile": False, "dependency_license_audit": "BLOCKED_UNREVIEWED_TRANSITIVE", "expected_versions": DIRECT_DEPENDENCY_VERSIONS, "actual_versions": DIRECT_DEPENDENCY_VERSIONS})
-            raise AssertionError("blocked dependency audit accepted")
+            require_dependency_approval_binding(valid_binding, Path("/private/tmp/dia-validator-evidence"), Path("/private/tmp/missing-scope.json"), Path("/private/tmp/missing-approval.json"), "1" * 64, "2" * 64, "0" * 40)
+            raise AssertionError("missing external dependency approval accepted")
+        except ValueError:
+            pass
+        tampered_binding = dict(valid_binding)
+        tampered_binding["publication"] = "UPLOAD"
+        try:
+            require_dependency_approval_binding(tampered_binding, Path("/private/tmp/dia-validator-evidence"), Path("/private/tmp/missing-scope.json"), Path("/private/tmp/missing-approval.json"), "1" * 64, "2" * 64, "0" * 40)
+            raise AssertionError("tampered dependency binding accepted")
         except ValueError:
             pass
         assert set(DIRECT_DEPENDENCY_VERSIONS) == {
@@ -415,13 +483,15 @@ def main() -> int:
         return 0
     if args.evidence is None:
         parser.error("evidence directory is required")
-    if args.expected_head is None or args.approval_sha256 is None:
-        parser.error("expected HEAD and approval SHA are required")
+    if args.expected_head is None or args.approval_sha256 is None or args.dependency_scope is None or args.dependency_approval_evidence is None or args.dependency_approval_sha256 is None or args.dependency_scope_sha256 is None:
+        parser.error("expected HEAD/model approval and external dependency approval binding are required")
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_head):
         parser.error("expected_head must be lowercase 40-hex")
     if not re.fullmatch(r"[0-9a-f]{64}", args.approval_sha256):
         parser.error("approval_sha256 must be lowercase 64-hex")
-    validate(args.evidence, args.expected_head, args.approval_sha256)
+    if not re.fullmatch(r"[0-9a-f]{64}", args.dependency_approval_sha256) or not re.fullmatch(r"[0-9a-f]{64}", args.dependency_scope_sha256):
+        parser.error("dependency approval/scope SHA must be lowercase 64-hex")
+    validate(args.evidence, args.expected_head, args.approval_sha256, args.dependency_scope, args.dependency_approval_evidence, args.dependency_approval_sha256, args.dependency_scope_sha256)
     print("Dia reference evidence validation: OK")
     return 0
 

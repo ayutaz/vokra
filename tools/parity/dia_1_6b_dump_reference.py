@@ -466,13 +466,49 @@ def validate_binding(expected_head: str, approval_sha256: str) -> None:
         raise ValueError("approval_sha256 must be lowercase 64-hex")
 
 
-def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpoint: Path, dac_source: Path, output: Path, text: str, seed: int, expected_head: str, approval_sha256: str) -> None:
+def validate_dependency_binding(
+    expected_head: str,
+    approval_sha256: str,
+    scope_sha256: str,
+    status: str,
+    publication: str,
+) -> dict[str, str]:
+    """Accept only the runner's already externally validated dependency result.
+
+    The scope and approval JSON remain outside this adapter.  The runner first
+    validates them with ``dependency_approval.py`` and then passes these exact
+    digests/status values through the command line.  The evidence validator
+    re-opens the external files, so a manifest cannot turn this summary into an
+    approval on its own.
+    """
+    if not isinstance(expected_head, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+        raise ValueError("dependency expected_head must be lowercase 40-hex")
+    if not isinstance(approval_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256):
+        raise ValueError("dependency approval_sha256 must be lowercase 64-hex")
+    if not isinstance(scope_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", scope_sha256):
+        raise ValueError("dependency scope_sha256 must be lowercase 64-hex")
+    if status != "VALIDATED":
+        raise ValueError("dependency approval status must be VALIDATED")
+    if publication != "NO_UPLOAD":
+        raise ValueError("dependency approval publication must remain NO_UPLOAD")
+    return {
+        "status": status,
+        "approval_sha256": approval_sha256,
+        "scope_sha256": scope_sha256,
+        "expected_head": expected_head,
+        "dependency_license_audit": DEPENDENCY_LICENSE_AUDIT_STATUS,
+        "publication": publication,
+    }
+
+
+def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpoint: Path, dac_source: Path, output: Path, text: str, seed: int, expected_head: str, approval_sha256: str, dependency_approval_sha256: str, dependency_scope_sha256: str, dependency_approval_status: str, dependency_publication: str) -> None:
     validate_binding(expected_head, approval_sha256)
+    dependency_binding = validate_dependency_binding(expected_head, dependency_approval_sha256, dependency_scope_sha256, dependency_approval_status, dependency_publication)
     if not source.is_dir() or not model.is_dir() or not public.is_dir() or not output.is_dir():
         raise RuntimeError("source, model, public, and output directories are required")
     project_evidence = reference_project_identity()
-    if project_evidence["dependency_license_audit"] != "AUDITED_ALLOW":
-        raise RuntimeError("Dia reference dependency license/provenance audit is blocked")
+    if project_evidence["dependency_license_audit"] != DEPENDENCY_LICENSE_AUDIT_STATUS:
+        raise RuntimeError("Dia reference dependency license/provenance audit status drifted")
     torchaudio_seam = install_torchaudio_fail_closed_stub()
     source_evidence = authenticate_source(source)
     # Execute the official source-only contract before touching any checkpoint.
@@ -631,6 +667,7 @@ def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpo
             "format": FORMAT,
             "expected_head": expected_head,
             "approval_sha256": approval_sha256,
+            "dependency_approval": dependency_binding,
             "status": "REFERENCE_COMPLETE",
             "reference_project": project_evidence,
             "audio_dependency_seam": torchaudio_seam,
@@ -660,6 +697,16 @@ def self_test() -> None:
         raise AssertionError("invalid expected_head accepted")
     except ValueError:
         pass
+    valid_dependency = validate_dependency_binding("0" * 40, "1" * 64, "2" * 64, "VALIDATED", "NO_UPLOAD")
+    assert valid_dependency["dependency_license_audit"] == DEPENDENCY_LICENSE_AUDIT_STATUS
+    for field, value in (("status", "APPROVED"), ("publication", "UPLOAD"), ("scope_sha256", "not-a-sha"), ("approval_sha256", "not-a-sha")):
+        candidate = dict(valid_dependency)
+        candidate[field] = value
+        try:
+            validate_dependency_binding(candidate["expected_head"], candidate["approval_sha256"], candidate["scope_sha256"], candidate["status"], candidate["publication"])
+            raise AssertionError(f"tampered dependency binding accepted: {field}")
+        except ValueError:
+            pass
     try:
         validate_binding("0" * 40, "not-a-sha")
         raise AssertionError("invalid approval_sha256 accepted")
@@ -765,9 +812,13 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--expected-head")
     parser.add_argument("--approval-sha256")
+    parser.add_argument("--dependency-approval-sha256")
+    parser.add_argument("--dependency-scope-sha256")
+    parser.add_argument("--dependency-approval-status")
+    parser.add_argument("--dependency-publication")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.source, args.model, args.public, args.output, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.expected_head, args.approval_sha256)) or args.text != DEFAULT_TEXT or args.seed != 0:
+        if any(value is not None for value in (args.source, args.model, args.public, args.output, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.expected_head, args.approval_sha256, args.dependency_approval_sha256, args.dependency_scope_sha256, args.dependency_approval_status, args.dependency_publication)) or args.text != DEFAULT_TEXT or args.seed != 0:
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
@@ -778,10 +829,11 @@ def main() -> int:
                 setattr(args, name, cli_path(raw, name.replace("_", "-")))
     except RuntimeError as error:
         parser.error(str(error))
-    if None in (args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.expected_head, args.approval_sha256):
-        parser.error("--source, --model, --public, --dac-evidence, --dac-checkpoint, --dac-source, and --output are required")
+    if None in (args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.expected_head, args.approval_sha256, args.dependency_approval_sha256, args.dependency_scope_sha256, args.dependency_approval_status, args.dependency_publication):
+        parser.error("source/model/public/DAC/output and both model/source and dependency approval bindings are required")
     try:
         validate_binding(args.expected_head, args.approval_sha256)
+        validate_dependency_binding(args.expected_head, args.dependency_approval_sha256, args.dependency_scope_sha256, args.dependency_approval_status, args.dependency_publication)
     except ValueError as error:
         parser.error(str(error))
     try:
@@ -793,7 +845,7 @@ def main() -> int:
     try:
         if args.text != DEFAULT_TEXT:
             parser.error(f"--text must be the fixed two-speaker evidence input: {DEFAULT_TEXT!r}")
-        run(args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.text, args.seed, args.expected_head, args.approval_sha256)
+        run(args.source, args.model, args.public, args.dac_evidence, args.dac_checkpoint, args.dac_source, args.output, args.text, args.seed, args.expected_head, args.approval_sha256, args.dependency_approval_sha256, args.dependency_scope_sha256, args.dependency_approval_status, args.dependency_publication)
     except Exception as error:
         try:
             publish_create_new(args.output / "INSPECTION_ERROR", lambda stream: stream.write((str(error) + "\n").encode("utf-8")))
