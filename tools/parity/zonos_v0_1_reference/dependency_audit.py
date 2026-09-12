@@ -1358,6 +1358,12 @@ def validate_report(path: Path) -> None:
     if sha256(preparation_path) != scope["preparation_sha256"]:
         raise RuntimeError("candidate scope preparation identity does not match evidence directory")
     preparation = _validate_preparation(preparation_path)
+    prepared_venv = Path(preparation["venv"]["path"]).resolve()
+    expected_executable = Path(preparation["venv"]["interpreter"]["executable"]).resolve()
+    if Path(sys.prefix).resolve() != prepared_venv:
+        raise RuntimeError("audit validator sys.prefix is outside the prepared venv")
+    if Path(sys.executable).resolve() != expected_executable:
+        raise RuntimeError("audit validator sys.executable is not the prepared interpreter")
     if installed.get("preparation") != preparation:
         raise RuntimeError("installed report preparation identity is not file-bound")
     if scope["constraints_sha256"] != preparation["project"]["constraints_sha256"]:
@@ -1967,7 +1973,15 @@ def self_test() -> None:
         },
         "sdist": {"url": NUMPY_SDIST_URL, "sha256": NUMPY_SDIST_SHA256, "bytes": NUMPY_SDIST_BYTES},
         "wheel": {"basename": "numpy-2.2.2-cp312-cp312-linux_x86_64.whl", "sha256": "0" * 64, "bytes": 1},
-        "venv": {"path": str(archive_dir / "venv"), "interpreter": {}},
+        "venv": {
+            "path": str(Path(sys.prefix).resolve()),
+            "interpreter": {
+                "prefix": str(Path(sys.prefix).resolve()),
+                "executable": str(Path(sys.executable).resolve()),
+                "implementation": "CPython",
+                "version": platform.python_version(),
+            },
+        },
     }
     original_validate_preparation = globals()["_validate_preparation"]
     globals()["_validate_preparation"] = lambda _path: fake_preparation
@@ -2053,6 +2067,31 @@ def self_test() -> None:
     )
     complete["candidate_scope_sha256"] = _digest(complete["candidate_scope"])
     broken_path = archive_dir / ".audit-self-test.json"
+    environment_broken_path = archive_dir / ".audit-environment-self-test.json"
+    bad_preparation = json.loads(json.dumps(fake_preparation))
+    bad_preparation["venv"] = {
+        "path": str(archive_dir / "different-venv"),
+        "interpreter": {
+            "prefix": str(archive_dir / "different-venv"),
+            "executable": str(archive_dir / "different-venv" / "bin" / "python"),
+            "implementation": "CPython",
+            "version": platform.python_version(),
+        },
+    }
+    environment_broken = json.loads(json.dumps(complete))
+    environment_broken["installed"]["preparation"] = bad_preparation
+    try:
+        globals()["_validate_preparation"] = lambda _path: bad_preparation
+        environment_broken_path.write_text(json.dumps(environment_broken), encoding="utf-8")
+        try:
+            validate_report(environment_broken_path)
+        except RuntimeError as error:
+            assert "sys.prefix" in str(error) or "sys.executable" in str(error)
+        else:
+            raise AssertionError("validator must reject a different prepared venv")
+    finally:
+        globals()["_validate_preparation"] = lambda _path: fake_preparation
+        environment_broken_path.unlink(missing_ok=True)
     try:
         broken_path.write_text(json.dumps(complete), encoding="utf-8")
         try:

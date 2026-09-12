@@ -53,6 +53,8 @@ self_test() {
   grep -Fq -- 'uv sync --frozen --no-install-project' "$0" || failed=1
   grep -Fq -- '--preparation' "$0" || failed=1
   grep -Fq -- ' -d "$ROOT/.git" || -f "$ROOT/.git" ' "$0" || failed=1
+  local env_token="UV_PROJECT_"'ENVIRONMENT='
+  [[ "$(grep -Fc "$env_token\"\$environment\"" "$0")" == 2 ]] || failed=1
   for forbidden in \
     'git '"clone" \
     'hugging'"face" \
@@ -148,7 +150,7 @@ set -e
 grep -Fq '"status": "BLOCKED_UNREVIEWED_TRANSITIVE"' "$output" || die 'blocked status marker missing'
 grep -Fq '"publication": "NO_UPLOAD"' "$output" || die 'NO_UPLOAD marker missing'
 set +e
-UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
   --validate-output "$output"
 validation_status=$?
