@@ -99,7 +99,10 @@ OWNER_CANDIDATE_SCOPE = (
     "owner/legal: review every resolved Linux x86_64 package, Torch/torchaudio "
     "bundled/native files, and publisher LICENSE/NOTICE bytes before execution"
 )
-MAX_SDIST_TAR_MEMBERS = 4096
+# The locked NumPy 2.2.2 sdist contains 7,758 unique regular files. This
+# publisher-evidence reader therefore shares the preparer's bounded 8,192 cap;
+# it still rejects larger or unsafe archives before extracting any bytes.
+MAX_SDIST_TAR_MEMBERS = 8192
 MAX_PUBLISHER_MEMBER_BYTES = 1 << 20
 MAX_PUBLISHER_TOTAL_BYTES = 8 << 20
 

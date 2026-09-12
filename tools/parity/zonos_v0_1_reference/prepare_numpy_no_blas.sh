@@ -110,7 +110,9 @@ import tarfile
 from pathlib import PurePosixPath
 
 archive, destination = map(pathlib.Path, sys.argv[1:])
-maximum_members = 4096
+# The locked NumPy 2.2.2 sdist has 7,758 unique regular-file members. Keep a
+# small, explicit margin for that exact archive while retaining a hard cap.
+maximum_members = 8192
 maximum_member_bytes = 16 * 1024 * 1024
 maximum_bytes = 512 * 1024 * 1024
 members_seen = 0
@@ -313,6 +315,7 @@ import sys
 import tarfile
 
 root = pathlib.Path(sys.argv[1])
+maximum_members = 8192
 def write_tar(path, member, body):
     with tarfile.open(path, "w:gz") as archive:
         member.size = len(body)
@@ -332,12 +335,22 @@ with tarfile.open(root / "link.tar.gz", "w:gz") as archive:
     archive.addfile(link)
 oversized = tarfile.TarInfo("numpy-2.2.2/LICENSE-big")
 write_tar(root / "oversized.tar.gz", oversized, b"x" * (16 * 1024 * 1024 + 1))
+def write_member_count(path, count):
+    with tarfile.open(path, "w:gz") as archive:
+        for index in range(count):
+            member = tarfile.TarInfo(f"numpy-2.2.2/member-{index}")
+            member.size = 0
+            archive.addfile(member)
+write_member_count(root / "member-limit.tar.gz", maximum_members)
+write_member_count(root / "member-over-limit.tar.gz", maximum_members + 1)
 PY
     extract_sdist "$temporary/safe.tar.gz" "$temporary/safe-out" || failed=1
     if extract_sdist "$temporary/duplicate.tar.gz" "$temporary/duplicate-out" >/dev/null 2>&1; then failed=1; fi
     if extract_sdist "$temporary/traversal.tar.gz" "$temporary/traversal-out" >/dev/null 2>&1; then failed=1; fi
     if extract_sdist "$temporary/link.tar.gz" "$temporary/link-out" >/dev/null 2>&1; then failed=1; fi
     if extract_sdist "$temporary/oversized.tar.gz" "$temporary/oversized-out" >/dev/null 2>&1; then failed=1; fi
+    extract_sdist "$temporary/member-limit.tar.gz" "$temporary/member-limit-out" || failed=1
+    if extract_sdist "$temporary/member-over-limit.tar.gz" "$temporary/member-over-limit-out" >/dev/null 2>&1; then failed=1; fi
     rm -rf "$temporary"
   else
     failed=1
