@@ -145,6 +145,8 @@ def identity(path):
 v = read_json(validation, "validation JSON")
 if v.get("status") != "PATH_C_PASS" or v.get("publication") != "NO_UPLOAD":
     raise ValueError("VAST packet is not PATH_C_PASS/NO_UPLOAD")
+if v.get("model_payload_transfer") != "STAGED_FOR_AUTHENTICATED_APPLE_TRANSFER":
+    raise ValueError("VAST packet was not staged for authenticated Apple transfer")
 if v.get("git_commit") != expected_head:
     raise ValueError("VAST git commit is not the requested exact HEAD")
 if v.get("source_tflite_sha256") != source_sha:
@@ -260,6 +262,7 @@ self_test() {
     'CARGO_BUILD_JOBS=1' 'CARGO_NET_OFFLINE=true' '--offline' '--locked' \
     'xcrun -sdk macosx metal -v' 'source_tflite_sha256' 'reviewed_topology_sha256' \
     'fresh_interpreter_reset_replay' 'stage_tensor_indices' 'CPU_REFERENCE_PASS_METAL_UNSUPPORTED' \
+    'model_payload_transfer' 'STAGED_FOR_AUTHENTICATED_APPLE_TRANSFER' \
     'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; do
     grep -Fq -- "$token" "$self" || { log "self-test missing contract token: $token"; fail=1; }
   done

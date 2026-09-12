@@ -123,16 +123,19 @@ VAST-only research path and is not part of the production conversion lock.
 After the exact dependency evidence and raw inventory have been collected on
 VAST, an owner may run the authenticated Path C worker. The checkout must be a
 clean commit and the three input/result paths below must be absolute and
-outside the checkout. The model, reviewed GGUF, and fixtures are generated
-under a worker-owned temporary VAST directory and removed when the worker
-exits:
+outside the checkout. By default, the model, reviewed GGUF, and fixtures are
+generated under a worker-owned temporary VAST directory and removed when the
+worker exits. To retain an exact packet for Apple verification, provide the
+optional `--apple-packet-dir` destination; it must be an absent absolute path
+whose existing parent is outside the checkout:
 
 ```sh
 export VOKRA_PUBLISH_ON_VAST=1 VOKRA_REVIEWED_VALIDATION=1
 scripts/publish/vast-ai/run-microwakeword-validation.sh --validate-reviewed \
   /root/scratchpad/<raw-inventory>.json \
   /root/scratchpad/<dependency-evidence>.json \
-  /root/scratchpad/<validation-results>
+  /root/scratchpad/<validation-results> \
+  --apple-packet-dir /root/scratchpad/<apple-packet>
 ```
 
 The worker verifies the fixed TFLite revision, size, SHA-256 and Git blobs,
@@ -141,10 +144,19 @@ allowed only for the pinned lock resolution; execution remains offline),
 creates the reviewed GGUF, emits the independent 512-invocation/stage trace,
 and runs `VOKRA_KWS_REAL_GGUF` + `VOKRA_KWS_REAL_FIXTURES` through the
 package-scoped Rust Path C test. The trace has 12 stage identities: 11
-preserved intermediate tensors plus final output tensor 69. On success or
-failure, the worker removes only its pattern-validated, worker-owned temporary
-root (which contains the GGUF and fixtures); caller paths are never recursively
-removed.
+preserved intermediate tensors plus final output tensor 69. After the result
+JSON is complete, `--apple-packet-dir` copies exactly the reviewed GGUF, the
+complete fixture tree, the validation JSON, `path-c.log`, and dependency
+evidence into that newly-created directory. It also writes a deterministic
+`packet-manifest.sha256` (which excludes itself) for transfer verification.
+With the option, the validation JSON records
+`model_payload_transfer=STAGED_FOR_AUTHENTICATED_APPLE_TRANSFER`; without it,
+the value remains `TEMPORARY_VAST_ONLY` and the Apple consumer deliberately
+rejects the result.
+The temporary worker root is then removed; the staged packet is never cleaned
+by this worker and no payload is uploaded. A copy failure is fatal and may
+leave a partial packet, so the caller must remove or quarantine it and retry
+with a fresh absent destination. Caller paths are never recursively removed.
 
 The raw inventory and dependency evidence must already exist; the caller
 result directory must already exist and be empty. Worker-owned output collisions
@@ -152,9 +164,17 @@ are impossible inside the fresh private root, while nonempty result directories
 are rejected. Only
 `microwakeword-validation.json` (filename/size/hash records) and `path-c.log`
 are result records; no model payload is uploaded or copied to the result
-directory. A successful worker run supplies the evidence needed to
-close the currently blocked parity status; this README does not claim that
-the run has already occurred.
+directory. The optional Apple packet is a separate explicit payload staging
+destination. From its root, verify the deterministic transfer manifest before
+moving it to the Apple host:
+
+```sh
+(cd /root/scratchpad/<apple-packet> && sha256sum -c packet-manifest.sha256)
+```
+
+A successful worker run supplies the evidence needed to close the currently
+blocked parity status; this README does not claim that the run has already
+occurred.
 
 ### Apple Silicon verification
 
@@ -162,17 +182,19 @@ The Apple worker consumes the reviewed VAST packet only; it never downloads or
 recreates a model. The packet must contain the reviewed GGUF, the complete
 `microwakeword-reference-v2` fixture directory, the VAST
 `microwakeword-validation.json` and `path-c.log`, and the exact dependency
-evidence file. All packet paths and the new evidence directory must be
+evidence file. The validation JSON must identify the packet as
+`STAGED_FOR_AUTHENTICATED_APPLE_TRANSFER`; a temporary VAST-only result is
+not accepted. All packet paths and the new evidence directory must be
 absolute, outside the checkout, and the checkout must be clean at the exact
 VAST commit:
 
 ```sh
 scripts/verify/apple-silicon-microwakeword.sh \
-  --gguf /absolute/vast/hey_jarvis.reviewed.gguf \
-  --fixtures /absolute/vast/fixtures \
-  --validation-json /absolute/vast/microwakeword-validation.json \
-  --path-c-log /absolute/vast/path-c.log \
-  --dependency-evidence /absolute/vast/dependency-evidence.json \
+  --gguf /absolute/vast/<apple-packet>/hey_jarvis.reviewed.gguf \
+  --fixtures /absolute/vast/<apple-packet>/fixtures \
+  --validation-json /absolute/vast/<apple-packet>/microwakeword-validation.json \
+  --path-c-log /absolute/vast/<apple-packet>/path-c.log \
+  --dependency-evidence /absolute/vast/<apple-packet>/dependency-evidence.json \
   --expected-head <exact-lowercase-40-hex-commit> \
   --evidence-dir /absolute/empty/apple-microwakeword-evidence
 ```
