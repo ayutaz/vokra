@@ -29,6 +29,10 @@ KOTOBA_GENERATION_BYTES=3898
 KOTOBA_GENERATION_SHA256="20d28b9169207ab6ca402ec9342393a88ec3f341d88c9da24e516e1da71c24de"
 KOTOBA_TOKENIZER_BYTES=3931381
 KOTOBA_TOKENIZER_SHA256="615928f5a25409279b47b47d87a4ca2aaee3bd09f65e1a3df6c9d23c718cfdb0"
+DISTIL_PREPROCESSOR_BYTES=340
+DISTIL_PREPROCESSOR_SHA256="7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
+KOTOBA_PREPROCESSOR_BYTES=340
+KOTOBA_PREPROCESSOR_SHA256="7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
 
 die() { echo "run_vast_validation: $*" >&2; exit 2; }
 
@@ -144,6 +148,7 @@ if ((self_test)); then
     "KOTOBA_MODEL_SHA256" "DISTIL_CONFIG_SHA256" "KOTOBA_CONFIG_SHA256" \
     "DISTIL_GENERATION_SHA256" "KOTOBA_GENERATION_SHA256" \
     "DISTIL_TOKENIZER_SHA256" "KOTOBA_TOKENIZER_SHA256" \
+    "DISTIL_PREPROCESSOR_SHA256" "KOTOBA_PREPROCESSOR_SHA256" \
     "snapshot-identity.txt" "--locked" \
     "CARGO_BUILD_JOBS=1"; do
     grep -Fq -- "$needle" "$0" || die "self-test missing $needle"
@@ -221,17 +226,19 @@ PY
       verify_file_identity "$destination/config.json" "$DISTIL_CONFIG_BYTES" "$DISTIL_CONFIG_SHA256" "$slug config"
       verify_file_identity "$destination/generation_config.json" "$DISTIL_GENERATION_BYTES" "$DISTIL_GENERATION_SHA256" "$slug generation_config"
       verify_file_identity "$destination/tokenizer.json" "$DISTIL_TOKENIZER_BYTES" "$DISTIL_TOKENIZER_SHA256" "$slug tokenizer"
+      verify_file_identity "$destination/preprocessor_config.json" "$DISTIL_PREPROCESSOR_BYTES" "$DISTIL_PREPROCESSOR_SHA256" "$slug preprocessor_config"
       ;;
     kotoba_whisper)
       verify_file_identity "$destination/model.safetensors" "$KOTOBA_MODEL_BYTES" "$KOTOBA_MODEL_SHA256" "$slug model"
       verify_file_identity "$destination/config.json" "$KOTOBA_CONFIG_BYTES" "$KOTOBA_CONFIG_SHA256" "$slug config"
       verify_file_identity "$destination/generation_config.json" "$KOTOBA_GENERATION_BYTES" "$KOTOBA_GENERATION_SHA256" "$slug generation_config"
       verify_file_identity "$destination/tokenizer.json" "$KOTOBA_TOKENIZER_BYTES" "$KOTOBA_TOKENIZER_SHA256" "$slug tokenizer"
+      verify_file_identity "$destination/preprocessor_config.json" "$KOTOBA_PREPROCESSOR_BYTES" "$KOTOBA_PREPROCESSOR_SHA256" "$slug preprocessor_config"
       ;;
     *) die "unknown snapshot slug: $slug" ;;
   esac
   {
-    for file in model.safetensors config.json generation_config.json tokenizer.json; do
+    for file in model.safetensors config.json generation_config.json tokenizer.json preprocessor_config.json; do
       printf '%s bytes=%s sha256=%s\n' "$file" "$(stat -c '%s' "$destination/$file")" "$(sha256sum "$destination/$file" | awk '{print $1}')"
     done
   } > "$evidence/$slug-snapshot-identity.txt"

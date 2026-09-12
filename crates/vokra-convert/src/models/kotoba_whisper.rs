@@ -349,6 +349,7 @@ fn convert_variant(
         b.add_string(KEY_PROVENANCE_UPSTREAM_HF, V22_UPSTREAM_HF);
         b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, revision);
     }
+    crate::models::whisper::frontend_spec(n_mels as u32).write_into(&mut b);
     write_hparams(&mut b, &st, v22_revision.is_some());
 
     let mut report = KotobaWhisperReport::default();
@@ -467,7 +468,7 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile, is_v22: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vokra_core::gguf::GgufFile;
+    use vokra_core::gguf::{FrontendSpec, GgufFile};
 
     fn minimal_safetensors_one_f32() -> Vec<u8> {
         // A single f32 tensor at the top of the file so `convert` has
@@ -580,6 +581,11 @@ mod tests {
         // integration tests.
         assert!(file.get(KEY_EOT).is_some());
         assert!(file.get(KEY_DECODER_START_IDS).is_some());
+        assert_eq!(
+            FrontendSpec::from_gguf(&file).expect("frontend spec"),
+            crate::models::whisper::frontend_spec(3),
+            "Kotoba frontend metadata must reuse the canonical Whisper spec"
+        );
     }
 
     /// F16 tensor passes through the union match arm.

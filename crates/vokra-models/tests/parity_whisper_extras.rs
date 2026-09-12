@@ -125,6 +125,8 @@ struct FamilyMember {
     generation_config_sha256: &'static str,
     tokenizer_bytes: usize,
     tokenizer_sha256: &'static str,
+    preprocessor_bytes: usize,
+    preprocessor_sha256: &'static str,
 }
 
 /// Every member of the whisper-extras parity family.
@@ -150,6 +152,8 @@ const FAMILY: &[FamilyMember] = &[
         generation_config_sha256: "b521c66612bd95be36c154f2d3904f6e4ea3be481a18a48f293d66791f60cf98",
         tokenizer_bytes: 2_480_645,
         tokenizer_sha256: "b3c8202bbf06d8ee4232c5984baa563784ac4737e2e7fdc42fa180200d3cfcdb",
+        preprocessor_bytes: 340,
+        preprocessor_sha256: "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
     },
     FamilyMember {
         arch_slug: "kotoba_whisper",
@@ -169,6 +173,8 @@ const FAMILY: &[FamilyMember] = &[
         generation_config_sha256: "20d28b9169207ab6ca402ec9342393a88ec3f341d88c9da24e516e1da71c24de",
         tokenizer_bytes: 3_931_381,
         tokenizer_sha256: "615928f5a25409279b47b47d87a4ca2aaee3bd09f65e1a3df6c9d23c718cfdb0",
+        preprocessor_bytes: 340,
+        preprocessor_sha256: "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
     },
 ];
 
@@ -466,6 +472,16 @@ fn parse_reference_packet(member: &FamilyMember, refdir: &Path) -> vokra_core::j
         manifest_string(&root, "tokenizer_sha256"),
         member.tokenizer_sha256,
         "tokenizer SHA-256 identity drift"
+    );
+    assert_eq!(
+        manifest_usize(&root, "preprocessor_bytes"),
+        member.preprocessor_bytes,
+        "preprocessor_config byte identity drift"
+    );
+    assert_eq!(
+        manifest_string(&root, "preprocessor_sha256"),
+        member.preprocessor_sha256,
+        "preprocessor_config SHA-256 identity drift"
     );
     for name in [
         "input_pcm.f32le",

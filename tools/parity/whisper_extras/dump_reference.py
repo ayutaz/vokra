@@ -24,6 +24,7 @@ IDENTITY_FILES = {
     "config.json": ("config_bytes", "config_sha256"),
     "generation_config.json": ("generation_config_bytes", "generation_config_sha256"),
     "tokenizer.json": ("tokenizer_bytes", "tokenizer_sha256"),
+    "preprocessor_config.json": ("preprocessor_bytes", "preprocessor_sha256"),
 }
 MODELS = {
     "distil_whisper": {
@@ -41,6 +42,8 @@ MODELS = {
         "generation_config_sha256": "b521c66612bd95be36c154f2d3904f6e4ea3be481a18a48f293d66791f60cf98",
         "tokenizer_bytes": 2480645,
         "tokenizer_sha256": "b3c8202bbf06d8ee4232c5984baa563784ac4737e2e7fdc42fa180200d3cfcdb",
+        "preprocessor_bytes": 340,
+        "preprocessor_sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
     },
     "kotoba_whisper": {
         "repo": "kotoba-tech/kotoba-whisper-v2.2",
@@ -60,6 +63,8 @@ MODELS = {
         "generation_config_sha256": "20d28b9169207ab6ca402ec9342393a88ec3f341d88c9da24e516e1da71c24de",
         "tokenizer_bytes": 3931381,
         "tokenizer_sha256": "615928f5a25409279b47b47d87a4ca2aaee3bd09f65e1a3df6c9d23c718cfdb0",
+        "preprocessor_bytes": 340,
+        "preprocessor_sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
     },
 }
 PCM_SAMPLES = 30 * 16_000
@@ -85,7 +90,13 @@ def identity_keys(name: str) -> tuple[str, str]:
 def verify_checkpoint_identity(checkpoint: Path, spec: dict) -> dict[str, int | str]:
     """Fail closed unless every pinned source file is byte-identical."""
     identities: dict[str, int | str] = {}
-    for name in ("model.safetensors", "config.json", "generation_config.json", "tokenizer.json"):
+    for name in (
+        "model.safetensors",
+        "config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "preprocessor_config.json",
+    ):
         path = checkpoint / name
         if not path.is_file():
             raise SystemExit(f"checkpoint is missing pinned {name}")
@@ -228,6 +239,7 @@ def main() -> None:
             "config.json": ("config_bytes", "config_sha256"),
             "generation_config.json": ("generation_config_bytes", "generation_config_sha256"),
             "tokenizer.json": ("tokenizer_bytes", "tokenizer_sha256"),
+            "preprocessor_config.json": ("preprocessor_bytes", "preprocessor_sha256"),
         }
         if IDENTITY_FILES != expected:
             raise SystemExit("identity filename mapping drift")
