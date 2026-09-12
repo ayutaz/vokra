@@ -498,7 +498,7 @@ fn within(actual: &[f32], expected: &[f32]) -> bool {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requires VAST-only real GGUF and independently generated reference packet artefacts"]
 fn cosyvoice2_hift_real_cpu_parity() {
     assert_eq!(
         std::env::var("VOKRA_PUBLISH_ON_VAST").as_deref(),

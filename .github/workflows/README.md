@@ -86,6 +86,7 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 | check name | 定義 file | 目的 |
 |---|---|---|
 | repo-hygiene | .github/workflows/ci-quality.yml | tracked file の scratch/gitignore drift 検査 |
+| agent-quality | .github/workflows/ci-quality.yml | Codex hooks/config、repository skills、Rust `#[ignore]` 理由、Dependabot lockfile coverage の deterministic gate（checkout-only） |
 | catalog-audit | .github/workflows/ci-quality.yml | model catalog の実在性 audit (catalog-reality gate) |
 | hf-mac-coverage-unit | .github/workflows/ci-quality.yml | HF public architecture audit の offline unit suite（毎PR実行、weight downloadなし） |
 | hf-mac-coverage (advisory) | .github/workflows/ci-quality.yml | HF public Models API / README card の read-only Metal registry coverage（artifact parityとは別ゲート） |
@@ -460,6 +461,24 @@ multi-architecture OCI `@sha256` digestを必須とする。`secret-scan.yml`の
 `scripts/check-workflow-hygiene.sh`はremote `uses:`、workflow container image、
 `docker run` / `docker pull`を横断し、mutable refをhard-failする。self-testはmoving
 Action tagとdigestなしDocker imageを実際に拒否し、tag+digestを受理できることも検証する。
+
+### 8.8 Agent-authored change quality
+
+`agent-quality` はPRごとに、Codexの `AGENTS.md` / manager・delegation設定と
+repository skillのfrontmatter・リンク・routingを検査し、全 hook のschema・target・syntax・
+self-testを実行する。Rust testの `#[ignore]` には理由を要求し、tracked `uv.lock` と
+isolated `Cargo.lock` がDependabotの明示directory coverageから漏れていないことも確認する。
+全てcheckout-onlyのdeterministicな検査で、Cargo、モデル実行、reference weight、
+ネットワーク依存のAI reviewは含まれない。
+
+Dependabotのuv設定はlockfileのある全treeを明示列挙し、意図的にlocklessな6つの
+parity treeとroot `Cargo.lock`はfail-closedで対象外にしている。新しいlockfileや
+lockless treeが追加された場合はこのgateが差分を検知する。
+
+Hosted Codex Actionは、fork PRでも安全に実行できるsecret設計と`OPENAI_API_KEY`が
+repositoryに用意されていないため、required gateとして追加していない。merge queueも
+現在無効であり、PR-onlyのdependency-reviewを含むrequired-context workflowへ
+`merge_group`を先行追加する変更は、queueを有効化するowner判断と同時に行う。
 
 ---
 
