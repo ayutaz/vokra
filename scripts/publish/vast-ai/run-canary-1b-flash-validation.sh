@@ -178,6 +178,7 @@ run_self_test() {
     "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
     "tools/parity/canary_1b_flash_prepare_checkpoint.py" \
     "tools/parity/canary_1b_flash_dump_reference.py" \
+    "audit-canary-1b-dependencies.sh" \
     "--frozen --project tools/parity/canary_1b_reference --python 3.12 python" \
     "--target-language de" "$REFERENCE_PACKET_VERIFIER" \
     "reference-manifest.sha256" "reference-packet.sha256" "apple-transfer-args.txt" "apple-transfer-manifest.txt" \
@@ -388,6 +389,12 @@ fi
 require_expected_head "$expected_head"
 license_preflight "$approval_evidence" "$approval_sha256"
 
+# Resolve and audit the dedicated dependency closure before archive inspection,
+# scratch creation, model processing, or Cargo.
+bash scripts/publish/vast-ai/audit-canary-1b-dependencies.sh \
+  --repo-root "$REPO_ROOT" --expected-head "$expected_head" \
+  --evidence-dir "/workspace/vokra-canary-1b-dependency-audit-$expected_head"
+
 [[ "$(uname -s)" == "Linux" ]] || die "actual validation is Linux/VAST-only"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
   || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
@@ -427,10 +434,6 @@ run_logged() {
   echo "+ $*" | tee -a "$log_path"
   "$@" 2>&1 | tee -a "$log_path"
 }
-
-# Sync only the dedicated official NeMo closure after all approval, host, and
-# archive gates. The generic parity environment is not part of this worker.
-run_logged uv sync --project "$CANARY_REFERENCE_PROJECT" --frozen --python 3.12
 
 run_cpu_case() {
   local pair="$1" source_language="$2" target_language="$3" log_file="$4"

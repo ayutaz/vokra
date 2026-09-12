@@ -19,6 +19,7 @@ environments = [
 # the executed oracle.  The audit records the resulting closure as blocked.
 override-dependencies = [
     "cuda-bindings ; python_version < '0'",
+    "text-unidecode ; python_version < '0'",
 ]
 
 [[tool.uv.index]]

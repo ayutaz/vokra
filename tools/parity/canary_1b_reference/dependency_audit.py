@@ -41,6 +41,14 @@ ELF_MAGIC = b"\x7fELF"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MIN_MEMORY_BYTES = 64 * 1024**3
+MODEL_FREE_FIELDS = {
+    "weights_acquired": False,
+    "source_acquired": False,
+    "model_imported": False,
+    "model_executed": False,
+    "cargo_invoked": False,
+    "upload": PUBLICATION,
+}
 
 
 class AuditError(ValueError):
@@ -137,14 +145,17 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(packages, list) or not packages:
         raise AuditError("uv lock package table is empty")
     rows: list[dict[str, Any]] = []
-    identities: set[tuple[str, str]] = set()
+    identities: set[tuple[str, str, str, str]] = set()
     for row in packages:
         if not isinstance(row, dict):
             raise AuditError("uv lock contains a non-object package row")
         name, version, source = row.get("name"), row.get("version"), row.get("source")
         if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
             raise AuditError("uv lock package identity is malformed")
-        identity = (name.casefold(), version)
+        identity = (
+            name.casefold(), version, canonical(source),
+            canonical(row.get("resolution-markers", [])),
+        )
         if identity in identities:
             raise AuditError(f"duplicate lock package identity: {identity}")
         identities.add(identity)
@@ -157,6 +168,97 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     if len(roots) != 1:
         raise AuditError(f"expected one virtual project row, found {len(roots)}")
     return rows
+
+
+def marker_active(marker: str | None, *, extra: str | None = None) -> bool:
+    """Evaluate the small PEP 508 marker subset emitted by uv for this host."""
+    if marker is None or not marker.strip():
+        return True
+    context = {
+        "sys_platform": "linux",
+        "platform_machine": "x86_64",
+        "platform_system": "Linux",
+        "python_version": "3.12",
+        "python_full_version": "3.12.14",
+        "implementation_name": "cpython",
+        "extra": extra or "",
+    }
+    for disjunction in re.split(r"\s+or\s+", marker.strip()):
+        terms = re.split(r"\s+and\s+", disjunction)
+        if all(_marker_term(term, context) for term in terms):
+            return True
+    return False
+
+
+def _marker_term(term: str, context: dict[str, str]) -> bool:
+    match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(not in|in|==|!=|<=|>=|<|>)\s*(['\"])(.*?)\3\s*", term)
+    if match is None:
+        raise AuditError(f"unsupported uv marker expression: {term!r}")
+    variable, operator, _, expected = match.groups()
+    actual = context.get(variable)
+    if actual is None:
+        raise AuditError(f"unknown uv marker variable: {variable}")
+    if operator == "==":
+        return actual == expected
+    if operator == "!=":
+        return actual != expected
+    if operator == "in":
+        return actual in expected
+    if operator == "not in":
+        return actual not in expected
+    if operator == "<":
+        return actual < expected
+    if operator == ">":
+        return actual > expected
+    if operator == "<=":
+        return actual <= expected
+    return actual >= expected
+
+
+def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Resolve the root project's Linux x86_64 dependency/extras closure."""
+    rows = lock_rows(lock)
+    root = next(row for row in rows if row.get("source") == {"virtual": "."})
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row.get("source") != {"virtual": "."}:
+            by_name.setdefault(str(row["name"]).casefold(), []).append(row)
+    active: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    failures: list[str] = []
+    queue: list[tuple[str, list[str], str | None]] = []
+    for requirement in root.get("metadata", {}).get("requires-dist", []):
+        if not isinstance(requirement, dict):
+            failures.append("root requires-dist row is malformed")
+            continue
+        if marker_active(requirement.get("marker")):
+            queue.append((str(requirement["name"]), list(requirement.get("extras", [])), requirement.get("marker")))
+    while queue:
+        name, extras, _marker = queue.pop(0)
+        candidates = [
+            row for row in by_name.get(name.casefold(), [])
+            if all(marker_active(marker) for marker in row.get("resolution-markers", []))
+        ]
+        if len(candidates) != 1:
+            failures.append(f"active package resolution is not unique for {name}: {len(candidates)} candidates")
+            continue
+        row = candidates[0]
+        key = (str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", [])))
+        if key in active:
+            continue
+        active[key] = row
+        for dependency in row.get("dependencies", []):
+            if marker_active(dependency.get("marker")):
+                queue.append((str(dependency["name"]), [], dependency.get("marker")))
+        optional = row.get("optional-dependencies", {})
+        if isinstance(optional, dict):
+            for selected_extra in extras:
+                for dependency in optional.get(selected_extra, []):
+                    if isinstance(dependency, dict) and marker_active(dependency.get("marker"), extra=selected_extra):
+                        queue.append((str(dependency["name"]), [], dependency.get("marker")))
+    inactive = [row for row in rows if row.get("source") != {"virtual": "."} and (
+        str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", []))
+    ) not in active]
+    return [root, *active.values()], inactive, sorted(set(failures))
 
 
 def normalized_name(value: str) -> str:
@@ -236,7 +338,7 @@ def native_fact(path: Path, relative: PurePosixPath) -> dict[str, Any]:
     return fact
 
 
-def distribution_fact(row: dict[str, Any]) -> dict[str, Any]:
+def distribution_fact(row: dict[str, Any], archive_dir: Path) -> dict[str, Any]:
     name, version = str(row["name"]), str(row["version"])
     try:
         distribution = metadata.distribution(name)
@@ -265,7 +367,18 @@ def distribution_fact(row: dict[str, Any]) -> dict[str, Any]:
             resolved = path.resolve(strict=True)
             resolved.relative_to(prefix)
             if license_name(raw):
-                licenses.append({"path": relative.as_posix(), "bytes": resolved.stat().st_size, "sha256": sha256_file(resolved)})
+                payload = resolved.read_bytes()
+                if len(payload) > 2 * 1024 * 1024:
+                    raise AuditError(f"publisher license file is too large: {raw}")
+                archive_name = f"{normalized_name(name)}-{version}-{len(licenses)}-{relative.name}"
+                archive_path = archive_dir / archive_name
+                write_no_replace(archive_path, payload)
+                licenses.append({
+                    "path": relative.as_posix(),
+                    "archive_path": archive_path.name,
+                    "bytes": len(payload),
+                    "sha256": sha256_bytes(payload),
+                })
             if native_name(raw) or is_elf(resolved):
                 native.append(native_fact(resolved, relative))
         except (AuditError, OSError, RuntimeError, ValueError) as error:
@@ -319,7 +432,7 @@ def memory_bytes() -> int | None:
     return None
 
 
-def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, dict[str, Any], list[dict[str, Any]]]:
+def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     project_bytes, project = load_toml(project_path, "dedicated pyproject")
     lock_bytes, lock = load_toml(lock_path, "dedicated uv.lock")
     if project.get("project", {}).get("name") != "vokra-canary-1b-reference":
@@ -338,13 +451,13 @@ def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, d
     dependencies = project.get("project", {}).get("dependencies", [])
     if sorted(dependencies) != ["nemo-toolkit[asr]==3.0.0", "torch==2.7.1"]:
         raise AuditError("dedicated dependency contract drifted")
-    rows = lock_rows(lock)
+    rows, inactive, failures = active_lock_rows(lock)
     if sha256_bytes(lock_bytes) == sha256_bytes(project_bytes):
         raise AuditError("project and lock unexpectedly share digest")
-    return project_bytes, lock_bytes, project, rows
+    return project_bytes, lock_bytes, project, rows, inactive, failures
 
 
-def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: str, output: Path) -> None:
+def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: str, output: Path, archive_dir: Path, expected_project_sha256: str | None, expected_lock_sha256: str | None, expected_audit_sha256: str | None) -> None:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise AuditError("Canary dependency audit requires Linux x86_64 VAST")
     if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
@@ -353,45 +466,60 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
     if available is None or available < MIN_MEMORY_BYTES:
         raise AuditError(f"VAST host RAM is below {MIN_MEMORY_BYTES} bytes")
     absent_output(output)
-    project_bytes, lock_bytes, _project, rows = verify_project(project_path, lock_path)
+    regular_directory(archive_dir, "license archive directory")
+    if any(archive_dir.iterdir()):
+        raise AuditError("license archive directory must be empty")
+    project_bytes, lock_bytes, _project, rows, inactive, collector_failures = verify_project(project_path, lock_path)
+    project_sha256 = sha256_bytes(project_bytes)
+    lock_sha256 = sha256_bytes(lock_bytes)
+    audit_sha256 = sha256_file(Path(__file__).resolve())
+    for label, actual, expected in (("project", project_sha256, expected_project_sha256), ("lock", lock_sha256, expected_lock_sha256), ("audit", audit_sha256, expected_audit_sha256)):
+        if expected is not None and (not HEX64.fullmatch(expected) or expected != actual):
+            raise AuditError(f"{label} SHA-256 binding mismatch")
     git = git_identity(repo_root, expected_head)
     inventory = installed_inventory(rows)
-    facts = [distribution_fact(row) for row in rows if row.get("source") != {"virtual": "."}]
+    facts = [distribution_fact(row, archive_dir) for row in rows if row.get("source") != {"virtual": "."}]
+    archive_files = sorted(
+        {path.name: {"path": path.name, "bytes": path.stat().st_size, "sha256": sha256_file(path)} for path in archive_dir.iterdir() if path.is_file()}.values(),
+        key=lambda item: item["path"],
+    )
+    package_scope = {"active_rows": rows, "active_facts": facts, "inactive_rows": inactive, "collector_failures": collector_failures, "project_sha256": project_sha256, "lock_sha256": lock_sha256, "audit_script_sha256": audit_sha256, "model_free": MODEL_FREE_FIELDS}
     report: dict[str, Any] = {
         "schema": SCHEMA,
         "status": STATUS,
         "publication": PUBLICATION,
         "owner_review": OWNER_REVIEW,
-        "project_sha256": sha256_bytes(project_bytes),
-        "lock_sha256": sha256_bytes(lock_bytes),
-        "audit_script_sha256": sha256_file(Path(__file__).resolve()),
+        "project_sha256": project_sha256,
+        "lock_sha256": lock_sha256,
+        "audit_script_sha256": audit_sha256,
         **git,
         "project_environment": "linux-x86_64-python3.12",
         "memory_bytes": available,
         "distribution_inventory": inventory,
         "package_rows": rows,
         "package_rows_sha256": digest(rows),
+        "inactive_lock_rows": inactive,
+        "collector_failures": collector_failures,
         "package_facts": facts,
         "package_facts_sha256": digest(facts),
-        "candidate_owner_scope_sha256": digest({"package_rows": rows, "package_facts": facts}),
+        "license_archive": archive_files,
+        "license_archive_sha256": digest(archive_files),
+        "candidate_owner_scope_sha256": digest(package_scope),
         "environment": {
             "platform": platform.platform(),
             "machine": platform.machine(),
             "python": sys.version,
-            "weights_acquired": False,
-            "source_acquired": False,
-            "model_imported": False,
-            "model_executed": False,
-            "cargo_invoked": False,
-            "upload": PUBLICATION,
+            **MODEL_FREE_FIELDS,
         },
         "blockers": [
             "all package publisher license metadata and license-file bytes require owner review",
             "all bundled/native payloads and ELF NEEDED entries require owner review",
             "any GPL/LGPL/AGPL/unknown/native rows remain fail-closed",
             "no model/source/checkpoint was acquired; runtime/parity remain locked",
+            *collector_failures,
         ],
     }
+    validate_report_semantics(report)
     write_no_replace(output, (canonical(report) + "\n").encode("utf-8"))
     sums = output.parent / "SHA256SUMS"
     write_no_replace(
@@ -405,6 +533,25 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
     )
 
 
+def validate_report_semantics(report: dict[str, Any]) -> None:
+    """Reject a plausible-looking report that is not fail-closed evidence."""
+    if report.get("schema") != SCHEMA or report.get("status") != STATUS or report.get("publication") != PUBLICATION:
+        raise AuditError("report is not permanently blocked/no-upload")
+    if report.get("clean") is not True or report.get("expected_head") != report.get("head"):
+        raise AuditError("report does not bind a clean exact HEAD")
+    for field in ("project_sha256", "lock_sha256", "audit_script_sha256", "package_rows_sha256", "package_facts_sha256", "license_archive_sha256", "candidate_owner_scope_sha256"):
+        if not isinstance(report.get(field), str) or not HEX64.fullmatch(report[field]):
+            raise AuditError(f"report has missing/null digest: {field}")
+    environment = report.get("environment")
+    if not isinstance(environment, dict) or any(environment.get(key) is not False for key in ("weights_acquired", "source_acquired", "model_imported", "model_executed", "cargo_invoked")) or environment.get("upload") != PUBLICATION:
+        raise AuditError("report model-free/no-upload contract drifted")
+    inventory = report.get("distribution_inventory")
+    if not isinstance(inventory, dict) or inventory.get("exact") is not True:
+        raise AuditError("installed active closure is not exact")
+    if not isinstance(report.get("collector_failures"), list) or not isinstance(report.get("inactive_lock_rows"), list):
+        raise AuditError("active/inactive closure evidence is incomplete")
+
+
 def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     assert "BLOCKED_UNREVIEWED_TRANSITIVE" in source
@@ -416,6 +563,33 @@ def self_test() -> None:
     assert license_name("LICENSE") and license_name("NOTICE.txt")
     assert not license_name("not-a-license.txt")
     assert normalized_name("Demo_pkg-1") == "demo-pkg-1"
+    assert marker_active("sys_platform == 'linux'")
+    assert marker_active("platform_machine == 'x86_64'")
+    assert not marker_active("sys_platform == 'darwin'")
+    assert not marker_active("platform_machine == 'aarch64'")
+    synthetic_lock = {
+        "version": 1,
+        "revision": 3,
+        "requires-python": "==3.12.*",
+        "package": [
+            {
+                "name": "root", "version": "0", "source": {"virtual": "."},
+                "metadata": {"requires-dist": [{"name": "demo", "specifier": "==1"}]},
+            },
+            {"name": "demo", "version": "1", "source": {"registry": PYPI}},
+            {"name": "darwin-only", "version": "1", "source": {"registry": PYPI}, "resolution-markers": ["sys_platform == 'darwin'"]},
+        ],
+    }
+    active, inactive, failures = active_lock_rows(synthetic_lock)
+    assert [row["name"] for row in active] == ["root", "demo"]
+    assert [row["name"] for row in inactive] == ["darwin-only"]
+    assert failures == []
+    try:
+        validate_report_semantics({"schema": SCHEMA, "status": STATUS, "publication": PUBLICATION})
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted a report with null/missing digests")
     for bad in ("", "/absolute", "../escape", "a/../b"):
         try:
             safe_relative(bad)
@@ -455,16 +629,20 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path)
     parser.add_argument("--expected-head")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--archive-dir", type=Path)
+    parser.add_argument("--project-sha256")
+    parser.add_argument("--lock-sha256")
+    parser.add_argument("--audit-sha256")
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output)):
+        if any(value is not None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.project_sha256, args.lock_sha256, args.audit_sha256)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
-    if any(value is None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output)):
-        parser.error("normal runs require --project, --lock, --repo-root, --expected-head, and --output")
+    if any(value is None for value in (args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.project_sha256, args.lock_sha256, args.audit_sha256)):
+        parser.error("normal runs require project, lock, repo-root, expected-head, output, archive-dir, and three SHA-256 bindings")
     try:
-        audit(args.project, args.lock, args.repo_root, args.expected_head, args.output)
+        audit(args.project, args.lock, args.repo_root, args.expected_head, args.output, args.archive_dir, args.project_sha256, args.lock_sha256, args.audit_sha256)
     except (AuditError, OSError, ValueError) as error:
         print(f"canary_1b_reference dependency audit: BLOCKED: {error}", file=sys.stderr)
         return 2

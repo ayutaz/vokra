@@ -14,9 +14,10 @@ model = EncDecMultiTaskModel.restore_from(...)
 
 The dumpers contain no frontend, decoder, tokenizer, or search mirror.  This
 project is Linux x86_64 / Python 3.12 only.  Torch is resolved exclusively
-from the pinned PyTorch CPU index.  The impossible `cuda-bindings` override
-keeps this CPU-only closure from silently installing CUDA host bindings; its
-presence is recorded by the audit and remains pending owner review.
+from the pinned PyTorch CPU index.  The impossible `cuda-bindings` and
+`text-unidecode` overrides keep this CPU-only closure from silently installing
+CUDA host bindings or the GPL text-unidecode package; their presence is
+recorded by the audit and remains pending owner review.
 
 ## Commands
 
@@ -39,12 +40,15 @@ uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 \
   --project tools/parity/canary_1b_reference/pyproject.toml \
   --lock tools/parity/canary_1b_reference/uv.lock \
   --repo-root /workspace/vokra --expected-head <40-hex> \
-  --archive-dir /workspace/canary-audit/archives \
-  --output /workspace/canary-audit/dependency-audit.json
+  --archive-dir /workspace/canary-audit/licenses \
+  --output /workspace/canary-audit/dependency-audit.json \
+  --project-sha256 <64-hex> --lock-sha256 <64-hex> --audit-sha256 <64-hex>
 ```
 
 The report is factual evidence, not a publication or legal approval.  It is
 always `BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD`; native payloads, ELF
-`NEEDED` entries, publisher license metadata, and license-file bytes remain
-owner-review rows.  The auditor never imports NeMo, accesses Hugging Face,
-reads a checkpoint, invokes Cargo, or uploads anything.
+`NEEDED` entries, publisher license metadata, and license-file bytes copied to
+the no-clobber license archive remain owner-review rows.  `SHA256SUMS` binds
+the project, lock, collector, report, and every archived publisher file.  The
+auditor never imports NeMo, accesses Hugging Face, reads a checkpoint, invokes
+Cargo, or uploads anything.
