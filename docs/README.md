@@ -1,8 +1,9 @@
 # Vokra documentation
 
-**Current-state review:** 2026-09-12
+**Current-state review:** 2026-09-13
 
-**Reviewed implementation baseline:** GitHub `main` at `1de3887d` (2026-09-12);
+**Reviewed implementation baseline:** GitHub `main` at `08b206c4` (2026-09-13);
+the current residual source/API implementation head is `87da78dc`;
 the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
@@ -23,11 +24,11 @@ publication approval on 2026-09-12 subsequently replaced the reviewed
 ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
 artifacts through the gated publisher; the exact revisions and hashes are in
 the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
-The latest live audit, evaluated with audit logic through `1be45e76`, reports
+The latest live audit, evaluated with audit logic through `87da78dc`, reports
 194 public repositories, 193 repositories with GGUFs, and 198 GGUF files. CPU
-code status is 135 full, 43 partial, 15 without a runtime binder, and 1
-non-artifact; Metal code status is 135 full, 58 blocked by CPU, and 1
-non-artifact, leaving 59 unresolved public rows. The exact-revision BiCodec
+code status is 136 full, 42 partial, 15 without a runtime binder, and 1
+non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1
+non-artifact, leaving 58 unresolved public rows. The exact-revision BiCodec
 and SGMSE CLI routes now promote those two published, Apple-verified rows to
 full; that promotion does not extend either route beyond its authenticated
 artifact contract. UTMOS numeric parity remains unclaimed.
@@ -55,7 +56,7 @@ environment they name.
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
-| Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md) and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 59 unresolved rows; the dated ledger retains its historical 63-row baseline) |
+| Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

@@ -65,12 +65,12 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 The current release line is workspace version `0.3.0`.
 
-**2026-09-12 current snapshot:** the observed `main` baseline is `1de3887d`.
+**2026-09-13 current snapshot:** the observed `main` baseline is `08b206c4`.
 The latest live, read-only public audit, evaluated with audit logic through
-`1be45e76`, reports 194 repositories, 193 GGUF-bearing repositories and 198
-GGUF files. CPU status is `full=135`, `partial=43`,
-`no-runtime-binder=15`, `not-artifact=1`; Metal status is `full=135`,
-`blocked-by-cpu=58`, `not-artifact=1`, leaving 59 unresolved public rows. The
+`87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
+GGUF files. CPU status is `full=136`, `partial=42`,
+`no-runtime-binder=15`, `not-artifact=1`; Metal status is `full=136`,
+`blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. The
 authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback batch
 passed only for its named scopes; four separately approved artifacts were then
 published through the gated workflow. UTMOS numeric parity remains unclaimed,
