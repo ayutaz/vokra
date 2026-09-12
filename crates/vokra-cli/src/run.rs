@@ -8060,7 +8060,7 @@ mod tests {
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes.extend(std::iter::repeat(0xabu8).take(32));
+        bytes.extend_from_slice(&[0xabu8; 32]);
         bytes.extend_from_slice(&7u32.to_le_bytes());
         for value in 0..vokra_models::bicodec::GLOBAL_TOKENS as u32 {
             bytes.extend_from_slice(&value.to_le_bytes());
@@ -8107,9 +8107,9 @@ mod tests {
         for value in [16_000_u32, 320, 1, 32, 8_192, 4_096, 0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes.extend(std::iter::repeat(0xabu8).take(32));
+        bytes.extend_from_slice(&[0xabu8; 32]);
         bytes.extend_from_slice(&0u32.to_le_bytes());
-        bytes.extend(std::iter::repeat(0u8).take(32 * 4));
+        bytes.extend_from_slice(&[0u8; 32 * 4]);
         bytes.push(1);
         let error = BicodecTokensV2::from_bytes(&bytes).unwrap_err();
         assert!(error.contains("length"), "unexpected error: {error}");
