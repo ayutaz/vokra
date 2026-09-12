@@ -98,19 +98,42 @@ run_audit() {
 }
 
 self_test() {
-  local temp_root failed=0
+  local temp_root fake_repo fake_project fake_output fake_log rc temp_parent failed=0
   for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--frozen --no-install-project' '--no-sync' 'dependency_audit.py' 'dependency-audit.json' 'publisher LICENSE/NOTICE bytes' 'native payload facts' 'NO_UPLOAD'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   if grep -En 'snapshot_download|git[[:space:]]+clone|cargo[[:space:]]+(build|test|check|clippy)|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$AUDITOR" --self-test >/dev/null 2>&1 || failed=1
-  if temp_root="$(mktemp -d "${TMPDIR:-/tmp}/dia-dependency-wrapper.XXXXXXXX")"; then
+  temp_parent="${TMPDIR:-/tmp}"
+  [[ -d /private/tmp && ! -L /private/tmp ]] && temp_parent=/private/tmp
+  if temp_root="$(mktemp -d "$temp_parent/dia-dependency-wrapper.XXXXXXXX")"; then
     trap 'rm -rf "$temp_root"' EXIT
     if VOKRA_PUBLISH_ON_VAST=0 run_audit "$temp_root/blocked" >/dev/null 2>&1; then failed=1; fi
     [[ ! -e "$temp_root/blocked" ]] || failed=1
     if require_absent_output "$VOKRA_ROOT/audit.json"; then failed=1; fi
     if require_absent_output "$PROJECT/audit.json"; then failed=1; fi
+    fake_repo="$temp_root/fake-repo"
+    fake_project="$fake_repo/tools/parity/dia_1_6b_reference"
+    fake_output="$temp_root/exception-report.json"
+    fake_log="$temp_root/exception-report.log"
+    mkdir -p "$fake_project"
+    : > "$fake_project/pyproject.toml"
+    : > "$fake_project/uv.lock"
+    set +e
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$AUDITOR" \
+      --project "$fake_project" --output "$fake_output" >"$fake_log" 2>&1
+    rc="$?"
+    set -e
+    (( rc == 2 )) || failed=1
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$fake_output" <<'PY' || failed=1
+import json, sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+assert report["schema"] == "vokra-dia-dependency-audit-v1"
+assert report["status"] == "BLOCKED"
+assert report["dependency_license_audit"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
+assert report["publication"] == "NO_UPLOAD"
+PY
     rm -rf "$temp_root"
     trap - EXIT
   else

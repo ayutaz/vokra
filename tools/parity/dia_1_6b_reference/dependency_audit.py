@@ -49,6 +49,7 @@ LOCK_SCHEMA = "uv-lock-v1-python312"
 LOCK_SHA256 = "ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
 PYPROJECT_SHA256 = "56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
 GATE_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
+PUBLICATION = "NO_UPLOAD"
 ALLOWED_REGISTRIES = {
     "https://pypi.org/simple": "files.pythonhosted.org",
     "https://download.pytorch.org/whl/cpu": "download-r2.pytorch.org",
@@ -671,6 +672,21 @@ def repository_facts(project: Path) -> tuple[dict[str, Any], list[str]]:
     return {"root": str(root), "head": head, "clean": not status, "audit_script_sha256": sha256_file(Path(__file__).resolve())}, failures
 
 
+def top_level_native_facts(packages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten native rows while retaining their owning distribution identity."""
+    return [
+        {
+            "package_identity": package["installed"]["identity"],
+            "package_name": normalized_name(package["installed"]["name"]),
+            "package_version": normalized_version(package["installed"]["version"]),
+            **item,
+        }
+        for package in packages
+        if package["installed"]
+        for item in package["installed"]["native_files"]
+    ]
+
+
 def audit(project: Path) -> dict[str, Any]:
     pyproject, lock, rows, contract = project_contract(project)
     active = active_rows(rows)
@@ -702,12 +718,13 @@ def audit(project: Path) -> dict[str, Any]:
         failures.append(f"audit host is not Linux x86_64: {sys.platform}/{platform.machine()}")
     if sys.version_info[:2] != (3, 12):
         failures.append(f"audit Python is not 3.12: {platform.python_version()}")
-    native = [item for package in packages if package["installed"] for item in package["installed"]["native_files"]]
+    native = top_level_native_facts(packages)
     missing = sorted(package["lock"]["name"] for package in packages if package["installed"] and not package["installed"]["publisher_license_files"] and not (package["installed"].get("locked_sdist_license_fallback") or {}).get("license_files"))
     report = {
         "schema": SCHEMA,
         "status": "BLOCKED" if failures else "FACTS_COLLECTED_GATE_BLOCKED",
         "dependency_license_audit": GATE_STATUS,
+        "publication": PUBLICATION,
         "audit_scope": "Linux x86_64 Python 3.12 installed dependency metadata, publisher LICENSE/NOTICE bytes, and native payload facts; model/source/checkpoint-free",
         "policy": {"license_classification": "NOT_PERFORMED", "owner_signoff": "NOT_PERFORMED", "model_acquisition": "NONE", "source_acquisition": "NONE", "torch_imported": False, "dia_imported": False, "vokra_imported": False, "cargo_invoked": False, "upload_performed": False},
         "repository": repository,
@@ -738,17 +755,53 @@ def write_no_clobber(path: Path, payload: bytes) -> None:
             os.close(descriptor)
 
 
+def blocked_report(error: BaseException) -> dict[str, Any]:
+    """Build the minimal schema-preserving report for an aborted audit."""
+    return {
+        "schema": SCHEMA,
+        "status": "BLOCKED",
+        "dependency_license_audit": GATE_STATUS,
+        "publication": PUBLICATION,
+        "policy": {
+            "license_classification": "NOT_PERFORMED",
+            "owner_signoff": "NOT_PERFORMED",
+            "model_acquisition": "NONE",
+            "source_acquisition": "NONE",
+            "torch_imported": False,
+            "dia_imported": False,
+            "vokra_imported": False,
+            "cargo_invoked": False,
+            "upload_performed": False,
+        },
+        "failures": [f"audit aborted: {type(error).__name__}: {error}"],
+    }
+
+
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     _pyproject, lock, rows, contract = project_contract(project)
     active = active_rows(rows)
     assert contract["gate_status"] == GATE_STATUS
+    assert blocked_report(AuditError("synthetic"))["publication"] == PUBLICATION
+    original_installed_distributions = globals()["installed_distributions"]
+    try:
+        globals()["installed_distributions"] = lambda: []
+        synthetic_report = audit(project)
+    finally:
+        globals()["installed_distributions"] = original_installed_distributions
+    assert synthetic_report["publication"] == PUBLICATION
+    assert synthetic_report["dependency_license_audit"] == GATE_STATUS
+    assert isinstance(synthetic_report["native_facts"]["files"], list)
     assert set(EXPECTED_LINUX_DIRECT_IDS).issubset({identity(row["name"], row["version"]) for row in active})
     assert len(rows) == 34
     assert len(active) == 30
     assert "colorama==0.4.6" not in {identity(row["name"], row["version"]) for row in active}
     assert all(row["source"].get("registry") in ALLOWED_REGISTRIES for row in active)
     assert identity("Torch", "2.6.0+CPU") == "torch==2.6.0+cpu"
+    synthetic_packages = [{"installed": {"identity": "numpy==2.2.5", "name": "NumPy", "version": "2.2.5", "native_files": [{"path": "numpy.libs/libx.so", "bytes": 1, "sha256": "a" * 64, "native": {}}]}}]
+    flattened = top_level_native_facts(synthetic_packages)
+    assert flattened[0]["package_identity"] == "numpy==2.2.5"
+    assert flattened[0]["package_name"] == "numpy" and flattened[0]["package_version"] == "2.2.5"
     assert is_license_path("pkg/LICENSE.txt") and is_license_path("pkg/NOTICE") and is_license_path("pkg/COPYING")
     assert not is_license_path("pkg/README.md")
     archive_buffer = io.BytesIO()
@@ -808,7 +861,7 @@ def main() -> int:
     try:
         report = audit(args.project)
     except (AuditError, OSError, UnicodeError, TypeError, ValueError, KeyError, AttributeError, subprocess.SubprocessError) as error:
-        report = {"schema": SCHEMA, "status": "BLOCKED", "dependency_license_audit": GATE_STATUS, "policy": {"license_classification": "NOT_PERFORMED", "owner_signoff": "NOT_PERFORMED", "model_acquisition": "NONE", "source_acquisition": "NONE", "torch_imported": False, "dia_imported": False, "vokra_imported": False, "cargo_invoked": False, "upload_performed": False}, "failures": [f"audit aborted: {type(error).__name__}: {error}"]}
+        report = blocked_report(error)
     write_no_clobber(args.output, (canonical(report) + "\n").encode("utf-8"))
     if report.get("failures") or report.get("dependency_license_audit") != GATE_STATUS:
         print("dia dependency audit: BLOCKED", file=sys.stderr)
