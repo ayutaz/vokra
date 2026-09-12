@@ -471,10 +471,11 @@ mod tests {
     use vokra_core::gguf::{FrontendSpec, GgufFile};
 
     fn minimal_safetensors_one_f32() -> Vec<u8> {
-        // A single f32 tensor at the top of the file so `convert` has
-        // something to pass through and the report counts a non-zero
-        // write. Uses the upstream HF Whisper name.
-        let header = r#"{"model.encoder.layers.0.self_attn.q_proj.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
+        // A single f32 conv1 tensor gives the converter the canonical
+        // checkpoint axis from which `n_mels` is derived.  The trailing
+        // kernel axis is shrunk to one, as in the other synthetic Whisper
+        // shape fixtures; the test only needs the first two axes.
+        let header = r#"{"model.encoder.conv1.weight":{"dtype":"F32","shape":[2,3,1],"data_offsets":[0,24]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
