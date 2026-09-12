@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -45,11 +47,12 @@ jobs:
           set -euo pipefail
           uv lock --check --project tools/parity/whisper_extras
           uv run --no-project --python 3.12 python -c "print('model-free uv runtime: OK')"
-          if rg -n '^name = "nvidia-' tools/parity/whisper_extras/uv.lock; then
+          if grep -nE '^name = "nvidia-' tools/parity/whisper_extras/uv.lock; then
             echo "nvidia/CUDA packages are forbidden in the reference lock" >&2
             exit 1
           fi
-          test "$(rg -c '^name = ' tools/parity/whisper_extras/uv.lock)" -gt 0
+          lock_package_count="$(grep -cE '^name = ' tools/parity/whisper_extras/uv.lock || true)"
+          test "$lock_package_count" -gt 0
 
       - name: Run model-free VAST runner self-test
         run: bash tools/parity/whisper_extras/run_vast_validation.sh --self-test
@@ -57,22 +60,22 @@ jobs:
       - name: Check independent reference and fixed provenance pins
         run: |
           set -euo pipefail
-          rg -F 'transformers.WhisperForConditionalGeneration' \
+          grep -F 'transformers.WhisperForConditionalGeneration' \
             tools/parity/whisper_extras/dump_reference.py
-          rg -F '728a7691f3ff1d3d971528d3203a6e9559165d41' \
+          grep -F '728a7691f3ff1d3d971528d3203a6e9559165d41' \
             crates/vokra-models/tests/parity_whisper_extras.rs \
             tools/parity/whisper_extras/dump_reference.py
-          rg -F '9d33482a0eb9b57f1ad80708e8ac5538246d8355' \
+          grep -F '9d33482a0eb9b57f1ad80708e8ac5538246d8355' \
             crates/vokra-models/tests/parity_whisper_extras.rs \
             tools/parity/whisper_extras/dump_reference.py
-          rg -F '"language": "ja"' tools/parity/whisper_extras/dump_reference.py
-          rg -F 'generation_config_sha256' tools/parity/whisper_extras/dump_reference.py
-          rg -F 'tokenizer_sha256' tools/parity/whisper_extras/dump_reference.py
-          rg -F '50_258, 50_266, 50_360, 50_364' \
+          grep -F '"language": "ja"' tools/parity/whisper_extras/dump_reference.py
+          grep -F 'generation_config_sha256' tools/parity/whisper_extras/dump_reference.py
+          grep -F 'tokenizer_sha256' tools/parity/whisper_extras/dump_reference.py
+          grep -F '50_258, 50_266, 50_360, 50_364' \
             crates/vokra-models/tests/parity_whisper_extras.rs
-          rg -F 'language="ja"' crates/vokra-models/src/kotoba_whisper/mod.rs \
+          grep -F 'language="ja"' crates/vokra-models/src/kotoba_whisper/mod.rs \
             crates/vokra-convert/src/models/kotoba_whisper.rs
-          ! rg -n 'from vokra|import vokra|snapshot_download|vokra-cli convert' \
+          ! grep -nE 'from vokra|import vokra|snapshot_download|vokra-cli convert' \
             tools/parity/whisper_extras/dump_reference.py
 
       - name: Shell and Rust static gates
