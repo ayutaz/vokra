@@ -48,7 +48,7 @@ require_vast() {
   local memory
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || { die 'VOKRA_PUBLISH_ON_VAST=1 is required'; return 2; }
   [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || { die 'Linux x86_64 VAST host required'; return 2; }
-  for tool in uv sha256sum tar readelf cc meson ninja; do command -v "$tool" >/dev/null 2>&1 || { die "$tool is required"; return 2; }; done
+  for tool in uv sha256sum tar readelf cc ninja; do command -v "$tool" >/dev/null 2>&1 || { die "$tool is required"; return 2; }; done
   memory="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
   [[ "$memory" =~ ^[0-9]+$ && "$memory" -ge "$MIN_VAST_MEM_KIB" ]] || { die 'VAST RAM is below the 60-GB guard'; return 2; }
 }
@@ -257,7 +257,7 @@ prepare() {
   UV_NO_CACHE=1 uv pip install --python "$builder/bin/python" --require-hashes --no-deps -r "$BUILD_CONSTRAINTS"
   write_build_dependency_evidence "$builder" "$output_real/build-dependency-evidence.json"
   log 'Building exact NumPy sdist with BLAS/LAPACK disabled'
-  uv build --no-build-isolation --python "$builder/bin/python" --wheel --out-dir "$wheel_dir" \
+  PATH="$builder/bin:$PATH" uv build --no-build-isolation --python "$builder/bin/python" --wheel --out-dir "$wheel_dir" \
     -C setup-args=-Dblas=none -C setup-args=-Dlapack=none -C setup-args=-Dallow-noblas=true "$src"
   wheel_path="$(find "$wheel_dir" -maxdepth 1 -type f -name 'numpy-2.2.5-*.whl' -print -quit)"
   [[ -n "$wheel_path" && -f "$wheel_path" ]] || { die 'NumPy wheel was not produced'; return 2; }
@@ -270,7 +270,7 @@ prepare() {
   wheel="$(sha256sum "$wheel_path" | awk '{print $1}')"
   uv_version="$(uv --version)"
   compiler_version="$(cc --version | head -n 1)"
-  meson_version="$(meson --version)"
+  meson_version="$("$builder/bin/meson" --version)"
   ninja_version="$(ninja --version)"
   UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 uv run --project "$PROJECT" --frozen --no-sync --python 3.12 python - "$output_real/preparation.json" "$wheel_path" "$wheel" "$environment" "$NUMPY_SDIST_URL" "$NUMPY_SDIST_SHA256" "$NUMPY_SDIST_BYTES" "$uv_version" "$compiler_version" "$meson_version" "$ninja_version" <<'PY'
 import json
@@ -287,7 +287,7 @@ payload = {
     "status": "PREPARED_NO_BLAS",
     "publication": "NO_UPLOAD",
     "sdist": {"name": "numpy", "version": "2.2.5", "url": sdist_url, "sha256": sdist_sha, "bytes": int(sdist_bytes)},
-    "build": {"arguments": ["-C", "setup-args=-Dblas=none", "-C", "setup-args=-Dlapack=none", "-C", "setup-args=-Dallow-noblas=true"], "python": sys.version, "platform": platform.platform(), "uv": uv_version, "compiler": compiler_version, "meson": meson_version, "ninja": ninja_version, "isolation": "uv build isolated"},
+    "build": {"arguments": ["-C", "setup-args=-Dblas=none", "-C", "setup-args=-Dlapack=none", "-C", "setup-args=-Dallow-noblas=true"], "python": sys.version, "platform": platform.platform(), "uv": uv_version, "compiler": compiler_version, "meson": meson_version, "ninja": ninja_version, "isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"},
     "wheel": {"path": wheel_path, "sha256": wheel_sha, "bytes": Path(wheel_path).stat().st_size},
     "installed_distribution": {"name": dist.metadata["Name"], "version": dist.version, "location": str(dist.locate_file("")), "files": len(tuple(dist.files or ()))},
     "runtime": {"environment": environment, "uv_run_mode": "--no-sync", "soundfile_installed": False, "torchaudio_installed": False},
@@ -304,10 +304,15 @@ PY
 }
 
 self_test() {
-  local failed=0
+  local failed=0 required_tools_line
   for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'build-dependency-evidence.json' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
+  required_tools_line="$(grep -F 'for tool in' "$0" | head -n 1)"
+  [[ "$required_tools_line" == '  for tool in uv sha256sum tar readelf cc ninja; do command -v "$tool" >/dev/null 2>&1 || { die "$tool is required"; return 2; }; done' ]] || failed=1
+  grep -Fq -- 'PATH="$builder/bin:$PATH" uv build --no-build-isolation' "$0" || failed=1
+  grep -Fq -- '"$builder/bin/meson" --version' "$0" || failed=1
+  grep -Fq -- 'no-build-isolation; builder venv preinstalled from hash-pinned constraints' "$0" || failed=1
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   if grep -En 'snapshot_download|git[[:space:]]+clone|cargo[[:space:]]+(build|test|check|clippy)|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   (( failed == 0 )) || { log 'self-test FAIL'; return 1; }
