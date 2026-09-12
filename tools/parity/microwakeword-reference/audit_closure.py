@@ -10,6 +10,7 @@ an evidence packet whose status remains owner-review-required.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import binascii
 import csv
@@ -59,6 +60,38 @@ EXPECTED_INSTALLER_ROWS = {
     "INSTALLER": {"bytes": 2, "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"},
     "REQUESTED": {"bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
 }
+CONSOLE_SCRIPT_DECLARED_PATHS = frozenset(
+    (
+        "../../../bin/litert-benchmark",
+        "../../../bin/f2py",
+        "../../../bin/numpy-config",
+        "../../../bin/tqdm",
+    )
+)
+CONSOLE_SCRIPT_CONTRACTS = {
+    "../../../bin/litert-benchmark": {
+        "resolved_path": "bin/litert-benchmark", "body_sha256": "61b8075a26f4011f92de6bdbb4de29d8b016568c8a105e8bd74740e3178ea9f1", "body_bytes": 306,
+        "imports": ["ai_edge_litert.tools.benchmark_litert_model:main", "sys"], "sys_exit_calls": ["sys.exit(main())"],
+    },
+    "../../../bin/f2py": {
+        "resolved_path": "bin/f2py", "body_sha256": "818dd08b04e8dab7013db537e70f4f9123d6cfaa4d90054005121af8d234cc0e", "body_bytes": 280,
+        "imports": ["numpy.f2py.f2py2e:main", "sys"], "sys_exit_calls": ["sys.exit(main())"],
+    },
+    "../../../bin/numpy-config": {
+        "resolved_path": "bin/numpy-config", "body_sha256": "7e98cb22d49484f51fbd95dd928ea89b14c72a6039be276b99d06f6dbbc2d15c", "body_bytes": 280,
+        "imports": ["numpy._configtool:main", "sys"], "sys_exit_calls": ["sys.exit(main())"],
+    },
+    "../../../bin/tqdm": {
+        "resolved_path": "bin/tqdm", "body_sha256": "1214130b2af4e293bf7b983a1adfafb277a1697e881d86312f07977244fd6375", "body_bytes": 271,
+        "imports": ["sys", "tqdm.cli:main"], "sys_exit_calls": ["sys.exit(main())"],
+    },
+}
+CONSOLE_SCRIPT_PATHS_BY_PACKAGE = {
+    "ai-edge-litert": frozenset(("../../../bin/litert-benchmark",)),
+    "numpy": frozenset(("../../../bin/f2py", "../../../bin/numpy-config")),
+    "tqdm": frozenset(("../../../bin/tqdm",)),
+}
+MAX_CONSOLE_SCRIPT_BYTES = 1 << 20
 
 
 def normalize_name(value: str) -> str:
@@ -231,7 +264,7 @@ def _normalized_record_entries(entries: list[dict[str, Any]], record_path: str) 
     normalized: list[dict[str, Any]] = []
     for entry in entries:
         declared_path = entry.get("declared", {}).get("path")
-        if declared_path in installer_paths:
+        if declared_path in installer_paths or declared_path in CONSOLE_SCRIPT_DECLARED_PATHS:
             continue
         item = {
             "declared": entry.get("declared"),
@@ -245,6 +278,85 @@ def _normalized_record_entries(entries: list[dict[str, Any]], record_path: str) 
             item["actual"] = entry.get("actual")
         normalized.append(item)
     return sorted(normalized, key=lambda item: str(item["declared"].get("path", "")).casefold())
+
+
+def _console_script_evidence(entry: dict[str, Any], environment_root: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Capture portable console-script identity without trusting its shebang path."""
+    resolved_path = entry.get("resolved_path")
+    if not isinstance(resolved_path, str):
+        return None, "console script resolved path is missing"
+    declared_path = entry.get("declared", {}).get("path")
+    contract = CONSOLE_SCRIPT_CONTRACTS.get(declared_path)
+    if contract is None or resolved_path != contract["resolved_path"]:
+        return None, "console script entrypoint path contract drift"
+    target = environment_root.joinpath(*resolved_path.split("/"))
+    try:
+        data, digest, size = _bounded_bytes(target, MAX_CONSOLE_SCRIPT_BYTES, "console script")
+        first_line, separator, body = data.partition(b"\n")
+        shebang = first_line.decode("utf-8")
+        if separator != b"\n" or not shebang.startswith("#!"):
+            return None, "console script shebang is malformed"
+        shebang_path = shebang[2:].strip()
+        shebang_file = Path(shebang_path)
+        if (
+            not shebang_file.is_absolute()
+            or shebang_file.parent.name != "bin"
+            or shebang_file.name not in {"python", "python3", "python3.12"}
+            or len(shebang_file.parts) < 3
+            or shebang_file.parts[-3] != ".venv"
+        ):
+            return None, "console script shebang is not an absolute venv Python"
+        try:
+            shebang_relative = shebang_file.relative_to(environment_root).as_posix()
+        except ValueError:
+            return None, "console script shebang escapes the environment root"
+        if shebang_relative != f"bin/{shebang_file.name}":
+            return None, "console script shebang is not the environment Python"
+        tree = ast.parse(body.decode("utf-8"), filename=resolved_path)
+        imports = []
+        sys_exit_calls = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.extend(
+                    f"{node.module or ''}:{alias.name}" for alias in node.names
+                )
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name) and node.func.value.id == "sys" and node.func.attr == "exit":
+                    sys_exit_calls.append(ast.unparse(node))
+        if not imports or not sys_exit_calls:
+            return None, "console script wrapper contract is incomplete"
+        actual_contract = {
+            "imports": sorted(imports),
+            "sys_exit_calls": sorted(sys_exit_calls),
+        }
+        expected_contract = {
+            "imports": contract["imports"],
+            "sys_exit_calls": contract["sys_exit_calls"],
+        }
+        if (
+            sha256_bytes(body) != contract["body_sha256"]
+            or len(body) != contract["body_bytes"]
+            or actual_contract != expected_contract
+        ):
+            return None, "console script wrapper contract drift"
+    except (OSError, UnicodeDecodeError, UnicodeError, SyntaxError, ValueError) as error:
+        return None, f"console script validation failed: {error}"
+    return {
+        "path": declared_path,
+        "resolved_path": resolved_path,
+        "sha256": digest,
+        "bytes": size,
+        "script_base64": base64.b64encode(data).decode("ascii"),
+        "shebang": shebang,
+        "shebang_basename": shebang_file.name,
+        "shebang_environment_relative": shebang_relative,
+        "body_sha256": sha256_bytes(body),
+        "body_bytes": len(body),
+        "body_base64": base64.b64encode(body).decode("ascii"),
+        "body_contract": actual_contract,
+    }, None
 
 
 def _record_evidence(
@@ -351,6 +463,17 @@ def _record_evidence(
     except csv.Error as error:
         failures.append(f"invalid RECORD CSV: {error}")
     record_path = f"{path.parent.name}/RECORD"
+    console_script_rows: list[dict[str, Any]] = []
+    for entry in entries:
+        declared_path = entry.get("declared", {}).get("path")
+        if declared_path not in CONSOLE_SCRIPT_DECLARED_PATHS:
+            continue
+        script_evidence, script_failure = _console_script_evidence(entry, environment_root)
+        if script_failure is not None:
+            failures.append(f"{declared_path}: {script_failure}")
+            continue
+        assert script_evidence is not None
+        console_script_rows.append(script_evidence)
     canonical_entries = json.dumps(entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     normalized_entries = _normalized_record_entries(entries, record_path)
     canonical_normalized_entries = json.dumps(
@@ -391,6 +514,10 @@ def _record_evidence(
             "entries_count": len(entries),
             "entries_sha256": sha256_bytes(canonical_entries),
             "installer_generated_rows": installer_rows,
+            "console_script_rows": console_script_rows,
+            "console_script_rows_sha256": sha256_bytes(
+                json.dumps(console_script_rows, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+            ),
             "normalized_entries_count": len(normalized_entries),
             "normalized_entries_sha256": sha256_bytes(canonical_normalized_entries),
         },
@@ -562,6 +689,16 @@ def collect_distribution(
     result["record"] = record
     result["record"]["path"] = f"{result['dist_info_path']}/RECORD"
     result["failures"].extend(record_failures)
+    expected_console_paths = CONSOLE_SCRIPT_PATHS_BY_PACKAGE.get(
+        normalize_name(expected_name), frozenset()
+    )
+    actual_console_paths = {
+        entry.get("declared", {}).get("path")
+        for entry in record.get("entries", [])
+        if entry.get("declared", {}).get("path") in CONSOLE_SCRIPT_DECLARED_PATHS
+    }
+    if actual_console_paths != expected_console_paths:
+        result["failures"].append("RECORD console-script package mapping drift")
     if not owned:
         result["failures"].append("RECORD owns no files")
     for relative_name, path in sorted(owned, key=lambda item: item[0].casefold()):
@@ -786,9 +923,22 @@ def _write_record(path: Path, rows: Iterable[tuple[str, str, str]]) -> None:
     path.write_text("".join(",".join(row) + "\n" for row in rows), encoding="utf-8")
 
 
+def _console_script_contract_self_test() -> None:
+    contract_paths = set(CONSOLE_SCRIPT_CONTRACTS)
+    mapped_paths = set().union(*CONSOLE_SCRIPT_PATHS_BY_PACKAGE.values())
+    assert contract_paths == mapped_paths == set(CONSOLE_SCRIPT_DECLARED_PATHS)
+    for path, contract in CONSOLE_SCRIPT_CONTRACTS.items():
+        owners = [name for name, paths in CONSOLE_SCRIPT_PATHS_BY_PACKAGE.items() if path in paths]
+        assert len(owners) == 1, (path, owners)
+        assert isinstance(contract.get("body_sha256"), str)
+        assert re.fullmatch(r"[0-9a-f]{64}", contract["body_sha256"])
+        assert isinstance(contract.get("body_bytes"), int) and contract["body_bytes"] > 0
+
+
 def self_test() -> int:
+    _console_script_contract_self_test()
     with tempfile.TemporaryDirectory(prefix="microwakeword-reference-audit-") as temporary:
-        root = Path(temporary) / "venv"
+        root = Path(temporary) / ".venv"
         site = root / "lib" / "python3.12" / "site-packages"
         site.mkdir(parents=True)
         dist = site / "tqdm-4.70.0.dist-info"
@@ -798,6 +948,24 @@ def self_test() -> int:
         executable = root / "bin" / "runner"
         executable.parent.mkdir(parents=True)
         executable.write_bytes(b"#!/bin/sh\n")
+        console_script = root / "bin" / "tqdm"
+        console_script_body = (
+            b"# -*- coding: utf-8 -*-\n"
+            b"import sys\n"
+            b"from tqdm.cli import main\n"
+            b"if __name__ == \"__main__\":\n"
+            b"    if sys.argv[0].endswith(\"-script.pyw\"):\n"
+            b"        sys.argv[0] = sys.argv[0][:-11]\n"
+            b"    elif sys.argv[0].endswith(\".exe\"):\n"
+            b"        sys.argv[0] = sys.argv[0][:-4]\n"
+            b"    sys.exit(main())\n"
+        )
+        assert len(console_script_body) == 271
+        assert sha256_bytes(console_script_body) == CONSOLE_SCRIPT_CONTRACTS["../../../bin/tqdm"]["body_sha256"]
+        console_script.write_bytes(
+            f"#!{root}/bin/python\n".encode("utf-8")
+            + console_script_body
+        )
         license_path = dist / "LICENCE.txt"
         license_path.write_bytes(b"Copyright owner\n")
         installer_path = dist / "INSTALLER"
@@ -819,6 +987,7 @@ def self_test() -> int:
             ("tqdm-4.70.0.dist-info/REQUESTED", record_hash(requested_path.read_bytes()), str(requested_path.stat().st_size)),
             ("tqdm/engine.so.1", record_hash(native.read_bytes()), str(native.stat().st_size)),
             ("../../../bin/runner", record_hash(executable.read_bytes()), str(executable.stat().st_size)),
+            ("../../../bin/tqdm", record_hash(console_script.read_bytes()), str(console_script.stat().st_size)),
             ("tqdm-4.70.0.dist-info/RECORD", "", ""),
         ]
         _write_record(dist / "RECORD", rows)
@@ -828,7 +997,7 @@ def self_test() -> int:
         assert result["status"] == "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED", result
         assert result["license_candidates"][0]["path"].endswith("LICENCE.txt")
         assert result["native_payloads"][0]["path"].endswith("engine.so.1")
-        assert len(result["record"]["entries"]) == 7
+        assert len(result["record"]["entries"]) == 8
         assert [
             item["declared"]["path"] for item in result["record"]["installer_generated_rows"]
         ] == [
@@ -836,9 +1005,59 @@ def self_test() -> int:
             "tqdm-4.70.0.dist-info/REQUESTED",
         ]
         assert result["record"]["normalized_entries_count"] == 5
+        assert result["record"]["console_script_rows"][0]["path"] == "../../../bin/tqdm"
+        assert result["record"]["console_script_rows"][0]["body_bytes"] == 271
+        assert result["record"]["console_script_rows"][0]["body_contract"] == {
+            "imports": ["sys", "tqdm.cli:main"],
+            "sys_exit_calls": ["sys.exit(main())"],
+        }
+        portable_entries = json.loads(json.dumps(result["record"]["entries"]))
+        portable_script = next(
+            item for item in portable_entries if item["declared"]["path"] == "../../../bin/tqdm"
+        )
+        portable_script["actual"] = {"sha256": "f" * 64, "bytes": portable_script["actual"]["bytes"] + 1}
+        portable_script["declared"]["hash"]["value"] = "f" * 64
+        portable_script["declared"]["size"]["value"] = portable_script["actual"]["bytes"]
+        assert _normalized_record_entries(portable_entries, "tqdm-4.70.0.dist-info/RECORD") == _normalized_record_entries(
+            result["record"]["entries"], "tqdm-4.70.0.dist-info/RECORD"
+        )
         runner_entry = next(item for item in result["record"]["entries"] if item["declared"]["path"] == "../../../bin/runner")
         assert runner_entry["validation"] == "MATCH"
         assert runner_entry["resolved_path"] == "bin/runner"
+
+        def rewrite_console_record(payload: bytes, *, declared_path: str = "../../../bin/tqdm") -> None:
+            rewritten = []
+            for row in rows:
+                if row[0] == "../../../bin/tqdm":
+                    rewritten.append((declared_path, record_hash(payload), str(len(payload))))
+                else:
+                    rewritten.append(row)
+            _write_record(dist / "RECORD", rewritten)
+
+        coherent_body_tamper = console_script_body.replace(b"tqdm.cli", b"wrong.cli")
+        coherent_body_data = f"#!{root}/bin/python\n".encode("utf-8") + coherent_body_tamper
+        console_script.write_bytes(coherent_body_data)
+        rewrite_console_record(coherent_body_data)
+        body_tamper = collect_distribution(root, site, "tqdm", "4.70.0", inventory["tqdm"], inventory_sha256)
+        assert body_tamper["status"] == "COLLECTION_FAILED_FAIL_CLOSED"
+        assert any("console script wrapper contract drift" in failure for failure in body_tamper["failures"])
+
+        wrong_shebang_data = b"#!/usr/bin/python\n" + console_script_body
+        console_script.write_bytes(wrong_shebang_data)
+        rewrite_console_record(wrong_shebang_data)
+        shebang_tamper = collect_distribution(root, site, "tqdm", "4.70.0", inventory["tqdm"], inventory_sha256)
+        assert shebang_tamper["status"] == "COLLECTION_FAILED_FAIL_CLOSED"
+        assert any("absolute venv Python" in failure for failure in shebang_tamper["failures"])
+
+        unknown_script = root / "bin" / "unknown-wrapper"
+        unknown_script.write_bytes(b"#!" + str(root / "bin" / "python").encode("utf-8") + b"\n" + console_script_body)
+        rewrite_console_record(unknown_script.read_bytes(), declared_path="../../../bin/unknown-wrapper")
+        unknown_path = collect_distribution(root, site, "tqdm", "4.70.0", inventory["tqdm"], inventory_sha256)
+        assert unknown_path["status"] == "COLLECTION_FAILED_FAIL_CLOSED"
+        assert any("console-script package mapping drift" in failure for failure in unknown_path["failures"])
+
+        console_script.write_bytes(f"#!{root}/bin/python\n".encode("utf-8") + console_script_body)
+        _write_record(dist / "RECORD", rows)
 
         installer_drift_rows = list(rows)
         installer_path.write_bytes(b"xx")

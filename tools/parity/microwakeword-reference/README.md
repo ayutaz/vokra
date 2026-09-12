@@ -15,7 +15,15 @@ actual file hash/size is checked. uv's two standardized installer rows
 two rows, plus the self-referential actual digest/size of `RECORD`, are omitted
 from `normalized_entries_*`; all other rows remain in the normalized identity.
 Unknown extra rows therefore remain fail-closed rather than being hidden as
-installer metadata.
+installer metadata. The four known uv console scripts are recorded separately
+with their complete wrapper bytes and a portable identity: only the absolute
+venv Python path in the first shebang line is normalized. The wrapper body,
+target/import contract, and shebang's `bin/python*` environment-relative target
+are verified against the reviewed per-entrypoint body size/SHA, import target,
+and `sys.exit(main())` contract; unknown or additional scripts remain part of
+the normalized identity and fail closed. The absolute shebang must remain an
+environment `.venv/bin/python*` target, while its root may vary between VAST
+work directories.
 The worker passes both the synchronized venv root and the exact
 `sysconfig.get_path("purelib")` site-packages path. RECORD entries may point to
 venv-owned files such as `../../../bin/...`; lexical traversal and symlink
