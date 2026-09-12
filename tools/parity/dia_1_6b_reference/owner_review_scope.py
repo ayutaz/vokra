@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import re
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -48,16 +47,42 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def require_output(path: Path) -> None:
+    if not path.is_absolute() or any(part in {".", ".."} for part in path.parts[1:]) or path == Path(path.anchor):
+        raise ScopeError("owner scope output must be absolute and free of dot components")
+    if path.exists() or path.is_symlink():
+        raise ScopeError("owner scope output must be absent")
+    cursor = path.parent
+    while True:
+        if cursor.is_symlink() or not cursor.is_dir():
+            raise ScopeError("owner scope output parent must be a regular directory")
+        if cursor == Path(cursor.anchor):
+            break
+        cursor = cursor.parent
+
+
 def require_audit(report: dict[str, Any]) -> None:
-    if report.get("schema") != "vokra-dia-dependency-audit-v1" or report.get("dependency_license_audit") != GATE or report.get("publication") != PUBLICATION:
+    if report.get("schema") != "vokra-dia-dependency-audit-v1" or report.get("status") != "FACTS_COLLECTED_GATE_BLOCKED" or report.get("dependency_license_audit") != GATE or report.get("publication") != PUBLICATION:
         raise ScopeError("audit schema/gate/publication is not fail-closed")
+    repository = report.get("repository")
+    if not isinstance(repository, dict) or not HEAD_RE.fullmatch(repository.get("head", "")) or repository.get("clean") is not True:
+        raise ScopeError("audit repository identity is missing or dirty")
+    contract = report.get("contract")
+    if not isinstance(contract, dict) or contract.get("gate_status") != GATE or contract.get("uv_lock_sha256") != LOCK_SHA256 or contract.get("pyproject_sha256") != PYPROJECT_SHA256:
+        raise ScopeError("audit contract identity is stale or not fail-closed")
     closure = report.get("closure")
     if not isinstance(closure, dict) or closure.get("exact") is not True or closure.get("missing") != [] or closure.get("unexpected") != [] or closure.get("duplicate_identities") != [] or len(closure.get("expected", [])) != 26 or closure.get("expected") != closure.get("installed"):
         raise ScopeError("audit is not the exact 26-package Linux closure")
     packages = report.get("packages")
     if not isinstance(packages, list) or len(packages) != 26:
         raise ScopeError("audit package inventory is not exactly 26 rows")
-    identities = [item.get("lock", {}).get("name") + "==" + item.get("lock", {}).get("version") for item in packages if isinstance(item, dict) and isinstance(item.get("lock"), dict)]
+    identities = []
+    for item in packages:
+        lock = item.get("lock") if isinstance(item, dict) else None
+        installed = item.get("installed") if isinstance(item, dict) else None
+        if not isinstance(lock, dict) or not isinstance(lock.get("name"), str) or not isinstance(lock.get("version"), str) or not isinstance(installed, dict) or not isinstance(installed.get("identity"), str):
+            raise ScopeError("audit package row is malformed")
+        identities.append(lock["name"] + "==" + lock["version"])
     if len(identities) != 26 or len(set(identities)) != 26:
         raise ScopeError("audit package identities are incomplete or duplicated")
     license_facts = report.get("license_facts")
@@ -87,6 +112,12 @@ def build_scope(report_path: Path, preparation_path: Path, expected_head: str) -
     preparation = read_json(preparation_path)
     require_audit(report)
     require_preparation(preparation)
+    if report["repository"]["head"] != expected_head:
+        raise ScopeError("audit report HEAD does not match the requested exact HEAD")
+    for name, expected in (("uv.lock", LOCK_SHA256), ("pyproject.toml", PYPROJECT_SHA256)):
+        path = PROJECT / name
+        if path.is_symlink() or not path.is_file() or digest_bytes(path) != expected:
+            raise ScopeError(f"current Dia project input drifted: {name}")
     packages = report["packages"]
     package_identities = sorted(item["installed"]["identity"] for item in packages)
     native_inventory = report["native_facts"]["files"]
@@ -127,14 +158,41 @@ def validate_scope(scope: dict[str, Any], report_path: Path, preparation_path: P
 
 def self_test() -> int:
     assert SCHEMA.endswith("v1") and APPROVAL_SCHEMA.endswith("v1")
+    for unsafe in (Path("relative.json"), Path("/tmp/../owner.json"), Path("/")):
+        try: require_output(unsafe)
+        except ScopeError: pass
+        else: raise AssertionError("unsafe owner scope output accepted")
     with __import__("tempfile").TemporaryDirectory(prefix="dia-owner-scope-") as directory:
         root = Path(directory)
-        report = {"schema": "vokra-dia-dependency-audit-v1", "dependency_license_audit": GATE, "publication": PUBLICATION, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": [f"p{i}==1" for i in range(26)], "installed": [f"p{i}==1" for i in range(26)]}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(26)], "license_facts": {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}, "native_facts": {"files": [{"package_identity": "p0==1", "sha256": "a" * 64, "path": "x.so"}]}, "failures": []}
+        link = root / "link"; link.mkdir()
+        link_target = root / "link-alias"; link_target.symlink_to(link, target_is_directory=True)
+        try: require_output(root / "link-alias" / "scope.json")
+        except ScopeError: pass
+        else: raise AssertionError("symlinked owner scope output accepted")
+        report = {"schema": "vokra-dia-dependency-audit-v1", "status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": GATE, "publication": PUBLICATION, "repository": {"head": "0" * 40, "clean": True}, "contract": {"gate_status": GATE, "uv_lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256}, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": [f"p{i}==1" for i in range(26)], "installed": [f"p{i}==1" for i in range(26)]}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(26)], "license_facts": {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}, "native_facts": {"files": [{"package_identity": "p0==1", "sha256": "a" * 64, "path": "x.so"}]}, "failures": []}
         preparation = {"schema": "vokra-dia-reference-preparation-v1", "status": "PREPARED_NO_BLAS", "publication": PUBLICATION, "build": {"isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"}, "runtime": {"soundfile_installed": False, "torchaudio_installed": False}}
         report_path, preparation_path = root / "report.json", root / "preparation.json"
         report_path.write_text(json.dumps(report), encoding="utf-8"); preparation_path.write_text(json.dumps(preparation), encoding="utf-8")
         scope = build_scope(report_path, preparation_path, "0" * 40)
         validate_scope(scope, report_path, preparation_path, "0" * 40)
+        for key, value in (("head", "1" * 40), ("clean", False)):
+            drifted = json.loads(json.dumps(report)); drifted["repository"][key] = value; report_path.write_text(json.dumps(drifted), encoding="utf-8")
+            try: build_scope(report_path, preparation_path, "0" * 40)
+            except ScopeError: pass
+            else: raise AssertionError(f"report repository drift accepted: {key}")
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        for key, value in (("status", "BLOCKED"), ("dependency_license_audit", "AUDITED_ALLOW")):
+            drifted = json.loads(json.dumps(report)); drifted[key] = value; report_path.write_text(json.dumps(drifted), encoding="utf-8")
+            try: build_scope(report_path, preparation_path, "0" * 40)
+            except ScopeError: pass
+            else: raise AssertionError(f"report status drift accepted: {key}")
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        for key, value in (("uv_lock_sha256", "1" * 64), ("pyproject_sha256", "1" * 64)):
+            drifted = json.loads(json.dumps(report)); drifted["contract"][key] = value; report_path.write_text(json.dumps(drifted), encoding="utf-8")
+            try: build_scope(report_path, preparation_path, "0" * 40)
+            except ScopeError: pass
+            else: raise AssertionError(f"report contract drift accepted: {key}")
+        report_path.write_text(json.dumps(report), encoding="utf-8")
         broken = dict(scope); broken["status"] = "VAST_READY"
         try: validate_scope(broken, report_path, preparation_path, "0" * 40)
         except ScopeError: pass
@@ -163,9 +221,7 @@ def main() -> int:
         return 0
     if args.output is None: parser.error("scope generation requires --output")
     scope = build_scope(args.report, args.preparation, args.expected_head)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    if args.output.exists() or args.output.is_symlink():
-        raise ScopeError("owner scope output must be absent")
+    require_output(args.output)
     args.output.write_bytes(canonical(scope) + b"\n")
     print("dia owner-review scope: PENDING_OWNER_REVIEW (NO_UPLOAD)")
     return 0
