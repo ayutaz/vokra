@@ -351,6 +351,15 @@ def native_fact(path: Path, relative: PurePosixPath) -> dict[str, Any]:
     return fact
 
 
+def license_flags(publisher_license: str, classifiers: list[str], files: list[dict[str, Any]]) -> list[str]:
+    """Record license signals without turning metadata into an approval."""
+    text = " ".join([publisher_license, *classifiers, *(str(item["path"]) for item in files)]).casefold()
+    flags = [name for name in ("AGPL", "GPL", "LGPL") if re.search(rf"(?<![a-z]){name.casefold()}", text)]
+    if flags:
+        return flags
+    return ["UNKNOWN"] if not text.strip() else ["UNCLASSIFIED_DECLARED"]
+
+
 def distribution_fact(row: dict[str, Any], archive_dir: Path) -> dict[str, Any]:
     name, version = str(row["name"]), str(row["version"])
     try:
@@ -406,6 +415,7 @@ def distribution_fact(row: dict[str, Any], archive_dir: Path) -> dict[str, Any]:
         "lock_row_sha256": digest(row),
         "publisher_license": publisher_license,
         "license_classifiers": classifiers,
+        "license_flags": license_flags(publisher_license, classifiers, licenses),
         "license_files": licenses,
         "license_files_sha256": digest(licenses),
         "native_files": native,
@@ -588,6 +598,8 @@ def self_test() -> None:
     assert native_name("x.so") and native_name("x.so.1") and native_name("x.a")
     assert license_name("LICENSE") and license_name("NOTICE.txt")
     assert not license_name("not-a-license.txt")
+    assert license_flags("LGPL-3.0", [], []) == ["LGPL"]
+    assert license_flags("", [], []) == ["UNKNOWN"]
     assert normalized_name("Demo_pkg-1") == "demo-pkg-1"
     assert marker_active("sys_platform == 'linux'")
     assert marker_active("platform_machine == 'x86_64'")
