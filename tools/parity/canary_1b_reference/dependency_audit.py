@@ -248,7 +248,13 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
         active[key] = row
         for dependency in row.get("dependencies", []):
             if marker_active(dependency.get("marker")):
-                queue.append((str(dependency["name"]), [], dependency.get("marker")))
+                target_extras = dependency.get("extra", [])
+                if isinstance(target_extras, str):
+                    target_extras = [target_extras]
+                if not isinstance(target_extras, list) or not all(isinstance(item, str) for item in target_extras):
+                    failures.append(f"dependency extra metadata is malformed for {dependency.get('name')}")
+                    continue
+                queue.append((str(dependency["name"]), target_extras, dependency.get("marker")))
         optional = row.get("optional-dependencies", {})
         if isinstance(optional, dict):
             for selected_extra in extras:
@@ -582,12 +588,14 @@ def self_test() -> None:
                 "name": "root", "version": "0", "source": {"virtual": "."},
                 "metadata": {"requires-dist": [{"name": "demo", "specifier": "==1"}]},
             },
-            {"name": "demo", "version": "1", "source": {"registry": PYPI}},
+            {"name": "demo", "version": "1", "source": {"registry": PYPI}, "dependencies": [{"name": "extra-target", "extra": ["http"]}]},
+            {"name": "extra-target", "version": "1", "source": {"registry": PYPI}, "optional-dependencies": {"http": [{"name": "http-child"}]}},
+            {"name": "http-child", "version": "1", "source": {"registry": PYPI}},
             {"name": "darwin-only", "version": "1", "source": {"registry": PYPI}, "resolution-markers": ["sys_platform == 'darwin'"]},
         ],
     }
     active, inactive, failures = active_lock_rows(synthetic_lock)
-    assert [row["name"] for row in active] == ["root", "demo"]
+    assert [row["name"] for row in active] == ["root", "demo", "extra-target", "http-child"]
     assert [row["name"] for row in inactive] == ["darwin-only"]
     assert failures == []
     try:
@@ -606,7 +614,10 @@ def self_test() -> None:
     valid = "a" * 40
     assert HEX40.fullmatch(valid)
     assert digest({"x": 1}) == digest({"x": 1})
-    with tempfile.TemporaryDirectory(prefix="vokra-canary-audit-") as directory:
+    temp_root = Path("/private/tmp")
+    if not temp_root.is_dir() or temp_root.is_symlink():
+        temp_root = Path("/tmp")
+    with tempfile.TemporaryDirectory(prefix="vokra-canary-audit-", dir=temp_root) as directory:
         root = Path(directory)
         target = root / "evidence.json"
         write_no_replace(target, b"first\n")
