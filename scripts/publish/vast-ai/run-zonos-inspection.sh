@@ -203,9 +203,11 @@ require_approval_binding "$approval" "$approval_sha"
 # acquisition.  The dedicated wrapper intentionally returns 2 while the
 # owner/legal decision remains WITHHOLD, so this worker must stop here.
 dependency_output="${ZONOS_DEPENDENCY_AUDIT_OUTPUT:-/dev/shm/vokra-zonos-dependency-audit-${expected_head}.json}"
+dependency_archive="${ZONOS_DEPENDENCY_AUDIT_ARCHIVE:-/dev/shm/vokra-zonos-publisher-license-${expected_head}}"
 set +e
 VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash "$DEPENDENCY_AUDIT_WRAPPER" \
-  --expected-head "$expected_head" --output "$dependency_output"
+  --expected-head "$expected_head" --output "$dependency_output" \
+  --publisher-archive "$dependency_archive"
 dependency_status=$?
 set -e
 [[ "$dependency_status" == 2 ]] || die 'Zonos dependency audit did not fail closed before acquisition'

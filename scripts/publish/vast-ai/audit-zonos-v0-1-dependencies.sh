@@ -44,7 +44,7 @@ require_host() {
 }
 
 self_test() {
-  local failed=0 temporary output
+  local failed=0 temporary output archive
   [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" ]] || failed=1
   grep -Fq 'zonos_v0_1_reference' "$0" || failed=1
   grep -Fq -- 'uv sync --frozen --no-install-project' "$0" || failed=1
@@ -62,8 +62,15 @@ self_test() {
   done
   temporary="$(mktemp -d "$(realpath "${TMPDIR:-/tmp}")/vokra-zonos-audit-selftest.XXXXXX")"
   output="$temporary/evidence.json"
+  archive="$temporary/archive"
   (require_absent_canonical_output "$output") || failed=1
+  (require_absent_canonical_output "$archive") || failed=1
   touch "$output"
+  mkdir "$archive"
+  if (require_absent_canonical_output "$archive") >/dev/null 2>&1; then
+    echo 'existing archive directory was accepted' >&2
+    failed=1
+  fi
   if (require_absent_canonical_output "$output") >/dev/null 2>&1; then
     echo 'existing output was accepted' >&2
     failed=1
@@ -89,12 +96,14 @@ if [[ "${1:-}" == --self-test ]]; then
   self_test
   exit 0
 fi
-[[ $# == 4 ]] || die 'expected --expected-head HEX40 --output ABSENT_FILE'
-[[ "$1" == --expected-head && "$3" == --output ]] || die 'arguments must be --expected-head and --output'
+[[ $# == 6 ]] || die 'expected --expected-head HEX40 --output ABSENT_FILE --publisher-archive ABSENT_DIR'
+[[ "$1" == --expected-head && "$3" == --output && "$5" == --publisher-archive ]] || die 'arguments must be --expected-head, --output, and --publisher-archive'
 expected_head="$2"
 output="$4"
+publisher_archive="$6"
 require_clean_head "$expected_head"
 require_absent_canonical_output "$output"
+require_absent_canonical_output "$publisher_archive"
 require_host
 [[ "${VOKRA_ZONOS_DEPENDENCY_AUDIT:-0}" == 1 ]] || die 'VOKRA_ZONOS_DEPENDENCY_AUDIT=1 is absent'
 for command in git realpath awk uv; do command -v "$command" >/dev/null || die "missing tool: $command"; done
@@ -105,7 +114,7 @@ UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
 set +e
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
-  --installed --output "$output"
+  --installed --expected-head "$expected_head" --publisher-archive "$publisher_archive" --output "$output"
 audit_status=$?
 set -e
 [[ "$audit_status" == 0 || "$audit_status" == 2 ]] || die "dependency collector failed with status $audit_status"
