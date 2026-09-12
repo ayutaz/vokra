@@ -12,11 +12,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/microwakeword"
 REFERENCE_PROJECT="$ROOT/tools/parity/microwakeword-reference"
-INSPECTOR="$ROOT/tools/parity/microwakeword_inspect.py"
+MODEL_INSPECTOR="$ROOT/tools/parity/microwakeword_inspect.py"
+REFERENCE_INSPECTOR="$REFERENCE_PROJECT/inspect.py"
 TENSOR_MANIFEST_PRODUCER="$ROOT/tools/parity/microwakeword_tensor_manifest.py"
 CONVERTER_LOCK_SHA256="984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2"
 REFERENCE_LOCK_SHA256="736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
-DEPENDENCY_EVIDENCE_SHA256="2b24695d106665b5cbc17357b1a43ff03ab75235d35e7d3ed03e5c7c7a68069d"
 PACKAGE_COUNT=1
 PACKAGE_ROWS_SHA256="d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7"
 LICENSE_ROWS_SHA256="4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c"
@@ -206,6 +206,7 @@ reviewed_validation() {
   for command in curl git uv sha256sum awk stat realpath find cargo rustc hostname nproc; do command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"; done
   [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
   local commit system machine kernel host_name cpu_model cpu_flags cpu_count rustc_version cargo_version
+  local dependency_evidence_sha256 raw_inventory_sha256 inspector_report
   commit="$(git rev-parse HEAD)" || die "unable to record git commit"
   system="$(uname -s)"
   machine="$(uname -m)"
@@ -232,8 +233,11 @@ reviewed_validation() {
       [[ "$left" == "$right" ]] || paths_disjoint "$left" "$right" || die "reviewed paths must be canonically disjoint"
     done
   done
-  [[ "$(sha256sum "$inventory_path" | awk '{print $1}')" == "$RAW_INVENTORY_SHA256" ]] || die "REVIEWED_RAW_INVENTORY_REQUIRED"
-  [[ "$(sha256sum "$dependency_evidence_path" | awk '{print $1}')" == "$DEPENDENCY_EVIDENCE_SHA256" ]] || die "REVIEWED_DEPENDENCY_EVIDENCE_REQUIRED"
+  raw_inventory_sha256="$(sha256sum "$inventory_path" | awk '{print $1}')" || die "raw inventory SHA-256 calculation failed"
+  dependency_evidence_sha256="$(sha256sum "$dependency_evidence_path" | awk '{print $1}')" || die "dependency evidence SHA-256 calculation failed"
+  [[ "$raw_inventory_sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "raw inventory SHA-256 is invalid"
+  [[ "$dependency_evidence_sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "dependency evidence SHA-256 is invalid"
+  [[ "$raw_inventory_sha256" == "$RAW_INVENTORY_SHA256" ]] || die "REVIEWED_RAW_INVENTORY_REQUIRED"
 
   export UV_CACHE_DIR="$UV_CACHE_DIR_VALUE"
   uv sync --project "$PROJECT" --frozen
@@ -244,6 +248,41 @@ reviewed_validation() {
   paths_disjoint "$VALIDATION_WORK_DIR" "$inventory_path" || die "validation work directory overlaps raw inventory"
   paths_disjoint "$VALIDATION_WORK_DIR" "$dependency_evidence_path" || die "validation work directory overlaps dependency evidence"
   paths_disjoint "$VALIDATION_WORK_DIR" "$result_dir" || die "validation work directory overlaps result directory"
+  inspector_report="$VALIDATION_WORK_DIR/dependency-audit.json"
+  [[ ! -e "$inspector_report" && ! -L "$inspector_report" ]] || die "inspector report destination exists"
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --project "$REFERENCE_PROJECT" --offline --no-sync --python 3.12 python "$REFERENCE_INSPECTOR" \
+    --project "$REFERENCE_PROJECT/pyproject.toml" --lock "$REFERENCE_PROJECT/uv.lock" \
+    --dependency-evidence "$dependency_evidence_path" --output "$inspector_report" >/dev/null; then
+    die "reference dependency inspector rejected reviewed evidence"
+  fi
+  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python - \
+    "$inspector_report" "$dependency_evidence_sha256" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+expected_evidence_sha256 = sys.argv[2]
+if report_path.is_symlink() or not report_path.is_file():
+    raise SystemExit("reference inspector report is absent or symlinked")
+try:
+    def reject_duplicate_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate inspector report key")
+            result[key] = value
+        return result
+    report = json.loads(report_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+    raise SystemExit("reference inspector report is not valid JSON") from error
+if not isinstance(report, dict) or report.get("status") != "PASS" or report.get("failures") != []:
+    raise SystemExit("reference inspector did not return PASS")
+if report.get("dependency_evidence_status") != "VALIDATED_EXACT_OWNER_REVIEWED":
+    raise SystemExit("reference inspector evidence status is not exact owner-reviewed")
+if report.get("dependency_evidence_sha256") != expected_evidence_sha256:
+    raise SystemExit("reference inspector evidence SHA-256 differs from runtime input SHA-256")
+PY
   local tflite_path="$VALIDATION_WORK_DIR/hey_jarvis.tflite" license_path="$VALIDATION_WORK_DIR/LICENSE" companion_path="$VALIDATION_WORK_DIR/hey_jarvis.json"
   local output_path="$VALIDATION_WORK_DIR/hey_jarvis.reviewed.gguf" fixture_path="$VALIDATION_WORK_DIR/fixtures"
   [[ ! -e "$output_path" && ! -L "$output_path" && ! -e "$fixture_path" && ! -L "$fixture_path" ]] || die "worker output paths must be absent"
@@ -274,7 +313,7 @@ reviewed_validation() {
   [[ ! -e "$result_manifest" && ! -L "$result_manifest" ]] || die "validation result destination exists"
   uv run --no-project --offline --python 3.12 python - "$result_manifest" "$output_path" "$fixture_path" "$path_c_log" \
     "$commit" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$MODEL_ARTIFACT_BYTES_SHA256" \
-    "$DEPENDENCY_EVIDENCE_SHA256" "$RAW_INVENTORY_SHA256" "$system" "$machine" \
+    "$dependency_evidence_sha256" "$raw_inventory_sha256" "$system" "$machine" \
     "$kernel" "$host_name" "$cpu_count" "$cpu_model" "$cpu_flags" "$rustc_version" "$cargo_version" <<'PY'
 import hashlib
 import json
@@ -426,7 +465,7 @@ inspect_only() {
   work_dir="$INSPECTION_WORK_DIR"
   trap cleanup_inspection_workdir EXIT
   manifest_path="$work_dir/raw-inventory.json"
-  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test
+  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$MODEL_INSPECTOR" --self-test
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --output "$work_dir/hey_jarvis.tflite" "$DEFAULT_UPSTREAM_URL"
   [[ "$(stat -c '%s' "$work_dir/hey_jarvis.tflite")" == "$MODEL_TARGET_SIZE" ]] || die "canonical artifact size mismatch"
@@ -563,10 +602,23 @@ PY
 self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
-  [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: inspector missing" >&2; fail=1; }
-  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$DEPENDENCY_EVIDENCE_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
+  [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: model inspector missing" >&2; fail=1; }
+  [[ -f "$root/tools/parity/microwakeword-reference/inspect.py" ]] || { echo "self-test FAIL: reference inspector missing" >&2; fail=1; }
+  for needle in "REFERENCE_PROJECT/inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
+  local stale_sha_name='DEPENDENCY_EVIDENCE_'
+  stale_sha_name+='SHA256'
+  if grep -Fq -- "$stale_sha_name" "$self"; then
+    echo 'self-test FAIL: stale dependency evidence SHA gate remains' >&2
+    fail=1
+  fi
+  if ! grep -Fq -- 'uv run --project "$REFERENCE_PROJECT" --offline --no-sync --python 3.12 python "$REFERENCE_INSPECTOR"' "$self" \
+    || ! grep -Fq -- '--dependency-evidence "$dependency_evidence_path"' "$self" \
+    || ! grep -Fq -- 'sha256sum "$dependency_evidence_path"' "$self"; then
+    echo 'self-test FAIL: reviewed validation lacks offline reference inspector and runtime evidence SHA gate' >&2
+    fail=1
+  fi
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload|vokra-cli[[:space:]]+convert)([[:space:]]|$)' "$self" >/dev/null; then
     echo 'self-test FAIL: upload/conversion command found' >&2; fail=1
   fi
@@ -574,6 +626,10 @@ self_test() {
     echo 'self-test FAIL: raw Python/pip invocation found' >&2; fail=1
   fi
   inspection_body="$(sed -n '/^inspect_only()/,/^}/p' "$self")"
+  if ! grep -Fq -- 'python "$MODEL_INSPECTOR" --self-test' <<<"$inspection_body"; then
+    echo 'self-test FAIL: inspect-only does not call the model inspector' >&2
+    fail=1
+  fi
   local platform_gate_pattern=''
   platform_gate_pattern+='[['
   platform_gate_pattern+=" \"\$(uname -s)\" == Linux && \"\$(uname -m)\" == x86_64 ]]"
@@ -605,6 +661,10 @@ self_test() {
   fi
   [[ -f "$root/tools/parity/microwakeword-reference/inspect.py" ]] || { echo 'self-test FAIL: reference inspector missing' >&2; fail=1; }
   validation_body="$(sed -n '/^reviewed_validation()/,/^}/p' "$self")"
+  if ! grep -Fq -- 'python "$REFERENCE_INSPECTOR"' <<<"$validation_body" || ! grep -Fq -- '--dependency-evidence "$dependency_evidence_path"' <<<"$validation_body"; then
+    echo 'self-test FAIL: reviewed validation does not call the reference inspector' >&2
+    fail=1
+  fi
   if ! grep -Fq -- "uv sync --project \"\$PROJECT\" --frozen" <<<"$validation_body" || ! grep -Fq -- "VOKRA_REVIEWED_CONVERSION=1 uv run --project \"\$PROJECT\"" <<<"$validation_body" || ! grep -Fq -- "cargo test --locked -p vokra-kws-micro --test parity_microwakeword" <<<"$validation_body"; then
     echo 'self-test FAIL: reviewed validation lacks frozen sync and Path C' >&2
     fail=1
