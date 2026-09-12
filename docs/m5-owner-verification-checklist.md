@@ -389,15 +389,40 @@ For each landed scaffold that ships a flip-the-switch harness, point the per-fam
 These are tracked on the CC side for future waves; listed here for owner visibility only. Not gating for GA.
 
 - [x] F0 / CREPE real 6-block CNN forward landed (`crates/vokra-models/src/f0/crepe.rs`); targeted F0 tests pass. Real external-checkpoint parity remains a separate §6.4 task.
-- [ ] Charsiu `align` real-checkpoint binding and reference parity. CTC segmentation/Viterbi and synthesized-weight forward are implemented; the remaining work is the upstream tensor manifest/GGUF bind, not a replacement of a placeholder Viterbi algorithm.
-- [ ] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture. The fixed reviewed stateful GGUF binder, exact tensor fingerprints, and 512-stage trace harness are landed; the authenticated VAST fixture run and numerical verdict remain.
-- [ ] Model-level BF16 activation/runtime integration. Raw-BF16 CPU/Metal
-  storage and GEMM seams plus kernel-fixture parity are landed; Ultravox still
-  uses FP32 activations/accumulation and widens its projector, encoder, norm and
-  embedding paths. Close this only with an explicit precision design, a real
-  BF16 checkpoint, AVX512-BF16 model parity and Arm-BF16/Apple evidence.
-- [ ] Full HiFTNet GPU generator path. Metal primitives are landed, but the complete generator and non-Metal backends remain.
-- [ ] Full BigVGAN GPU path. Metal activation/upsampling primitives are landed, but the complete generator and non-Metal backends remain.
+- [x] Charsiu `align` real-checkpoint binding and reference parity. Exact VAST
+  head `e478117c` converted the pinned
+  `charsiu/en_w2v2_fc_10ms` checkpoint, regenerated the independent
+  Transformers `Wav2Vec2ForCTC` reference and passed native CPU parity at
+  max |Δ| `0.000007629` against the preregistered `0.000200000` bound. Final
+  Apple CPU/Metal/no-fallback evidence remains a platform task, not part of
+  this real-checkpoint/reference checkbox.
+- [x] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture.
+  Exact VAST head `72f0ad0b` passed the reviewed stateful GGUF binder against
+  the authenticated LiteRT oracle: 512 persistent invocations, eleven
+  intermediate stages, final output and four-invocation reset replay, with
+  `4 passed / 0 failed / 0 ignored`. Final Apple disposition remains a
+  separate platform task; this embedded INT8 runtime has no fabricated Metal
+  result.
+- [ ] Model-level BF16 checkpoint evidence. Raw-BF16 CPU/Metal storage and
+  GEMM seams plus kernel-fixture parity are landed. Ultravox's model-level
+  runtime now keeps dense companion weights mapped as raw BF16 on CPU/Metal
+  while deliberately retaining FP32 activations, norms and accumulation; the
+  projector/audio tower widening boundary is explicit rather than an implied
+  end-to-end BF16 claim. Completion still requires a newly approved exact
+  checkpoint scope, AVX512-BF16 model parity and Arm-BF16/Apple evidence; the
+  current Ultravox execution scope is withheld.
+- [ ] Full HiFTNet GPU generator evidence. The complete resident CPU/Metal
+  graph, strict 328-tensor converter/binder, fixed config, one-final-readback
+  contract and nonzero synthetic parity harness are landed. Completion still
+  requires the exact hash-bound owner gate, independent real-weight VAST CPU
+  parity and final Apple CPU/Metal/no-fallback evidence; unavailable backends
+  must continue to fail explicitly.
+- [ ] Full BigVGAN GPU generator evidence. The complete native generator,
+  topology-derived four-variant converter/binder, resident Metal graph and
+  one-final-readback contract are landed. Completion still requires exact
+  owner approval, real-weight independent parity for all four release
+  variants on VAST and final Apple CPU/Metal/no-fallback evidence; unavailable
+  backends must continue to fail explicitly.
 - [x] SNAC Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
 - [x] Qwen3-TTS-codec Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
 

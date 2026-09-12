@@ -91,7 +91,16 @@ implementation or only evidence reconciliation. Neither path uploads a model.
   the legacy Lightning `.ckpt` remains permanently refused. Numeric parity is
   still blocked on an independently authenticated safe wav2vec state-dict and
   an owner-approved upstream model-construction path; no unsafe pickle fallback
-  or UTMOS numerical success is claimed.
+  or UTMOS numerical success is claimed. A read-only primary-source refresh on
+  2026-09-12 found no safe export to adopt: the fixed official
+  [UTMOS demo tree](https://huggingface.co/spaces/sarulab-speech/UTMOS-demo/tree/47212055c2ecfb02d40cec2395233b83295d3d30)
+  still distributes only `epoch=3-step=7459.ckpt` and `wav2vec_small.pt` as
+  the learned payloads, and Hugging Face identifies pickle imports in both.
+  The official
+  [UTMOS22 source tree](https://github.com/sarulab-speech/UTMOS22/tree/master)
+  likewise contains download scripts but no `.safetensors` state-dict. The
+  newer UTMOSv2 project is a different model and cannot be substituted as
+  evidence for UTMOS22-strong.
 - BigVGAN: extend the real-weight VAST and Apple gate from the already-proven
   base variant to all four released, already-supported runtime variants. Do
   not invent missing revisions or payload hashes.
