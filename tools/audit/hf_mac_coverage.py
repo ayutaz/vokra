@@ -402,6 +402,11 @@ METAL_CODE_ARCHES = {
     "wespeaker",
     "xcodec2",
     "xvector",
+    # Zonos uses one explicitly selected backend for both the transformer
+    # hot-op set and the authenticated 44.1-kHz DAC sidecar.  Compute's Metal
+    # capability check is fail-closed, so an uncovered op is an explicit
+    # error; there is no implicit CPU fallback.
+    "zonos",
     "yue_upsampler",
 }
 

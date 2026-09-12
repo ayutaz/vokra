@@ -824,6 +824,27 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(coverage.cpu_code, "full")
         self.assertEqual(coverage.metal_code, "full")
 
+    def test_zonos_is_classified_full_for_its_explicit_metal_route(self):
+        record = audit.RepoRecord(
+            "vokra/zonos-v0.1-transformer",
+            "abc",
+            ("zonos-v0.1-transformer.gguf",),
+            "zonos",
+        )
+        coverage = audit.classify(record, {"zonos"}, set())
+        self.assertEqual(coverage.cpu_code, "full")
+        self.assertEqual(coverage.metal_code, "full")
+        self.assertIn("declared Metal code path", coverage.reason)
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "crates/vokra-cli/src/engine.rs").read_text(encoding="utf-8")
+        routed, bound = audit.parse_engine_arches(source)
+        self.assertIn("zonos", routed)
+        self.assertNotIn("zonos", bound)
+        self.assertEqual(
+            audit.METAL_CODE_ARCHES - (routed - audit.ROUTED_PARTIAL_ARCHES),
+            set(),
+        )
+
     def test_parsed_metal_registry_has_no_invalid_arches(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "crates/vokra-cli/src/engine.rs").read_text(encoding="utf-8")
