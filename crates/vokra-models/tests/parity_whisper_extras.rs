@@ -564,7 +564,7 @@ fn parse_reference_packet(member: &FamilyMember, refdir: &Path) -> vokra_core::j
     assert!(
         manifest_prefix
             .iter()
-            .all(|&token| token as usize < vocab),
+            .all(|&token| (token as usize) < vocab),
         "reference decoder prefix contains a token outside manifest vocabulary"
     );
     assert_eq!(
@@ -593,7 +593,7 @@ fn parse_reference_packet(member: &FamilyMember, refdir: &Path) -> vokra_core::j
     assert!(
         manifest_tokens
             .iter()
-            .all(|&token| token as usize < vocab),
+            .all(|&token| (token as usize) < vocab),
         "reference greedy sequence contains a token outside manifest vocabulary"
     );
     assert!(
