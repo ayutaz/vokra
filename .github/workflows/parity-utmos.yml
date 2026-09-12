@@ -1,31 +1,28 @@
-# Vokra UTMOS parity (M4-18 T12 CI wiring; the M4-18 defer was lifted
-# 2026-07-18 and M5-15 landed the implementation side).
+# Vokra UTMOS parity (safe state-dict boundary; current 2026-09-12 posture).
 #
-# Purpose: validate the UTMOS parity boundary without deserializing the
-# historical Lightning pickle. The committed reference fixture and converter
-# remain useful artifacts, but the current safe loader intentionally refuses
-# this checkpoint because it contains unsupported pickle globals. Therefore
-# this workflow must not claim a numeric parity result until an owner-approved
-# safe state-dict source is available.
+# Purpose: validate the UTMOS safe state-dict boundary without deserializing
+# the historical Lightning pickle. The canonical input is an authenticated
+# tensor-only `.safetensors` state-dict. The legacy `.ckpt` URL remains in the
+# historical source manifest for provenance, but is never a CI input.
 #
 # The model-free job always exercises both explicit self-tests. When the pinned
-# checkpoint source is present, the boundary job downloads it and treats the
-# safe-loader refusal as the expected, passing outcome. It also proves that no
-# safetensors or config output was emitted. This keeps the refusal visible and
-# prevents an unsafe fallback or a fabricated parity pass.
+# tensor-only source is present, the boundary job downloads it and prepares the
+# sidecar. This keeps the safe route visible and prevents an unsafe fallback or
+# a fabricated parity pass.
 #
 # Artifacts the setup job requires:
-#   1. tests/parity/utmos/source.env with at least one non-comment line —
+#   1. tests/parity/utmos/source.env with both state-dict fields —
 #      owner-supplied as:
-#          CKPT_URL=<https url of the upstream UTMOS checkpoint>
-#          CKPT_SHA256=<sha256 of that file>
+#          STATE_DICT_URL=<https url of an upstream/exported safetensors file>
+#          STATE_DICT_SHA256=<sha256 of that file>
 #   2. tests/parity/utmos/score.json — the historical upstream-generated
 #      reference fixture. It is checked for presence, but is not consumed by
 #      a numeric job while the checkpoint cannot be safely prepared.
 #
-# The boundary uses only a temporary Python environment for the offline
-# checkpoint inspection; it does not invoke Cargo or modify the runtime
-# dependency set. Numeric parity remains explicitly unclaimed.
+# The boundary uses only a temporary Python environment for offline
+# safetensors inspection; it does not invoke Cargo or modify the runtime
+# dependency set. Numeric parity remains explicitly unclaimed until the
+# independent upstream dumper also receives a safe state-dict route.
 #
 # NOT a required check: workflow_dispatch + weekly cron + narrow PR path
 # filter only, matching the Kokoro/Whisper real-parity workflows (promote to
@@ -45,7 +42,7 @@ on:
     # Phase 5a-3 (2026-07-23): UTMOS metric / harness / fixtures / converter /
     # dumper / this workflow に加え、共有依存 (vokra-core / vokra-ops =
     # metric NN op が乗る座) を追加。setup job は boundary artifact の
-    # 有無を明示し、欠落時は safe-loader boundary を clean-skip する
+    # 有無を明示し、欠落時は safe state-dict boundary を clean-skip する
     # (fabricated pass 禁止 NFR-QL-04)。
     paths:
       - ".github/workflows/parity-utmos.yml"
@@ -70,7 +67,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Preflight: detect whether the pinned source and historical fixture exist.
+  # Preflight: detect whether the pinned UTMOS state-dict and historical
+  # fixture exist. `ready=true` means only the UTMOS preparation boundary;
+  # it is not a numeric-parity readiness signal (wav2vec is separate).
   # Missing inputs remain a visible boundary skip; they never become a
   # fabricated pass.
   setup:
@@ -83,32 +82,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Detect safe-loader boundary artifacts
+      - name: Detect safe state-dict boundary artifacts
         id: flip
         shell: bash
         run: |
           set -euo pipefail
           SRC=tests/parity/utmos/source.env
           FIX=tests/parity/utmos/score.json
-          src_has_content=0
-          if [ -f "$SRC" ] && grep -vE '^\s*(#|$)' "$SRC" | grep -q .; then
-            src_has_content=1
+          state_has_content=0
+          if [ -f "$SRC" ] && grep -qE '^STATE_DICT_URL=https?://' "$SRC" \
+            && grep -qE '^STATE_DICT_SHA256=[0-9a-fA-F]{64}$' "$SRC"; then
+            state_has_content=1
           fi
-          if [ "$src_has_content" -eq 1 ] && [ -f "$FIX" ]; then
+          if [ "$state_has_content" -eq 1 ] && [ -f "$FIX" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
             {
               echo "### parity-utmos"
               echo ""
-              echo "boundary artifacts: **present** (\`$SRC\` + \`$FIX\`) — checking the safe-loader refusal."
+              echo "safe UTMOS state-dict source: **present** (\`$SRC\` + \`$FIX\`) — checking tensor-only preparation only."
+              echo "Numeric parity remains blocked until W2V_STATE_DICT_URL + W2V_STATE_DICT_SHA256 are also fixed."
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             missing_reason="unknown"
             expected=1
             if [ ! -f "$SRC" ]; then
-              missing_reason="source.env missing (checkpoint source unavailable)"
-            elif [ "$src_has_content" -eq 0 ]; then
-              missing_reason="source.env has no pinned checkpoint source"
+              missing_reason="source.env missing (safe state-dict source unavailable)"
+            elif [ "$state_has_content" -eq 0 ]; then
+              missing_reason="source.env has no pinned STATE_DICT_URL + STATE_DICT_SHA256"
             elif [ ! -f "$FIX" ]; then
               # Not the expected cause: score.json is committed, so its
               # absence is a regression rather than the pending blocker.
@@ -118,10 +119,10 @@ jobs:
             {
               echo "### parity-utmos"
               echo ""
-              echo "Safe-loader boundary skipping — \`$missing_reason\`."
+              echo "Safe state-dict boundary skipping — \`$missing_reason\`."
               echo ""
               if [ "$expected" -eq 1 ]; then
-                echo "The source or fixture is not available, so the checkpoint boundary"
+              echo "The safe state-dict source or fixture is not available, so the boundary"
                 echo "cannot be exercised on this run. The model-free self-tests still run."
               else
                 echo "This is NOT the expected blocker and should be investigated."
@@ -130,7 +131,7 @@ jobs:
               echo "Skipping rather than substituting anything is the honest posture"
               echo "(NFR-QL-04). Recipe: \`tests/parity/utmos/README.md\`."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning file=tests/parity/utmos/README.md::parity-utmos safe-loader boundary skipping: $missing_reason (FR-EX-08 explicit skip, not a synthetic fallback)"
+            echo "::warning file=tests/parity/utmos/README.md::parity-utmos safe state-dict boundary skipping: $missing_reason (FR-EX-08 explicit skip, not a synthetic fallback)"
           fi
 
   model-free-selftests:
@@ -142,13 +143,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      - name: Check safe-loader self-tests
+      - name: Sync pinned UTMOS parity environment
+        run: uv sync --project tools/parity/utmos --frozen
+      - name: Check safe state-dict self-tests
         shell: bash
         run: |
           set -euo pipefail
-          uv run --no-project --python 3.12 python \
+          uv run --project tools/parity/utmos --frozen python \
             tools/parity/utmos_prepare_checkpoint.py --self-test
-          uv run --no-project --python 3.12 python \
+          uv run --project tools/parity/utmos --frozen python \
             tools/parity/utmos_dump_reference.py --self-test
       - name: Announce numeric parity boundary
         shell: bash
@@ -157,14 +160,14 @@ jobs:
           {
             echo "### parity-utmos"
             echo ""
-            echo "Model-free safe-loader/reference self-tests passed."
+            echo "Model-free safe state-dict/reference self-tests passed."
             echo ""
-            echo "Numeric parity is not claimed: the historical Lightning checkpoint"
-            echo "requires an owner-approved safe state-dict source."
+            echo "Numeric parity is not claimed: both UTMOS and wav2vec safe state-dicts"
+            echo "with fixed SHA-256 manifests are required."
           } >> "$GITHUB_STEP_SUMMARY"
 
   parity-utmos:
-    name: parity-utmos safe-loader-boundary
+    name: parity-utmos safe-state-dict-boundary
     needs: [setup, model-free-selftests]
     if: needs.setup.outputs.ready == 'true'
     runs-on: ubuntu-latest
@@ -174,45 +177,36 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      - name: Download + verify the pinned checkpoint source
+      - name: Sync pinned UTMOS parity environment
+        run: uv sync --project tools/parity/utmos --frozen
+      - name: Download + verify the pinned tensor-only state-dict source
         shell: bash
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
           source tests/parity/utmos/source.env
-          : "${CKPT_URL:?source.env must define CKPT_URL}"
-          : "${CKPT_SHA256:?source.env must define CKPT_SHA256}"
-          curl -fL --retry 3 -o /tmp/utmos-checkpoint "$CKPT_URL"
-          echo "${CKPT_SHA256}  /tmp/utmos-checkpoint" | sha256sum -c -
-      - name: Verify expected safe-loader refusal (no output or parity claim)
+          : "${STATE_DICT_URL:?source.env must define STATE_DICT_URL}"
+          : "${STATE_DICT_SHA256:?source.env must define STATE_DICT_SHA256}"
+          curl -fL --retry 3 -o /tmp/utmos-state-dict.safetensors "$STATE_DICT_URL"
+          echo "${STATE_DICT_SHA256}  /tmp/utmos-state-dict.safetensors" | sha256sum -c -
+      - name: Prepare tensor-only state-dict (no pickle or parity claim)
         shell: bash
         run: |
           set -euo pipefail
           workdir="$(mktemp -d)"
           trap 'rm -rf "$workdir"' EXIT
-          # The prepare step uses torch only as an offline bridge. Installing
-          # it here does not add anything to the runtime Cargo dependency set.
-          uv venv --python 3.12 "$workdir/venv"
-          uv pip install --python "$workdir/venv/bin/python" \
-            "torch==2.8.0" "numpy>=1.26,<3" safetensors
-          set +e
-          uv run --no-project --python "$workdir/venv/bin/python" \
+          # The pinned project contains only offline bridge dependencies; none
+          # enter the runtime Cargo dependency set.
+          uv run --project tools/parity/utmos --frozen \
             python tools/parity/utmos_prepare_checkpoint.py \
-            --ckpt /tmp/utmos-checkpoint \
+            --state-dict /tmp/utmos-state-dict.safetensors \
             --output "$workdir/utmos.safetensors" \
-            --config-out "$workdir/utmos-config.json" \
-            >"$workdir/prepare.log" 2>&1
-          status=$?
-          set -e
-          test "$status" -ne 0
-          grep -Fq "weights_only=True refused checkpoint" "$workdir/prepare.log"
-          grep -Fq "unsafe pickle deserialization is not permitted" "$workdir/prepare.log"
-          test ! -e "$workdir/utmos.safetensors"
-          test ! -e "$workdir/utmos-config.json"
-          cat "$workdir/prepare.log"
+            --config-out "$workdir/utmos-config.json"
+          test -s "$workdir/utmos.safetensors"
+          test -s "$workdir/utmos-config.json"
           {
-            echo "### UTMOS safe-loader boundary: PASS"
+            echo "### UTMOS safe state-dict boundary: PASS"
             echo ""
-            echo "The pinned Lightning checkpoint was refused by weights_only=True."
-            echo "No safetensors/config output was created; numeric parity was not claimed."
+            echo "The pinned tensor-only state-dict was prepared without pickle deserialization."
+            echo "Numeric parity was not claimed; the independent upstream reference route remains required."
           } >> "$GITHUB_STEP_SUMMARY"

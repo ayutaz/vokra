@@ -5,17 +5,28 @@ This records the state reviewed before the documentation refresh; later
 documentation-only commits do not change the implementation head. The audit below is
 the license and publication source of truth, while runtime reachability,
 real-weight parity, and Apple CPU/Metal verdicts remain separate gates. The
-owner-independent pre-Scaleway security work is complete: direct checkpoint
-loads are explicit restricted loads (`weights_only=True`), unsafe pickle
-fallbacks are refused, and incomplete Dia/Zonos/CLAP routes remain
+owner-independent pre-Scaleway security work is complete: legacy checkpoint
+routes that remain supported use explicit restricted loads
+(`weights_only=True`), UTMOS accepts tensor-only safetensors instead, unsafe
+pickle fallbacks are refused, and incomplete Dia/Zonos/CLAP routes remain
 fail-closed. UTMOS's historical upstream parity numbers are retained as
 non-rerunnable evidence only; its current legacy Lightning checkpoint route is
-`BLOCKED_UNSAFE_PICKLE` until owner-approved safe state-dict wiring exists.
+`BLOCKED_UNSAFE_PICKLE`; the separate safe UTMOS preparation boundary does not
+by itself make numeric parity ready.
 Reference-only VAST evidence is `NO_UPLOAD`; the disposable final replay
 instance and its storage were destroyed, and no retained VAST resource should
 be treated as an Apple/Scaleway transfer source. Apple CPU/reference and
 Metal/reference/no-fallback are still pending Scaleway and are not implied by
 license sign-off or CI.
+
+**UTMOS safety correction (2026-09-12)**: UTMOS no longer uses
+`torch.load(..., weights_only=True)` for either preparation or reference
+generation. The preparation tool accepts only an authenticated tensor-only
+`.safetensors` state-dict and the legacy Lightning `.ckpt` remains
+`BLOCKED_UNSAFE_PICKLE`. Numeric reference parity is additionally blocked
+until an independently authenticated wav2vec state-dict and an owner-approved
+safe upstream model-construction path are available; the safe UTMOS state-dict
+boundary alone is not numeric parity evidence.
 
 **履歴状態レビュー（2026-08-22、superseded）**: `main` `42af7a90`。§3 の実装表を
 converter / runtime / parity / publication の別に再照合し、
@@ -300,7 +311,7 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 
 **UTMOS22-strong 状態訂正（2026-08-26、下表の旧「要 owner sign-off / weight 非配布」文言を supersede）**: §3.1 は 2026-07-23 に `yousan` が Commercial として sign-off 済みで、`vokra/utmos22-strong` revision `49974674621965c7b83cb4f4793dd362e48a43de` は `utmos22-strong.gguf` 412,639,296 bytes（SHA-256 `790e538c8cadd8b9d73ecbe0cf3d95c659cf2736022fcdf15e177a77f8a181ea`）を MIT で公開済み。これは Hugging Face 公式 API と固定 revision のモデルカードを 2026-08-25 に再確認した現行事実であり、今回の Mac route 作業は既存 artefact を監査・実行するだけで upload / 差替を行わない。
 
-**UTMOS22-strong 現行安全状態（2026-09-09）**: 上記公開・license/sign-off と、下表に残る M5-15 の upstream parity 数値は、旧unsafe pickle 経路で得た**履歴記録**であり、現行環境で再生成可能な証跡や安全な実行承認ではない。現 worker `tools/parity/utmos_dump_reference.py` は `BLOCKED_UNSAFE_PICKLE` stub として torch import/load、upstream source download、checkpoint read、output write を行わず終了する。`tools/parity/utmos_prepare_checkpoint.py` は restricted loader（明示した `weights_only=True`）のみを使用し、安全loader拒否時は unsafe fallback なしで停止する。安全な reference 再生成には owner-approved safe state-dict wiring が必要であり、これは license sign-off とは別の実行ブロッカーである。
+**UTMOS22-strong 現行安全状態（2026-09-09、2026-09-12訂正で一部 supersede）**: 上記公開・license/sign-off と、下表に残る M5-15 の upstream parity 数値は、旧unsafe pickle 経路で得た**履歴記録**であり、現行環境で再生成可能な証跡や安全な実行承認ではない。legacy `--ckpt` 経路は `BLOCKED_UNSAFE_PICKLE` として拒否される。現 worker `tools/parity/utmos_dump_reference.py` は、認証済み tensor-only state-dict を安全に検査した後も `BLOCKED_SAFE_REFERENCE` で停止し、owner-approved な独立 wav2vec state-dict と安全な upstream model-construction path を要求する。`tools/parity/utmos_prepare_checkpoint.py` は認証済み tensor-only `.safetensors` のみを受け付け、`torch.load`（`weights_only=True` を含む）や unsafe fallback は使用しない。安全な reference 再生成には owner-approved safe state-dict wiring が必要であり、これは license sign-off とは別の実行ブロッカーである。
 
 | モデル | Code License | Weight License | 商用可 | Vokra 公式配布 | 備考 |
 |-------|------------|-------------|-----|-------------|-----|
@@ -442,7 +453,7 @@ compositionであり、standalone EnCodec配布やHF再公開を追加しない�
 
 ### Owner sign-off template（依頼者記入）
 
-**UTMOS22-strong §3.1 実行状態追補（2026-09-09）**: 同表の旧 `upstream parity 達成` / `upstream 実装を import する dumper` 記載は、旧unsafe pickle 経路に基づく履歴である。現行 `tools/parity/utmos_dump_reference.py` は `BLOCKED_UNSAFE_PICKLE` で停止し、`tools/parity/utmos_prepare_checkpoint.py` は `weights_only=True` の restricted loader に拒否された場合に fail closed する。owner-approved safe state-dict wiring が完了するまで、旧数値を再実行可能な parity evidence と扱わない。
+**UTMOS22-strong §3.1 実行状態追補（2026-09-09、2026-09-12訂正で一部 supersede）**: 同表の旧 `upstream parity 達成` / `upstream 実装を import する dumper` 記載は、旧unsafe pickle 経路に基づく履歴である。legacy `--ckpt` は `BLOCKED_UNSAFE_PICKLE` で拒否され、認証済み safe state-dict を用いる現行 dumper は `BLOCKED_SAFE_REFERENCE` で停止する。後者は独立した wav2vec state-dict と owner-approved safe upstream model-construction path が揃うまで numeric parity evidence にならない。`tools/parity/utmos_prepare_checkpoint.py` は認証済み tensor-only `.safetensors` のみを扱い、`torch.load`（`weights_only=True` を含む）や unsafe fallback は使用しない。owner-approved safe state-dict wiring が完了するまで、旧数値を再実行可能な parity evidence と扱わない。
 
 **位置付け（重要）**: 前節 §CC-verified 事実確認は Claude Code（CC）が一次公表資料（upstream の LICENSE ファイル / model card / GitHub 等）を写した **事実の記録** である。本節は、その事実を踏まえて **依頼者（`ayutaz`）が下す配布可否の法務的意思決定** を記録する場である。CC はライセンス facts の verification（upstream の license 表記の引用）のみを担い、"このモデルを商用配布して良いか / research-only で扱うか / 拒否するか" という distribute-or-not の法務判断は本節で依頼者が明示的にサインオフする。
 
@@ -1079,15 +1090,17 @@ AudioSeal checkpoints and HT-Demucs/HT-Demucs Multi runtime facts above remain
 historical implementation/licensing records; this correction does not revoke
 the standalone AudioSeal API or erase past measurements/publication history.
 
-`emotion2vec_prepare_checkpoint.py`, `fcpe_prepare_checkpoint.py`, and
-`utmos_prepare_checkpoint.py` now permit only restricted
-`torch.load(..., weights_only=True)`. A safe-loader refusal is a hard
-`BLOCKED` result; no tolerant unpickler, custom pickle module, or unrestricted
-fallback remains. Regeneration and any future VAST parity
-must use an official tensor-only artifact or an owner-approved state-dict
-route, with provenance/license gates still independently satisfied. Existing
-GGUF publication and parity records are retained as historical facts and are
-not evidence that a new unsafe legacy conversion is authorized.
+`emotion2vec_prepare_checkpoint.py` and `fcpe_prepare_checkpoint.py` permit
+only restricted `torch.load(..., weights_only=True)`. UTMOS is stricter:
+`utmos_prepare_checkpoint.py` accepts only an authenticated tensor-only
+`.safetensors` state-dict and never calls `torch.load`. A safe-loader refusal is
+a hard `BLOCKED` result; no tolerant unpickler, custom pickle module, or
+unrestricted fallback remains. Regeneration and any future VAST parity must
+use an official tensor-only artifact or an owner-approved state-dict route,
+with the independent safe wav2vec/model-construction gate and
+provenance/license gates still independently satisfied. Existing GGUF
+publication and parity records are retained as historical facts and are not
+evidence that a new unsafe legacy conversion is authorized.
 
 ## 10. 定期監査
 

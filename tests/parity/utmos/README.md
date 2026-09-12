@@ -1,20 +1,27 @@
 # UTMOS parity fixtures (M5-15)
 
-## Current status (2026-09-09)
+## Current status (2026-09-12)
 
 The committed fixture and native UTMOS harness remain useful historical
-artifacts, but the legacy SaruLab Lightning checkpoint cannot currently be
-prepared safely. `tools/parity/utmos_dump_reference.py` is an explicit
-`BLOCKED_UNSAFE_PICKLE` stub: it does not import torch, download upstream
-sources, read a checkpoint, or write reference output. The current
-`tools/parity/utmos_prepare_checkpoint.py` uses only an explicit restricted
-`weights_only=True` loader and stops when that loader rejects the checkpoint;
-there is no unsafe fallback.
+artifacts. The canonical preparation input is now a fixed, authenticated
+tensor-only `.safetensors` state-dict: it contains no pickle program or Python
+objects. `tools/parity/utmos_prepare_checkpoint.py --state-dict ...` accepts
+that path and derives the side-car only after strict tensor/key/shape checks.
+
+The historical SaruLab Lightning checkpoint is permanently refused. It is a
+pickle container with training objects, and no class allowlist or
+`weights_only=True` exception is permitted for this route: `--ckpt` returns
+`BLOCKED_UNSAFE_PICKLE`. A fixed, authenticated tensor-only state-dict is
+accepted only for the safe preparation milestone. The current
+`tools/parity/utmos_dump_reference.py` inspects that safe input but returns
+`BLOCKED_SAFE_REFERENCE` until an independently authenticated wav2vec source
+and owner-approved safe upstream model-construction path are available.
 
 Therefore current CI claims only the model-free self-tests and the
-safe-loader refusal boundary; it claims no numeric UTMOS parity. Re-enabling
-real reference generation requires owner-approved safe state-dict wiring,
-separate from the MIT license sign-off in `docs/license-audit.md` §3.1.
+safe state-dict boundary; it claims no numeric UTMOS parity. Re-enabling real
+reference generation requires owner-approved safe state-dict wiring for both
+the UTMOS and wav2vec inputs, separate from the MIT license sign-off in
+`docs/license-audit.md` §3.1.
 
 The checkpoint is never committed and Vokra ships no UTMOS weights. Future
 checkpoint preparation, reference generation, conversion, or `vokra-models`
@@ -34,9 +41,9 @@ What is committed here:
 | `ref-clip.wav` | 2 s mono 16 kHz PCM16, cut from `tests/fixtures/audio/jfk-30s.wav` (offset 0.5 s). Small enough to keep the 99-frame parity run fast, long enough to exercise the whole stack. |
 | `score.json` | The upstream score for that clip + the honest tolerance and its derivation. |
 
-**Still not committed, deliberately:** the checkpoint itself. The weights stay
-owner-gated pending the `docs/license-audit.md` §3.1 UTMOS sign-off, and Vokra
-ships no weights.
+**Still not committed, deliberately:** the checkpoint itself. The legacy
+pickle stays unusable; only an owner-provided, fixed `.safetensors` export may
+enter the preparation route. Vokra ships no UTMOS weights here.
 
 ## The two harnesses
 
@@ -50,30 +57,28 @@ fault (a swapped `ln1`/`ln2` mapping, a mis-folded weight-norm and a backwards
 LSTM direction all just read as "wrong number"), so the per-stage comparison is
 what turns a failure into a named stage.
 
-## Historical regeneration recipe (currently blocked)
+## Safe regeneration recipe (currently blocked)
 
 The following recipe documents the former VAST procedure. Do not run it until
-owner-approved safe state-dict wiring is supplied. The current safe loader must
-not be bypassed.
+the owner supplies both fixed state-dict URLs and SHA-256 manifests. The
+legacy Lightning pickle must not be bypassed or opened.
 
 ```bash
-# 0. environment — measured, not assumed (M5-15 T38; docs/adr/M5-15-utmos.md §(d)).
-#    Python 3.9 + torch 2.8.0 + fairseq @ d03f4e77 + pytorch-lightning 1.9.5 + omegaconf 2.1.2.
-#    Python 3.11 does NOT work (fairseq@2022 trips 3.11's tightened dataclass check);
-#    the upstream pin torch==1.11.0 has no macOS-arm64 wheel at all.
-tools/parity/utmos_env_probe.sh          # records which branch this machine lands on
+# 0. The legacy Lightning checkpoint is not an input. The VAST worker must
+#    first receive both an authenticated tensor-only state-dict and its SHA.
 
-# 1. flatten the upstream .ckpt → safetensors + config side-car
-uv run --project tools/parity --frozen --python 3.12 python tools/parity/utmos_prepare_checkpoint.py \
-    --ckpt "$CKPT" --output /tmp/utmos.safetensors --config-out /tmp/utmos-config.json
+# 1. flatten an authenticated tensor-only state-dict → config side-car
+uv run --project tools/parity/utmos --frozen --python 3.12 python tools/parity/utmos_prepare_checkpoint.py \
+    --state-dict "$STATE_DICT" --output /tmp/utmos.safetensors --config-out /tmp/utmos-config.json
 
 # 2. convert to a vokra.utmos.* GGUF (v1 variant)
 cargo run --release -p vokra-convert -- --model utmos \
     --input /tmp/utmos.safetensors --config /tmp/utmos-config.json --output /tmp/utmos.gguf
 
-# 3. dump the upstream reference — this IMPORTS the real implementation
-uv run --project tools/parity --frozen --python 3.12 python tools/parity/utmos_dump_reference.py \
-    --ckpt "$CKPT" --w2v "$W2V" --clip tests/parity/utmos/ref-clip.wav \
+# 3. dump the upstream reference — currently blocked until both safe inputs
+#    and the owner-approved upstream construction path are supplied
+uv run --project tools/parity/utmos --frozen --python 3.12 python tools/parity/utmos_dump_reference.py \
+    --state-dict "$STATE_DICT" --w2v "$W2V_STATE_DICT" --clip tests/parity/utmos/ref-clip.wav \
     --outdir ~/.cache/vokra-eval/out/utmos-flip/reference
 
 # 4. run both harnesses
@@ -82,9 +87,8 @@ VOKRA_UTMOS_REFDIR=~/.cache/vokra-eval/out/utmos-flip/reference \
     cargo test --release -p vokra-eval --test parity_utmos_stages -- --nocapture
 ```
 
-The conversion and model Cargo commands above are VAST-only. The former
-Python 3.9/fairseq environment is historical and is not a reason to bypass the
-current `weights_only=True` boundary.
+The conversion and model Cargo commands above are VAST-only. No legacy
+Lightning pickle route may be used to obtain a state-dict.
 
 ## The honesty rules this directory enforces
 
@@ -112,7 +116,8 @@ current `weights_only=True` boundary.
 ## Historical measured result (2026-07-20, M1 iMac / arm64)
 
 These values are retained for provenance and are not a current rerunnable
-parity claim. The current status is `BLOCKED_UNSAFE_PICKLE`.
+parity claim. The legacy `--ckpt` status is `BLOCKED_UNSAFE_PICKLE`; the safe
+state-dict reference path remains `BLOCKED_SAFE_REFERENCE`.
 
 Every stage and the final score agreed with upstream:
 

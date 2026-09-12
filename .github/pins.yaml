@@ -291,18 +291,26 @@ entries:
       upstream_mismatch: skip       # HF space resolve URL is content-addressed by construction; pins_probe cannot verify from the space URL alone (no resolve path) — kept skip until pins_probe supports HF space resolve pattern
       mirror_mismatch: hard_fail    # once mirror block populated (X-10 pattern extension)
     notes: |
-      UTMOS22-strong (SaruLab, MIT). Landed 2026-07-23 with the
-      docs/license-audit.md §3.1 UTMOS sign-off (yousan ☑ Commercial); the
-      parity-utmos.yml setup gate flips ready=true from this commit onward.
+      UTMOS22-strong (SaruLab, MIT). The legacy checkpoint pin is retained
+      for provenance only. It is not a CI input, and parity-utmos.yml does
+      not consume $CKPT_URL / $CKPT_SHA256: the legacy Lightning pickle is
+      permanently refused. The setup gate is a safe tensor-only boundary
+      gate and may report ready=true only when an owner-supplied
+      STATE_DICT_URL + STATE_DICT_SHA256 and the historical fixture exist.
 
-      Pin source-of-truth: tests/parity/utmos/source.env (not the workflow
-      yml — the workflow uses `source tests/parity/utmos/source.env` and
-      reads $CKPT_URL / $CKPT_SHA256 into its fetch + sha256 verification
-      step). That indirection is why owning_line stays 0: forward literal
-      search in the workflow yml would find nothing; check_pins_sync.py's
-      owning_line=0 sentinel keeps the forward leg skipped for source.env-
-      referenced pins. The SHA recorded here (44c57e3e...) MUST match
-      tests/parity/utmos/source.env CKPT_SHA256; editing either side
+      Numeric parity remains blocked until both the UTMOS tensor-only source
+      and an independently authenticated W2V_STATE_DICT_URL +
+      W2V_STATE_DICT_SHA256 are supplied. The UTMOS safetensors preparation
+      route and the independent safe wav2vec/model-construction route are
+      separate gates; neither is implied by this legacy pin or the license
+      sign-off.
+
+      Pin source-of-truth: tests/parity/utmos/source.env. The indirection is
+      why owning_line stays 0: forward literal search in the workflow yml
+      would find no legacy checkpoint input; check_pins_sync.py's
+      owning_line=0 sentinel keeps the forward leg skipped for
+      source.env-referenced pins. The SHA recorded here (44c57e3e...) MUST
+      match tests/parity/utmos/source.env CKPT_SHA256; editing either side
       requires editing the other.
 
       Measurement: 2026-07-17 campaign-2 utmos-probe fetched
