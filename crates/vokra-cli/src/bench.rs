@@ -1033,6 +1033,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsZonos => {
+            return Err(
+                "bench: arch `zonos` requires an explicit versioned conditioning packet, caller-supplied packet content digest from the preparer/reference/transfer manifest, and authenticated 44.1-kHz DAC sidecar; the generic bench surface has none of these inputs. Use `vokra-cli run --model <zonos.gguf> --input <conditioning.zcp> --zonos-conditioning-digest <64-hex-content-sha256> --zonos-dac <dac-44khz.gguf> --zonos-max-steps <N> --output <out.wav>` (FR-EX-08: refusing to fabricate conditioning or a duration denominator)"
+                    .to_owned(),
+            );
+        }
         ModelTask::AudioLlmUltravox => {
             return Err(
                 "bench: arch `ultravox` needs a separately licensed Llama companion, exact expanded prompt/audio span/stop IDs, and content-dependent generation length; use `vokra-cli run --model <ultravox-audio.gguf> --ultravox-companion <llama.gguf> --input <16k-mono.wav> --token-ids <expanded-prompt-ids> --ultravox-audio-start <N> --ultravox-stop-token-ids <ids>` (FR-EX-08: refusing to fabricate tokenizer, chat template, gated weights, or a duration denominator)"

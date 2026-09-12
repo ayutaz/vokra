@@ -12,6 +12,7 @@
 //! external, and TTS writes a WAV (or reports the sample count when `--output`
 //! is absent).
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use vokra_core::engines::{KwsEngine, SeparationEngine};
@@ -103,6 +104,9 @@ USAGE:
                   [--qwen3-tts-instruction <description>] \
                   [--qwen3-tts-max-new-tokens <N>] [--qwen3-tts-greedy] \
                   [--output <out.wav>]
+    vokra-cli run --model <zonos.gguf> --input <conditioning.zcp> \
+                  --zonos-conditioning-digest <64-hex-content-sha256> --zonos-dac <dac-44khz.gguf> \
+                  --zonos-max-steps <N> [--zonos-guidance-scale <f32>] --output <out.wav>
     vokra-cli run --model <ultravox-audio.gguf> --ultravox-companion <llama.gguf> \
                   --input <16k-mono.wav> --token-ids <expanded-prompt-u32,...> \
                   --ultravox-audio-start <N> --ultravox-stop-token-ids <u32,u32,...> \
@@ -203,6 +207,19 @@ OPTIONS:
     --qwen3-tts-greedy          Qwen3-TTS deterministic talker and predictor
                                 argmax mode; stochastic release defaults are
                                 used when absent.
+    --zonos-dac <path>          Zonos only, REQUIRED: explicit authenticated DAC
+                                44.1 kHz / nine-codebook GGUF sidecar.
+    --zonos-conditioning-digest <64-hex-content-sha256>
+                                Zonos only, REQUIRED: caller-supplied 64-hex
+                                packet content digest from the preparer or an
+                                independent reference/transfer manifest; this
+                                is not the SHA-256 of the packet file and the
+                                embedded digest is never self-adopted.
+    --zonos-max-steps <N>       Zonos only, REQUIRED: positive bounded generation
+                                length in delayed codebook frames.
+    --zonos-guidance-scale <f32>
+                                Zonos only: finite classifier-free guidance
+                                scale (default 1.0).
     --tokenizer <path>          Authenticated ASR tokenizer sidecar: Nemotron
                                 uses tokenizer.json; Parakeet-TDT-1.1B uses
                                 tokenizer.vocab. Published legacy GGUFs need
@@ -616,6 +633,15 @@ struct RunArgs {
     qwen3_tts_max_new_tokens: Option<usize>,
     /// Qwen3-TTS deterministic talker and predictor sampling.
     qwen3_tts_greedy: bool,
+    /// Zonos only: versioned conditioning packet's externally supplied
+    /// content digest. The packet's embedded digest is not trusted alone.
+    zonos_conditioning_digest: Option<String>,
+    /// Zonos only: explicit authenticated DAC 44.1-kHz sidecar GGUF.
+    zonos_dac: Option<String>,
+    /// Zonos only: positive bounded delayed-frame generation cap.
+    zonos_max_steps: Option<usize>,
+    /// Zonos only: finite classifier-free guidance scale.
+    zonos_guidance_scale: Option<f32>,
     /// Nemotron-ASR-only official tokenizer.json sidecar.
     tokenizer: Option<String>,
     input: Option<String>,
@@ -818,6 +844,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut qwen3_tts_instruction: Option<String> = None;
     let mut qwen3_tts_max_new_tokens: Option<usize> = None;
     let mut qwen3_tts_greedy = false;
+    let mut zonos_conditioning_digest: Option<String> = None;
+    let mut zonos_dac: Option<String> = None;
+    let mut zonos_max_steps: Option<usize> = None;
+    let mut zonos_guidance_scale: Option<f32> = None;
     let mut tokenizer: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
@@ -958,6 +988,64 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             "--qwen3-tts-greedy" => {
                 qwen3_tts_greedy = true;
                 i += 1;
+            }
+            "--zonos-conditioning-digest" => {
+                if zonos_conditioning_digest.is_some() {
+                    return Err("duplicate option `--zonos-conditioning-digest`".to_owned());
+                }
+                zonos_conditioning_digest = Some(
+                    args.get(i + 1)
+                        .ok_or(
+                            "--zonos-conditioning-digest requires a 64-hex packet content digest",
+                        )?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--zonos-dac" => {
+                if zonos_dac.is_some() {
+                    return Err("duplicate option `--zonos-dac`".to_owned());
+                }
+                zonos_dac = Some(
+                    args.get(i + 1)
+                        .ok_or("--zonos-dac requires a DAC GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--zonos-max-steps" => {
+                if zonos_max_steps.is_some() {
+                    return Err("duplicate option `--zonos-max-steps`".to_owned());
+                }
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--zonos-max-steps requires a positive integer")?;
+                let steps = value
+                    .parse::<usize>()
+                    .map_err(|error| format!("--zonos-max-steps must be an integer: {error}"))?;
+                if steps == 0 {
+                    return Err("--zonos-max-steps must be positive".to_owned());
+                }
+                zonos_max_steps = Some(steps);
+                i += 2;
+            }
+            "--zonos-guidance-scale" => {
+                if zonos_guidance_scale.is_some() {
+                    return Err("duplicate option `--zonos-guidance-scale`".to_owned());
+                }
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--zonos-guidance-scale requires a finite float")?;
+                let scale = value
+                    .parse::<f32>()
+                    .map_err(|error| format!("--zonos-guidance-scale must be a float: {error}"))?;
+                if !scale.is_finite() {
+                    return Err(format!(
+                        "--zonos-guidance-scale must be finite (got {scale})"
+                    ));
+                }
+                zonos_guidance_scale = Some(scale);
+                i += 2;
             }
             "--tokenizer" => {
                 tokenizer = Some(
@@ -1440,6 +1528,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         qwen3_tts_instruction,
         qwen3_tts_max_new_tokens,
         qwen3_tts_greedy,
+        zonos_conditioning_digest,
+        zonos_dac,
+        zonos_max_steps,
+        zonos_guidance_scale,
         tokenizer,
         input,
         text,
@@ -1577,6 +1669,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::TtsVibeVoice
         | ModelTask::TtsSpeechT5
         | ModelTask::TtsQwen3
+        | ModelTask::TtsZonos
         | ModelTask::TtsKokoro
         | ModelTask::TtsMelo
         | ModelTask::Speaker
@@ -1700,6 +1793,66 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
              --qwen3-tts-max-new-tokens / --qwen3-tts-greedy are only supported for the qwen3_tts arch"
                 .to_owned(),
         );
+    }
+    if (a.zonos_conditioning_digest.is_some()
+        || a.zonos_dac.is_some()
+        || a.zonos_max_steps.is_some()
+        || a.zonos_guidance_scale.is_some())
+        && task != ModelTask::TtsZonos
+    {
+        return Err(
+            "run: --zonos-conditioning-digest / --zonos-dac / --zonos-max-steps / \
+             --zonos-guidance-scale are only supported for the zonos arch"
+                .to_owned(),
+        );
+    }
+    if task == ModelTask::TtsZonos {
+        if a.text.is_some() {
+            return Err(
+                "run (Zonos): --text is not accepted; use the versioned offline conditioning \
+                 packet through --input"
+                    .to_owned(),
+            );
+        }
+        if a.input.is_none() {
+            return Err("run (Zonos): --input <conditioning.zcp> is required".to_owned());
+        }
+        if a.zonos_conditioning_digest.is_none() {
+            return Err(
+                "run (Zonos): --zonos-conditioning-digest <64-hex-content-sha256> is required; \
+                 provide the external packet content digest from the preparer/reference/transfer \
+                 manifest — the packet's self-reported digest cannot authenticate itself"
+                    .to_owned(),
+            );
+        }
+        if a.zonos_dac.is_none() {
+            return Err(
+                "run (Zonos): --zonos-dac <dac-44khz.gguf> is required; the DAC is an \
+                 explicit sidecar and is never inferred"
+                    .to_owned(),
+            );
+        }
+        if a.zonos_max_steps.is_none() {
+            return Err("run (Zonos): --zonos-max-steps <N> is required".to_owned());
+        }
+        if a.output.is_none() {
+            return Err("run (Zonos): --output <out.wav> is required".to_owned());
+        }
+        if a.interrupt_after.is_some()
+            || a.deterministic
+            || a.duplex
+            || a.echo_sim.is_some()
+            || a.beam_size != 1
+            || a.no_repeat_ngram != 0
+            || a.length_penalty.to_bits() != 0.6f32.to_bits()
+        {
+            return Err(
+                "run (Zonos): --interrupt-after / --deterministic / --duplex / --echo-sim / \
+                 beam-search flags are not part of the authenticated packet-conditioned \
+                 generation contract"
+                    .to_owned(),
+            );
+        }
     }
     if a.max_new_frames.is_some()
         && !matches!(
@@ -2159,6 +2312,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsQwen3 => {
             run_qwen3_tts(&session, &a)?;
+        }
+        ModelTask::TtsZonos => {
+            run_zonos(&session, &a)?;
         }
         ModelTask::MusicGeneration => {
             run_musicgen(&a)?;
@@ -2768,6 +2924,164 @@ fn run_ast_classification(session: &vokra_core::Session, args: &RunArgs) -> Resu
             "vokra: AST note: this GGUF has no AudioSet label-name table; class indices are printed and no names are fabricated"
         );
     }
+    Ok(())
+}
+
+/// Parses the caller-supplied Zonos packet content digest. This is deliberately
+/// kept in the CLI boundary: the expected digest must come from the external
+/// preparer/reference/transfer manifest, never from the packet's self-declared
+/// field. It is not the SHA-256 of the complete packet file.
+fn parse_zonos_content_digest(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "--zonos-conditioning-digest must be exactly 64 ASCII hexadecimal characters"
+                .to_owned(),
+        );
+    }
+    let mut digest = [0u8; 32];
+    for (index, slot) in digest.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|error| {
+            format!("--zonos-conditioning-digest contains invalid hexadecimal: {error}")
+        })?;
+    }
+    Ok(digest)
+}
+
+/// Reads a sidecar only when the path itself is a regular, non-symlink file.
+/// A followed symlink would make the provenance selected by the caller
+/// ambiguous, so Zonos rejects it before parsing packet bytes.
+fn read_zonos_regular_file(path: &str, label: &str) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("run (Zonos): {label} `{path}`: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!(
+            "run (Zonos): {label} `{path}` is not a regular file (symlinks and directories are rejected)"
+        ));
+    }
+    std::fs::read(path).map_err(|error| format!("run (Zonos): {label} `{path}`: {error}"))
+}
+
+/// Checks the output path before synthesis. The existing WAV writer is the
+/// canonical serializer, but it intentionally permits replacement for legacy
+/// CLI tasks; the production Zonos route must not overwrite an existing or
+/// symlinked artifact.
+fn ensure_zonos_new_output(path: &str) -> Result<(), String> {
+    let output = Path::new(path);
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent_metadata = std::fs::symlink_metadata(parent).map_err(|error| {
+        format!(
+            "run (Zonos): output parent `{}` cannot be inspected: {error}",
+            parent.display()
+        )
+    })?;
+    if !parent_metadata.file_type().is_dir() {
+        return Err(format!(
+            "run (Zonos): output parent `{}` is not a regular directory",
+            parent.display()
+        ));
+    }
+    match std::fs::symlink_metadata(output) {
+        Ok(_) => Err(format!(
+            "run (Zonos): refusing to overwrite existing output `{path}` (remove it explicitly first)"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "run (Zonos): output `{path}` cannot be inspected: {error}"
+        )),
+    }
+}
+
+/// Runs the authenticated Zonos-v0.1 production route. Input is intentionally
+/// a versioned offline conditioning packet rather than raw text/phonemes. The
+/// transformer and explicit DAC sidecar are bound on one selected backend;
+/// unsupported backend operations remain loud errors in the model layer.
+fn run_zonos(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let packet_path = a
+        .input
+        .as_deref()
+        .ok_or("run (Zonos): --input <conditioning.zcp> is required")?;
+    let digest_text = a.zonos_conditioning_digest.as_deref().ok_or(
+        "run (Zonos): --zonos-conditioning-digest <64-hex-content-sha256> is required; \
+             provide the external packet content digest from the preparer/reference/transfer \
+             manifest, never the packet's self-reported field",
+    )?;
+    let expected_digest = parse_zonos_content_digest(digest_text)?;
+    let dac_path = a
+        .zonos_dac
+        .as_deref()
+        .ok_or("run (Zonos): --zonos-dac <dac-44khz.gguf> is required")?;
+    let max_steps = a
+        .zonos_max_steps
+        .ok_or("run (Zonos): --zonos-max-steps <N> is required")?;
+    let guidance_scale = a.zonos_guidance_scale.unwrap_or(1.0);
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (Zonos): --output <out.wav> is required")?;
+
+    ensure_zonos_new_output(output_path)?;
+    let packet_bytes = read_zonos_regular_file(packet_path, "conditioning packet")?;
+    let model_metadata = std::fs::symlink_metadata(&a.model).map_err(|error| {
+        format!(
+            "run (Zonos): model `{}` cannot be inspected: {error}",
+            a.model
+        )
+    })?;
+    if !model_metadata.file_type().is_file() {
+        return Err(format!(
+            "run (Zonos): model `{}` is not a regular file (symlinks and directories are rejected)",
+            a.model
+        ));
+    }
+    let dac_metadata = std::fs::symlink_metadata(dac_path).map_err(|error| {
+        format!("run (Zonos): DAC sidecar `{dac_path}` cannot be inspected: {error}")
+    })?;
+    if !dac_metadata.file_type().is_file() {
+        return Err(format!(
+            "run (Zonos): DAC sidecar `{dac_path}` is not a regular file (symlinks and directories are rejected)"
+        ));
+    }
+
+    let policy = vokra_core::CompliancePolicy::from_env();
+    vokra_core::check_weight_license(session.gguf(), &policy)
+        .map_err(|error| format!("run (Zonos): transformer license gate: {error}"))?;
+
+    let zonos = vokra_models::zonos::ZonosTts::from_gguf(session.gguf())
+        .map_err(|error| format!("run (Zonos): transformer bind: {error}"))?;
+    let packet = vokra_models::zonos::ZonosConditioningPacket::parse(
+        &packet_bytes,
+        expected_digest,
+        zonos.config().backbone.d_model,
+    )
+    .map_err(|error| format!("run (Zonos): conditioning packet: {error}"))?;
+
+    let dac_file = vokra_mmap::open_gguf(dac_path)
+        .map_err(|error| format!("run (Zonos): DAC sidecar `{dac_path}`: {error}"))?;
+    vokra_core::check_weight_license(&dac_file, &policy)
+        .map_err(|error| format!("run (Zonos): DAC license gate: {error}"))?;
+    let dac = vokra_models::dac::Dac::from_gguf(&dac_file)
+        .map_err(|error| format!("run (Zonos): DAC bind: {error}"))?
+        .with_backend(a.backend);
+    let zonos = zonos
+        .with_dac(dac)
+        .map_err(|error| format!("run (Zonos): transformer/DAC contract: {error}"))?
+        .with_backend(a.backend);
+    let sample_rate = zonos
+        .dac()
+        .map(|dac| dac.sample_rate())
+        .ok_or("run (Zonos): DAC binding disappeared before synthesis")?;
+    let pcm = zonos
+        .synthesize_with_conditioning_packet(&packet, max_steps, guidance_scale)
+        .map_err(|error| format!("run (Zonos): synthesis: {error}"))?;
+    wav::write_wav_create_new(output_path, &pcm, sample_rate)
+        .map_err(|error| format!("run (Zonos): --output {output_path}: {error}"))?;
+    println!(
+        "zonos: wrote {} samples @ {sample_rate} Hz -> {output_path}",
+        pcm.len()
+    );
     Ok(())
 }
 
@@ -9025,6 +9339,66 @@ mod tests {
                 .unwrap(),
             "--no-repeat-ngram requires a value"
         );
+    }
+
+    #[test]
+    fn parses_zonos_packet_contract_and_rejects_duplicate_or_bad_digest() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "zonos.gguf",
+            "--input",
+            "conditioning.zcp",
+            "--zonos-conditioning-digest",
+            "ab0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+            "--zonos-dac",
+            "dac-44khz.gguf",
+            "--zonos-max-steps",
+            "64",
+            "--zonos-guidance-scale",
+            "1.5",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("Zonos packet contract parses");
+        assert_eq!(
+            parsed.zonos_conditioning_digest.as_deref(),
+            Some("ab0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd")
+        );
+        assert_eq!(parsed.zonos_dac.as_deref(), Some("dac-44khz.gguf"));
+        assert_eq!(parsed.zonos_max_steps, Some(64));
+        assert_eq!(parsed.zonos_guidance_scale, Some(1.5));
+
+        let duplicate = parse_args(&args(&[
+            "--model",
+            "zonos.gguf",
+            "--input",
+            "a.zcp",
+            "--zonos-dac",
+            "dac-1.gguf",
+            "--zonos-dac",
+            "dac-2.gguf",
+        ]))
+        .err()
+        .expect("duplicate options must fail closed");
+        assert!(
+            duplicate.contains("duplicate option `--zonos-dac`"),
+            "{duplicate}"
+        );
+        let bad_digest = parse_zonos_content_digest("not-a-digest").expect_err("bad digest");
+        assert!(bad_digest.contains("64 ASCII hexadecimal"), "{bad_digest}");
+    }
+
+    #[test]
+    fn zonos_digest_parser_accepts_uppercase_hex_without_changing_bytes() {
+        let lower = parse_zonos_content_digest(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("lowercase digest");
+        let upper = parse_zonos_content_digest(
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        )
+        .expect("uppercase digest");
+        assert_eq!(lower, upper);
     }
 
     // ---- --backend (bench-surface mirror) + --compare (speaker) ----------

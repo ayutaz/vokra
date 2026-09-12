@@ -132,6 +132,10 @@ pub(crate) enum ModelTask {
     /// waveform-decoder companion. The run arm owns both mmap mappings and
     /// threads one selected CPU/Metal backend through the complete graph.
     TtsQwen3,
+    /// Zonos-v0.1 packet-conditioned TTS with an explicit authenticated
+    /// 44.1-kHz DAC sidecar. The dispatch returns a bare session so `run`
+    /// can bind the transformer and DAC once on the same selected backend.
+    TtsZonos,
     /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
     ///
     /// The dispatch returns a bare session because the concrete mapping-owned
@@ -590,6 +594,8 @@ const ARCH_VOXTRAL: &str = "voxtral";
 const ARCH_QWEN3_ASR: &str = "qwen3_asr";
 /// Alibaba Qwen3-TTS Base/CustomVoice/VoiceDesign main generation family.
 const ARCH_QWEN3_TTS: &str = "qwen3_tts";
+/// Zonos-v0.1 transformer packet-conditioned TTS.
+const ARCH_ZONOS: &str = "zonos";
 /// Kokoro-82M (M2-07) — matches `vokra_models::kokoro`'s `EXPECTED_ARCH` and
 /// what `vokra-convert --model kokoro` writes.
 const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
@@ -1256,6 +1262,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bare session: the run arm owns the explicit 12-Hz companion and
             // opens both mmap-backed artifacts once on the requested backend.
             Ok((session, ModelTask::TtsQwen3))
+        }
+        ARCH_ZONOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported for the zonos arch"
+                ));
+            }
+            // Bare session: the run arm binds the strict transformer and its
+            // explicitly supplied 44.1-kHz DAC sidecar exactly once, keeping
+            // the packet-conditioned concrete API available without loading
+            // the model a second time.
+            Ok((session, ModelTask::TtsZonos))
         }
         ARCH_VIBEVOICE => {
             if hint.is_some() {
@@ -2170,7 +2188,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
-                 `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
+                 `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_ZONOS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_NISQA}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
@@ -2398,12 +2416,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| {
             vokra_models::voxcpm2::VoxCpm2Checkpoint::from_gguf(g).map(|_| ())
         }),
-    },
-    BoundArch {
-        arch: "zonos",
-        module: "vokra_models::zonos",
-        entry: "ZonosCheckpoint::from_gguf → INSPECTION_ONLY (no synthesize)",
-        probe: Some(|g: &GgufFile| vokra_models::zonos::ZonosCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "diffsinger",
@@ -3806,24 +3818,17 @@ mod tests {
         });
     }
 
-    /// Zonos moved from the last no-loader slice to a strict manifest probe;
-    /// an arch-only GGUF must surface the binder failure and the remaining
-    /// forward class rather than the retired synthesized-only diagnosis.
+    /// Zonos dispatches to the packet-conditioned production task while
+    /// retaining the strict bare-session binding boundary.
     #[test]
-    fn load_session_zonos_uses_strict_probe_and_loud_partial_diagnostic() {
-        let err = with_arch_only_gguf("zonos", "zonos-arch", |p| {
-            let Err(e) = load_session(p) else {
-                panic!("zonos has no run task");
-            };
-            e
+    fn load_session_routes_zonos_to_packet_conditioned_tts_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_ZONOS, "zonos-arch", |p| {
+            load_session(p).expect("zonos session builds (bare)")
         });
+        assert_eq!(task, ModelTask::TtsZonos);
         assert!(
-            err.contains("FAILED — the binder reports:") && err.contains("loud-partial"),
-            "must report the strict binder outcome and remaining forward class: {err}"
-        );
-        assert!(
-            err.contains("vokra_models::zonos"),
-            "must name the binding module: {err}"
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_ZONOS),
+            "the routed Zonos arch must not retain a stale registry row"
         );
     }
 
