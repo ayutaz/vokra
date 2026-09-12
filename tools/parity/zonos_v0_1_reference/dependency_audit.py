@@ -91,6 +91,20 @@ def _digest(value: Any) -> str:
     ).hexdigest()
 
 
+def _streaming_binary_facts(path: Path) -> tuple[int, str, bool]:
+    """Hash native payloads without retaining a potentially huge file."""
+    digest = hashlib.sha256()
+    size = 0
+    header = bytearray()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+            if len(header) < 4:
+                header.extend(block[: 4 - len(header)])
+    return size, digest.hexdigest(), bytes(header) == b"\\x7fELF"
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -148,6 +162,7 @@ def _lock_rows() -> list[dict[str, Any]]:
                     for dependency in package.get("dependencies", [])
                     if isinstance(dependency, dict) and isinstance(dependency.get("marker"), str)
                 ),
+                "dependencies": package.get("dependencies", []),
                 "license_conclusion": LICENSE_CONCLUSIONS[name],
             }
         )
@@ -177,27 +192,117 @@ def lock_audit() -> dict[str, Any]:
     }
 
 
-def _active_lock_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _active_lock_rows(
+    rows: list[dict[str, Any]], environment: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
     """Select the exact Linux x86_64 lock closure, not every platform fork."""
     active: list[dict[str, Any]] = []
-    for name in sorted({row["name"] for row in rows}):
-        candidates = [row for row in rows if row["name"] == name]
-        if all(row["source"].get("virtual") is not None for row in candidates):
+    virtual = [row for row in rows if row["source"].get("virtual") is not None]
+    if len(virtual) != 1:
+        raise RuntimeError("dedicated lock must contain exactly one virtual root")
+    selected: dict[str, dict[str, Any]] = {}
+    pending = list(virtual[0].get("dependencies", []))
+    environment = environment or {
+        "sys_platform": "linux",
+        "platform_machine": "x86_64",
+        "platform_python_implementation": "CPython",
+        "python_version": "3.12",
+        "python_full_version": "3.12.0",
+    }
+    while pending:
+        dependency = pending.pop()
+        if not isinstance(dependency, dict) or not isinstance(dependency.get("name"), str):
+            raise RuntimeError("virtual root has an invalid dependency row")
+        marker = dependency.get("marker")
+        if marker is not None and not _marker_matches(marker, environment):
             continue
-        candidates = [row for row in candidates if row["source"].get("virtual") is None]
-        if name in {"torch", "torchaudio"}:
-            candidates = [
-                row
-                for row in candidates
-                if row["version"] == "2.6.0+cpu"
-                and row["source"].get("registry") == "https://download.pytorch.org/whl/cpu"
-            ]
-        elif len(candidates) != 1:
-            raise RuntimeError(f"active Linux lock resolution is ambiguous: {name}")
+        name = dependency["name"]
+        candidates = [row for row in rows if row["name"] == name and row["source"].get("virtual") is None]
+        version = dependency.get("version")
+        source = dependency.get("source")
+        if version is not None:
+            candidates = [row for row in candidates if row["version"] == version]
+        if source is not None:
+            candidates = [row for row in candidates if row["source"] == source]
+        if name in selected:
+            if selected[name] not in candidates:
+                raise RuntimeError(f"active Linux lock resolution conflicts: {name}")
+            continue
         if len(candidates) != 1:
-            raise RuntimeError(f"active Linux lock resolution is missing: {name}")
-        active.append(candidates[0])
+            raise RuntimeError(f"active Linux lock resolution is not unique: {name}")
+        selected[name] = candidates[0]
+        for child in selected[name].get("dependencies", []):
+            if isinstance(child, dict):
+                pending.append(child)
+    active = [selected[name] for name in sorted(selected)]
+    expected_torch_version = "2.6.0+cpu" if environment["sys_platform"] == "linux" else "2.6.0"
+    for name in ("torch", "torchaudio"):
+        candidates = [row for row in active if row["name"] == name]
+        if len(candidates) != 1 or candidates[0]["version"] != expected_torch_version:
+            raise RuntimeError(f"Linux CPU {name} resolution is not pinned")
     return active
+
+
+def _marker_matches(marker: str, environment: dict[str, str]) -> bool:
+    """Evaluate uv lock markers with packaging, with a strict stdlib fallback."""
+    try:
+        from packaging.markers import Marker
+    except ImportError:
+        # Self-tests intentionally run without syncing the project.  This
+        # parser accepts only the lock grammar (quoted ==/!= leaves joined by
+        # and/or); unknown marker syntax remains fail-closed.
+        def evaluate(expression: str) -> bool:
+            expression = expression.strip()
+            while expression.startswith("(") and expression.endswith(")"):
+                depth = 0
+                closes_at = None
+                for index, character in enumerate(expression):
+                    if character == "(":
+                        depth += 1
+                    elif character == ")":
+                        depth -= 1
+                        if depth == 0:
+                            closes_at = index
+                            break
+                if closes_at != len(expression) - 1:
+                    break
+                expression = expression[1:-1].strip()
+            for operator in (" or ", " and "):
+                parts: list[str] = []
+                start = 0
+                depth = 0
+                quote = False
+                index = 0
+                while index < len(expression):
+                    character = expression[index]
+                    if character == "'":
+                        quote = not quote
+                    elif not quote and character == "(":
+                        depth += 1
+                    elif not quote and character == ")":
+                        depth -= 1
+                    if not quote and depth == 0 and expression.startswith(operator, index):
+                        parts.append(expression[start:index])
+                        start = index + len(operator)
+                        index = start
+                        continue
+                    index += 1
+                if parts:
+                    parts.append(expression[start:])
+                if len(parts) > 1:
+                    values = [evaluate(part) for part in parts]
+                    return any(values) if operator.strip() == "or" else all(values)
+            match = re.fullmatch(r"([a-z_]+)\s*(==|!=)\s*'([^']*)'", expression)
+            if match is None or match.group(1) not in environment:
+                raise RuntimeError(f"unsupported lock dependency marker: {marker}")
+            actual = environment[match.group(1)]
+            return actual == match.group(3) if match.group(2) == "==" else actual != match.group(3)
+
+        return evaluate(marker)
+    try:
+        return bool(Marker(marker).evaluate(environment))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"invalid lock dependency marker: {marker}") from error
 
 
 def _elf_needed(path: Path) -> list[str]:
@@ -269,8 +374,7 @@ def installed_audit() -> dict[str, Any]:
             if path.is_symlink() or not path.is_file():
                 failures.append(f"native file is unsafe: {path}")
                 continue
-            raw = path.read_bytes()
-            is_elf = raw.startswith(b"\\x7fELF")
+            byte_count, file_sha256, is_elf = _streaming_binary_facts(path)
             needed: list[str] = []
             if is_elf:
                 try:
@@ -294,8 +398,8 @@ def installed_audit() -> dict[str, Any]:
                         ".so.*" if re.search(r"\.so\.", path.name, re.IGNORECASE)
                         else path.suffix.lower()
                     ),
-                    "bytes": len(raw),
-                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "bytes": byte_count,
+                    "sha256": file_sha256,
                     "format": "ELF" if is_elf else "non-ELF",
                     "needed": needed,
                 }
@@ -325,6 +429,7 @@ def installed_audit() -> dict[str, Any]:
             failures.append(f"missing publisher LICENSE/NOTICE evidence: {name}")
     publisher_files.sort(key=lambda row: (row["distribution"], row.get("path", "")))
     return {
+        "status": "COLLECTED",
         "platform": {"system": "Linux", "machine": "x86_64"},
         "active_lock_packages": active_rows,
         "installed_distributions": installed_rows,
@@ -356,6 +461,7 @@ def audit(output: Path | None = None, installed: bool = False) -> dict[str, Any]
         "checkpoint_access": False,
         "publication": PUBLICATION,
     }
+    report["candidate_scope_sha256"] = _digest(report["candidate_scope"])
     report["failures"] = installed_report.get("failures", [])
     if output is not None:
         if output.exists() or output.is_symlink():
@@ -366,6 +472,91 @@ def audit(output: Path | None = None, installed: bool = False) -> dict[str, Any]
     return report
 
 
+def _strict_json(path: Path) -> dict[str, Any]:
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_pairs)
+    if not isinstance(value, dict):
+        raise ValueError("audit evidence must be a JSON object")
+    return value
+
+
+def validate_report(path: Path) -> None:
+    """Reject incomplete/fallback evidence before it can be owner-reviewed."""
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("audit evidence must be a regular non-symlink file")
+    report = _strict_json(path)
+    if report.get("schema") != "vokra-zonos-dependency-audit-v1":
+        raise RuntimeError("audit evidence schema is not exact")
+    if report.get("status") != AUDIT_STATUS or report.get("publication") != PUBLICATION:
+        raise RuntimeError("audit evidence status/publication is not fail-closed")
+    installed = report.get("installed")
+    scope = report.get("candidate_scope")
+    if not isinstance(installed, dict) or installed.get("status") != "COLLECTED":
+        raise RuntimeError("installed closure was not completely collected")
+    if not isinstance(scope, dict):
+        raise RuntimeError("candidate scope is missing")
+    required_scope = {
+        "schema", "lock_rows_sha256", "installed_closure_sha256", "native_files_sha256",
+        "publisher_files_sha256", "failures", "model_access", "source_access",
+        "checkpoint_access", "publication",
+    }
+    if not required_scope.issubset(scope):
+        raise RuntimeError("candidate scope is incomplete")
+    if scope["schema"] != "vokra-zonos-dependency-approval-scope-v1":
+        raise RuntimeError("candidate scope schema is not exact")
+    if any(scope[key] is not False for key in ("model_access", "source_access", "checkpoint_access")):
+        raise RuntimeError("audit evidence crosses the acquisition boundary")
+    if scope["publication"] != PUBLICATION:
+        raise RuntimeError("candidate scope publication is not NO_UPLOAD")
+    hex64 = re.compile(r"[0-9a-f]{64}")
+    for key in ("lock_rows_sha256", "installed_closure_sha256", "native_files_sha256", "publisher_files_sha256"):
+        if not isinstance(scope[key], str) or not hex64.fullmatch(scope[key]):
+            raise RuntimeError(f"candidate scope digest is missing or malformed: {key}")
+    if not isinstance(report.get("candidate_scope_sha256"), str) or not hex64.fullmatch(report["candidate_scope_sha256"]):
+        raise RuntimeError("candidate scope canonical digest is missing or malformed")
+    if report["candidate_scope_sha256"] != _digest(scope):
+        raise RuntimeError("candidate scope canonical digest mismatch")
+    lock = report.get("lock")
+    if not isinstance(lock, dict) or not isinstance(lock.get("rows"), list):
+        raise RuntimeError("lock rows are missing")
+    if scope["lock_rows_sha256"] != _digest(lock["rows"]):
+        raise RuntimeError("lock row digest mismatch")
+    failures = installed.get("failures")
+    if not isinstance(failures, list) or report.get("failures") != failures or scope["failures"] != failures:
+        raise RuntimeError("audit failures are not consistently bound")
+    installed_rows = installed.get("installed_distributions")
+    native = installed.get("native_files")
+    publisher = installed.get("publisher_license_notice_files")
+    digests = installed.get("digests")
+    if not all(isinstance(value, list) for value in (installed_rows, native, publisher)) or not isinstance(digests, dict):
+        raise RuntimeError("installed closure/native/publisher facts are incomplete")
+    expected_digests = {
+        "installed_closure_sha256": _digest(installed_rows),
+        "native_files_sha256": _digest(native),
+        "publisher_files_sha256": _digest(publisher),
+    }
+    for key, digest in expected_digests.items():
+        if digests.get(key) != digest or scope[key] != digest:
+            raise RuntimeError(f"{key} is not hash-bound")
+    for row in native:
+        if not isinstance(row, dict) or not isinstance(row.get("sha256"), str) or not hex64.fullmatch(row["sha256"]):
+            raise RuntimeError("native file hash evidence is malformed")
+    for row in publisher:
+        if not isinstance(row, dict) or row.get("status") == "MISSING":
+            if not isinstance(row, dict) or row.get("status") != "MISSING":
+                raise RuntimeError("publisher evidence row is malformed")
+            continue
+        if not isinstance(row.get("sha256"), str) or not hex64.fullmatch(row["sha256"]):
+            raise RuntimeError("publisher LICENSE/NOTICE hash evidence is malformed")
+
+
 def self_test() -> None:
     assert project_identity()["python"] == "3.12"
     report = audit()
@@ -374,9 +565,23 @@ def self_test() -> None:
     assert report["lock"]["package_count"] == 29
     assert not set(row["name"].lower() for row in report["lock"]["rows"]) & FORBIDDEN_PACKAGES
     active = _active_lock_rows(report["lock"]["rows"])
-    assert len(active) == 26
+    assert len(active) == 25
     assert all(row["source"].get("virtual") is None for row in active)
     assert {row["version"] for row in active if row["name"] in {"torch", "torchaudio"}} == {"2.6.0+cpu"}
+    darwin = _active_lock_rows(
+        report["lock"]["rows"],
+        {
+            "sys_platform": "darwin",
+            "platform_machine": "x86_64",
+            "platform_python_implementation": "CPython",
+            "python_version": "3.12",
+            "python_full_version": "3.12.0",
+        },
+    )
+    darwin_names = {row["name"] for row in darwin}
+    assert "colorama" not in darwin_names
+    assert {row["version"] for row in darwin if row["name"] == "torch"} == {"2.6.0"}
+    assert {row["version"] for row in darwin if row["name"] == "torchaudio"} == {"2.6.0"}
     ambiguous = list(report["lock"]["rows"])
     ambiguous.append(dict(next(row for row in ambiguous if row["name"] == "numpy"), version="2.2.3"))
     try:
@@ -388,6 +593,46 @@ def self_test() -> None:
     assert report["candidate_scope"]["model_access"] is False
     assert report["candidate_scope"]["publication"] == PUBLICATION
     assert report["candidate_scope"]["installed_closure_sha256"] is None
+    assert re.fullmatch(r"[0-9a-f]{64}", report["candidate_scope_sha256"])
+    assert report["candidate_scope_sha256"] == _digest(report["candidate_scope"])
+    complete = json.loads(json.dumps(report))
+    complete["installed"] = {
+        "status": "COLLECTED",
+        "active_lock_packages": active,
+        "installed_distributions": [],
+        "failures": [],
+        "native_files": [],
+        "publisher_license_notice_files": [],
+        "digests": {
+            "installed_closure_sha256": _digest([]),
+            "native_files_sha256": _digest([]),
+            "publisher_files_sha256": _digest([]),
+        },
+    }
+    complete["failures"] = []
+    complete["candidate_scope"].update(
+        {
+            "installed_closure_sha256": complete["installed"]["digests"]["installed_closure_sha256"],
+            "native_files_sha256": complete["installed"]["digests"]["native_files_sha256"],
+            "publisher_files_sha256": complete["installed"]["digests"]["publisher_files_sha256"],
+            "failures": [],
+        }
+    )
+    complete["candidate_scope_sha256"] = _digest(complete["candidate_scope"])
+    broken_path = PROJECT_DIR / ".audit-self-test.json"
+    try:
+        broken_path.write_text(json.dumps(complete), encoding="utf-8")
+        validate_report(broken_path)
+        complete["candidate_scope"]["installed_closure_sha256"] = None
+        broken_path.write_text(json.dumps(complete), encoding="utf-8")
+        try:
+            validate_report(broken_path)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("incomplete candidate scope must fail closed")
+    finally:
+        broken_path.unlink(missing_ok=True)
     try:
         original = set(FORBIDDEN_PACKAGES)
         globals()["FORBIDDEN_PACKAGES"] = frozenset((*original, "torch"))
@@ -411,14 +656,25 @@ def main() -> int:
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--installed", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--validate-output", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if args.preflight_only or args.installed or args.output is not None:
+        if args.preflight_only or args.installed or args.output is not None or args.validate_output is not None:
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
     if args.preflight_only and (args.installed or args.output is not None):
         parser.error("--preflight-only accepts no installed scan or output")
+    if args.validate_output is not None and (args.preflight_only or args.installed or args.output is not None):
+        parser.error("--validate-output accepts no audit collection arguments")
+    if args.validate_output is not None:
+        try:
+            validate_report(args.validate_output)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"zonos dependency audit evidence BLOCKED: {error}", file=sys.stderr)
+            return 2
+        print("zonos dependency audit evidence: complete and hash-bound")
+        return 0
     try:
         report = audit(args.output, installed=args.installed)
     except (OSError, RuntimeError, ValueError) as error:
@@ -441,6 +697,7 @@ def main() -> int:
                     "publication": PUBLICATION,
                 },
             }
+            failure["candidate_scope_sha256"] = _digest(failure["candidate_scope"])
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("x", encoding="utf-8") as handle:
                 handle.write(json.dumps(failure, indent=2, sort_keys=True) + "\n")

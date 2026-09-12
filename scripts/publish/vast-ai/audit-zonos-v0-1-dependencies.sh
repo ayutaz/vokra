@@ -112,11 +112,12 @@ set -e
 [[ -f "$output" && ! -L "$output" ]] || die 'dependency audit did not create regular evidence'
 grep -Fq '"status": "BLOCKED_UNREVIEWED_TRANSITIVE"' "$output" || die 'blocked status marker missing'
 grep -Fq '"publication": "NO_UPLOAD"' "$output" || die 'NO_UPLOAD marker missing'
-grep -Fq '"model_access": false' "$output" || die 'model access boundary missing'
-grep -Fq '"source_access": false' "$output" || die 'source access boundary missing'
-grep -Fq '"checkpoint_access": false' "$output" || die 'checkpoint access boundary missing'
-grep -Fq '"installed_closure_sha256"' "$output" || die 'installed closure digest missing'
-grep -Fq '"native_files_sha256"' "$output" || die 'native digest missing'
-grep -Fq '"publisher_files_sha256"' "$output" || die 'publisher digest missing'
+set +e
+UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+  uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
+  --validate-output "$output"
+validation_status=$?
+set -e
+[[ "$validation_status" == 0 ]] || die 'dependency audit evidence is incomplete or not hash-bound'
 echo 'zonos dependency audit is BLOCKED_UNREVIEWED_TRANSITIVE; evidence was written; NO_UPLOAD' >&2
 exit 2
