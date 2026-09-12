@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flatten the UTMOS22-strong ``.ckpt`` → safetensors + config side-car (M5-15 T14).
+"""Prepare an authenticated UTMOS state-dict → config side-car (M5-15 T14).
 
 An **offline** sidecar tool (FR-LD-05: no Python / PyTorch ever enters the
 runtime). Upstream ships a PyTorch-Lightning checkpoint
@@ -7,10 +7,13 @@ runtime). Upstream ships a PyTorch-Lightning checkpoint
 the Rust converter (``crates/vokra-convert/src/models/utmos.rs``) reads
 safetensors + JSON only, so this script bridges the two:
 
-* loads the ckpt on CPU and takes its ``state_dict`` verbatim — the dotted
-  upstream keys are preserved, nothing is renamed here (the Rust converter
-  owns the name mapping so the mapping is covered by its unit tests, exactly
-  as ``dac_prepare_checkpoint.py`` leaves the weight-norm fold to Rust);
+* accepts only a tensor-only ``.safetensors`` state-dict. This is the
+  canonical safe path: it contains no pickle program or Python objects. The
+  historical Lightning ``.ckpt`` path is permanently refused;
+* takes the state-dict verbatim — the dotted upstream keys are preserved,
+  nothing is renamed here (the Rust converter owns the name mapping so the
+  mapping is covered by its unit tests, exactly as
+  ``dac_prepare_checkpoint.py`` leaves the weight-norm fold to Rust);
 * drops **only** ``…ssl_model.mask_emb`` (present but unused at inference:
   upstream calls the SSL model with ``mask=False``), and says so on stdout;
 * derives the config side-car from the *tensor shapes themselves* plus the
@@ -26,9 +29,9 @@ silently patched default (FR-EX-08).
 
 ::
 
-    ~/.cache/vokra-eval/venv-utmos-e/bin/python \\
+    uv run --project tools/parity/utmos --frozen python \\
         tools/parity/utmos_prepare_checkpoint.py \\
-        --ckpt ~/.cache/vokra-eval/out/utmos-probe/ckpt/epoch=3-step=7459.ckpt \\
+        --state-dict /vast/utmos22-strong.state_dict.safetensors \\
         --output /tmp/utmos22-strong.safetensors \\
         --config-out /tmp/utmos22-strong-config.json
 
@@ -44,7 +47,9 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 # Upstream inference constants, quoted from the HF space's score.py:
@@ -70,23 +75,30 @@ def die(msg: str) -> "None":
     raise SystemExit(2)
 
 
-def load_state_dict(path: str) -> "dict[str, torch.Tensor]":
-    """Load the ckpt's ``state_dict`` with torch's safe loader only."""
-    import torch
+def load_safetensors_state_dict(path: str) -> "dict[str, torch.Tensor]":
+    """Load a tensor-only state-dict without invoking pickle at all.
 
+    ``safetensors.torch.load_file`` parses the bounded safetensors header and
+    maps tensor storage; it has no object deserialization or global allowlist.
+    The extension check is deliberate: accepting an arbitrary file here would
+    make the safety claim depend on caller intent rather than the format.
+    """
+    source = Path(path)
+    if source.suffix != ".safetensors":
+        die(f"safe state-dict must use the `.safetensors` extension: {source.name}")
     try:
-        obj = torch.load(path, map_location="cpu", weights_only=True)
-    except Exception as error:  # noqa: BLE001 — safe refusal is terminal
-        die(
-            f"weights_only=True refused checkpoint ({type(error).__name__}: "
-            f"{str(error)[:160]}); unsafe pickle deserialization is not permitted"
-        )
-    if not isinstance(obj, dict):
-        die(f"checkpoint root is {type(obj).__name__}, expected a dict")
-    sd = obj.get("state_dict", obj)
-    if not isinstance(sd, dict) or not sd:
-        die("checkpoint has no non-empty `state_dict`")
-    return sd
+        from safetensors.torch import load_file
+    except ImportError:
+        die("`safetensors` is not installed in this interpreter")
+    try:
+        state = load_file(str(source), device="cpu")
+    except Exception as error:  # noqa: BLE001 — malformed input is terminal
+        die(f"safetensors state-dict could not be loaded safely ({type(error).__name__}: {error})")
+    if not isinstance(state, dict) or not state:
+        die("safetensors state-dict is empty or has an unexpected root type")
+    if any(not isinstance(key, str) or not key for key in state):
+        die("safetensors state-dict contains a non-string or empty tensor key")
+    return state
 
 
 def need(sd, key):
@@ -218,50 +230,196 @@ def derive_config(sd: "dict[str, torch.Tensor]") -> dict:
     }
 
 
+def _output_path(raw: str) -> Path:
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if ".." in path.parts:
+        die(f"output path must not contain '..': {raw}")
+    return path
+
+
+def _validate_output_parent(path: Path) -> None:
+    parent = path.parent
+    if not parent.exists() or parent.is_symlink() or not parent.is_dir():
+        die(f"output parent must be an existing non-symlink directory: {parent}")
+    current = parent
+    while True:
+        if current.is_symlink():
+            resolved = current.resolve(strict=True)
+            if (current, resolved) in ((Path("/var"), Path("/private/var")), (Path("/tmp"), Path("/private/tmp"))):
+                current = resolved
+                continue
+            die(f"output parent contains an unexpected symlink component: {current}")
+        if not current.is_dir():
+            die(f"output parent contains a symlink or non-directory component: {current}")
+        if current.parent == current:
+            break
+        current = current.parent
+
+
+def validate_output_boundary(output: str, config_out: str) -> tuple[Path, Path]:
+    """Validate create-new, disjoint output targets before loading tensors."""
+    targets = (_output_path(output), _output_path(config_out))
+    for target in targets:
+        _validate_output_parent(target)
+        if target.exists() or target.is_symlink():
+            die(f"output target must be absent and non-symlinked: {target}")
+    output_path, config_path = targets
+    if output_path == config_path:
+        die("--output and --config-out must be distinct paths")
+    if output_path in config_path.parents or config_path in output_path.parents:
+        die("--output and --config-out must be disjoint file paths")
+    return targets
+
+
+def _link_create_new(temp_path: Path, target: Path) -> None:
+    """Publish one staged file without replacing a caller path."""
+    try:
+        os.link(temp_path, target)
+    except FileExistsError:
+        die(f"output target appeared during preparation; refusing to clobber: {target}")
+    except OSError as error:
+        die(f"could not atomically publish {target} without replacement ({type(error).__name__}: {error})")
+
+
+def publish_outputs(tensors, config: dict, output: Path, config_out: Path) -> None:
+    """Stage both outputs, then create-new link them into the caller paths."""
+    staged: list[Path] = []
+    published: list[tuple[Path, Path]] = []
+    try:
+        for target in (output, config_out):
+            fd, raw = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+            os.close(fd)
+            staged.append(Path(raw))
+        try:
+            from safetensors.torch import save_file
+        except ImportError:
+            die("`safetensors` is not installed in this interpreter")
+        save_file(tensors, str(staged[0]))
+        with staged[1].open("w", encoding="utf-8") as stream:
+            json.dump(config, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        for temp_path, target in zip(staged, (output, config_out)):
+            _link_create_new(temp_path, target)
+            published.append((temp_path, target))
+    except BaseException:
+        for temp_path, target in reversed(published):
+            try:
+                if target.is_file() and os.path.samestat(os.stat(temp_path), os.stat(target, follow_symlinks=False)):
+                    target.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+        raise
+    finally:
+        for temp_path in staged:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
+    assert not any(
+        isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "load"
+        and node.func.attr in {"load", "load_state_dict"}
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "torch"
-    ]
-    assert calls, "safe loader contract has no torch.load call"
-    for call in calls:
-        weights_only = next(
-            (keyword.value for keyword in call.keywords if keyword.arg == "weights_only"),
-            None,
-        )
-        assert isinstance(weights_only, ast.Constant) and weights_only.value is True, (
-            "every torch.load call must explicitly set weights_only=True"
-        )
+        for node in ast.walk(tree)
+    ), "UTMOS preparation must not call torch pickle loaders"
     assert not any(isinstance(node, ast.ClassDef) and node.name.endswith("Unpickler") for node in ast.walk(tree))
-    print("utmos_prepare_checkpoint: safe-loader self-test PASS")
+    assert any(
+        isinstance(node, ast.FunctionDef) and node.name == "load_safetensors_state_dict"
+        for node in ast.walk(tree)
+    ), "canonical tensor-only state-dict path is missing"
+    source_text = source
+    assert "load_file(str(source), device=\"cpu\")" in source_text
+    assert "source.suffix != \".safetensors\"" in source_text
+    assert ("safe_" + "globals") not in source_text
+    assert "validate_output_boundary(args.output, args.config_out)" in source_text
+    assert "os.link(temp_path, target)" in source_text
+    with tempfile.TemporaryDirectory(prefix="utmos-prepare-self-test-") as raw_root:
+        root = Path(raw_root)
+        output = root / "out.safetensors"
+        config = root / "config.json"
+        validate_output_boundary(str(output), str(config))
+
+        output.write_text("caller-owned", encoding="utf-8")
+        try:
+            validate_output_boundary(str(output), str(config))
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise AssertionError("existing output target was accepted")
+        output.unlink()
+
+        link_parent = root / "link-parent"
+        link_parent.symlink_to(root, target_is_directory=True)
+        try:
+            validate_output_boundary(str(link_parent / "out"), str(config))
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise AssertionError("symlinked output parent was accepted")
+
+        config.write_text("caller-owned", encoding="utf-8")
+        try:
+            validate_output_boundary(str(output), str(config))
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise AssertionError("existing config target was accepted")
+        config.unlink()
+
+        staged = root / "staged"
+        staged.write_text("new", encoding="utf-8")
+        output.write_text("caller-owned", encoding="utf-8")
+        try:
+            _link_create_new(staged, output)
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise AssertionError("create-new publish accepted a caller target")
+        assert output.read_text(encoding="utf-8") == "caller-owned"
+    print("utmos_prepare_checkpoint: safe state-dict self-test PASS")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--ckpt", help="UTMOS22-strong .ckpt")
+    group = ap.add_mutually_exclusive_group()
+    group.add_argument("--ckpt", help="legacy UTMOS22-strong .ckpt (always refused)")
+    group.add_argument(
+        "--state-dict",
+        help="canonical tensor-only UTMOS state-dict (.safetensors; no pickle)",
+    )
     ap.add_argument("--output", help="flat safetensors out")
     ap.add_argument("--config-out", help="config JSON side-car out")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 
     if args.self_test:
-        if any(value is not None for value in (args.ckpt, args.output, args.config_out)):
+        if any(value is not None for value in (args.ckpt, args.state_dict, args.output, args.config_out)):
             ap.error("--self-test accepts no checkpoint or output arguments")
         self_test()
         return 0
-    if any(value is None for value in (args.ckpt, args.output, args.config_out)):
-        ap.error("--ckpt, --output, and --config-out are required unless --self-test is used")
+    if args.ckpt is not None:
+        die(
+            "BLOCKED_UNSAFE_PICKLE: legacy Lightning .ckpt inputs are permanently "
+            "refused; provide an authenticated tensor-only .safetensors state-dict"
+        )
+    if args.state_dict is None:
+        ap.error("--state-dict is required unless --self-test is used")
+    if any(value is None for value in (args.output, args.config_out)):
+        ap.error("--output and --config-out are required unless --self-test is used")
+
+    output_path, config_path = validate_output_boundary(args.output, args.config_out)
 
     import torch
 
-    sd = load_state_dict(args.ckpt)
+    sd = load_safetensors_state_dict(args.state_dict)
     tensors, dropped, non_tensor = {}, [], []
     for k, v in sd.items():
         if k in DROP:
@@ -278,19 +436,12 @@ def main() -> int:
 
     config = derive_config(tensors)
 
-    try:
-        from safetensors.torch import save_file
-    except ImportError:
-        die("`safetensors` is not installed in this interpreter (pip install safetensors)")
-    save_file(tensors, args.output)
-    with open(args.config_out, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, sort_keys=True)
-        f.write("\n")
+    publish_outputs(tensors, config, output_path, config_path)
 
     total = sum(t.numel() for t in tensors.values())
     print(f"tensors written : {len(tensors)} ({total:,} params)")
     print(f"dropped         : {dropped if dropped else '(none)'}")
-    for path in (args.output, args.config_out):
+    for path in (output_path, config_path):
         h = hashlib.sha256(open(path, "rb").read()).hexdigest()
         print(f"sha256 {h}  {path}")
     print(json.dumps(config, indent=2, sort_keys=True))

@@ -18,6 +18,7 @@
 use std::path::Path;
 
 use vokra_backend_cpu::kernels;
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
@@ -25,7 +26,7 @@ use vokra_ops::{
     ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
 };
 
-use crate::compute::Compute;
+use crate::compute::{Compute, HotOp};
 
 use super::{AlignedToken, LoadError};
 
@@ -44,6 +45,16 @@ use super::{AlignedToken, LoadError};
 /// inventory used for forced alignment, so aliasing the tags would let a
 /// letter-vocab checkpoint silently produce nonsense phoneme boundaries.
 pub const EXPECTED_ARCH: &str = "charsiu";
+/// Complete learned-op registry for the Charsiu CPU/Metal forward.
+pub const CHARSIU_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Gelu,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::GroupNorm,
+];
 const EXPECTED_REVISION: &str = "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f";
 const EXPECTED_CHECKPOINT_SHA256: &str =
     "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1";
@@ -481,6 +492,7 @@ pub struct Charsiu {
     cfg: CharsiuConfig,
     weights: CharsiuWeights,
     vocab: Vec<String>,
+    backend: BackendKind,
 }
 
 impl Charsiu {
@@ -501,6 +513,7 @@ impl Charsiu {
             cfg,
             weights,
             vocab,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -523,17 +536,32 @@ impl Charsiu {
 
     /// Opens and binds a Charsiu GGUF from disk.
     pub fn from_gguf(path: &Path) -> std::result::Result<Self, LoadError> {
+        Self::from_gguf_with_backend(path, BackendKind::Cpu)
+    }
+
+    /// Opens and binds a Charsiu GGUF, eagerly preflighting the complete
+    /// learned-op set for `backend`. Unsupported backends fail before any
+    /// waveform is processed; no operation falls back to CPU implicitly.
+    pub fn from_gguf_with_backend(
+        path: &Path,
+        backend: BackendKind,
+    ) -> std::result::Result<Self, LoadError> {
         if !path.exists() {
             return Err(LoadError::FileNotFound(path.to_path_buf()));
         }
         let file = GgufFile::open(path)
             .map_err(|e| LoadError::Gguf(format!("charsiu: opening {}: {e}", path.display())))?;
-        Self::from_file(&file).map_err(|e| LoadError::Gguf(e.to_string()))
+        Self::from_file_with_backend(&file, backend).map_err(|e| LoadError::Gguf(e.to_string()))
     }
 
     /// Binds from an already-parsed GGUF, validating every metadata axis and
     /// tensor shape before returning a usable aligner.
     pub fn from_file(file: &GgufFile) -> Result<Self> {
+        Self::from_file_with_backend(file, BackendKind::Cpu)
+    }
+
+    /// Binds from an already-parsed GGUF and selects one complete backend.
+    pub fn from_file_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         verify_arch(file)?;
         require_meta_string(file, "vokra.charsiu.revision", EXPECTED_REVISION)?;
         require_meta_string(
@@ -706,7 +734,22 @@ impl Charsiu {
             },
             is_synthesized: false,
         };
-        Self::new(cfg, weights, vocab)
+        let model = Self::new(cfg, weights, vocab)?;
+        Compute::for_backend(backend, CHARSIU_HOT_OPS)?;
+        Ok(model.with_backend(backend))
+    }
+
+    /// Selects the backend used by every learned operation.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected inference backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// Force-aligns a phoneme sequence to a 16 kHz mono PCM buffer.
@@ -756,7 +799,8 @@ impl Charsiu {
             phone_ids.push(id);
         }
         let (logits, frames) = self.logits(pcm, sample_rate)?;
-        let probabilities = softmax(&logits, frames, self.cfg.vocab_size);
+        let compute = Compute::for_backend(self.backend, CHARSIU_HOT_OPS)?;
+        let probabilities = softmax_with_compute(&logits, frames, self.cfg.vocab_size, &compute)?;
         charsiu_forced_align(
             &probabilities,
             frames,
@@ -785,17 +829,20 @@ impl Charsiu {
             )));
         }
 
+        let compute = Compute::for_backend(self.backend, CHARSIU_HOT_OPS)?;
+
         // ---- Stem: raw PCM → [T', 512] time-major ---------------------
-        let features = vokra_ops::waveform_frontend(
+        let features = waveform_frontend_with_compute(
             pcm,
             &self.weights.stem_attrs,
             &self.weights.stem_weights,
+            &compute,
         )?;
         let feature_dim = self.weights.stem_attrs.out_channels()?;
         assert_eq!(features.len() % feature_dim, 0);
         let t_frames = features.len() / feature_dim;
         // ---- Feature projection + grouped positional conv ------------
-        let mut hidden = feature_projection_forward(
+        let mut hidden = feature_projection_forward_with_compute(
             &features,
             t_frames,
             feature_dim,
@@ -803,32 +850,53 @@ impl Charsiu {
             self.cfg.hidden_size,
             self.cfg.feature_projection_has_layer_norm,
             self.cfg.layer_norm_eps,
-        );
-        let position =
-            positional_conv_forward(&hidden, t_frames, &self.cfg, &self.weights.pos_conv)?;
+            &compute,
+        )?;
+        let position = positional_conv_forward_with_compute(
+            &hidden,
+            t_frames,
+            &self.cfg,
+            &self.weights.pos_conv,
+            &compute,
+        )?;
         for (value, pos) in hidden.iter_mut().zip(position) {
             *value += pos;
         }
-        layer_norm_inplace(
+        layer_norm_with_compute_inplace(
             &mut hidden,
             t_frames,
             self.cfg.hidden_size,
             &self.weights.encoder_input_norm_gamma,
             &self.weights.encoder_input_norm_beta,
             self.cfg.layer_norm_eps,
-        );
+            &compute,
+        )?;
 
         // ---- post-norm Transformer blocks -----------------------------
         for block in &self.weights.blocks {
-            transformer_block_forward(&mut hidden, t_frames, &self.cfg, block);
+            transformer_block_forward_with_valid_keys_and_compute(
+                &mut hidden,
+                t_frames,
+                t_frames,
+                &self.cfg,
+                block,
+                &compute,
+            )?;
         }
-        let logits = ctc_head_forward(
+        let logits = linear_forward_with_compute(
             &hidden,
             t_frames,
             self.cfg.hidden_size,
-            &self.weights.head,
+            &self.weights.head.weight,
+            &self.weights.head.bias,
             self.cfg.vocab_size,
-        );
+            &compute,
+        )?;
+        if logits.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "charsiu logits: backend produced non-finite output".to_owned(),
+            ));
+        }
         Ok((logits, t_frames))
     }
 
@@ -945,6 +1013,114 @@ impl Charsiu {
 // Math helpers (private — plain scalar loops; hot-path SIMD is a
 // follow-up; kept simple so the forward is easy to audit)
 // ---------------------------------------------------------------------------
+
+/// Backend-dispatched raw-waveform frontend used by the real Charsiu path.
+/// The first wav2vec2 layer's GroupNorm is included in the hot-op contract;
+/// it must not be performed by a host scalar loop when Metal is selected.
+fn waveform_frontend_with_compute(
+    waveform: &[f32],
+    attrs: &WaveformFrontendAttrs,
+    weights: &WaveformFrontendWeights,
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    weights.validate(attrs)?;
+    if waveform.len() % attrs.in_channels != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "charsiu: waveform length {} is not divisible by {} channel(s)",
+            waveform.len(),
+            attrs.in_channels
+        )));
+    }
+    let mut time = waveform.len() / attrs.in_channels;
+    let _ = attrs.predict_t_out(time)?;
+    let mut current = waveform.to_vec();
+    let mut in_channels = attrs.in_channels;
+    for (index, (layer, layer_weights)) in attrs.layers.iter().zip(&weights.layers).enumerate() {
+        let output_time = (time - layer.kernel) / layer.stride + 1;
+        let mut convolution = vec![0.0f32; layer.out_channels * output_time];
+        compute.conv1d_f32(
+            &current,
+            in_channels,
+            time,
+            &layer_weights.conv_w,
+            layer.out_channels,
+            layer.kernel,
+            attrs.conv_bias.then_some(layer_weights.conv_b.as_slice()),
+            layer.stride,
+            0,
+            &mut convolution,
+        )?;
+        if attrs.norm.has_group_norm(index) {
+            let gamma = layer_weights
+                .norm_gamma
+                .as_ref()
+                .expect("validated group-norm gamma");
+            let beta = layer_weights
+                .norm_beta
+                .as_ref()
+                .expect("validated group-norm beta");
+            let mut normalized = vec![0.0f32; convolution.len()];
+            // Wav2Vec2's GroupNorm(num_groups=out_channels) normalizes each
+            // channel across time, not all channels as one group.
+            compute.group_norm_groups_f32(
+                &convolution,
+                &mut normalized,
+                layer.out_channels,
+                output_time,
+                layer.out_channels,
+                gamma,
+                beta,
+                1e-5,
+            )?;
+            convolution = normalized;
+        } else if attrs.norm.has_layer_norm(index) {
+            let mut frame_major =
+                transpose_channel_to_frame(&convolution, layer.out_channels, output_time);
+            layer_norm_with_compute_inplace(
+                &mut frame_major,
+                output_time,
+                layer.out_channels,
+                layer_weights
+                    .norm_gamma
+                    .as_ref()
+                    .expect("validated layer-norm gamma"),
+                layer_weights
+                    .norm_beta
+                    .as_ref()
+                    .expect("validated layer-norm beta"),
+                1e-5,
+                compute,
+            )?;
+            convolution = transpose_frame_to_channel(&frame_major, output_time, layer.out_channels);
+        }
+        let mut activated = vec![0.0f32; convolution.len()];
+        compute.gelu_f32(&convolution, &mut activated)?;
+        current = activated;
+        time = output_time;
+        in_channels = layer.out_channels;
+    }
+    Ok(transpose_channel_to_frame(&current, in_channels, time))
+}
+
+fn transpose_channel_to_frame(values: &[f32], channels: usize, time: usize) -> Vec<f32> {
+    let mut output = vec![0.0f32; values.len()];
+    for channel in 0..channels {
+        for frame in 0..time {
+            output[frame * channels + channel] = values[channel * time + frame];
+        }
+    }
+    output
+}
+
+fn transpose_frame_to_channel(values: &[f32], time: usize, channels: usize) -> Vec<f32> {
+    let mut output = vec![0.0f32; values.len()];
+    for frame in 0..time {
+        for channel in 0..channels {
+            output[channel * time + frame] = values[frame * channels + channel];
+        }
+    }
+    output
+}
 
 /// Feature projection: `[T, 512]` → `[T, hidden]`. Applies the pre-Linear
 /// LayerNorm iff `has_layer_norm`.
@@ -1130,13 +1306,6 @@ pub(crate) fn positional_conv_forward_with_compute(
         }
     }
     Ok(out)
-}
-
-/// Runs one post-LayerNorm Wav2Vec2 encoder block in place.
-///
-/// `y = LN1(x + attn(x)); z = LN2(y + ffn(y))`.
-fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, b: &CharsiuBlock) {
-    transformer_block_forward_with_valid_keys(hidden, t, t, cfg, b);
 }
 
 /// Wav2Vec2 post-LayerNorm block with an explicit number of valid attention
@@ -1451,38 +1620,15 @@ pub(crate) fn layer_norm_with_compute_inplace(
     Ok(())
 }
 
-/// CTC head — Linear from `[t, hidden]` to `[t, vocab]`.
-fn ctc_head_forward(
-    hidden: &[f32],
+fn softmax_with_compute(
+    logits: &[f32],
     t: usize,
-    h: usize,
-    head: &CharsiuHead,
     vocab: usize,
-) -> Vec<f32> {
-    linear_forward(hidden, t, h, &head.weight, &head.bias, vocab)
-}
-
-/// Per-frame softmax over the vocab axis.
-fn softmax(logits: &[f32], t: usize, vocab: usize) -> Vec<f32> {
-    let mut out = logits.to_vec();
-    for ti in 0..t {
-        let row = &mut out[ti * vocab..(ti + 1) * vocab];
-        let mut max_v = f32::NEG_INFINITY;
-        for &v in row.iter() {
-            if v > max_v {
-                max_v = v;
-            }
-        }
-        let mut sum = 0.0_f32;
-        for v in row.iter_mut() {
-            *v = (*v - max_v).exp();
-            sum += *v;
-        }
-        for v in row.iter_mut() {
-            *v /= sum;
-        }
-    }
-    out
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    let mut output = vec![0.0f32; logits.len()];
+    compute.softmax_f32(logits, &mut output, t, vocab)?;
+    Ok(output)
 }
 
 #[allow(clippy::too_many_arguments)]

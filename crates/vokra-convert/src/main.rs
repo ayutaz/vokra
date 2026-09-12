@@ -22,11 +22,11 @@ use vokra_convert::{
     convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file,
     convert_cosyvoice2_hift_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
     convert_file_licensed, convert_file_quantized, convert_firered_asr_aed_l_with_sidecars,
-    convert_kyutai_stt_tokenizer_file, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
-    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file,
-    convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
+    convert_kotoba_whisper_v22_file, convert_kyutai_stt_tokenizer_file,
+    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
+    convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
+    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
+    convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
     convert_speecht5_file_with_tokenizer, convert_ultravox_llama_companion_file,
     convert_utmos_file, kyutai_stt_tokenizer_table_sha256,
 };
@@ -36,7 +36,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|clap|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|kyutai-stt-tokenizer|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|clap|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|kyutai-stt-tokenizer|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|kotoba-whisper-v2.2|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -131,7 +131,9 @@ OPTIONS:
                        permissive — no runtime-side attribution
                        obligation. **JA-ASR-2 axis**: n_text_layer=2 is
                        read from checkpoint tensor names, never
-                       hard-coded), or
+                       hard-coded); `kotoba-whisper-v2.2` is an explicit
+                       selector that authenticates the pinned upstream
+                       revision, or
                        vits-ja (ESPnet-family Japanese plain VITS —
                        Kim et al. 2021 VITS + HiFi-GAN generator, as
                        shipped by ESPnet's
@@ -214,6 +216,7 @@ fn main() -> ExitCode {
 
     let Parsed {
         model,
+        raw_model_slug,
         input,
         config,
         cmvn,
@@ -649,6 +652,22 @@ fn main() -> ExitCode {
             // the LLM bind (loud note per FR-EX-08).
             convert_cosyvoice3_file(&input, config.as_deref(), &output)
         }
+        ModelKind::KotobaWhisper
+            if matches!(
+                raw_model_slug.to_ascii_lowercase().as_str(),
+                "kotoba-whisper-v2.2" | "kotoba-whisper-v2_2"
+            ) =>
+        {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for kotoba-whisper-v2.2\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            if config.is_some() {
+                eprintln!("error: --model kotoba-whisper-v2.2 does not take --config\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            convert_kotoba_whisper_v22_file(&input, &output, license.as_deref())
+        }
         ModelKind::SbV2 => {
             if quant.is_some() {
                 eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
@@ -804,6 +823,7 @@ fn convert_sbv2(
 
 struct Parsed {
     model: ModelKind,
+    raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
     cmvn: Option<PathBuf>,
@@ -873,6 +893,7 @@ fn parse_quant(s: &str) -> Option<GgmlType> {
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
+    let mut raw_model_slug = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
     let mut cmvn: Option<PathBuf> = None;
@@ -891,6 +912,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         match args[i].as_str() {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
+                raw_model_slug = v.clone();
                 ultravox_companion = matches!(
                     v.as_str(),
                     "ultravox-llama-companion" | "ultravox_llama_companion"
@@ -908,7 +930,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | kyutai-stt-tokenizer | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper | vits-ja | styletts2 | fsmn-vad)"
+                         distil-whisper | kotoba-whisper | kotoba-whisper-v2.2 | vits-ja | styletts2 | fsmn-vad)"
                     )
                 })?);
                 i += 2;
@@ -985,6 +1007,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 
     Ok(Parsed {
         model: model.ok_or("--model is required")?,
+        raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
         cmvn,
@@ -4369,6 +4392,7 @@ mod tests {
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("kotoba-whisper-v2.2", ModelKind::KotobaWhisper),
             ("vits-ja", ModelKind::VitsJa),
             ("styletts2", ModelKind::StyleTts2),
             // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD.

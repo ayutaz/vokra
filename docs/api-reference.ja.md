@@ -62,10 +62,11 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 現行の workspace release line は `0.3.0` である。
 
-**2026-09-12 current snapshot:** 現行 `main` baseline は `43d127f1` である。読み取り専用の
-live public audit は repository 194、GGUF repository 193、GGUF file 198 を報告している。
-CPU status は `full=133`、`partial=45`、`no-runtime-binder=15`、`not-artifact=1`、Metal
-status は `full=133`、`blocked-by-cpu=60`、`not-artifact=1` で、未解決の public row は61件
+**2026-09-12 current snapshot:** 観測済み `main` baseline は `1de3887d` である。監査実装
+`1be45e76` までを使った最新の読み取り専用 live public audit は repository 194、GGUF
+repository 193、GGUF file 198 を報告している。CPU status は `full=135`、`partial=43`、
+`no-runtime-binder=15`、`not-artifact=1`、Metal status は `full=135`、
+`blocked-by-cpu=58`、`not-artifact=1` で、未解決の public row は59件
 である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
 named scope のみ合格し、その後、明示的に承認された4件の artifact が gated workflow 経由で
 公開された。UTMOS numeric parity は未主張で、release tag は0、GitHub Release も0である。

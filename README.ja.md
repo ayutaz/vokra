@@ -15,13 +15,14 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
 > **開発状況（2026-09-12）:** workspace は `0.3.0` development で、この snapshot の
-> 現行 `main` baseline は `43d127f1` です。読み取り専用の公開 inventory は
-> repository 194、GGUF を持つ repository 193、GGUF file 198 です。内訳は Mac CPU
-> complete 133、partial 45、runtime binder なし 15、non-artifact 1、Apple Metal
-> full 133、CPU 起因の block 60、non-artifact 1 で、未解決の public row は 61 です。
+> このcampaignで観測した `main` baseline は `1de3887d` です。監査実装
+> `1be45e76` までを使った最新の読み取り専用公開 inventory は repository 194、GGUF
+> を持つ repository 193、GGUF file 198 です。内訳は Mac CPU complete 135、partial
+> 43、runtime binder なし 15、non-artifact 1、Apple Metal full 135、CPU 起因の
+> block 58、non-artifact 1 で、未解決の public row は 59 です。
 > [Apple 検証結果](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)に記録した
 > Apple Silicon batch は named scope のみ合格し、その後、明示的に承認された4件の
-> artifact が公開されました。公開 row はなお61件未解決で、Git tag と公開済み release
+> artifact が公開されました。公開 row はなお59件未解決で、Git tag と公開済み release
 > はなく、Vokra は pre-1.0 のままです。Rust API、C ABI、GGUF metadata、モデル対応範囲は
 > 変更される可能性があります。他プロジェクトで評価するときは正確な commit を固定し、
 > release 公開後は正確な tag または release を固定してください。

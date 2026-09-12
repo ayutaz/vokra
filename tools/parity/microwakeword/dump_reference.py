@@ -107,6 +107,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import hashlib
 import importlib.util
 import json
@@ -187,6 +188,22 @@ EXPECTED_REFERENCE_DISTRIBUTIONS = {
     "tqdm": "4.70.0",
     "typing-extensions": "4.16.0",
 }
+CONSOLE_SCRIPT_ROW_KEYS = frozenset(
+    (
+        "path",
+        "resolved_path",
+        "sha256",
+        "bytes",
+        "script_base64",
+        "shebang",
+        "shebang_basename",
+        "shebang_environment_relative",
+        "body_sha256",
+        "body_bytes",
+        "body_base64",
+        "body_contract",
+    )
+)
 
 # Compile-time contracts (mirror the Rust `const _:` asserts).
 assert WINDOW_SAMPLES <= N_FFT, "WINDOW_SAMPLES must fit in N_FFT"
@@ -280,6 +297,24 @@ def _metadata_license_declarations_present(metadata: dict[str, Any]) -> bool:
         for field in fields
         for value in metadata[field]
     )
+
+
+_REFERENCE_INSPECTOR: Any | None = None
+
+
+def _load_reference_inspector() -> Any:
+    """Load the stdlib-only inspector so both gates share one record contract."""
+    global _REFERENCE_INSPECTOR
+    if _REFERENCE_INSPECTOR is not None:
+        return _REFERENCE_INSPECTOR
+    inspector_path = Path(__file__).parent.parent / "microwakeword-reference" / "inspect.py"
+    spec = importlib.util.spec_from_file_location("microwakeword_reference_inspector", inspector_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"reference dependency inspector unavailable: {inspector_path}")
+    inspector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inspector)
+    _REFERENCE_INSPECTOR = inspector
+    return inspector
 
 
 def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
@@ -463,7 +498,23 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         record = row["record"]
         if not isinstance(record, dict):
             raise SystemExit(f"dependency evidence installed record malformed: {name}")
-        _exact_keys(record, ("path", "bytes", "sha256", "entries", "entries_count", "entries_sha256"), f"dependency evidence record.{name}")
+        _exact_keys(
+            record,
+            (
+                "path",
+                "bytes",
+                "sha256",
+                "entries",
+                "entries_count",
+                "entries_sha256",
+                "installer_generated_rows",
+                "console_script_rows",
+                "console_script_rows_sha256",
+                "normalized_entries_count",
+                "normalized_entries_sha256",
+            ),
+            f"dependency evidence record.{name}",
+        )
         if not isinstance(record["path"], str) or not record["path"] or not isinstance(record["bytes"], int) or record["bytes"] <= 0:
             raise SystemExit(f"dependency evidence RECORD identity malformed: {name}")
         entries = record["entries"]
@@ -512,6 +563,22 @@ def validate_dependency_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
                 raise SystemExit(f"dependency evidence RECORD errors malformed: {name}")
             if "resolved_path" in entry and (not isinstance(entry["resolved_path"], str) or not entry["resolved_path"]):
                 raise SystemExit(f"dependency evidence RECORD resolved path malformed: {name}")
+        inspector = _load_reference_inspector()
+        console_script_rows = record["console_script_rows"]
+        if not isinstance(console_script_rows, list):
+            raise SystemExit(f"dependency evidence console-script rows malformed: {name}")
+        for console_script_row in console_script_rows:
+            if not isinstance(console_script_row, dict) or set(console_script_row) != CONSOLE_SCRIPT_ROW_KEYS:
+                raise SystemExit(f"dependency evidence console-script row keys drift: {name}")
+        try:
+            inspector._validate_record_evidence(
+                name,
+                row,
+                record,
+                inspector.EXPECTED_DISTRIBUTION_FINGERPRINTS[name],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SystemExit(f"dependency evidence RECORD contract drift: {name}: {error}") from error
         candidates = row["license_candidates"]
         metadata_declared = _metadata_license_declarations_present(metadata)
         if not isinstance(candidates, list) or (not candidates and not metadata_declared):
@@ -579,6 +646,7 @@ def require_reference_runtime(evidence_versions: dict[str, str]) -> dict[str, An
 
 def _synthetic_dependency_evidence() -> dict[str, Any]:
     """Build a model-free success-shaped collector report for self-tests."""
+    inspector = _load_reference_inspector()
     inventory_entries = [
         {
             "path": f"lib/python3.12/site-packages/{name}-{version}.dist-info",
@@ -604,44 +672,117 @@ def _synthetic_dependency_evidence() -> dict[str, Any]:
     ]
     inventory_sha256 = _canonical_json_sha256(inventory_entries)
     lock_rows: list[dict[str, Any]] = []
-    record_entries = [
-        {
-            "row": 1,
-            "declared": {
-                "path": "METADATA",
-                "hash": {"algorithm": "sha256", "value": "0" * 64, "status": "VALID"},
-                "size": {"value": 1, "status": "VALID"},
-            },
-            "actual": {"sha256": "0" * 64, "bytes": 1},
-            "resolved_path": "lib/python3.12/site-packages/METADATA",
-            "validation": "MATCH",
-            "errors": [],
+    rows = []
+    synthetic_contracts: dict[str, dict[str, Any]] = {}
+    synthetic_fingerprints: dict[str, dict[str, Any]] = {}
+    for name, version in EXPECTED_REFERENCE_DISTRIBUTIONS.items():
+        dist_info = f"{name}-{version}.dist-info"
+        dist_info_path = f"lib/python3.12/site-packages/{dist_info}"
+        declared_record_path = f"{dist_info}/RECORD"
+        file_record_path = f"{dist_info_path}/RECORD"
+        metadata_path = f"{dist_info}/METADATA"
+        license_path = f"{dist_info}/LICENSE"
+
+        def entry(path: str, digest: str = "0" * 64, size: int = 1, *, empty: bool = False) -> dict[str, Any]:
+            declaration = {
+                "path": path,
+                "hash": {"algorithm": "sha256", "value": digest, "status": "VALID"},
+                "size": {"value": size, "status": "VALID"},
+            }
+            if empty:
+                declaration["hash"] = {"algorithm": None, "value": None, "status": "EMPTY"}
+                declaration["size"] = {"value": None, "status": "EMPTY"}
+            return {
+                "row": 0,
+                "declared": declaration,
+                "actual": {"sha256": digest, "bytes": size},
+                "resolved_path": f"{dist_info_path}/{path}",
+                "validation": "EMPTY_DECLARATION" if empty else "MATCH",
+                "errors": [],
+            }
+
+        record_entries = [entry(metadata_path), entry(license_path)]
+        for installer_name, installer in inspector.EXPECTED_INSTALLER_ROWS.items():
+            record_entries.append(entry(f"{dist_info}/{installer_name}", installer["sha256"], installer["bytes"]))
+        console_script_rows = []
+        for script_path in sorted(inspector.CONSOLE_SCRIPT_PATHS_BY_PACKAGE.get(name, frozenset())):
+            script_contract = inspector.CONSOLE_SCRIPT_CONTRACTS[script_path]
+            module, function = script_contract["imports"][0].rsplit(":", 1) if ":" in script_contract["imports"][0] else (None, None)
+            if module is None:
+                module, function = script_contract["imports"][1].rsplit(":", 1)
+            body = (
+                b"import sys\n"
+                + f"from {module} import {function}\n".encode()
+                + b"if __name__ == '__main__':\n    sys.exit(main())\n"
+            )
+            resolved_path = script_contract["resolved_path"]
+            shebang = "#!/tmp/synthetic/.venv/bin/python"
+            script = shebang.encode() + b"\n" + body
+            actual_sha = hashlib.sha256(script).hexdigest()
+            console_script_rows.append({
+                "path": script_path,
+                "resolved_path": resolved_path,
+                "sha256": actual_sha,
+                "bytes": len(script),
+                "script_base64": base64.b64encode(script).decode("ascii"),
+                "shebang": shebang,
+                "shebang_basename": "python",
+                "shebang_environment_relative": "bin/python",
+                "body_sha256": hashlib.sha256(body).hexdigest(),
+                "body_bytes": len(body),
+                "body_base64": base64.b64encode(body).decode("ascii"),
+                "body_contract": {"imports": sorted(["sys", f"{module}:{function}"]), "sys_exit_calls": ["sys.exit(main())"]},
+            })
+            record_entries.append(entry(script_path, actual_sha, len(script)))
+            synthetic_contracts[script_path] = {
+                **script_contract,
+                "body_sha256": hashlib.sha256(body).hexdigest(),
+                "body_bytes": len(body),
+                "imports": sorted(["sys", f"{module}:{function}"]),
+                "sys_exit_calls": ["sys.exit(main())"],
+            }
+        self_entry = entry(declared_record_path, "0" * 64, 1, empty=True)
+        self_entry["row"] = len(record_entries) + 1
+        record_entries.append(self_entry)
+        for row_number, record_entry in enumerate(record_entries, start=1):
+            record_entry["row"] = row_number
+        normalized = inspector._normalized_record_entries(record_entries, declared_record_path)
+        synthetic_fingerprints[name] = {
+            "sha256": _canonical_json_sha256(normalized),
+            "entries_count": len(normalized),
         }
-    ]
-    record = {
-        "path": "RECORD",
-        "bytes": 1,
-        "sha256": "0" * 64,
-        "entries": record_entries,
-        "entries_count": len(record_entries),
-        "entries_sha256": _canonical_json_sha256(record_entries),
-    }
-    rows = [
-        {
+        record = {
+            "path": file_record_path,
+            "bytes": 1,
+            "sha256": "0" * 64,
+            "entries": record_entries,
+            "entries_count": len(record_entries),
+            "entries_sha256": _canonical_json_sha256(record_entries),
+            "installer_generated_rows": [
+                record_entry for record_entry in record_entries
+                if record_entry["declared"]["path"] in {f"{dist_info}/INSTALLER", f"{dist_info}/REQUESTED"}
+            ],
+            "console_script_rows": console_script_rows,
+            "console_script_rows_sha256": _canonical_json_sha256(console_script_rows),
+            "normalized_entries_count": len(normalized),
+            "normalized_entries_sha256": _canonical_json_sha256(normalized),
+        }
+        metadata = next(item["metadata"] for item in inventory_entries if item["normalized_name"] == name)
+        rows.append({
             "expected_name": name,
             "expected_version": version,
             "status": DEPENDENCY_EVIDENCE_STATUS,
-            "metadata": dict(inventory_entries[0]["metadata"] | {"name": [name], "version": [version]}),
+            "metadata": metadata,
             "record": record,
-            "license_candidates": [{"path": "LICENSE", "bytes": 1, "sha256": "0" * 64}],
+            "license_candidates": [{"path": license_path, "bytes": 1, "sha256": "0" * 64}],
             "native_payloads": [],
             "failures": [],
-            "dist_info": f"{name}-{version}.dist-info",
-            "dist_info_path": f"lib/python3.12/site-packages/{name}-{version}.dist-info",
+            "dist_info": dist_info,
+            "dist_info_path": dist_info_path,
             "inventory_sha256": inventory_sha256,
-        }
-        for name, version in EXPECTED_REFERENCE_DISTRIBUTIONS.items()
-    ]
+        })
+    inspector.CONSOLE_SCRIPT_CONTRACTS = synthetic_contracts
+    inspector.EXPECTED_NORMALIZED_RECORD_FINGERPRINTS = synthetic_fingerprints
     return {
         "schema": DEPENDENCY_EVIDENCE_SCHEMA,
         "status": DEPENDENCY_EVIDENCE_STATUS,
@@ -1249,6 +1390,14 @@ def self_test() -> int:
     assert effective["review_status"] == "VALIDATED_EXACT_OWNER_REVIEWED"
     assert effective["fixture_generation_permitted"] is True
     assert effective["publication_permitted"] is False
+
+    def expect_reject(candidate: dict[str, Any], label: str) -> None:
+        try:
+            validate_dependency_evidence(candidate)
+        except SystemExit:
+            return
+        raise AssertionError(f"{label} was accepted")
+
     backports_name = json.loads(json.dumps(evidence))
     backports_row = next(
         row for row in backports_name["installed_distributions"] if row["expected_name"] == "backports-strenum"
@@ -1312,12 +1461,94 @@ def self_test() -> int:
         raise AssertionError("installed inventory digest drift was accepted")
     record_tamper = json.loads(json.dumps(evidence))
     record_tamper["installed_distributions"][0]["record"]["entries"].append({"path": "tampered"})
-    try:
-        validate_dependency_evidence(record_tamper)
-    except SystemExit:
-        pass
-    else:
-        raise AssertionError("RECORD entries digest drift was accepted")
+    expect_reject(record_tamper, "RECORD entries digest drift")
+    payload_tamper = json.loads(json.dumps(evidence))
+    payload_row = next(
+        row for row in payload_tamper["installed_distributions"]
+        if row["record"]["console_script_rows"]
+    )
+    payload_row["record"]["console_script_rows"][0]["script_base64"] = base64.b64encode(b"tampered").decode("ascii")
+    expect_reject(payload_tamper, "console-script payload tamper")
+    unknown_console_key = json.loads(json.dumps(evidence))
+    unknown_console_row = next(
+        row for row in unknown_console_key["installed_distributions"]
+        if row["record"]["console_script_rows"]
+    )["record"]["console_script_rows"][0]
+    unknown_console_row["unexpected"] = True
+    expect_reject(unknown_console_key, "unknown console-script row key")
+    missing_console_key = json.loads(json.dumps(evidence))
+    missing_console_row = next(
+        row for row in missing_console_key["installed_distributions"]
+        if row["record"]["console_script_rows"]
+    )["record"]["console_script_rows"][0]
+    del missing_console_row["body_contract"]
+    expect_reject(missing_console_key, "missing console-script row key")
+    mapping_tamper = json.loads(json.dumps(evidence))
+    mapping_row = next(
+        row for row in mapping_tamper["installed_distributions"]
+        if row["expected_name"] == "tqdm"
+    )
+    mapping_row["record"]["console_script_rows"][0]["path"] = "../../../bin/unknown"
+    mapping_row["record"]["console_script_rows_sha256"] = _canonical_json_sha256(mapping_row["record"]["console_script_rows"])
+    expect_reject(mapping_tamper, "console-script package/path mapping drift")
+    normalized_count_tamper = json.loads(json.dumps(evidence))
+    normalized_count_tamper["installed_distributions"][0]["record"]["normalized_entries_count"] += 1
+    expect_reject(normalized_count_tamper, "normalized RECORD count drift")
+    normalized_digest_tamper = json.loads(json.dumps(evidence))
+    normalized_digest_tamper["installed_distributions"][0]["record"]["normalized_entries_sha256"] = "f" * 64
+    expect_reject(normalized_digest_tamper, "normalized RECORD digest drift")
+    coherent_body_tamper = json.loads(json.dumps(evidence))
+    coherent_row = next(
+        row for row in coherent_body_tamper["installed_distributions"]
+        if row["record"]["console_script_rows"]
+    )
+    coherent_script = coherent_row["record"]["console_script_rows"][0]
+    coherent_body = base64.b64decode(coherent_script["body_base64"], validate=True).replace(b"import sys", b"import os__")
+    coherent_prefix = base64.b64decode(coherent_script["script_base64"], validate=True).split(b"\n", 1)[0] + b"\n"
+    coherent_payload = coherent_prefix + coherent_body
+    coherent_script.update({
+        "script_base64": base64.b64encode(coherent_payload).decode("ascii"),
+        "sha256": hashlib.sha256(coherent_payload).hexdigest(),
+        "bytes": len(coherent_payload),
+        "body_base64": base64.b64encode(coherent_body).decode("ascii"),
+        "body_sha256": hashlib.sha256(coherent_body).hexdigest(),
+        "body_bytes": len(coherent_body),
+        "body_contract": {"imports": ["os__", coherent_script["body_contract"]["imports"][1]], "sys_exit_calls": ["sys.exit(main())"]},
+    })
+    coherent_entry = next(
+        entry for entry in coherent_row["record"]["entries"]
+        if entry["declared"]["path"] == coherent_script["path"]
+    )
+    coherent_entry["actual"] = {"sha256": coherent_script["sha256"], "bytes": coherent_script["bytes"]}
+    coherent_entry["declared"]["hash"]["value"] = coherent_script["sha256"]
+    coherent_entry["declared"]["size"]["value"] = coherent_script["bytes"]
+    coherent_row["record"]["entries_sha256"] = _canonical_json_sha256(coherent_row["record"]["entries"])
+    coherent_row["record"]["console_script_rows_sha256"] = _canonical_json_sha256(coherent_row["record"]["console_script_rows"])
+    expect_reject(coherent_body_tamper, "coherent console-script body/import tamper")
+    shebang_tamper = json.loads(json.dumps(evidence))
+    shebang_row = next(
+        row for row in shebang_tamper["installed_distributions"]
+        if row["record"]["console_script_rows"]
+    )
+    shebang_script = shebang_row["record"]["console_script_rows"][0]
+    shebang_body = base64.b64decode(shebang_script["body_base64"], validate=True)
+    shebang_payload = b"#!/usr/bin/python\n" + shebang_body
+    shebang_script.update({
+        "script_base64": base64.b64encode(shebang_payload).decode("ascii"),
+        "sha256": hashlib.sha256(shebang_payload).hexdigest(),
+        "bytes": len(shebang_payload),
+        "shebang": "#!/usr/bin/python",
+    })
+    shebang_entry = next(
+        entry for entry in shebang_row["record"]["entries"]
+        if entry["declared"]["path"] == shebang_script["path"]
+    )
+    shebang_entry["actual"] = {"sha256": shebang_script["sha256"], "bytes": shebang_script["bytes"]}
+    shebang_entry["declared"]["hash"]["value"] = shebang_script["sha256"]
+    shebang_entry["declared"]["size"]["value"] = shebang_script["bytes"]
+    shebang_row["record"]["entries_sha256"] = _canonical_json_sha256(shebang_row["record"]["entries"])
+    shebang_row["record"]["console_script_rows_sha256"] = _canonical_json_sha256(shebang_row["record"]["console_script_rows"])
+    expect_reject(shebang_tamper, "coherent console-script shebang tamper")
     lock_tamper = json.loads(json.dumps(evidence))
     lock_tamper["lock"]["rows"].append({"name": "tampered"})
     try:

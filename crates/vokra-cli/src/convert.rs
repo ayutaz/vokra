@@ -38,7 +38,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|sgmse-voicebank|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|sgmse-voicebank|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|kotoba-whisper-v2.2|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -116,7 +116,8 @@ OPTIONS:
                               csm | moshi | denoise | sgmse-voicebank | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-tdt-1.1b | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
                               reazonspeech-nemo-v2 |
-                              distil-whisper | kotoba-whisper | whisper-medusa-v1 |
+                              distil-whisper | kotoba-whisper | kotoba-whisper-v2.2 |
+                              whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | qwen3-tts-tokenizer-12hz | voxcpm | vibevoice | irodori | vits-ja |
                               sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
@@ -592,7 +593,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          campplus | kokoro | cosyvoice2 | cosyvoice2-hift | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper | \
+                         distil-whisper | kotoba-whisper | kotoba-whisper-v2.2 | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
                          qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
                          sbv2 | deberta-v2 | deberta-v3 | xcodec2 | \
@@ -2614,6 +2615,7 @@ mod tests {
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("kotoba-whisper-v2.2", ModelKind::KotobaWhisper),
             ("whisper-medusa-v1", ModelKind::WhisperMedusaV1),
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),

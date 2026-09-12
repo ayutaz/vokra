@@ -2,11 +2,12 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**2026-09-12 current-state / supersession note:** the current `main` baseline
-for this snapshot is `43d127f1`. The live, read-only public audit reports 194
-repositories, 193 GGUF-bearing repositories and 198 GGUF files. CPU status is
-`full=133`, `partial=45`, `no-runtime-binder=15`, `not-artifact=1`; Metal status
-is `full=133`, `blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved
+**2026-09-12 current-state / supersession note:** the observed `main` baseline
+for this campaign is `1de3887d`. The latest live, read-only public audit,
+evaluated with audit logic through `1be45e76`, reports 194 repositories, 193
+GGUF-bearing repositories and 198 GGUF files. CPU status is `full=135`,
+`partial=43`, `no-runtime-binder=15`, `not-artifact=1`; Metal status is
+`full=135`, `blocked-by-cpu=58`, `not-artifact=1`, leaving 59 unresolved
 public rows. The authorized Scaleway Apple CPU/reference, Metal/reference and
 no-fallback batch passed only for its named scopes; four separately approved
 artifacts were subsequently published through the gated workflow. UTMOS
@@ -97,7 +98,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. The live inventory is CPU `full=133`, `partial=45`, `no-runtime-binder=15`, `not-artifact=1`; Metal `full=133`, `blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
+| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. Exact-revision CLI routing then promoted BiCodec and SGMSE. The live inventory is CPU `full=135`, `partial=43`, `no-runtime-binder=15`, `not-artifact=1`; Metal `full=135`, `blocked-by-cpu=58`, `not-artifact=1`, leaving 59 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
 | SoTA / parity / publish | Converters and many structural proofs landed | The 31 current literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
@@ -388,15 +389,40 @@ For each landed scaffold that ships a flip-the-switch harness, point the per-fam
 These are tracked on the CC side for future waves; listed here for owner visibility only. Not gating for GA.
 
 - [x] F0 / CREPE real 6-block CNN forward landed (`crates/vokra-models/src/f0/crepe.rs`); targeted F0 tests pass. Real external-checkpoint parity remains a separate §6.4 task.
-- [ ] Charsiu `align` real-checkpoint binding and reference parity. CTC segmentation/Viterbi and synthesized-weight forward are implemented; the remaining work is the upstream tensor manifest/GGUF bind, not a replacement of a placeholder Viterbi algorithm.
-- [ ] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture. The fixed reviewed stateful GGUF binder, exact tensor fingerprints, and 512-stage trace harness are landed; the authenticated VAST fixture run and numerical verdict remain.
-- [ ] Model-level BF16 activation/runtime integration. Raw-BF16 CPU/Metal
-  storage and GEMM seams plus kernel-fixture parity are landed; Ultravox still
-  uses FP32 activations/accumulation and widens its projector, encoder, norm and
-  embedding paths. Close this only with an explicit precision design, a real
-  BF16 checkpoint, AVX512-BF16 model parity and Arm-BF16/Apple evidence.
-- [ ] Full HiFTNet GPU generator path. Metal primitives are landed, but the complete generator and non-Metal backends remain.
-- [ ] Full BigVGAN GPU path. Metal activation/upsampling primitives are landed, but the complete generator and non-Metal backends remain.
+- [x] Charsiu `align` real-checkpoint binding and reference parity. Exact VAST
+  head `e478117c` converted the pinned
+  `charsiu/en_w2v2_fc_10ms` checkpoint, regenerated the independent
+  Transformers `Wav2Vec2ForCTC` reference and passed native CPU parity at
+  max |Δ| `0.000007629` against the preregistered `0.000200000` bound. Final
+  Apple CPU/Metal/no-fallback evidence remains a platform task, not part of
+  this real-checkpoint/reference checkbox.
+- [x] `vokra-kws-micro` upstream-model binding and real `hey_jarvis` fixture.
+  Exact VAST head `72f0ad0b` passed the reviewed stateful GGUF binder against
+  the authenticated LiteRT oracle: 512 persistent invocations, eleven
+  intermediate stages, final output and four-invocation reset replay, with
+  `4 passed / 0 failed / 0 ignored`. Final Apple disposition remains a
+  separate platform task; this embedded INT8 runtime has no fabricated Metal
+  result.
+- [ ] Model-level BF16 checkpoint evidence. Raw-BF16 CPU/Metal storage and
+  GEMM seams plus kernel-fixture parity are landed. Ultravox's model-level
+  runtime now keeps dense companion weights mapped as raw BF16 on CPU/Metal
+  while deliberately retaining FP32 activations, norms and accumulation; the
+  projector/audio tower widening boundary is explicit rather than an implied
+  end-to-end BF16 claim. Completion still requires a newly approved exact
+  checkpoint scope, AVX512-BF16 model parity and Arm-BF16/Apple evidence; the
+  current Ultravox execution scope is withheld.
+- [ ] Full HiFTNet GPU generator evidence. The complete resident CPU/Metal
+  graph, strict 328-tensor converter/binder, fixed config, one-final-readback
+  contract and nonzero synthetic parity harness are landed. Completion still
+  requires the exact hash-bound owner gate, independent real-weight VAST CPU
+  parity and final Apple CPU/Metal/no-fallback evidence; unavailable backends
+  must continue to fail explicitly.
+- [ ] Full BigVGAN GPU generator evidence. The complete native generator,
+  topology-derived four-variant converter/binder, resident Metal graph and
+  one-final-readback contract are landed. Completion still requires exact
+  owner approval, real-weight independent parity for all four release
+  variants on VAST and final Apple CPU/Metal/no-fallback evidence; unavailable
+  backends must continue to fail explicitly.
 - [x] SNAC Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
 - [x] Qwen3-TTS-codec Metal MSL kernel and CPU-parity coverage landed. CUDA/Vulkan/WebGPU equivalents remain future backend work.
 

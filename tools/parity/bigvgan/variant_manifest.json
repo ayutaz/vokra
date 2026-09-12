@@ -1,0 +1,72 @@
+{
+  "schema": "bigvgan-variant-identity-matrix-v1",
+  "source_repository": "https://github.com/NVIDIA/BigVGAN",
+  "source_revision": "7d2b454564a6c7d014227f635b7423881f14bdac",
+  "variants": [
+    {
+      "slug": "v2_22khz_80band_256x",
+      "hf_repository": "nvidia/bigvgan_v2_22khz_80band_256x",
+      "model_kind": "bigvgan-v2-22khz-80band-256x",
+      "variant_tag": "v2_22khz_80band_256x",
+      "review_status": "IDENTITY_REVIEWED_APPROVAL_PENDING",
+      "model_revision": "633ff708ed5b74903e86ff1298cf4a98e921c513",
+      "checkpoint_file": "bigvgan_generator.pt",
+      "checkpoint_bytes": 449228171,
+      "checkpoint_sha256": "e95ba25972d3de0628d99cd156e9315a9c018899bf739988959ebe3544080ced",
+      "config_file": "config.json",
+      "config_bytes": 1405,
+      "config_sha256": "88a1f47acf747db0b21e97a389d838566147f7a5464583ff5c8d819d870f03ee",
+      "identity_source": "https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/tree/633ff708ed5b74903e86ff1298cf4a98e921c513",
+      "identity_note": "Official HF exact revision metadata was independently verified without downloading the checkpoint payload; owner/license approval remains required."
+    },
+    {
+      "slug": "v2_44khz_128band_512x",
+      "hf_repository": "nvidia/bigvgan_v2_44khz_128band_512x",
+      "model_kind": "bigvgan-v2-44khz-128band-512x",
+      "variant_tag": "v2_44khz_128band_512x",
+      "review_status": "IDENTITY_REVIEWED_APPROVAL_PENDING",
+      "model_revision": "95a9d1dcb12906c03edd938d77b9333d6ded7dfb",
+      "checkpoint_file": "bigvgan_generator.pt",
+      "checkpoint_bytes": 489041291,
+      "checkpoint_sha256": "d9fe7ec6bd0b44ed9d66973d5012d8181c1570b01e5c72df51973e241dccd357",
+      "config_file": "config.json",
+      "config_bytes": 1403,
+      "config_sha256": "65b7f487bfaf15256056a75f6667ef5f640214c981922a111927873705ea4ddb",
+      "identity_source": "https://huggingface.co/nvidia/bigvgan_v2_44khz_128band_512x/tree/95a9d1dcb12906c03edd938d77b9333d6ded7dfb",
+      "identity_note": "Official HF exact revision metadata was independently verified without downloading the checkpoint payload; owner/license approval remains required."
+    },
+    {
+      "slug": "v2_24khz_100band_256x",
+      "hf_repository": "nvidia/bigvgan_v2_24khz_100band_256x",
+      "model_kind": "bigvgan-v2-24khz-100band-256x",
+      "variant_tag": "v2_24khz_100band_256x",
+      "review_status": "IDENTITY_REVIEWED_APPROVAL_PENDING",
+      "model_revision": "c329ede9e9bbc100ddf5c91e2330a61921262370",
+      "checkpoint_file": "bigvgan_generator.pt",
+      "checkpoint_bytes": 450088331,
+      "checkpoint_sha256": "6f9c5715550c9d0f11159ceb8935638da5aeb19e27d1e63677632df095e376f5",
+      "config_file": "config.json",
+      "config_bytes": 1402,
+      "config_sha256": "d77e2c96583ca2296ac112a56ec7cc6bd5da4bf7681ceff18448bedc4fcf6512",
+      "identity_source": "https://huggingface.co/nvidia/bigvgan_v2_24khz_100band_256x/tree/c329ede9e9bbc100ddf5c91e2330a61921262370",
+      "identity_note": "Official HF exact revision metadata was independently verified without downloading the checkpoint payload; owner/license approval remains required."
+    },
+    {
+      "slug": "base_v1_24khz_100band",
+      "hf_repository": "nvidia/bigvgan_base_24khz_100band",
+      "model_kind": "bigvgan-base-24khz-100band",
+      "variant_tag": "base_v1_24khz_100band",
+      "review_status": "IDENTITY_REVIEWED_APPROVAL_PENDING",
+      "model_revision": "0f6305d0e010eaafdbf649978f46c3b5af099343",
+      "checkpoint_file": "bigvgan_generator.pt",
+      "checkpoint_bytes": 56297637,
+      "checkpoint_sha256": "ca8bced4d3ef588e654742f732455c16abb004e49d7d3bf03edade84d3e982f2",
+      "config_file": "config.json",
+      "config_bytes": 1034,
+      "config_sha256": "885553969751bfd87f1980017364e968917cd34347376ed08238db673ea5b46b",
+      "identity_note": "Official HF exact-revision metadata recorded checkpoint bytes 56297637 and config bytes 1034 without downloading payloads; existing reviewed hashes are retained and owner/license approval remains required."
+    }
+  ],
+  "publication": "NO_UPLOAD",
+  "unknown_identity_policy": "FAIL_CLOSED_PRIMARY_SOURCE_REQUIRED"
+}

@@ -24,6 +24,17 @@ import torch  # type: ignore[import-not-found]
 
 SOURCE_REPOSITORY = "https://github.com/NVIDIA/BigVGAN"
 
+# The variant is an input to the oracle as well as to the converter. Keeping
+# this check here prevents a correctly hashed config from being paired with a
+# reference labelled for another BigVGAN release (the 24 kHz variants need
+# the upsample_initial_channel tie-breaker).
+VARIANTS: dict[str, tuple[int, int, int]] = {
+    "v2_22khz_80band_256x": (80, 22050, 1536),
+    "v2_24khz_100band_256x": (100, 24000, 1536),
+    "v2_44khz_128band_512x": (128, 44100, 1536),
+    "base_v1_24khz_100band": (100, 24000, 512),
+}
+
 
 class _UnsafePickle:
     pass
@@ -94,6 +105,7 @@ def self_test() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--variant")
     parser.add_argument("--upstream-dir", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--checkpoint-sha256")
@@ -103,11 +115,12 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.upstream_dir, args.checkpoint, args.checkpoint_sha256, args.config_sha256, args.source_revision, args.config, args.output)):
+        if any(value is not None for value in (args.variant, args.upstream_dir, args.checkpoint, args.checkpoint_sha256, args.config_sha256, args.source_revision, args.config, args.output)):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return
     required = {
+        "--variant": args.variant,
         "--upstream-dir": args.upstream_dir,
         "--checkpoint": args.checkpoint,
         "--checkpoint-sha256": args.checkpoint_sha256,
@@ -119,6 +132,8 @@ def main() -> None:
     missing = [name for name, value in required.items() if value is None]
     if missing:
         parser.error("the following arguments are required: " + ", ".join(missing))
+    if args.variant not in VARIANTS:
+        raise SystemExit(f"bigvgan_dump: unsupported --variant {args.variant!r}")
     if not args.checkpoint.is_file():
         raise SystemExit(f"bigvgan_dump: checkpoint not found: {args.checkpoint}")
     if not isinstance(args.checkpoint_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", args.checkpoint_sha256):
@@ -153,6 +168,18 @@ def main() -> None:
     from env import AttrDict  # type: ignore[import-not-found]
 
     config = AttrDict(json.loads(args.config.read_text(encoding="utf-8")))
+    expected_mels, expected_rate, expected_initial = VARIANTS[args.variant]
+    actual_shape = (
+        int(config.num_mels),
+        int(config.get("sampling_rate", -1)),
+        int(config.upsample_initial_channel),
+    )
+    if actual_shape != (expected_mels, expected_rate, expected_initial):
+        raise SystemExit(
+            "bigvgan_dump: config identity does not match --variant "
+            f"{args.variant!r}: got {actual_shape}, expected "
+            f"{(expected_mels, expected_rate, expected_initial)}"
+        )
     generator = BigVGAN(config)
     checkpoint = safe_load(args.checkpoint)
     if not isinstance(checkpoint, dict) or "generator" not in checkpoint:

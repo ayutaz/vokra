@@ -5,18 +5,19 @@
 # separately locked reference project.  The reviewed end-to-end path below is
 # the only route that may acquire the fixed artifact, convert it, generate
 # independent fixtures, and run Path C; it is Linux x86_64/VAST/clean-checkout
-# gated and never uploads or copies model payloads into the result archive.
+# gated and never uploads model payloads. By explicit request, the reviewed
+# route may also stage one exact Apple packet outside the result archive.
 # shellcheck disable=SC2034 # identity constants are self-test contract data.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/microwakeword"
 REFERENCE_PROJECT="$ROOT/tools/parity/microwakeword-reference"
-INSPECTOR="$ROOT/tools/parity/microwakeword_inspect.py"
+MODEL_INSPECTOR="$ROOT/tools/parity/microwakeword_inspect.py"
+REFERENCE_INSPECTOR="$REFERENCE_PROJECT/inspect.py"
 TENSOR_MANIFEST_PRODUCER="$ROOT/tools/parity/microwakeword_tensor_manifest.py"
 CONVERTER_LOCK_SHA256="984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2"
 REFERENCE_LOCK_SHA256="736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
-DEPENDENCY_EVIDENCE_SHA256="2b24695d106665b5cbc17357b1a43ff03ab75235d35e7d3ed03e5c7c7a68069d"
 PACKAGE_COUNT=1
 PACKAGE_ROWS_SHA256="d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7"
 LICENSE_ROWS_SHA256="4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c"
@@ -156,6 +157,34 @@ paths_disjoint() {
   [[ "$left" != "$right" && "$left" != "$right"/* && "$right" != "$left"/* ]]
 }
 
+reject_symlink_ancestors() {
+  local path="$1" label="$2" current=/ component
+  [[ "$path" == /* ]] || die "$label must be absolute: $path"
+  local rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    if [[ "$rest" == */* ]]; then
+      component="${rest%%/*}"
+      rest="${rest#*/}"
+    else
+      component="$rest"
+      rest=''
+    fi
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || die "$label contains dot components"
+    current="${current%/}/$component"
+    [[ ! -L "$current" ]] || die "$label has a symlink ancestor: $current"
+  done
+}
+
+canonical_absent() {
+  local path="$1" label="$2" parent
+  reject_symlink_ancestors "$path" "$label"
+  [[ ! -e "$path" && ! -L "$path" ]] || die "$label must be absent before validation: $path"
+  parent="$(dirname -- "$path")"
+  [[ -d "$parent" && ! -L "$parent" ]] || die "$label parent must be an existing directory"
+  parent="$(cd -P "$parent" && pwd -P)" || die "$label parent cannot be canonicalized"
+  printf '%s/%s\n' "$parent" "$(basename -- "$path")"
+}
+
 require_empty_directory() {
   local directory="$1"
   [[ -d "$directory" && ! -L "$directory" ]] || die "result directory must be an existing non-symlink directory"
@@ -175,7 +204,7 @@ require_path_c_sentinel() {
   local log_path="$1"
   local sentinel='Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4'
   [[ "$(grep -Fxc -- "$sentinel" "$log_path" || true)" == 1 ]] || die "Path C authenticated sentinel must occur exactly once"
-  [[ "$(grep -Ec '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_path" || true)" == 1 ]] || die "Path C test result is not the exact 4/0/0/0/0 success line"
+  [[ "$(grep -Ec '^test result: ok\. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_path" || true)" == 1 ]] || die "Path C test result is not the exact 5/0/0/0/0 success line"
 }
 
 cleanup_validation_workdir() {
@@ -191,21 +220,67 @@ cleanup_validation_workdir() {
   return "$status"
 }
 
+stage_apple_packet() {
+  local packet_dir="$1" gguf="$2" fixtures="$3" validation="$4" path_log="$5" dependency="$6"
+  local manifest source name
+  [[ ! -e "$packet_dir" && ! -L "$packet_dir" ]] || die "Apple packet destination must remain absent: $packet_dir"
+  [[ -f "$gguf" && ! -L "$gguf" && -s "$gguf" ]] || die "reviewed GGUF is not a regular non-empty file"
+  [[ -d "$fixtures" && ! -L "$fixtures" ]] || die "reviewed fixtures directory is unavailable"
+  [[ -z "$(find -P "$fixtures" -type l -print -quit)" ]] || die "reviewed fixtures contain a symlink"
+  [[ -z "$(find -P "$fixtures" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" ]] || die "reviewed fixtures contain a non-regular entry"
+  for source in "$validation" "$path_log" "$dependency"; do
+    [[ -f "$source" && ! -L "$source" && -s "$source" ]] || die "Apple packet source is not a regular non-empty file: $source"
+  done
+  mkdir "$packet_dir" || die "unable to create Apple packet destination"
+  mkdir "$packet_dir/fixtures" || die "unable to create Apple packet fixture directory"
+  cp -p -- "$gguf" "$packet_dir/hey_jarvis.reviewed.gguf" || die "unable to stage reviewed GGUF"
+  cp -p -- "$validation" "$packet_dir/microwakeword-validation.json" || die "unable to stage validation JSON"
+  cp -p -- "$path_log" "$packet_dir/path-c.log" || die "unable to stage Path-C log"
+  cp -p -- "$dependency" "$packet_dir/dependency-evidence.json" || die "unable to stage dependency evidence"
+  cp -p -- "$fixtures"/* "$packet_dir/fixtures/" || die "unable to stage complete fixture tree"
+  [[ -d "$packet_dir/fixtures" && ! -L "$packet_dir/fixtures" ]] || die "staged fixture directory is unavailable"
+  cmp -s -- "$gguf" "$packet_dir/hey_jarvis.reviewed.gguf" || die "staged reviewed GGUF differs from source"
+  cmp -s -- "$validation" "$packet_dir/microwakeword-validation.json" || die "staged validation JSON differs from source"
+  cmp -s -- "$path_log" "$packet_dir/path-c.log" || die "staged Path-C log differs from source"
+  cmp -s -- "$dependency" "$packet_dir/dependency-evidence.json" || die "staged dependency evidence differs from source"
+  while IFS= read -r source; do
+    name="$(basename -- "$source")"
+    cmp -s -- "$source" "$packet_dir/fixtures/$name" || die "staged fixture differs from source: $name"
+  done < <(find -P "$fixtures" -mindepth 1 -maxdepth 1 -type f -print)
+  manifest="$packet_dir/packet-manifest.sha256"
+  (
+    cd -P "$packet_dir" || exit 1
+    [[ -z "$(find -P . -type l -print -quit)" ]] || exit 1
+    find -P . -type f ! -name "$(basename -- "$manifest")" -print | LC_ALL=C sort |
+      while IFS= read -r path; do sha256sum -- "$path"; done >"$manifest"
+  ) || die "unable to create deterministic Apple packet manifest"
+  [[ -s "$manifest" ]] || die "Apple packet manifest is empty"
+  echo "Apple packet staged: $packet_dir (NO_UPLOAD; manifest excludes itself)" >&2
+}
+
 # Reviewed end-to-end VAST path. The model, reviewed GGUF, and fixtures are
 # worker-owned descendants of one private temporary root. Only the JSON result
-# and test log belong in result_dir; no payload is copied there.
+# and test log belong in result_dir; an explicit Apple packet destination is
+# staged after successful Path C and is never cleaned by this worker.
 reviewed_validation() {
   [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "Linux x86_64 VAST required"
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
   [[ "${VOKRA_REVIEWED_VALIDATION:-0}" == 1 ]] || die "VOKRA_REVIEWED_VALIDATION=1 is absent"
-  [[ "$#" == 3 ]] || die "--validate-reviewed requires raw-inventory dependency-evidence result-dir"
-  local inventory_path="$1" dependency_evidence_path="$2" result_dir="$3"
+  [[ "$#" == 3 || "$#" == 5 ]] || die "--validate-reviewed requires raw-inventory dependency-evidence result-dir [--apple-packet-dir absent-dir]"
+  local inventory_path="$1" dependency_evidence_path="$2" result_dir="$3" apple_packet_dir=''
+  local payload_transfer_status='TEMPORARY_VAST_ONLY'
+  if [[ "$#" == 5 ]]; then
+    [[ "$4" == --apple-packet-dir ]] || die "--validate-reviewed accepts only --apple-packet-dir after result-dir"
+    apple_packet_dir="$5"
+    payload_transfer_status='STAGED_FOR_AUTHENTICATED_APPLE_TRANSFER'
+  fi
   [[ "$inventory_path" == /* && "$dependency_evidence_path" == /* && "$result_dir" == /* ]] || die "reviewed paths must be absolute"
   [[ -f "$inventory_path" && ! -L "$inventory_path" && -f "$dependency_evidence_path" && ! -L "$dependency_evidence_path" ]] || die "reviewed evidence inputs must be regular non-symlink files"
   cd "$ROOT"
-  for command in curl git uv sha256sum awk stat realpath find cargo rustc hostname nproc; do command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"; done
+  for command in curl git uv sha256sum awk stat realpath find cmp cargo rustc hostname nproc; do command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"; done
   [[ -z "$(git status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
   local commit system machine kernel host_name cpu_model cpu_flags cpu_count rustc_version cargo_version
+  local dependency_evidence_sha256 raw_inventory_sha256 inspector_report
   commit="$(git rev-parse HEAD)" || die "unable to record git commit"
   system="$(uname -s)"
   machine="$(uname -m)"
@@ -225,15 +300,26 @@ reviewed_validation() {
   inventory_path="$(realpath -e -- "$inventory_path")" || die "raw inventory cannot be canonicalized"
   dependency_evidence_path="$(realpath -e -- "$dependency_evidence_path")" || die "dependency evidence cannot be canonicalized"
   result_dir="$(realpath -e -- "$result_dir")" || die "result directory cannot be canonicalized"
+  if [[ -n "$apple_packet_dir" ]]; then
+    apple_packet_dir="$(canonical_absent "$apple_packet_dir" apple-packet-dir)"
+  fi
   [[ "$inventory_path" != "$ROOT"/* && "$dependency_evidence_path" != "$ROOT"/* && "$result_dir" != "$ROOT"/* ]] || die "reviewed paths must be outside checkout root"
+  [[ -z "$apple_packet_dir" || ( "$apple_packet_dir" != "$ROOT" && "$apple_packet_dir" != "$ROOT"/* ) ]] || die "Apple packet must be outside checkout root"
   require_empty_directory "$result_dir"
   for left in "$inventory_path" "$dependency_evidence_path" "$result_dir"; do
     for right in "$inventory_path" "$dependency_evidence_path" "$result_dir"; do
       [[ "$left" == "$right" ]] || paths_disjoint "$left" "$right" || die "reviewed paths must be canonically disjoint"
     done
+    [[ -z "$apple_packet_dir" ]] || paths_disjoint "$left" "$apple_packet_dir" || die "Apple packet must be canonically disjoint from reviewed paths"
   done
-  [[ "$(sha256sum "$inventory_path" | awk '{print $1}')" == "$RAW_INVENTORY_SHA256" ]] || die "REVIEWED_RAW_INVENTORY_REQUIRED"
-  [[ "$(sha256sum "$dependency_evidence_path" | awk '{print $1}')" == "$DEPENDENCY_EVIDENCE_SHA256" ]] || die "REVIEWED_DEPENDENCY_EVIDENCE_REQUIRED"
+  if [[ -n "$apple_packet_dir" ]] && ! paths_disjoint "$ROOT" "$apple_packet_dir"; then
+    die "Apple packet must be disjoint from checkout"
+  fi
+  raw_inventory_sha256="$(sha256sum "$inventory_path" | awk '{print $1}')" || die "raw inventory SHA-256 calculation failed"
+  dependency_evidence_sha256="$(sha256sum "$dependency_evidence_path" | awk '{print $1}')" || die "dependency evidence SHA-256 calculation failed"
+  [[ "$raw_inventory_sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "raw inventory SHA-256 is invalid"
+  [[ "$dependency_evidence_sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "dependency evidence SHA-256 is invalid"
+  [[ "$raw_inventory_sha256" == "$RAW_INVENTORY_SHA256" ]] || die "REVIEWED_RAW_INVENTORY_REQUIRED"
 
   export UV_CACHE_DIR="$UV_CACHE_DIR_VALUE"
   uv sync --project "$PROJECT" --frozen
@@ -244,6 +330,42 @@ reviewed_validation() {
   paths_disjoint "$VALIDATION_WORK_DIR" "$inventory_path" || die "validation work directory overlaps raw inventory"
   paths_disjoint "$VALIDATION_WORK_DIR" "$dependency_evidence_path" || die "validation work directory overlaps dependency evidence"
   paths_disjoint "$VALIDATION_WORK_DIR" "$result_dir" || die "validation work directory overlaps result directory"
+  [[ -z "$apple_packet_dir" ]] || paths_disjoint "$VALIDATION_WORK_DIR" "$apple_packet_dir" || die "validation work directory overlaps Apple packet"
+  inspector_report="$VALIDATION_WORK_DIR/dependency-audit.json"
+  [[ ! -e "$inspector_report" && ! -L "$inspector_report" ]] || die "inspector report destination exists"
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --project "$REFERENCE_PROJECT" --offline --no-sync --python 3.12 python "$REFERENCE_INSPECTOR" \
+    --project "$REFERENCE_PROJECT/pyproject.toml" --lock "$REFERENCE_PROJECT/uv.lock" \
+    --dependency-evidence "$dependency_evidence_path" --output "$inspector_report" >/dev/null; then
+    die "reference dependency inspector rejected reviewed evidence"
+  fi
+  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python - \
+    "$inspector_report" "$dependency_evidence_sha256" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+expected_evidence_sha256 = sys.argv[2]
+if report_path.is_symlink() or not report_path.is_file():
+    raise SystemExit("reference inspector report is absent or symlinked")
+try:
+    def reject_duplicate_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate inspector report key")
+            result[key] = value
+        return result
+    report = json.loads(report_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+    raise SystemExit("reference inspector report is not valid JSON") from error
+if not isinstance(report, dict) or report.get("status") != "PASS" or report.get("failures") != []:
+    raise SystemExit("reference inspector did not return PASS")
+if report.get("dependency_evidence_status") != "VALIDATED_EXACT_OWNER_REVIEWED":
+    raise SystemExit("reference inspector evidence status is not exact owner-reviewed")
+if report.get("dependency_evidence_sha256") != expected_evidence_sha256:
+    raise SystemExit("reference inspector evidence SHA-256 differs from runtime input SHA-256")
+PY
   local tflite_path="$VALIDATION_WORK_DIR/hey_jarvis.tflite" license_path="$VALIDATION_WORK_DIR/LICENSE" companion_path="$VALIDATION_WORK_DIR/hey_jarvis.json"
   local output_path="$VALIDATION_WORK_DIR/hey_jarvis.reviewed.gguf" fixture_path="$VALIDATION_WORK_DIR/fixtures"
   [[ ! -e "$output_path" && ! -L "$output_path" && ! -e "$fixture_path" && ! -L "$fixture_path" ]] || die "worker output paths must be absent"
@@ -274,15 +396,16 @@ reviewed_validation() {
   [[ ! -e "$result_manifest" && ! -L "$result_manifest" ]] || die "validation result destination exists"
   uv run --no-project --offline --python 3.12 python - "$result_manifest" "$output_path" "$fixture_path" "$path_c_log" \
     "$commit" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$MODEL_ARTIFACT_BYTES_SHA256" \
-    "$DEPENDENCY_EVIDENCE_SHA256" "$RAW_INVENTORY_SHA256" "$system" "$machine" \
-    "$kernel" "$host_name" "$cpu_count" "$cpu_model" "$cpu_flags" "$rustc_version" "$cargo_version" <<'PY'
+    "$dependency_evidence_sha256" "$raw_inventory_sha256" "$system" "$machine" \
+    "$kernel" "$host_name" "$cpu_count" "$cpu_model" "$cpu_flags" "$rustc_version" "$cargo_version" \
+    "$payload_transfer_status" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 result, gguf, fixture, path_c_log = map(Path, sys.argv[1:5])
-commit, converter_lock, reference_lock, tflite_sha, evidence_sha, inventory_sha, system, machine, kernel, host_name, cpu_count, cpu_model, cpu_flags, rustc_version, cargo_version = sys.argv[5:]
+commit, converter_lock, reference_lock, tflite_sha, evidence_sha, inventory_sha, system, machine, kernel, host_name, cpu_count, cpu_model, cpu_flags, rustc_version, cargo_version, payload_transfer_status = sys.argv[5:]
 
 def reject_duplicate_keys(pairs):
     value = {}
@@ -380,7 +503,7 @@ def identity(path: Path) -> dict[str, object]:
 summary = {
     "status": "PATH_C_PASS",
     "publication": "NO_UPLOAD",
-    "model_payload_transfer": "TEMPORARY_VAST_ONLY",
+    "model_payload_transfer": payload_transfer_status,
     "git_commit": commit,
     "converter_lock_sha256": converter_lock,
     "reference_lock_sha256": reference_lock,
@@ -398,7 +521,12 @@ with result.open("x", encoding="utf-8") as output:
     json.dump(summary, output, indent=2, sort_keys=True)
     output.write("\n")
 PY
-  echo "reviewed Path C validation complete: $result_manifest (NO_UPLOAD; model payload remains VAST-only)" >&2
+  if [[ -n "$apple_packet_dir" ]]; then
+    stage_apple_packet "$apple_packet_dir" "$output_path" "$fixture_path" "$result_manifest" "$path_c_log" "$dependency_evidence_path"
+    echo "reviewed Path C validation complete: $result_manifest (NO_UPLOAD; packet staged for authenticated Apple transfer at $apple_packet_dir)" >&2
+  else
+    echo "reviewed Path C validation complete: $result_manifest (NO_UPLOAD; model payload remains VAST-only)" >&2
+  fi
 }
 
 # Evidence-only VAST path. It is intentionally separate from production:
@@ -426,7 +554,7 @@ inspect_only() {
   work_dir="$INSPECTION_WORK_DIR"
   trap cleanup_inspection_workdir EXIT
   manifest_path="$work_dir/raw-inventory.json"
-  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test
+  UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$MODEL_INSPECTOR" --self-test
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --output "$work_dir/hey_jarvis.tflite" "$DEFAULT_UPSTREAM_URL"
   [[ "$(stat -c '%s' "$work_dir/hey_jarvis.tflite")" == "$MODEL_TARGET_SIZE" ]] || die "canonical artifact size mismatch"
@@ -563,10 +691,23 @@ PY
 self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
-  [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: inspector missing" >&2; fail=1; }
-  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$DEPENDENCY_EVIDENCE_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
+  [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: model inspector missing" >&2; fail=1; }
+  [[ -f "$root/tools/parity/microwakeword-reference/inspect.py" ]] || { echo "self-test FAIL: reference inspector missing" >&2; fail=1; }
+  for needle in "REFERENCE_PROJECT/inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "candidate_conversion" "reviewed_conversion" "reviewed_validation" "stage_apple_packet" "canonical_absent" "--apple-packet-dir" "packet-manifest.sha256" "TEMPORARY_VAST_ONLY" "STAGED_FOR_AUTHENTICATED_APPLE_TRANSFER" "--validate-reviewed" "requires raw-inventory dependency-evidence result-dir [--apple-packet-dir absent-dir]" "VOKRA_REVIEWED_VALIDATION" "VOKRA_KWS_REAL_GGUF" "VOKRA_KWS_REAL_FIXTURES" "uv sync" "--frozen" "--no-sync" "--locked" "paths_disjoint" "cpuinfo_field" "model name" "flags" "require_empty_directory" "require_path_c_sentinel" "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4" "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out" "open(\"x\"" "git_commit" "converter_lock_sha256" "reference_lock_sha256" "source_tflite_sha256" "dependency_evidence_sha256" "raw_inventory_sha256" "model_payload_transfer" "preserved_intermediate_stage_count" "final_output_tensor" "--reviewed" "--candidate" "CANDIDATE_UNREVIEWED" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$CONVERTER_LOCK_SHA256" "$REFERENCE_LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256="21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77"' 'REVIEWED_TOPOLOGY_SHA256="e17fa0cae8d504ce71b49ad2113fc6f7ebba9e74dd4070d26e7f291dcbfaf621"'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
+  local stale_sha_name='DEPENDENCY_EVIDENCE_'
+  stale_sha_name+='SHA256'
+  if grep -Fq -- "$stale_sha_name" "$self"; then
+    echo 'self-test FAIL: stale dependency evidence SHA gate remains' >&2
+    fail=1
+  fi
+  if ! grep -Fq -- 'uv run --project "$REFERENCE_PROJECT" --offline --no-sync --python 3.12 python "$REFERENCE_INSPECTOR"' "$self" \
+    || ! grep -Fq -- '--dependency-evidence "$dependency_evidence_path"' "$self" \
+    || ! grep -Fq -- 'sha256sum "$dependency_evidence_path"' "$self"; then
+    echo 'self-test FAIL: reviewed validation lacks offline reference inspector and runtime evidence SHA gate' >&2
+    fail=1
+  fi
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload|vokra-cli[[:space:]]+convert)([[:space:]]|$)' "$self" >/dev/null; then
     echo 'self-test FAIL: upload/conversion command found' >&2; fail=1
   fi
@@ -574,6 +715,10 @@ self_test() {
     echo 'self-test FAIL: raw Python/pip invocation found' >&2; fail=1
   fi
   inspection_body="$(sed -n '/^inspect_only()/,/^}/p' "$self")"
+  if ! grep -Fq -- 'python "$MODEL_INSPECTOR" --self-test' <<<"$inspection_body"; then
+    echo 'self-test FAIL: inspect-only does not call the model inspector' >&2
+    fail=1
+  fi
   local platform_gate_pattern=''
   platform_gate_pattern+='[['
   platform_gate_pattern+=" \"\$(uname -s)\" == Linux && \"\$(uname -m)\" == x86_64 ]]"
@@ -594,7 +739,7 @@ self_test() {
     echo 'self-test FAIL: inspection mode accepts arbitrary source identity' >&2
     fail=1
   fi
-  local cleanup_probe
+  local cleanup_probe packet_parent packet_probe packet_canonical stage_parent stage_packet stage_fixture stage_count temp_root
   cleanup_probe="$(mktemp -d /tmp/vokra-mww-inspect.XXXXXX)"
   INSPECTION_WORK_DIR="$cleanup_probe"
   cleanup_inspection_workdir
@@ -603,8 +748,44 @@ self_test() {
     echo 'self-test FAIL: unsafe inspection cleanup path was accepted' >&2
     fail=1
   fi
+  temp_root="$(cd -P "${TMPDIR:-/tmp}" && pwd -P)"
+  packet_parent="$(mktemp -d "$temp_root/vokra-mww-packet-selftest.XXXXXX")"
+  packet_probe="$packet_parent/packet"
+  packet_canonical="$(canonical_absent "$packet_probe" packet-dir)"
+  [[ "$packet_canonical" == "$packet_probe" && ! -e "$packet_probe" ]] || {
+    echo 'self-test FAIL: absent Apple packet path was not canonicalized safely' >&2
+    fail=1
+  }
+  touch "$packet_probe"
+  if (canonical_absent "$packet_probe" packet-dir) 2>/dev/null; then
+    echo 'self-test FAIL: existing Apple packet path was accepted' >&2
+    fail=1
+  fi
+  rm -rf -- "$packet_parent"
+  stage_parent="$(mktemp -d "$temp_root/vokra-mww-stage-selftest.XXXXXX")"
+  stage_packet="$stage_parent/apple-packet"
+  stage_fixture="$stage_parent/fixtures"
+  mkdir "$stage_fixture"
+  printf 'synthetic-gguf\n' >"$stage_parent/input.gguf"
+  printf '{"status":"PATH_C_PASS"}\n' >"$stage_parent/validation.json"
+  printf 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' >"$stage_parent/path-c.log"
+  printf '{"schema":"dependency-evidence"}\n' >"$stage_parent/dependency.json"
+  printf 'synthetic-fixture\n' >"$stage_fixture/input.bin"
+  stage_apple_packet "$stage_packet" "$stage_parent/input.gguf" "$stage_fixture" \
+    "$stage_parent/validation.json" "$stage_parent/path-c.log" "$stage_parent/dependency.json"
+  stage_count="$(find -P "$stage_packet" -type f -print | wc -l | tr -d ' ')"
+  [[ "$stage_count" == 6 ]] || { echo 'self-test FAIL: Apple packet file count drifted' >&2; fail=1; }
+  (cd -P "$stage_packet" && sha256sum -c packet-manifest.sha256 >/dev/null) || {
+    echo 'self-test FAIL: Apple packet manifest did not verify' >&2
+    fail=1
+  }
+  rm -rf -- "$stage_parent"
   [[ -f "$root/tools/parity/microwakeword-reference/inspect.py" ]] || { echo 'self-test FAIL: reference inspector missing' >&2; fail=1; }
   validation_body="$(sed -n '/^reviewed_validation()/,/^}/p' "$self")"
+  if ! grep -Fq -- 'python "$REFERENCE_INSPECTOR"' <<<"$validation_body" || ! grep -Fq -- '--dependency-evidence "$dependency_evidence_path"' <<<"$validation_body"; then
+    echo 'self-test FAIL: reviewed validation does not call the reference inspector' >&2
+    fail=1
+  fi
   if ! grep -Fq -- "uv sync --project \"\$PROJECT\" --frozen" <<<"$validation_body" || ! grep -Fq -- "VOKRA_REVIEWED_CONVERSION=1 uv run --project \"\$PROJECT\"" <<<"$validation_body" || ! grep -Fq -- "cargo test --locked -p vokra-kws-micro --test parity_microwakeword" <<<"$validation_body"; then
     echo 'self-test FAIL: reviewed validation lacks frozen sync and Path C' >&2
     fail=1
@@ -632,13 +813,13 @@ self_test() {
     fail=1
   fi
   missing_sentinel_log="$worker_probe/missing.log"
-  printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' >"$missing_sentinel_log"
+  printf 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' >"$missing_sentinel_log"
   if (require_path_c_sentinel "$missing_sentinel_log") 2>/dev/null; then
     echo 'self-test FAIL: missing Path C sentinel was accepted' >&2
     fail=1
   fi
   bad_result_log="$worker_probe/bad-result.log"
-  printf '%s\n4 passed; 0 failed\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$bad_result_log"
+  printf '%s\n5 passed; 0 failed\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$bad_result_log"
   if (require_path_c_sentinel "$bad_result_log") 2>/dev/null; then
     echo 'self-test FAIL: abbreviated Path C result line was accepted' >&2
     fail=1
@@ -660,7 +841,7 @@ PY
     fail=1
   fi
   good_sentinel_log="$worker_probe/good.log"
-  printf '%s\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$good_sentinel_log"
+  printf '%s\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' 'Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4' >"$good_sentinel_log"
   require_path_c_sentinel "$good_sentinel_log" || fail=1
   cleanup_root="$(mktemp -d /tmp/vokra-mww-cleanup-selftest.XXXXXX)"
   cleanup_work="$(mktemp -d /tmp/vokra-mww-validation.XXXXXX)"

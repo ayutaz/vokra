@@ -216,3 +216,6 @@ NIN = "NIN"
 
 [type.sh.extend-words]
 arange = "arange"        # v1.48.0: NumPy API identifier in shell fixture
+# Charsiu's released ARPAbet inventory uses IY for the long-e vowel. Typos
+# v1.50.1 incorrectly reports this formal phoneme label as "IT".
+IY = "IY"

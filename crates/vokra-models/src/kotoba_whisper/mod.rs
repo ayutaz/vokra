@@ -70,6 +70,11 @@
 //! - **Language specialization**: kotoba-whisper is Japanese-specialized
 //!   (JA CER 6-9% on the eval triad); distil-whisper covers many
 //!   languages with more moderate quality per language.
+//! - **v2.2 decode contract**: the pinned v2.2 official pipeline passes
+//!   `language="ja"`, `task="transcribe"`, and `return_timestamps=False`.
+//!   The v2.2 GGUF therefore carries the exact prefix
+//!   `<|startoftranscript|><|ja|><|transcribe|><|notimestamps|>`; the
+//!   historical v2.0 aliases retain their existing prefix.
 //!
 //! Because the *runtime forward* is identical (same op inventory, same
 //! tensor names, same shape flow), both share the [`crate::whisper`]
@@ -84,15 +89,12 @@
 //! (`vokra-ops`) or backend kernel: the same STFT / mel filterbank / GEMM /
 //! GEMV / softmax / layer-norm / GELU / conv1d inventory Whisper base
 //! consumes (see [`crate::whisper`] docstring §Operator inventory) is
-//! also what kotoba-whisper uses. The runtime forward is a follow-up
-//! wave (T29-equivalent — the Moshi / CSM / Zonos / Kyutai STT /
-//! Parakeet-CTC / distil-whisper pattern): when it lands it will
-//! delegate to [`crate::whisper::WhisperModel`] with an appropriately-
-//! shrunk `WhisperConfig`, since the checkpoint's tensor names follow
-//! the upstream HF Whisper convention verbatim
-//! (`model.encoder.layers.*` / `model.decoder.layers.*`) and the
-//! converter (`vokra-convert::models::kotoba_whisper`) writes them
-//! through unchanged.
+//! also what kotoba-whisper uses. The native runtime forward is implemented
+//! through [`crate::whisper::WhisperModel`] with an appropriately-shrunk
+//! `WhisperConfig`; the checkpoint's tensor names follow the upstream HF
+//! Whisper convention verbatim (`model.encoder.layers.*` /
+//! `model.decoder.layers.*`) and the converter
+//! (`vokra-convert::models::kotoba_whisper`) writes them through unchanged.
 //!
 //! # What lands in this Phase 5 slice
 //!
@@ -119,7 +121,7 @@
 //! (whisper.cpp 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
 
 use vokra_core::engines::AsrEngine;
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -148,6 +150,17 @@ pub const EXPECTED_ARCH: &str = "kotoba-whisper";
 /// in `config.json` but inherited from the Whisper feature extractor
 /// preprocessor).
 pub const KOTOBA_WHISPER_SAMPLE_RATE: u32 = 16_000;
+
+/// v2.2's official pipeline fixes Japanese transcription with
+/// `language="ja", task="transcribe", return_timestamps=False`. These ids
+/// are the exact tokenizer/generation-config values at the pinned upstream
+/// revision. Older Kotoba aliases retain their historical prefix.
+const V22_DECODER_START_IDS: [u32; 4] = [50_258, 50_266, 50_360, 50_364];
+const V22_UPSTREAM_HF: &str = "kotoba-tech/kotoba-whisper-v2.2";
+const V22_UPSTREAM_REVISION: &str = "9d33482a0eb9b57f1ad80708e8ac5538246d8355";
+const V22_MODEL_NAME: &str = "kotoba-whisper-v2.2";
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -416,6 +429,34 @@ impl KotobaWhisperAsr {
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let inner = WhisperAsr::from_gguf(file)?;
         let wc = inner.model().config();
+        if file
+            .get(chunks::KEY_MODEL_NAME)
+            .and_then(|value| value.as_str())
+            == Some(V22_MODEL_NAME)
+        {
+            let upstream_hf = file
+                .get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|value| value.as_str());
+            if upstream_hf != Some(V22_UPSTREAM_HF) {
+                return Err(VokraError::ModelLoad(format!(
+                    "kotoba-whisper-v2.2: upstream HF provenance must be {V22_UPSTREAM_HF:?}, got {upstream_hf:?}"
+                )));
+            }
+            let upstream_revision = file
+                .get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|value| value.as_str());
+            if upstream_revision != Some(V22_UPSTREAM_REVISION) {
+                return Err(VokraError::ModelLoad(format!(
+                    "kotoba-whisper-v2.2: upstream revision must be {V22_UPSTREAM_REVISION:?}, got {upstream_revision:?}"
+                )));
+            }
+            if wc.decoder_start_ids.as_slice() != V22_DECODER_START_IDS.as_slice() {
+                return Err(VokraError::ModelLoad(format!(
+                    "kotoba-whisper-v2.2: decoder prefix must be {:?} (ja/transcribe/no-timestamps), got {:?}",
+                    V22_DECODER_START_IDS, wc.decoder_start_ids
+                )));
+            }
+        }
         if wc.n_text_layer >= wc.n_audio_layer {
             return Err(VokraError::ModelLoad(format!(
                 "kotoba-whisper: loaded GGUF has n_text_layer ({}) >= n_audio_layer ({}); \
@@ -973,11 +1014,11 @@ mod tests {
     /// to keep this module's registry-side contract honest.
     ///
     /// Scout A-5 follow-up (2026-07-29): `kotoba-whisper-v2.2` is the
-    /// slug the parity-CI workflow (`parity-whisper-extras-real.yml`)
-    /// pins today via `env.KOTOBA_WHISPER_REPO`. It resolves Permissive
+    /// slug the VAST runner and reference manifest pin today via
+    /// `KOTOBA_REPO`. It resolves Permissive
     /// transitively via the `kotoba-whisper-` prefix walk in
     /// `vokra_core::compliance::license_class`, but pinning it here
-    /// makes the workflow-pinned literal a machine-checked invariant so
+    /// makes the VAST-pinned literal a machine-checked invariant so
     /// a future prefix-walk removal surfaces red on any `cargo test`
     /// rather than only during a paid HF-download workflow run.
     #[test]
@@ -989,7 +1030,7 @@ mod tests {
             "kotoba-whisper-v1.1",
             "kotoba-whisper-v2.0",
             "kotoba-whisper-v2.1",
-            // v2.2 = workflow-pinned literal (see rustdoc above).
+            // v2.2 = VAST-pinned literal (see rustdoc above).
             // Prefix walk covers it today; the pin binds the contract.
             "kotoba-whisper-v2.2",
             "kotoba-whisper-bilingual",

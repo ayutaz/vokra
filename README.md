@@ -16,14 +16,15 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
 > **Development status (2026-09-12):** the workspace is `0.3.0` development;
-> the current `main` baseline for this snapshot is `43d127f1`. The live,
-> read-only public inventory reports 194 repositories, 193 GGUF-bearing
-> repositories and 198 GGUF files: 133 Mac-CPU-complete, 45 partial, 15
-> without a runtime binder and 1 non-artifact; Apple Metal is 133 full, 60
-> blocked by CPU and 1 non-artifact. The bounded Apple Silicon batch recorded
+> the observed `main` baseline for this campaign is `1de3887d`. The latest
+> live, read-only public inventory, evaluated with audit logic through
+> `1be45e76`, reports 194 repositories, 193 GGUF-bearing repositories and 198
+> GGUF files: 135 Mac-CPU-complete, 43 partial, 15 without a runtime binder and
+> 1 non-artifact; Apple Metal is 135 full, 58 blocked by CPU and 1
+> non-artifact. The bounded Apple Silicon batch recorded
 > in the [Apple results](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
 > passed only for its named scopes, and four explicitly approved artifacts
-> were subsequently published. There are still 61 unresolved public rows,
+> were subsequently published. There are still 59 unresolved public rows,
 > no Git tags or published releases, and Vokra remains pre-1.0; Rust APIs, the
 > C ABI, GGUF metadata and model coverage may change. Pin an exact commit when
 > evaluating Vokra in another project; switch to an exact tag or release after

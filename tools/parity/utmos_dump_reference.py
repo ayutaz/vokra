@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """UTMOS22 reference dump stub with an explicit unsafe-pickle boundary.
 
+Current status: 2026-09-12.
+
 The historical UTMOS Lightning checkpoint contains pickled training objects,
 and the upstream Lightning loader does not provide an explicit safe
 state-dict loading API. This command therefore refuses the reference path
@@ -8,8 +10,10 @@ before importing PyTorch, fetching upstream sources, reading a checkpoint, or
 creating output. An owner-approved safe state-dict wiring is required before
 reference generation can resume.
 
-The original command-line options remain accepted so callers receive a stable
-fail-closed result while the safe loader design is pending.
+The dumper accepts a tensor-only ``.safetensors`` state-dict as a preparation
+milestone, but it still refuses to run until the upstream model can be built
+with a safe wav2vec state-dict as well. It never falls back to the upstream
+Lightning checkpoint loader or any unrestricted pickle loader.
 """
 
 from __future__ import annotations
@@ -40,9 +44,28 @@ def self_test() -> None:
     print("utmos_dump_reference self-test: PASS")
 
 
+def validate_state_dict_source(path: str) -> None:
+    """Read only a tensor-only source header; never deserialize Python objects."""
+    source = Path(path)
+    if source.suffix != ".safetensors":
+        die(f"safe state-dict must use the `.safetensors` extension: {source.name}")
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        die("`safetensors` is not installed; refusing reference execution")
+    try:
+        with safe_open(str(source), framework="pt", device="cpu") as handle:
+            keys = list(handle.keys())
+    except Exception as error:  # noqa: BLE001 — malformed input is terminal
+        die(f"safetensors state-dict could not be inspected safely ({type(error).__name__}: {error})")
+    if not keys:
+        die("safetensors state-dict has no tensor keys")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ckpt", help="UTMOS Lightning checkpoint")
+    parser.add_argument("--ckpt", help="legacy UTMOS Lightning checkpoint (refused)")
+    parser.add_argument("--state-dict", help="tensor-only UTMOS state-dict (.safetensors)")
     parser.add_argument("--w2v", help="wav2vec_small.pt (architecture source)")
     parser.add_argument("--clip", help="mono 16 kHz WAV")
     parser.add_argument("--outdir")
@@ -58,6 +81,7 @@ def main() -> int:
     if args.self_test:
         forbidden_options = (
             "--ckpt",
+            "--state-dict",
             "--w2v",
             "--clip",
             "--outdir",
@@ -73,12 +97,23 @@ def main() -> int:
         self_test()
         return 0
 
-    if not args.ckpt or not args.w2v or not args.clip or not args.outdir:
-        parser.error("--ckpt, --w2v, --clip, and --outdir are required")
+    if not args.ckpt and not args.state_dict:
+        parser.error("one of --state-dict or --ckpt is required")
+    if not args.w2v or not args.clip or not args.outdir:
+        parser.error("--w2v, --clip, and --outdir are required")
+    if args.ckpt:
+        die(
+            "BLOCKED_UNSAFE_PICKLE: legacy Lightning .ckpt inputs are permanently "
+            "refused; provide authenticated tensor-only state-dicts for every "
+            "upstream input"
+        )
+    if args.state_dict:
+        validate_state_dict_source(args.state_dict)
     die(
-        "BLOCKED_UNSAFE_PICKLE: the published Lightning checkpoint cannot be "
-        "processed without an owner-approved explicit safe state-dict path; "
-        "no checkpoint, source, or output was read or created"
+        "BLOCKED_SAFE_REFERENCE: the tensor-only UTMOS state-dict was inspected, "
+        "but the independent upstream reference still requires a safe wav2vec "
+        "state-dict and owner-approved model-construction path; no model or "
+        "audio execution was performed"
     )
 
 
