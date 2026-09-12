@@ -31,7 +31,7 @@
 //! skip. The config-only constructors remain covered by model unit tests, but
 //! are not a success condition for this real-weight harness.
 //!
-//! # What the test verifies today (real CPU parity)
+//! # What the test verifies today (real CPU and Apple Metal parity)
 //!
 //! 1. `vokra.model.arch` string matches the expected canonical tag
 //!    (distinct from vanilla Whisper's `"whisper"` — provenance / telemetry /
@@ -48,6 +48,9 @@
 //!    zero-tensor GGUF would still pass steps 1-3 but is caught here).
 //! 5. Native CPU encoder states, decoder prefix logits, and greedy generated
 //!    token ids match the independent reference within the fixed FP32 bound.
+//! 6. The ignored Apple tests rerun the canonical CPU leg, then require an
+//!    explicit Metal dispatcher to match the same reference packet and CPU
+//!    encoder/logits within that bound, with exact greedy-token equality.
 //!
 //! # What the test explicitly does NOT do
 //!
@@ -72,9 +75,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use vokra_core::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_core::gguf::chunks;
 use vokra_models::whisper::WhisperModel;
+use vokra_models::whisper::greedy::greedy_decode;
+use vokra_models::{Compute, HotOp};
 
 const FP32_ATOL: f32 = 0.01;
 const INPUT_AUDIO_SHA256: &str = "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f";
@@ -742,6 +748,111 @@ fn run_real_cpu_parity(member: &FamilyMember, file: &GgufFile, refdir: &Path) {
     }
 }
 
+/// Runs the complete real-weight Apple leg for one family member.
+///
+/// The packet is deliberately the same independent Transformers packet used
+/// by [`run_real_cpu_parity`].  CPU/reference is checked first, then the exact
+/// same GGUF and PCM are sent through an explicitly constructed Metal
+/// dispatcher.  `Compute::for_backend` is a hard backend selection: an
+/// unavailable device is an error here, and the two selected forwards below
+/// do not have a CPU fallback branch.
+fn run_real_apple_parity(member: &FamilyMember, file: &GgufFile, refdir: &Path) {
+    let root = parse_reference_packet(member, refdir);
+    let pcm = read_f32(&refdir.join("input_pcm.f32le"));
+    let encoder_reference = read_f32(&refdir.join("encoder.f32le"));
+    let logits_reference = read_f32(&refdir.join("logits_last.f32le"));
+    let token_reference = read_u32(&refdir.join("greedy_tokens.u32le"));
+
+    let model = Arc::new(WhisperModel::from_gguf(file).expect("bind real Whisper weights"));
+    let cpu_encoder = model.encode_pcm(&pcm).expect("native CPU encoder");
+    let rows = manifest_usize(&root, "encoder_rows");
+    let width = model.config().d_model;
+    let encoder_len = rows
+        .checked_mul(width)
+        .unwrap_or_else(|| panic!("Apple encoder rows*d_model overflows usize"));
+    assert!(cpu_encoder.hidden.len() >= encoder_len);
+    assert_close(
+        &cpu_encoder.hidden[..encoder_len],
+        &encoder_reference,
+        "Apple CPU encoder/reference",
+    );
+
+    let prefix = manifest_u32s(&root, "decoder_prefix");
+    let mut cpu_decoder = model.decoder(&cpu_encoder).expect("native CPU decoder");
+    let cpu_logits = cpu_decoder.step(&prefix).expect("native CPU prefix logits");
+    let vocab = model.config().n_vocab;
+    assert_eq!(cpu_logits.len(), prefix.len() * vocab);
+    let cpu_last = &cpu_logits[(prefix.len() - 1) * vocab..];
+    assert_close(cpu_last, &logits_reference, "Apple CPU decoder/reference");
+    cpu_decoder.reset();
+    let cpu_tokens = greedy_decode(&mut cpu_decoder, &prefix, model.config().eot, 224)
+        .expect("native CPU greedy decode");
+    assert_eq!(
+        cpu_tokens, token_reference,
+        "Apple CPU/reference greedy tokens"
+    );
+
+    let hot_ops = [
+        HotOp::Gemm,
+        HotOp::Gemv,
+        HotOp::Softmax,
+        HotOp::LayerNorm,
+        HotOp::Gelu,
+        HotOp::Conv1d,
+    ];
+    let metal = Compute::for_backend(BackendKind::Metal, &hot_ops)
+        .expect("Metal device and complete Whisper hot-op coverage are required");
+    assert_eq!(
+        metal.backend_name(),
+        "metal",
+        "Apple leg must use the selected Metal dispatcher, never CPU fallback"
+    );
+    let metal_encoder = model
+        .encode_pcm_with(&metal, &pcm)
+        .expect("native Metal encoder");
+    assert!(metal_encoder.hidden.len() >= encoder_len);
+    assert_close(
+        &metal_encoder.hidden[..encoder_len],
+        &encoder_reference,
+        "Apple Metal encoder/reference",
+    );
+    assert_close(
+        &metal_encoder.hidden[..encoder_len],
+        &cpu_encoder.hidden[..encoder_len],
+        "Apple Metal/CPU encoder",
+    );
+
+    let mut metal_decoder = model
+        .decoder_with_backend(&metal_encoder, BackendKind::Metal)
+        .expect("native Metal decoder");
+    let metal_logits = metal_decoder
+        .step(&prefix)
+        .expect("native Metal prefix logits");
+    assert_eq!(metal_logits.len(), prefix.len() * vocab);
+    let metal_last = &metal_logits[(prefix.len() - 1) * vocab..];
+    assert_close(
+        metal_last,
+        &logits_reference,
+        "Apple Metal decoder/reference",
+    );
+    assert_close(&metal_logits, &cpu_logits, "Apple Metal/CPU decoder");
+    metal_decoder.reset();
+    let metal_tokens = greedy_decode(&mut metal_decoder, &prefix, model.config().eot, 224)
+        .expect("native Metal greedy decode");
+    assert_eq!(
+        metal_tokens, token_reference,
+        "Apple Metal/reference greedy tokens must match exactly"
+    );
+    assert_eq!(
+        metal_tokens, cpu_tokens,
+        "Apple Metal/CPU greedy tokens must match exactly"
+    );
+    eprintln!(
+        "WHISPER_EXTRAS_APPLE variant={} cpu_reference=PASS metal_reference=PASS metal_cpu=PASS greedy_tokens=EXACT no_fallback=PASS verdict=PASS",
+        member.arch_slug
+    );
+}
+
 // ---------------------------------------------------------------------------
 // distil_whisper
 // ---------------------------------------------------------------------------
@@ -1099,6 +1210,65 @@ fn parity_whisper_extras_kotoba_whisper() {
         member.arch_slug
     );
     let _ = gguf_path;
+}
+
+/// Distil-Whisper Apple Silicon CPU/reference/Metal/reference/Metal-CPU leg.
+///
+/// This is ignored in ordinary local and CI runs because it requires the
+/// VAST-produced ~3 GiB GGUF and independent packet.  The Apple worker runs
+/// this exact named test once with `--ignored --exact` on Darwin arm64.
+#[test]
+#[ignore = "requires VAST-authenticated Distil-Whisper packet and Apple Silicon Metal"]
+fn parity_whisper_extras_distil_whisper_apple_cpu_metal() {
+    assert!(cfg!(target_os = "macos"), "Apple parity requires macOS");
+    assert!(cfg!(target_arch = "aarch64"), "Apple parity requires arm64");
+    let member = FAMILY
+        .iter()
+        .find(|m| m.arch_slug == "distil_whisper")
+        .expect("family entry present");
+    let (gguf_path, refdir) = env_paths_for(member.arch_slug);
+    let Some(gguf_path) = gguf_path else {
+        panic!(
+            "Apple parity requires {} and {}",
+            gguf_env_var(member.arch_slug),
+            refdir_env_var(member.arch_slug)
+        );
+    };
+    let refdir = refdir.expect("reference packet is required with the GGUF");
+    let file = GgufFile::open(&gguf_path)
+        .unwrap_or_else(|e| panic!("open {}: {e:?}", gguf_path.display()));
+    // Reuse the canonical CPU test first so the Apple leg retains every
+    // family-specific arch, hparam, provenance, tensor, and CPU/reference
+    // assertion instead of maintaining a weaker duplicate.
+    parity_whisper_extras_distil_whisper();
+    run_real_apple_parity(member, &file, &refdir);
+}
+
+/// Kotoba-Whisper v2.2 Apple Silicon CPU/reference/Metal/reference/Metal-CPU
+/// leg.  The packet itself authenticates the Japanese prefix and v2.2 source
+/// revision; no family alias or shape inference is accepted.
+#[test]
+#[ignore = "requires VAST-authenticated Kotoba-Whisper packet and Apple Silicon Metal"]
+fn parity_whisper_extras_kotoba_whisper_apple_cpu_metal() {
+    assert!(cfg!(target_os = "macos"), "Apple parity requires macOS");
+    assert!(cfg!(target_arch = "aarch64"), "Apple parity requires arm64");
+    let member = FAMILY
+        .iter()
+        .find(|m| m.arch_slug == "kotoba_whisper")
+        .expect("family entry present");
+    let (gguf_path, refdir) = env_paths_for(member.arch_slug);
+    let Some(gguf_path) = gguf_path else {
+        panic!(
+            "Apple parity requires {} and {}",
+            gguf_env_var(member.arch_slug),
+            refdir_env_var(member.arch_slug)
+        );
+    };
+    let refdir = refdir.expect("reference packet is required with the GGUF");
+    let file = GgufFile::open(&gguf_path)
+        .unwrap_or_else(|e| panic!("open {}: {e:?}", gguf_path.display()));
+    parity_whisper_extras_kotoba_whisper();
+    run_real_apple_parity(member, &file, &refdir);
 }
 
 // ---------------------------------------------------------------------------

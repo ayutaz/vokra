@@ -47,3 +47,42 @@ names v2.0 (or lacks the dedicated upstream metadata keys) is rejected
 fail-closed by the Rust harness. Select `kotoba-whisper-v2.2` explicitly in
 the converter so the artifact carries the authenticated release identity. Do
 not run the model generator on the maintainer Mac or upload its output.
+
+## Apple Silicon handoff
+
+After the VAST runner passes, transfer the two GGUFs, both reference
+directories, the two per-variant CPU logs, and `evidence/git-head.txt` to the
+disposable Apple checkout. The Apple worker binds every input by SHA-256 and
+requires the head file to contain the exact clean VAST `HEAD`:
+
+```bash
+bash scripts/verify/apple-silicon-whisper-extras.sh \
+  --distil-gguf /transfer/distil_whisper.gguf \
+  --distil-gguf-sha256 <VAST-GGUF-SHA256> \
+  --distil-reference /transfer/reference/distil_whisper \
+  --distil-reference-manifest-sha256 <MANIFEST-SHA256> \
+  --distil-reference-packet-sha256 <CANONICAL-PACKET-SHA256> \
+  --distil-cpu-log /transfer/evidence/distil_whisper.log \
+  --distil-cpu-log-sha256 <CPU-LOG-SHA256> \
+  --kotoba-gguf /transfer/kotoba_whisper.gguf \
+  --kotoba-gguf-sha256 <VAST-GGUF-SHA256> \
+  --kotoba-reference /transfer/reference/kotoba_whisper \
+  --kotoba-reference-manifest-sha256 <MANIFEST-SHA256> \
+  --kotoba-reference-packet-sha256 <CANONICAL-PACKET-SHA256> \
+  --kotoba-cpu-log /transfer/evidence/kotoba_whisper.log \
+  --kotoba-cpu-log-sha256 <CPU-LOG-SHA256> \
+  --vast-head-file /transfer/evidence/git-head.txt \
+  --vast-head-sha256 <HEAD-FILE-SHA256> \
+  --expected-head <CLEAN-HEAD-HEX40> \
+  --evidence-dir /transfer/apple-evidence
+```
+
+`<CANONICAL-PACKET-SHA256>` is the SHA-256 of the newline-separated sorted
+records `sha256  filename` for exactly `encoder.f32le`,
+`greedy_tokens.u32le`, `input_pcm.f32le`, `logits_last.f32le`, and
+`manifest.json`. The worker runs each named Apple test exactly once with
+`--ignored --exact`; the tests compare CPU/reference, Metal/reference, and
+Metal/CPU, and require exact greedy token equality. A missing Metal device or
+unsupported hot op is an error, never a CPU fallback. The worker records
+`publication=NO_UPLOAD` and creates no evidence directory until every input
+gate passes.
