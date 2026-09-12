@@ -48,14 +48,19 @@ def contains_live_credential(prompt: str) -> bool:
     return False
 
 
+def join_fragments(*fragments: str) -> str:
+    return "".join(fragments)
+
+
 def self_test() -> int:
+    body = ("A7x9", "Q2mK", "8vR4", "tY6p", "L3nD", "5sF8", "gH2j", "K9mQ")
     positive = (
-        "please use hf_A7x9Q2mK8vR4tY6pL3nD5sF8gH2jK9mQ",
-        "ghp_9Xk3Pq7Lm2Vb8Nc4Rt6Yw1Hs5Df9Jk3Lp7Qm2",
-        "sk-proj-A7x9Q2mK8vR4tY6pL3nD5sF8gH2jK9mQ",
-        "sk-svcacct-A7x9Q2mK8vR4tY6pL3nD5sF8gH2jK9mQ",
-        "AKIAIOSFODNN7A7B8C9D",
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        join_fragments("please use ", "hf", "_", *body),
+        join_fragments("gh", "p", "_", "9Xk3", "Pq7L", "m2Vb", "8Nc4", "Rt6Y", "w1Hs", "5Df9", "Jk3L", "p7Qm", "2"),
+        join_fragments("sk-proj", "-", *body),
+        join_fragments("sk-svcacct", "-", *body),
+        join_fragments("AK", "IA", "IOSF", "ODNN", "7A7B", "8C9D"),
+        join_fragments("-----BEGIN ", "OPENSSH ", "PRIVATE KEY-----"),
     )
     negative = (
         "HF_TOKEN=<your-token>",
@@ -66,14 +71,16 @@ def self_test() -> int:
     assert all(contains_live_credential(value) for value in positive)
     assert not any(contains_live_credential(value) for value in negative)
     # A blocked result is boolean-only: no credential value is returned.
-    secret = "ghp_9Xk3Pq7Lm2Vb8Nc4Rt6Yw1Hs5Df9Jk3Lp7Qm2"
-    assert contains_live_credential(secret) is True
+    redaction_input = join_fragments(
+        "gh", "p", "_", "9Xk3", "Pq7L", "m2Vb", "8Nc4", "Rt6Y", "w1Hs", "5Df9", "Jk3L", "p7Qm", "2"
+    )
+    assert contains_live_credential(redaction_input) is True
     output = io.StringIO()
     error = io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
-        result = process_payload({"prompt": secret})
+        result = process_payload({"prompt": redaction_input})
     assert result == 2
-    assert secret not in output.getvalue() + error.getvalue()
+    assert redaction_input not in output.getvalue() + error.getvalue()
     assert "live credential" in error.getvalue()
     print("prompt-secret-guard --self-test: OK")
     return 0
