@@ -606,7 +606,7 @@ def self_test() -> None:
     valid = "a" * 40
     assert HEX40.fullmatch(valid)
     assert digest({"x": 1}) == digest({"x": 1})
-    with tempfile.TemporaryDirectory(prefix="vokra-canary-audit-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="vokra-canary-audit-") as directory:
         root = Path(directory)
         target = root / "evidence.json"
         write_no_replace(target, b"first\n")
