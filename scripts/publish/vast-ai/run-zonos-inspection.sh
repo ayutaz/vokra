@@ -159,12 +159,24 @@ self_test() {
     echo 'upload/publish command found' >&2
     failed=1
   fi
+  for consumer in "$ROOT/tools/parity/zonos_dump_reference.py" "$ROOT/tools/parity/zonos_inspect.py" "$ROOT/tools/parity/zonos_vast_stage.py" "$0"; do
+    grep -Fq 'zonos_v0_1_reference' "$consumer" || { echo "dedicated project binding missing: $consumer" >&2; failed=1; }
+    generic_project="--project tools/"'parity --'
+    if grep -Fq -- "$generic_project" "$consumer"; then
+      echo "generic parity project fallback found: $consumer" >&2
+      failed=1
+    fi
+  done
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || failed=1
+    uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$INSPECTOR" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" --self-test || failed=1
+    uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/zonos_prepare_conditioning_packet.py" --self-test || failed=1
+    uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$ROOT/tools/parity/zonos_prepare_conditioning_packet.py" --self-test || failed=1
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$ROOT/tools/parity/zonos_v0_1_reference/dependency_audit.py" --self-test || failed=1
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$ROOT/tools/parity/zonos_v0_1_reference/import_policy.py" || failed=1
   (( failed == 0 )) || return 1
   echo 'run-zonos-inspection.sh self-test: OK'
 }
@@ -184,7 +196,7 @@ require_approval_binding "$approval" "$approval_sha"
 [[ -n "${ZONOS_CONDITIONING_PACKET:-}" ]] || die 'ZONOS_CONDITIONING_PACKET must name a v1 packet from zonos_prepare_conditioning_packet.py (--phoneme-ids, --speaker, --emotion)'
 [[ -f "$ZONOS_CONDITIONING_PACKET" && ! -L "$ZONOS_CONDITIONING_PACKET" ]] || die 'ZONOS_CONDITIONING_PACKET must be a regular non-symlink file'
 for command in git uv awk cp sha256sum cargo; do command -v "$command" >/dev/null || die "missing tool: $command"; done
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \
+UV_NO_CACHE=1 uv run --no-cache --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \
   --preflight-only --approval-evidence "$approval" || die 'Zonos license/preflight gate blocked before acquisition'
 require_clean_expected_head "$expected_head"
 mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"
@@ -192,13 +204,21 @@ mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"
 
 cd "$ROOT"
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python \
   "$ROOT/tools/parity/zonos_vast_stage.py" --root "$WORK" \
   --approval-evidence "$approval" \
   --upstream-safetensors "$WORK/upstream/model.safetensors" \
   --manifest-output "$WORK/evidence/upstream-tensor-manifest.json" \
   --public-gguf "$WORK/public/zonos-v0.1-transformer.gguf" \
   --public-manifest-output "$WORK/evidence/public-tensor-manifest.json"
+UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --python 3.12 python \
+  "$ROOT/tools/parity/zonos_v0_1_reference/dependency_audit.py" --installed \
+  --output "$WORK/evidence/dependency-audit.json" || die 'installed Zonos dependency audit blocked'
+grep -Fq '"status": "BLOCKED_UNREVIEWED_TRANSITIVE"' "$WORK/evidence/dependency-audit.json" \
+  || die 'dependency audit status marker missing'
+grep -Fq '"publication": "NO_UPLOAD"' "$WORK/evidence/dependency-audit.json" \
+  || die 'dependency audit NO_UPLOAD marker missing'
 cp -- "$ZONOS_CONDITIONING_PACKET" "$WORK/evidence/conditioning.packet"
 git clone --filter=blob:none --no-checkout "$SOURCE_REPOSITORY" "$WORK/source"
 git -C "$WORK/source" checkout --detach "$SOURCE_REVISION"
@@ -206,7 +226,7 @@ require_source_license_identity "$WORK/source"
 
 set +e
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python \
   "$ROOT/tools/parity/zonos_dump_reference.py" \
   --source "$WORK/source" --upstream-snapshot "$WORK/upstream" \
   --conditioning-packet "$WORK/evidence/conditioning.packet" \
@@ -241,7 +261,7 @@ require_native_cpu_log "$WORK/evidence/native-cpu.log"
 
 set +e
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$INSPECTOR" \
   --snapshot "$WORK/public" --server-tree "$WORK/public-server-tree.json" \
   --tensor-manifest "$WORK/evidence/public-tensor-manifest.json" \
   --upstream-snapshot "$WORK/upstream" --upstream-server-tree "$WORK/upstream-server-tree.json" \

@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+#!/usr/bin/env -S uv run --frozen --project tools/parity/zonos_v0_1_reference --python 3.12 python
 """Fail-closed Zonos evidence collector.
 
 This tool deliberately does not download, execute, convert, or infer Zonos
@@ -15,6 +15,8 @@ import re
 import struct
 from pathlib import Path
 from typing import Any
+
+from zonos_v0_1_reference import dependency_audit
 
 HF_REPOSITORY = "vokra/zonos-v0.1-transformer"
 HF_REVISION = "b1bf5c56d470eb9097e9b04f9deca364576574ba"
@@ -94,6 +96,8 @@ SOURCE_MARKERS = {
         "y, gate = self.fc1(x).chunk(2, dim=-1)",
     ),
 }
+REFERENCE_PROJECT_LOCK_SHA256 = dependency_audit.EXPECTED_LOCK_SHA256
+REFERENCE_PROJECT_PYPROJECT_SHA256 = dependency_audit.EXPECTED_PROJECT_SHA256
 STATUS_FIELDS = {
     "status": "BLOCKED",
     "evidence_stage": "AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE",
@@ -568,6 +572,7 @@ def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Pa
             "dac_source_model_id", "dac_num_codebooks", "dac_identity_status",
             "pcm_sample_rate",
             "runtime_status", "publication",
+            "reference_project",
         }
         if not isinstance(record, dict) or not required.issubset(record):
             raise ValueError("reference record is missing required identity/status fields")
@@ -582,6 +587,9 @@ def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Pa
             or record["upstream_revision"] != UPSTREAM_HF_REVISION
             or record["runtime_status"] != "REFERENCE_ONLY_NO_NATIVE_VERDICT"
             or record["publication"] != "NO_UPLOAD"
+            or not isinstance(record["reference_project"], dict)
+            or record["reference_project"].get("uv_lock_sha256") != REFERENCE_PROJECT_LOCK_SHA256
+            or record["reference_project"].get("pyproject_sha256") != REFERENCE_PROJECT_PYPROJECT_SHA256
             or record["dac_source_model_id"] != DAC_SOURCE_MODEL_ID
             or record["dac_num_codebooks"] != DAC_NUM_CODEBOOKS
             or record["dac_identity_status"] != "SOURCE_REQUEST_ONLY"
@@ -639,6 +647,8 @@ def native_evidence(path: Path | None, blockers: list[str], evidence_root: Path)
 
 
 def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, upstream_snapshot: Path | None, upstream_packet: Path | None, upstream_manifest: Path | None, source: Path | None, output: Path, reference_record: Path | None = None, native_log: Path | None = None) -> int:
+    project = dependency_audit.project_identity()
+    dependency_report = dependency_audit.lock_audit()
     blockers = [
         "PCM numeric bound remains MEASURED_NOT_GATED",
         "Apple Metal exact-code/PCM validation is pending",
@@ -646,6 +656,8 @@ def inspect(snapshot: Path | None, packet: Path | None, manifest: Path | None, u
     evidence: dict[str, Any] = {
         **STATUS_FIELDS,
         "format": FORMAT,
+        "reference_project": project,
+        "dependency_audit": dependency_report,
         "model": HF_REPOSITORY,
         "fixed_revision": HF_REVISION,
         "upstream_model": {"repository": UPSTREAM_HF_REPOSITORY, "revision": UPSTREAM_HF_REVISION},
@@ -909,6 +921,10 @@ def self_test() -> None:
             "pcm_sample_rate": 44_100,
             "runtime_status": "REFERENCE_ONLY_NO_NATIVE_VERDICT",
             "publication": "NO_UPLOAD",
+            "reference_project": {
+                "uv_lock_sha256": REFERENCE_PROJECT_LOCK_SHA256,
+                "pyproject_sha256": REFERENCE_PROJECT_PYPROJECT_SHA256,
+            },
         }), encoding="utf-8")
         pcm = root / "reference-pcm.f32le"
         pcm.write_bytes(struct.pack("<f", 0.0))
