@@ -522,14 +522,20 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
     validate_report_semantics(report)
     write_no_replace(output, (canonical(report) + "\n").encode("utf-8"))
     sums = output.parent / "SHA256SUMS"
+    sum_lines = [
+        f"{sha256_file(project_path)}  {project_path.name}\n",
+        f"{sha256_file(lock_path)}  {lock_path.name}\n",
+        f"{sha256_file(Path(__file__).resolve())}  {Path(__file__).name}\n",
+        f"{sha256_file(output)}  {output.name}\n",
+    ]
+    archive_root = archive_dir.relative_to(output.parent)
+    for path in sorted(archive_dir.iterdir(), key=lambda item: item.name):
+        if not path.is_file() or path.is_symlink():
+            raise AuditError(f"license archive contains an unexpected entry: {path}")
+        sum_lines.append(f"{sha256_file(path)}  {(archive_root / path.name).as_posix()}\n")
     write_no_replace(
         sums,
-        (
-            f"{sha256_file(project_path)}  {project_path.name}\n"
-            f"{sha256_file(lock_path)}  {lock_path.name}\n"
-            f"{sha256_file(Path(__file__).resolve())}  {Path(__file__).name}\n"
-            f"{sha256_file(output)}  {output.name}\n"
-        ).encode("utf-8"),
+        "".join(sum_lines).encode("utf-8"),
     )
 
 
