@@ -168,3 +168,64 @@ storage on 2026-09-12. The individual API readback returned `instances: null`;
 the full inventory contained no Vokra-labelled instance or retained Vokra
 storage. The remaining `ralomi-m4r4s-*` entries are unrelated and were not
 touched.
+
+## 2026-09-13 Dia, Zonos and Canary source/API integration replay
+
+The next owner-independent source/API batch was integrated from clean base
+`240187302b531dfb42d50ddf3535845e58c6145b` at exact clean implementation
+head `d9aeb5d2dbe325c470032c975e03fbe147ed90dc`. It adds Dia's explicit
+production generation APIs and no-BLAS reference dependency boundary, an
+authenticated Zonos synthesis CLI, and a model-free Canary Flash/v2
+dependency audit. The protected CosyVoice2 LLM owner manifest was not read,
+modified or staged.
+
+Disposable VAST instance `50763529` (`vokra-source-apis-20260913`) replayed
+the exact head. `cargo test --workspace --all-targets --locked` completed 306
+result groups with 8,028 passing, zero failed and 101 ignored tests; its log
+SHA-256 is
+`4b00a8a3816ff2d449ed62fb50ba9f9d5f02e6a5c01404d69f9793bb49813806`.
+Workspace/all-target/all-feature Clippy with warnings denied passed; its log
+SHA-256 is
+`2b87f439fa896da2a32a0430e139744be7cdd43088d28800c75c255c7d92b5ac`.
+Format, locked metadata, diff hygiene, zero-dependency, forbidden-symbol,
+fixture-EOL, pipefail, architecture-handshake, bound-architecture and model-zoo
+gates passed; the static-gate log SHA-256 is
+`200f3aaf4023c72767e5b5192594d8be0c3a7bcecd11e9ffd1878230edcf3b55`.
+`cargo-deny` 0.20.2 and `cargo-audit` 0.22.2 passed with only the existing
+unmatched `libfuzzer-sys` exception warning; the dependency-gate log SHA-256
+is `32fcf309f976ea56990443035ae611430458952d759a23d3f7c89e05242a0654`.
+The preflight log SHA-256 is
+`ca3d0cde9aa3a13b5f5c6bcff40e8ada38eea666e4c9f2911f941e76743fe471`.
+
+The three exact-head model-free audits intentionally stopped before model
+acquisition:
+
+- Canary reported `BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD`. It accounted
+  for the virtual root plus 133 installed package facts and retained 200
+  publisher-license files. The closure still includes GPL/LGPL/native review
+  boundaries such as NumPy/SciPy native libraries and soxr. Its report
+  SHA-256 is
+  `72da310c35841584eb6c8427766d2ec72638dbb72231a8b9e9e5d8fe793ad844`.
+- Zonos reported `BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD`. Its eight
+  factual blockers are missing installed publisher-license bytes for
+  `safetensors` and `tokenizers`, plus the NumPy wheel's
+  `libgfortran`/`libquadmath`/OpenBLAS native boundary and dependent
+  extensions. Its report SHA-256 is
+  `ba02dfbb6215045089809bcb6a699bacc7866879b5f6e2adfaad9caa34e26f52`.
+- Dia built and audited the exact 26-package reference closure with
+  `blas=none` and `lapack=none`, with no missing or unexpected package. It
+  reported `FACTS_COLLECTED_GATE_BLOCKED` / `NO_UPLOAD` because the exact
+  publisher/native rows still require owner review. Its report SHA-256 is
+  `70235d132b3c17e55deba18f02634eed849fbd687d2f9f030b26ad3e7e33d66c`.
+
+No checkpoint, source model or Hugging Face token was acquired; no model was
+imported or executed; no real-weight conversion, independent-reference CPU
+parity, Apple/Scaleway run or upload occurred. These implementation and
+dependency facts therefore do not reduce the live 59-row unresolved public
+denominator.
+
+Only the 6-MiB bounded evidence set was recovered and its local hashes were
+verified. Instance `50763529` and its 150-GB storage were then destroyed. The
+individual API readback returned `instances: null`; the remaining VAST
+inventory contains no Vokra-labelled instance or retained Vokra storage. The
+unrelated `ralomi-m4r-4t-horizon-20260913` instance was not touched.
