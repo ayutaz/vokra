@@ -1152,11 +1152,15 @@ def _numpy_record_evidence(
             if installed_rows.get(path) != fields:
                 raise ValueError(f"installed NumPy RECORD row differs from wheel: {path}")
         installed_only = installed_paths - wheel_paths
-        unexpected_generated = installed_only - generated_paths
-        if unexpected_generated:
+        if installed_only != generated_paths:
+            unexpected_generated = installed_only - generated_paths
+            missing_generated = generated_paths - installed_only
             raise ValueError(
                 "installed NumPy RECORD has unexpected generated rows: "
+                + "unexpected="
                 + ",".join(sorted(unexpected_generated))
+                + "; missing="
+                + ",".join(sorted(missing_generated))
             )
 
         def verify_file(
@@ -1230,17 +1234,6 @@ def _numpy_record_evidence(
                     continue
                 relative = path.relative_to(site_packages).as_posix()
                 if relative in record_paths or relative in generated_seen:
-                    continue
-                if relative in generated_paths:
-                    generated.append(
-                        {
-                            "path": relative,
-                            "bytes": path.stat().st_size,
-                            "sha256": sha256(path),
-                            "reason": "installer-generated-metadata",
-                        }
-                    )
-                    generated_seen.add(relative)
                     continue
                 if path.suffix == ".pyc":
                     raise ValueError(f"unrecorded generated pyc file: {relative}")
@@ -1784,13 +1777,10 @@ def self_test() -> None:
     record_evidence = _numpy_record_evidence(
         SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
     )
-    assert not record_failures and record_evidence["status"] == "PASS"
+    assert record_evidence["status"] == "FAIL_RECORD_INVALID"
+    assert any("missing=../../../bin/f2py" in failure for failure in record_failures)
     assert record_evidence["wheel"]["bytes"] == len(original_record_bytes)
     assert record_evidence["wheel"]["sha256"] == hashlib.sha256(original_record_bytes).hexdigest()
-    assert record_evidence["installed"] == record_evidence["wheel"]
-    assert {row["path"] for row in record_evidence["generated"]} == {
-        "numpy-2.2.2.dist-info/" + name for name in GENERATED_NUMPY_METADATA
-    }, record_evidence["generated"]
     script_root = synthetic_venv / "bin"
     script_root.mkdir()
     script_paths = {"../../../bin/f2py": script_root / "f2py", "../../../bin/numpy-config": script_root / "numpy-config"}
@@ -1801,15 +1791,17 @@ def self_test() -> None:
         encoded = base64.urlsafe_b64encode(bytes.fromhex(sha256(target))).decode().rstrip("=")
         return f"{relative},sha256={encoded},{target.stat().st_size}\n".encode()
 
-    extra_record_bytes = original_record_bytes + b"".join(
+    script_record_bytes = b"".join(
         authenticated_record_line(relative, target) for relative, target in script_paths.items()
-    ) + b"".join(
+    )
+    metadata_record_bytes = b"".join(
         authenticated_record_line(
             "numpy-2.2.2.dist-info/" + name,
             dist_info / name,
         )
         for name in sorted(GENERATED_NUMPY_METADATA)
     )
+    extra_record_bytes = original_record_bytes + script_record_bytes + metadata_record_bytes
     record_path.write_bytes(extra_record_bytes)
     record_failures = []
     extra_evidence = _numpy_record_evidence(
@@ -1820,6 +1812,83 @@ def self_test() -> None:
         *script_paths,
         *("numpy-2.2.2.dist-info/" + name for name in GENERATED_NUMPY_METADATA),
     }
+    for missing_row in (
+        b"numpy-2.2.2.dist-info/REQUESTED",
+        b"../../../bin/f2py",
+    ):
+        missing_record = extra_record_bytes.replace(
+            next(
+                line
+                for line in extra_record_bytes.splitlines(keepends=True)
+                if line.startswith(missing_row + b",")
+            ),
+            b"",
+        )
+        record_path.write_bytes(missing_record)
+        record_failures = []
+        assert _numpy_record_evidence(
+            SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+        )["status"] == "FAIL_RECORD_INVALID"
+        assert any("missing=" in failure for failure in record_failures)
+    record_path.write_bytes(
+        extra_record_bytes.replace(
+            next(
+                line
+                for line in extra_record_bytes.splitlines(keepends=True)
+                if line.startswith(b"../../../bin/f2py,")
+            ),
+            b"../../../bin/f2py,,\n",
+        )
+    )
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("hash/size authenticated" in failure for failure in record_failures)
+    record_path.write_bytes(
+        extra_record_bytes.replace(
+            next(
+                line
+                for line in extra_record_bytes.splitlines(keepends=True)
+                if line.startswith(b"../../../bin/f2py,")
+            ),
+            b"../../../bin/f2py,sha256=bad,22\n",
+        )
+    )
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("hash" in failure for failure in record_failures)
+    record_path.write_bytes(extra_record_bytes)
+    f2py_path = script_paths["../../../bin/f2py"]
+    outside_target = synthetic_venv / "outside-f2py"
+    outside_target.write_bytes(f2py_path.read_bytes())
+    f2py_path.unlink()
+    f2py_path.symlink_to(outside_target)
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("missing or symlinked" in failure for failure in record_failures)
+    f2py_path.unlink()
+    f2py_path.mkdir()
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("missing or symlinked" in failure for failure in record_failures)
+    f2py_path.rmdir()
+    f2py_path.write_bytes(b"#!/usr/bin/env python3\n")
+    record_path.write_bytes(
+        extra_record_bytes
+        + authenticated_record_line("../../bin/f2py", f2py_path)
+    )
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("unsafe" in failure for failure in record_failures)
     record_path.write_bytes(original_record_bytes)
     altered_wheel = direct_url_root / "altered-record.whl"
     altered_hash = base64.urlsafe_b64encode(b"x" * 32).decode().rstrip("=")
@@ -1855,7 +1924,7 @@ def self_test() -> None:
     )["status"] == "FAIL_RECORD_INVALID"
     assert any("unexpected generated rows" in failure for failure in record_failures)
     unknown_file.unlink(missing_ok=True)
-    record_path.write_bytes(original_record_bytes)
+    record_path.write_bytes(extra_record_bytes)
     package_file.write_bytes(b"tampered numpy payload")
     record_failures = []
     assert _numpy_record_evidence(
@@ -1871,9 +1940,13 @@ def self_test() -> None:
     assert any("unsafe" in failure for failure in record_failures)
     record_path.write_bytes(original_record_bytes)
     package_file.write_bytes(b"tampered numpy payload")
-    tampered_installed_record = (
-        authenticated_record_line("numpy/core.py", package_file)
-        + b"numpy-2.2.2.dist-info/RECORD,,\n"
+    tampered_installed_record = extra_record_bytes.replace(
+        next(
+            line
+            for line in extra_record_bytes.splitlines(keepends=True)
+            if line.startswith(b"numpy/core.py,")
+        ),
+        authenticated_record_line("numpy/core.py", package_file),
     )
     record_path.write_bytes(tampered_installed_record)
     record_failures = []
