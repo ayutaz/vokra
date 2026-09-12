@@ -60,25 +60,36 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 ## 5. 現行 0.3.0 release と Apple 検証 status
 
-現行の workspace release line は `0.3.0` で、2026-09-09 の監査開始時点の PR #79 head は
-`9efcd16eb63b857f48fc00d0b83d1113defd578b` である。最新 remote check は成功 110、
+現行の workspace release line は `0.3.0` である。
+
+**2026-09-12 current snapshot:** 現行 `main` baseline は `43d127f1` である。読み取り専用の
+live public audit は repository 194、GGUF repository 193、GGUF file 198 を報告している。
+CPU status は `full=133`、`partial=45`、`no-runtime-binder=15`、`not-artifact=1`、Metal
+status は `full=133`、`blocked-by-cpu=60`、`not-artifact=1` で、未解決の public row は61件
+である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
+named scope のみ合格し、その後、明示的に承認された4件の artifact が gated workflow 経由で
+公開された。UTMOS numeric parity は未主張で、release tag は0、GitHub Release も0である。
+これは public model catalog 全体の対応完了や v1.0 release readiness を主張するものではない。
+
+**2026-09-09 audit-start historical snapshot:** 監査開始時点の PR #79 head は
+`9efcd16eb63b857f48fc00d0b83d1113defd578b` で、当時の remote check は成功 110、
 想定 skip 13、失敗 0 である。監査開始時点の live public audit は
 194 repository（GGUF repository 193、GGUF file 198）。CPU coverage は `full=131`、
 `partial=45`、
 `no-runtime-binder=17`、`not-artifact=1`、Metal は `full=131`、
 `blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
-現時点の release tag は 0、GitHub Release も 0 である。
+その監査開始時点の release tag は 0、GitHub Release も 0 である。
 
-GigaAM v3 / Multilingual は conservative な Metal code route が complete だが、
+GigaAM v3 / Multilingual は conservative な Metal code route が complete だったが、
 Apple hardware verdict は未取得。未解決の public row 63 件は complete と主張しない。
-Scaleway は未開始であり、CI/audit 結果を Apple 実機 evidence の代用とはしない。
+Scaleway は未開始であり、CI/audit 結果を Apple 実機 evidence の代用とはしなかった。
 UTMOS の legacy Lightning checkpoint は制限付き `weights_only=True` loader が意図的に
 拒否するため、numeric parity は主張しない。
 
 ## Keeping this page current
 
-**最終確認日: 2026-09-09 — 監査開始時点の PR #79 head
-`9efcd16eb63b857f48fc00d0b83d1113defd578b` および `include/vokra.h` に対して
+**最終確認日: 2026-09-12 — 現行 `main` baseline `43d127f1` および
+`include/vokra.h` に対して
 確認。** pre-alpha の Python generator と checked-in `ctypes` table は、生成 C
 の全 57 function と完全に一致する。header は 15 typedef、4 enum、2 concrete
 struct、9 opaque handle を持つ。高水準 Python package は、全 C handle に wrapper

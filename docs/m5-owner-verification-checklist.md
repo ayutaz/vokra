@@ -2,7 +2,22 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**2026-09-09 audit-start snapshot:** Before this documentation refresh, PR #79
+**2026-09-12 current-state / supersession note:** the current `main` baseline
+for this snapshot is `43d127f1`. The live, read-only public audit reports 194
+repositories, 193 GGUF-bearing repositories and 198 GGUF files. CPU status is
+`full=133`, `partial=45`, `no-runtime-binder=15`, `not-artifact=1`; Metal status
+is `full=133`, `blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved
+public rows. The authorized Scaleway Apple CPU/reference, Metal/reference and
+no-fallback batch passed only for its named scopes; four separately approved
+artifacts were subsequently published through the gated workflow. UTMOS
+numeric parity remains unclaimed, and there are 0 release tags and 0 GitHub
+Releases. This checklist is not a GA or ABI-freeze declaration.
+
+The current literal Markdown ledger count is **51 checked / 31 unchecked**
+(mechanically counted on 2026-09-12). This is not an exhaustive task count:
+prose-only GA gates remain independently tracked.
+
+**2026-09-09 historical audit-start snapshot:** Before this documentation refresh, PR #79
 was at `9efcd16e` (`CLEAN` / `MERGEABLE`; 110 CI success / 13 intentional skip /
 0 fail). Exact VAST implementation evidence was `caf70eb1` (305 suites / 8,010
 passed / 0 failed / 100 ignored); VAST `50320338` and its 150-GB storage were
@@ -22,9 +37,10 @@ checkpoints are historical workspace `0.2.0` evidence. The active branch is
 workspace `0.3.0`; immediately before this documentation refresh its remote
 head was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109
 passing checks, 13 expected skips, and no failures or pending checks. The
-current surface has 57 C ABI functions / 15 typedefs and 49 checked / 33
-unchecked literal boxes.
-The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+That historical snapshot's surface had 57 C ABI functions / 15 typedefs and
+49 checked / 33 unchecked literal boxes.
+At that historical snapshot, the GitHub `main` reference was
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
 This checklist is the remaining action ledger feeding the **v1.0 GA** decision
 (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze —
 the freeze FIRES at the owner's v1.0 GA tag (M5-13). The 2026-08-18
@@ -40,10 +56,11 @@ branch/operation history remains in
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-31 current-state rule**: the earlier **94 unchecked boxes** and the
+**2026-08-31 historical count note**: the earlier **94 unchecked boxes** and the
 2026-08-18 **42 checked / 36 unchecked** are historical owner ledgers, not
-current counts of missing implementations. The current literal ledger is
-**49 checked / 33 unchecked**. Those counts are not an exhaustive task count:
+current counts of missing implementations. The 2026-08-31 literal ledger was
+**49 checked / 33 unchecked**. The current 2026-09-12 literal ledger is
+**51 checked / 31 unchecked**. These counts are not an exhaustive task count:
 the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose
 rather than Markdown boxes. The live index below includes both sets. A box can
 mean an external legal/infra decision, real-weight access, a deliberately
@@ -58,9 +75,9 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (2026-08-31)
+## 0. Live remaining-work index (2026-09-12)
 
-This table is the complete M5 routing index. The 33 unchecked Markdown boxes
+This table is the complete M5 routing index. The 31 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must
 not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
@@ -80,8 +97,8 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | Six Apple-ready model contracts have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec and Voice Gender Classifier. Their transfer packets were intentionally deleted with VAST instances `49168183` and `49261078` on 2026-09-01 because the Scaleway run is long-horizon; both ids read back `instances: null`, so no storage billing or restart target remains. Live inventory is CPU `full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`, with zero source-level CPU-only rows. GigaAM v3 and Multilingual have complete conservative Metal code routes, but all six rows still lack authenticated Apple-hardware verdicts. | When the Apple stage resumes, regenerate all required packets from the recorded fixed revisions/hashes on new disposable VAST workers, provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify them, run the six Apple CPU/Metal workers, preserve evidence and destroy the new VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
-| SoTA / parity / publish | Converters and many structural proofs landed | The 33 literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
+| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. The live inventory is CPU `full=133`, `partial=45`, `no-runtime-binder=15`, `not-artifact=1`; Metal `full=133`, `blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
+| SoTA / parity / publish | Converters and many structural proofs landed | The 31 current literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
 gaps are tracked outside this file in
