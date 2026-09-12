@@ -73,6 +73,25 @@ require_contract() {
   [[ "$(sha256sum "$PROJECT/pyproject.toml" | awk '{print $1}')" == "$PYPROJECT_SHA256" ]] || { die 'Dia pyproject identity mismatch'; return 2; }
 }
 
+normalize_audit_exit() {
+  local report="$1" audit_rc="$2" gate_status
+  (( audit_rc != 0 )) && return "$audit_rc"
+  gate_status="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$report" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    report = json.load(stream)
+if report.get("status") == "FACTS_COLLECTED_GATE_BLOCKED" and report.get("dependency_license_audit") == "BLOCKED_UNREVIEWED_TRANSITIVE" and report.get("publication") == "NO_UPLOAD":
+    print("BLOCKED")
+else:
+    print("UNEXPECTED")
+PY
+)"
+  [[ "$gate_status" == BLOCKED ]] && return 2
+  return 0
+}
+
 run_audit() {
   local output="$1" out log_path rc scope_rc head environment preparation scope
   require_vast || return 2
@@ -110,11 +129,11 @@ run_audit() {
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$OWNER_SCOPE" \
     --validate --report "$out" --preparation "$(canonicalize_uncreated "$preparation")/preparation.json" --expected-head "$head" --output "$scope" >>"$log_path" 2>&1 || { log 'owner-review scope validation failed'; return 2; }
   (cd "$(canonicalize_uncreated "$output")" && sha256sum audit.log dependency-audit.json owner-review-scope.json preparation/preparation.json preparation/build-dependency-evidence.json preparation/numpy-config.json preparation/numpy-2.2.5.tar.gz preparation/wheelhouse/*.whl > SHA256SUMS)
-  return "$rc"
+  normalize_audit_exit "$out" "$rc"
 }
 
 self_test() {
-  local temp_root fake_repo fake_project fake_output fake_log rc temp_parent failed=0
+  local temp_root fake_repo fake_project fake_output fake_log rc temp_parent failed=0 exit_probe
   for token in 'VOKRA_PUBLISH_ON_VAST=1' 'prepare-dia-1-6b-reference.sh' '--no-install-package numpy' '--no-sync' 'dependency_audit.py' 'owner_review_scope.py' 'owner-review-scope.json' 'dependency-audit.json' 'publisher LICENSE/NOTICE bytes' 'native payload facts' 'NO_UPLOAD'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
@@ -122,6 +141,25 @@ self_test() {
   if grep -En 'snapshot_download|git[[:space:]]+clone|cargo[[:space:]]+(build|test|check|clippy)|publish-one\.sh|--push|--upload' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$AUDITOR" --self-test >/dev/null 2>&1 || failed=1
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$OWNER_SCOPE" --self-test >/dev/null 2>&1 || failed=1
+  if temp_root="$(mktemp -d "${TMPDIR:-/tmp}/dia-dependency-exit-contract.XXXXXXXX")"; then
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$temp_root/blocked.json" <<'PY' || failed=1
+import json, sys
+json.dump({"status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": "BLOCKED_UNREVIEWED_TRANSITIVE", "publication": "NO_UPLOAD"}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+    set +e
+    normalize_audit_exit "$temp_root/blocked.json" 0
+    exit_probe="$?"
+    set -e
+    (( exit_probe == 2 )) || failed=1
+    set +e
+    normalize_audit_exit "$temp_root/blocked.json" 7
+    exit_probe="$?"
+    set -e
+    (( exit_probe == 7 )) || failed=1
+    rm -rf "$temp_root"
+  else
+    failed=1
+  fi
   temp_parent="${TMPDIR:-/tmp}"
   [[ -d /private/tmp && ! -L /private/tmp ]] && temp_parent=/private/tmp
   if temp_root="$(mktemp -d "$temp_parent/dia-dependency-wrapper.XXXXXXXX")"; then
