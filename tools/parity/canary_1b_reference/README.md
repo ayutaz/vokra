@@ -55,3 +55,33 @@ evidence directory to be absent and creates it exactly once below a regular,
 non-symlink parent; it snapshots the bound source files before finalizing the
 no-clobber checksum file.  The auditor never imports NeMo, accesses Hugging
 Face, reads a checkpoint, invokes Cargo, or uploads anything.
+
+## Closure review (lock/import evidence)
+
+The two dumpers statically bind the independent oracle to
+`nemo.collections.asr.models.EncDecMultiTaskModel.restore_from`; neither
+dumper mirrors NeMo internals.  The committed lock's Linux x86_64 active
+closure is 134 rows (133 installed distributions).  The audit report records
+every root-to-package dependency path, including selected extras.  The
+principal native/license blockers are reached as follows:
+
+```text
+project -> nemo-toolkit[asr] -> librosa[extra=asr] -> soxr
+project -> nemo-toolkit[asr] -> librosa[extra=asr] -> scipy
+project -> nemo-toolkit[asr] -> scipy[extra=asr]
+project -> nemo-toolkit[asr] -> pandas[extra=asr] -> numpy
+project -> nemo-toolkit[asr] -> datasets[extra=asr] -> pandas -> numpy
+project -> nemo-toolkit[asr] -> librosa[extra=asr] -> numba -> llvmlite
+project -> nemo-toolkit[asr] -> datasets[extra=asr] -> pyarrow
+```
+
+`numpy`, `scipy`, `pandas`, `pyarrow`, `numba`/`llvmlite`, and `soxr` are
+therefore not generic-project leftovers: each is reached by the selected
+official NeMo ASR extra (often through more than one path).  The native audit
+records their ELF/archive bytes and `NEEDED` entries; publisher license bytes
+are archived separately.  No safe package reduction was claimed: removing
+the `asr` extra would no longer establish the official ASR import closure, and
+replacing `EncDecMultiTaskModel` with a lighter oracle would lose the official
+checkpoint restore/prompt/decoder semantics and invalidate independent parity.
+The status consequently remains fail-closed until owner/legal review resolves
+the observed GPL/LGPL/unknown/native rows.

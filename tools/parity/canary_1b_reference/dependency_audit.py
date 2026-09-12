@@ -234,7 +234,7 @@ def _marker_term(term: str, context: dict[str, str]) -> bool:
     return actual_value >= expected_value
 
 
-def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     """Resolve the root project's Linux x86_64 dependency/extras closure."""
     rows = lock_rows(lock)
     root = next(row for row in rows if row.get("source") == {"virtual": "."})
@@ -244,16 +244,19 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
             by_name.setdefault(str(row["name"]).casefold(), []).append(row)
     active: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     processed_extras: dict[tuple[str, str, str, str], set[str]] = {}
+    paths: dict[tuple[str, str, str, str], set[tuple[str, ...]]] = {}
     failures: list[str] = []
-    queue: list[tuple[str, list[str], str | None]] = []
+    queue: list[tuple[str, list[str], str | None, tuple[str, ...]]] = []
     for requirement in root.get("metadata", {}).get("requires-dist", []):
         if not isinstance(requirement, dict):
             failures.append("root requires-dist row is malformed")
             continue
         if marker_active(requirement.get("marker")):
-            queue.append((str(requirement["name"]), list(requirement.get("extras", [])), requirement.get("marker")))
+            extras = list(requirement.get("extras", []))
+            suffix = f"[{','.join(extras)}]" if extras else ""
+            queue.append((str(requirement["name"]), extras, requirement.get("marker"), ("project", f"{requirement['name']}{suffix}")))
     while queue:
-        name, extras, _marker = queue.pop(0)
+        name, extras, _marker, dependency_path = queue.pop(0)
         candidates = [
             row for row in by_name.get(name.casefold(), [])
             if all(marker_active(marker) for marker in row.get("resolution-markers", []))
@@ -263,6 +266,7 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
             continue
         row = candidates[0]
         key = (str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", [])))
+        paths.setdefault(key, set()).add(dependency_path)
         first_visit = key not in active
         if first_visit:
             active[key] = row
@@ -280,17 +284,33 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
                     if not isinstance(target_extras, list) or not all(isinstance(item, str) for item in target_extras):
                         failures.append(f"dependency extra metadata is malformed for {dependency.get('name')}")
                         continue
-                    queue.append((str(dependency["name"]), target_extras, dependency.get("marker")))
+                    suffix = f"[{','.join(target_extras)}]" if target_extras else ""
+                    queue.append((str(dependency["name"]), target_extras, dependency.get("marker"), (*dependency_path, f"{dependency['name']}{suffix}")))
         optional = row.get("optional-dependencies", {})
         if isinstance(optional, dict):
             for selected_extra in new_extras:
                 for dependency in optional.get(selected_extra, []):
                     if isinstance(dependency, dict) and marker_active(dependency.get("marker"), extra=selected_extra):
-                        queue.append((str(dependency["name"]), [], dependency.get("marker")))
+                        queue.append((str(dependency["name"]), [], dependency.get("marker"), (*dependency_path, f"{dependency['name']}[extra={selected_extra}]")))
     inactive = [row for row in rows if row.get("source") != {"virtual": "."} and (
         str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", []))
     ) not in active]
-    return [root, *active.values()], inactive, sorted(set(failures))
+    rows = [root, *active.values()]
+    dependency_paths = []
+    for row in rows:
+        if row.get("source") == {"virtual": "."}:
+            row_paths = [["project"]]
+        else:
+            key = (str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", [])))
+            row_paths = [list(path) for path in sorted(paths.get(key, set()))]
+        dependency_paths.append({
+            "name": row["name"],
+            "version": row["version"],
+            "source": row["source"],
+            "resolution_markers": row.get("resolution-markers", []),
+            "paths": row_paths,
+        })
+    return rows, inactive, sorted(set(failures)), dependency_paths
 
 
 def normalized_name(value: str) -> str:
@@ -494,7 +514,7 @@ def memory_bytes() -> int | None:
     return None
 
 
-def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     project_bytes, project = load_toml(project_path, "dedicated pyproject")
     lock_bytes, lock = load_toml(lock_path, "dedicated uv.lock")
     if project.get("project", {}).get("name") != "vokra-canary-1b-reference":
@@ -513,10 +533,10 @@ def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, d
     dependencies = project.get("project", {}).get("dependencies", [])
     if sorted(dependencies) != ["nemo-toolkit[asr]==3.0.0", "torch==2.7.1"]:
         raise AuditError("dedicated dependency contract drifted")
-    rows, inactive, failures = active_lock_rows(lock)
+    rows, inactive, failures, dependency_paths = active_lock_rows(lock)
     if sha256_bytes(lock_bytes) == sha256_bytes(project_bytes):
         raise AuditError("project and lock unexpectedly share digest")
-    return project_bytes, lock_bytes, project, rows, inactive, failures
+    return project_bytes, lock_bytes, project, rows, inactive, failures, dependency_paths
 
 
 def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: str, output: Path, archive_dir: Path, wrapper_path: Path, expected_project_sha256: str | None, expected_lock_sha256: str | None, expected_audit_sha256: str | None, expected_wrapper_sha256: str | None, write_sums: bool = True) -> None:
@@ -532,7 +552,7 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
     if any(archive_dir.iterdir()):
         raise AuditError("license archive directory must be empty")
     verify_canonical_sources(repo_root, project_path, lock_path, wrapper_path)
-    project_bytes, lock_bytes, _project, rows, inactive, collector_failures = verify_project(project_path, lock_path)
+    project_bytes, lock_bytes, _project, rows, inactive, collector_failures, dependency_paths = verify_project(project_path, lock_path)
     project_sha256 = sha256_bytes(project_bytes)
     lock_sha256 = sha256_bytes(lock_bytes)
     audit_sha256 = sha256_file(Path(__file__).resolve())
@@ -548,7 +568,7 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
         {path.name: {"path": path.name, "bytes": path.stat().st_size, "sha256": sha256_file(path)} for path in archive_dir.iterdir() if path.is_file()}.values(),
         key=lambda item: item["path"],
     )
-    package_scope = {"active_rows": rows, "active_facts": facts, "inactive_rows": inactive, "collector_failures": collector_failures, "project_sha256": project_sha256, "lock_sha256": lock_sha256, "audit_script_sha256": audit_sha256, "wrapper_sha256": wrapper_sha256, "model_free": MODEL_FREE_FIELDS}
+    package_scope = {"active_rows": rows, "active_facts": facts, "dependency_paths": dependency_paths, "inactive_rows": inactive, "collector_failures": collector_failures, "project_sha256": project_sha256, "lock_sha256": lock_sha256, "audit_script_sha256": audit_sha256, "wrapper_sha256": wrapper_sha256, "model_free": MODEL_FREE_FIELDS}
     report: dict[str, Any] = {
         "schema": SCHEMA,
         "status": STATUS,
@@ -564,6 +584,8 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
         "distribution_inventory": inventory,
         "package_rows": rows,
         "package_rows_sha256": digest(rows),
+        "dependency_paths": dependency_paths,
+        "dependency_paths_sha256": digest(dependency_paths),
         "inactive_lock_rows": inactive,
         "collector_failures": collector_failures,
         "package_facts": facts,
@@ -618,7 +640,7 @@ def validate_report_semantics(report: dict[str, Any]) -> None:
         raise AuditError("report is not permanently blocked/no-upload")
     if report.get("clean") is not True or report.get("expected_head") != report.get("head"):
         raise AuditError("report does not bind a clean exact HEAD")
-    for field in ("project_sha256", "lock_sha256", "audit_script_sha256", "wrapper_sha256", "package_rows_sha256", "package_facts_sha256", "license_archive_sha256", "candidate_owner_scope_sha256"):
+    for field in ("project_sha256", "lock_sha256", "audit_script_sha256", "wrapper_sha256", "package_rows_sha256", "dependency_paths_sha256", "package_facts_sha256", "license_archive_sha256", "candidate_owner_scope_sha256"):
         if not isinstance(report.get(field), str) or not HEX64.fullmatch(report[field]):
             raise AuditError(f"report has missing/null digest: {field}")
     environment = report.get("environment")
@@ -629,6 +651,9 @@ def validate_report_semantics(report: dict[str, Any]) -> None:
         raise AuditError("installed active closure is not exact")
     if not isinstance(report.get("collector_failures"), list) or not isinstance(report.get("inactive_lock_rows"), list):
         raise AuditError("active/inactive closure evidence is incomplete")
+    paths = report.get("dependency_paths")
+    if not isinstance(paths, list) or any(not isinstance(row, dict) or not row.get("paths") for row in paths):
+        raise AuditError("dependency closure paths are incomplete")
 
 
 def self_test() -> None:
@@ -697,10 +722,11 @@ def self_test() -> None:
             {"name": "darwin-only", "version": "1", "source": {"registry": PYPI}, "resolution-markers": ["sys_platform == 'darwin'"]},
         ],
     }
-    active, inactive, failures = active_lock_rows(synthetic_lock)
+    active, inactive, failures, paths = active_lock_rows(synthetic_lock)
     assert [row["name"] for row in active] == ["root", "demo", "extra-target", "http-child"]
     assert [row["name"] for row in inactive] == ["darwin-only"]
     assert failures == []
+    assert paths[1]["paths"] == [["project", "demo"]]
     try:
         validate_report_semantics({"schema": SCHEMA, "status": STATUS, "publication": PUBLICATION})
     except AuditError:
