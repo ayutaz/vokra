@@ -98,7 +98,7 @@ with zipfile.ZipFile(wheel) as archive:
         if any(token in lowered for token in ("gpl", "lgpl")):
             raise SystemExit(f"GPL/LGPL NumPy wheel payload: {name}")
         if name.casefold().split("/")[-1] in {"license", "licence", "copying", "notice"}:
-            body = archive.read(name).casefold()
+            body = archive.read(name).lower()
             if b"gnu general public license" in body or b"gnu lesser general public license" in body:
                 raise SystemExit(f"GPL/LGPL NumPy license payload: {name}")
 PY
@@ -307,7 +307,7 @@ PY
 }
 
 self_test() {
-  local failed=0 required_tools_line temp_root
+  local failed=0 required_tools_line temp_root diagnostic
   for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'build-dependency-evidence.json' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
@@ -328,14 +328,25 @@ import zipfile
 root = pathlib.Path(sys.argv[1])
 with zipfile.ZipFile(root / "valid.whl", "w") as archive:
     archive.writestr("numpy/core/_multiarray_umath.so", b"ELF")
+with zipfile.ZipFile(root / "valid-license.whl", "w") as archive:
+    archive.writestr("numpy-2.2.5.dist-info/licenses/LICENSE", b"BSD 3-Clause License")
 with zipfile.ZipFile(root / "native-bad.whl", "w") as archive:
     archive.writestr("numpy.libs/libgfortran.so.5", b"ELF")
 with zipfile.ZipFile(root / "license-bad.whl", "w") as archive:
     archive.writestr("numpy-2.2.5.dist-info/licenses/LICENSE", b"GNU GENERAL PUBLIC LICENSE")
 PY
     if ! inspect_wheel "$temp_root/valid.whl"; then failed=1; fi
-    if inspect_wheel "$temp_root/native-bad.whl" >/dev/null 2>&1; then failed=1; fi
-    if inspect_wheel "$temp_root/license-bad.whl" >/dev/null 2>&1; then failed=1; fi
+    if ! inspect_wheel "$temp_root/valid-license.whl"; then failed=1; fi
+    if diagnostic="$(inspect_wheel "$temp_root/native-bad.whl" 2>&1)"; then
+      failed=1
+    elif [[ "$diagnostic" != *"forbidden NumPy wheel payload"* ]]; then
+      failed=1
+    fi
+    if diagnostic="$(inspect_wheel "$temp_root/license-bad.whl" 2>&1)"; then
+      failed=1
+    elif [[ "$diagnostic" != *"GPL/LGPL NumPy license payload"* ]]; then
+      failed=1
+    fi
     rm -rf "$temp_root"
   else
     failed=1
