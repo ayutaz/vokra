@@ -786,6 +786,10 @@ def validate_report(path: Path) -> None:
     lock = report.get("lock")
     if not isinstance(lock, dict) or not isinstance(lock.get("rows"), list):
         raise RuntimeError("lock rows are missing")
+    if report.get("project") != project_identity():
+        raise RuntimeError("dedicated Zonos project identity is not report-bound")
+    if lock["rows"] != _lock_rows():
+        raise RuntimeError("audit lock rows do not match the reviewed dedicated lock")
     if scope["lock_rows_sha256"] != _digest(lock["rows"]):
         raise RuntimeError("lock row digest mismatch")
     failures = installed.get("failures")
