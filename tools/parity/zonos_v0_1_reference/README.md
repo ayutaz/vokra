@@ -19,3 +19,23 @@ an owner/legal decision reviews the Linux x86_64 closure, native ELF files,
 and publisher LICENSE/NOTICE bytes. No model/source/checkpoint acquisition,
 execution, or publication is authorized by this project alone; all workers
 remain `NO_UPLOAD`.
+
+## Dependency approval transition
+
+The model-free audit emits `BLOCKED_UNREVIEWED_TRANSITIVE` because dependency
+facts and owner/legal classification are separate decisions. A later worker
+may cross the pre-acquisition boundary only when an owner supplies an external
+`vokra-zonos-dependency-approval-v1` record. The record is distinct from the
+source/model approval and must bind the audit file SHA-256, its exact
+`candidate_scope_sha256`, exact clean HEAD, and every scope digest: lock,
+prepared NumPy, no-forbidden-BLAS policy/runtime, installed closure, native
+files, publisher files, NumPy RECORD, and publisher archive manifest. It must
+also carry an explicit `owner/legal` attestation and a canonical signature.
+
+`run-zonos-inspection.sh` reads this record from
+`ZONOS_DEPENDENCY_APPROVAL` and binds its raw digest with
+`ZONOS_DEPENDENCY_APPROVAL_SHA256`. Missing, stale, unsigned, duplicate-key,
+placeholder-signer, wrong-head/hash, `NO_UPLOAD`-inconsistent, symlinked, or
+overlapping records remain fail-closed. Successful validation authorizes only
+the next pre-acquisition stage; the factual audit status and publication
+disposition do not change.
