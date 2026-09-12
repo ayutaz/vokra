@@ -533,12 +533,19 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
         ],
     }
     validate_report_semantics(report)
+    snapshots = {
+        "pyproject.toml": project_bytes,
+        "uv.lock": lock_bytes,
+        "dependency_audit.py": Path(__file__).read_bytes(),
+    }
+    for name, payload in snapshots.items():
+        write_no_replace(output.parent / name, payload)
     write_no_replace(output, (canonical(report) + "\n").encode("utf-8"))
     sums = output.parent / "SHA256SUMS"
     sum_lines = [
-        f"{sha256_file(project_path)}  {project_path.name}\n",
-        f"{sha256_file(lock_path)}  {lock_path.name}\n",
-        f"{sha256_file(Path(__file__).resolve())}  {Path(__file__).name}\n",
+        f"{sha256_file(output.parent / 'pyproject.toml')}  pyproject.toml\n",
+        f"{sha256_file(output.parent / 'uv.lock')}  uv.lock\n",
+        f"{sha256_file(output.parent / 'dependency_audit.py')}  dependency_audit.py\n",
         f"{sha256_file(output)}  {output.name}\n",
     ]
     archive_root = archive_dir.relative_to(output.parent)
