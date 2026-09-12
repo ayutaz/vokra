@@ -36,10 +36,27 @@ EXPECTED_NUMPY_WHEEL_SHA256 = "3cdec01fa790a186d430433fdd4d4ffb70eed6f0eeb4bf05c
 EXPECTED_ROWS = frozenset(EXPECTED_VERSIONS)
 EXPECTED_PROJECT_SHA256 = "2438d719428e497cc7f101429ba31fb5016e72737659d55aa0269d0824b1183d"
 EXPECTED_LOCK_SHA256 = "736fca6145c24984531ef11258cd64aebbb188fa8830300b09232cac0fe567f3"
+# Historical pre-normalization packet digest; retained for provenance only.
 EXPECTED_EVIDENCE_SHA256 = "2b24695d106665b5cbc17357b1a43ff03ab75235d35e7d3ed03e5c7c7a68069d"
 EXPECTED_INVENTORY_SHA256 = "eeda7a48d6effc9e6b94a4bf806c319d8933f53bdd7e58c1c5b22afacecf4f21"
 EXPECTED_LOCK_ROWS_SHA256 = "1f962ffccf851985838f2566831686399a7268001b62568eb38afeea39fa78e0"
 VALIDATED_EVIDENCE_STATUS = "VALIDATED_EXACT_OWNER_REVIEWED"
+INSTALLER_GENERATED_FILENAMES = frozenset(("INSTALLER", "REQUESTED"))
+EXPECTED_INSTALLER_ROWS = {
+    "INSTALLER": {"bytes": 2, "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"},
+    "REQUESTED": {"bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+}
+# Stable identities of the non-installer rows in the reviewed uv sync.  The
+# raw RECORD file and its complete row evidence remain separately checked.
+EXPECTED_NORMALIZED_RECORD_FINGERPRINTS = {
+    "ai-edge-litert": {"sha256": "29eec68709c3d12c4f57fc7b95cca0bb5769a5b5827a452b2d2097bf06c1170e", "entries_count": 109},
+    "backports-strenum": {"sha256": "f556caed0bf796bdbde84de31b1014174061226fc1a87d22570574793c8cd815", "entries_count": 8},
+    "flatbuffers": {"sha256": "72247775c534898fd9ff896874669a24daf4da3f6d4c5f302822ccd353aaf8c1", "entries_count": 14},
+    "numpy": {"sha256": "45c85236d4dd91fee5c6285fe5bf0354a8551b69c697ca7aab508ebc063250b9", "entries_count": 928},
+    "protobuf": {"sha256": "2038f5c71af41db6ad714e711b61b56d7a40c75cb0d4f8e1f8abbb9ab59b7106", "entries_count": 63},
+    "tqdm": {"sha256": "526d68549d8bf4cab320bce1a53ecb89cd3fe8449f7397ce76564e04f766b189", "entries_count": 40},
+    "typing-extensions": {"sha256": "30389d6a3f1f092f844938c18053fff02fabf7019f7a20fe50891f1b99facd30", "entries_count": 5},
+}
 EXPECTED_DISTRIBUTION_FINGERPRINTS = {
     "ai-edge-litert": {
         "metadata_sha256": "2ff89104841d22614e9db27451eaa5c877df0428183f02e64491db87a8dc112a",
@@ -180,6 +197,158 @@ def _canonical_json_sha256(value: Any) -> str:
     return sha256_bytes(payload)
 
 
+def _installer_generated_rows(entries: list[dict[str, Any]], record_path: str) -> list[dict[str, Any]]:
+    dist_info = record_path.rsplit("/", 1)[0]
+    paths = {f"{dist_info}/{name}" for name in INSTALLER_GENERATED_FILENAMES}
+    return [entry for entry in entries if entry.get("declared", {}).get("path") in paths]
+
+
+def _normalized_record_entries(entries: list[dict[str, Any]], record_path: str) -> list[dict[str, Any]]:
+    """Normalize only installer rows and the self-referential RECORD digest."""
+    installer_paths = {
+        entry.get("declared", {}).get("path")
+        for entry in _installer_generated_rows(entries, record_path)
+    }
+    normalized: list[dict[str, Any]] = []
+    for entry in entries:
+        declared_path = entry.get("declared", {}).get("path")
+        if declared_path in installer_paths:
+            continue
+        item = {
+            "declared": entry.get("declared"),
+            "errors": entry.get("errors"),
+            "resolved_path": entry.get("resolved_path"),
+            "validation": entry.get("validation"),
+            "actual": None if declared_path == record_path else entry.get("actual"),
+        }
+        normalized.append(item)
+    return sorted(normalized, key=lambda item: str(item["declared"].get("path", "")).casefold())
+
+
+def _validate_record_evidence(
+    name: str, row: dict[str, Any], record: dict[str, Any], fingerprint: dict[str, Any]
+) -> None:
+    entries = record.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"dependency evidence RECORD missing: {name}")
+    if not isinstance(record.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
+        raise ValueError(f"dependency evidence RECORD digest malformed: {name}")
+    expected_declared_record_path = f"{row.get('dist_info')}/RECORD"
+    expected_file_record_path = f"{row.get('dist_info_path')}/RECORD"
+    legacy_raw = (
+        record.get("sha256") == fingerprint["record_sha256"]
+        and record.get("entries_sha256") == fingerprint["entries_sha256"]
+        and record.get("entries_count") == fingerprint["entries_count"]
+    )
+    if (
+        (record.get("path") != expected_file_record_path and not (record.get("path") is None and legacy_raw))
+        or not isinstance(record.get("bytes"), int)
+        or record["bytes"] < 0
+    ):
+        raise ValueError(f"dependency evidence RECORD file identity malformed: {name}")
+    if (
+        not isinstance(record.get("entries_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", record["entries_sha256"])
+        or _canonical_json_sha256(entries) != record["entries_sha256"]
+        or record.get("entries_count") != len(entries)
+    ):
+        raise ValueError(f"dependency evidence RECORD raw evidence drift: {name}")
+
+    empty_rows: list[dict[str, Any]] = []
+    record_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for record_entry in entries:
+        if not isinstance(record_entry, dict):
+            raise ValueError(f"dependency evidence RECORD row malformed: {name}")
+        validation = record_entry.get("validation")
+        if validation not in {"MATCH", "EMPTY_DECLARATION"}:
+            raise ValueError(f"dependency evidence RECORD contains non-success row: {name}")
+        declared = record_entry.get("declared")
+        actual = record_entry.get("actual")
+        if not isinstance(declared, dict) or not isinstance(declared.get("path"), str):
+            raise ValueError(f"dependency evidence RECORD path missing: {name}")
+        path = declared["path"]
+        if path in seen_paths:
+            raise ValueError(f"dependency evidence RECORD duplicate path: {name}")
+        seen_paths.add(path)
+        record_paths.append(path)
+        if not isinstance(record_entry.get("resolved_path"), str) or record_entry.get("errors") != []:
+            raise ValueError(f"dependency evidence RECORD validation details drift: {name}")
+        if not isinstance(actual, dict) or not isinstance(actual.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", actual["sha256"]):
+            raise ValueError(f"dependency evidence RECORD actual digest malformed: {name}")
+        if not isinstance(actual.get("bytes"), int) or actual["bytes"] < 0:
+            raise ValueError(f"dependency evidence RECORD actual size malformed: {name}")
+        declared_hash = declared.get("hash")
+        declared_size = declared.get("size")
+        if not isinstance(declared_hash, dict) or not isinstance(declared_size, dict):
+            raise ValueError(f"dependency evidence RECORD declaration malformed: {name}")
+        if validation == "EMPTY_DECLARATION":
+            empty_rows.append(record_entry)
+            if path != expected_declared_record_path:
+                raise ValueError(f"dependency evidence RECORD empty row drift: {name}")
+            if declared_hash.get("status") != "EMPTY" or declared_size.get("status") != "EMPTY":
+                raise ValueError(f"dependency evidence RECORD self-row declaration drift: {name}")
+        else:
+            if (
+                declared_hash.get("status") != "VALID"
+                or declared_hash.get("algorithm") != "sha256"
+                or declared_hash.get("value") != actual["sha256"]
+                or declared_size.get("status") != "VALID"
+                or declared_size.get("value") != actual["bytes"]
+            ):
+                raise ValueError(f"dependency evidence RECORD declared/actual mismatch: {name}")
+    if len(empty_rows) != 1 or empty_rows[0]["declared"]["path"] != expected_declared_record_path:
+        raise ValueError(f"dependency evidence RECORD self-row drift: {name}")
+    self_actual = empty_rows[0]["actual"]
+    if self_actual["sha256"] != record["sha256"] or self_actual["bytes"] != record["bytes"]:
+        raise ValueError(f"dependency evidence RECORD self-file digest drift: {name}")
+
+    generated = _installer_generated_rows(entries, expected_declared_record_path)
+    generated_paths = [entry["declared"]["path"] for entry in generated]
+    allowed_paths = {f"{expected_declared_record_path.rsplit('/', 1)[0]}/{item}" for item in INSTALLER_GENERATED_FILENAMES}
+    if set(generated_paths) != allowed_paths or len(generated_paths) != len(set(generated_paths)):
+        raise ValueError(f"dependency evidence installer-generated row path drift: {name}")
+    for entry in generated:
+        basename = entry["declared"]["path"].rsplit("/", 1)[-1]
+        expected_installer = EXPECTED_INSTALLER_ROWS[basename]
+        actual = entry["actual"]
+        declared = entry["declared"]
+        if (
+            entry.get("validation") != "MATCH"
+            or actual.get("bytes") != expected_installer["bytes"]
+            or actual.get("sha256") != expected_installer["sha256"]
+            or declared.get("hash", {}).get("status") != "VALID"
+            or declared.get("hash", {}).get("algorithm") != "sha256"
+            or declared.get("hash", {}).get("value") != expected_installer["sha256"]
+            or declared.get("size", {}).get("status") != "VALID"
+            or declared.get("size", {}).get("value") != expected_installer["bytes"]
+        ):
+            raise ValueError(f"dependency evidence installer-generated row content drift: {name}")
+    recorded_generated = record.get("installer_generated_rows")
+    if recorded_generated is not None:
+        if not isinstance(recorded_generated, list) or recorded_generated != generated:
+            raise ValueError(f"dependency evidence installer-generated row evidence drift: {name}")
+    normalized = _normalized_record_entries(entries, expected_declared_record_path)
+    normalized_sha = _canonical_json_sha256(normalized)
+    has_normalized_identity = {
+        "installer_generated_rows", "normalized_entries_count", "normalized_entries_sha256"
+    } <= set(record)
+    if "normalized_entries_count" in record and record["normalized_entries_count"] != len(normalized):
+        raise ValueError(f"dependency evidence normalized RECORD count drift: {name}")
+    if "normalized_entries_sha256" in record and record["normalized_entries_sha256"] != normalized_sha:
+        raise ValueError(f"dependency evidence normalized RECORD digest drift: {name}")
+    expected_normalized = EXPECTED_NORMALIZED_RECORD_FINGERPRINTS.get(name)
+    legacy = legacy_raw
+    if not has_normalized_identity and not legacy:
+        raise ValueError(f"dependency evidence normalized RECORD fingerprint missing: {name}")
+    if has_normalized_identity and expected_normalized is None:
+        raise ValueError(f"dependency evidence normalized RECORD fingerprint missing: {name}")
+    if has_normalized_identity and (normalized_sha, len(normalized)) != (
+        expected_normalized["sha256"], expected_normalized["entries_count"]
+    ):
+        raise ValueError(f"dependency evidence normalized RECORD fingerprint drift: {name}")
+
+
 def _has_restrictive_terms_path(paths: list[str]) -> bool:
     markers = ("terms_of_use", "terms_and_conditions", "restrictive_terms", "restricted_terms")
     return any(
@@ -312,38 +481,12 @@ def _validate_dependency_evidence(value: dict[str, Any], project_sha256: str, lo
         if not all(isinstance(item, list) for item in declarations):
             raise ValueError(f"dependency evidence metadata license fields malformed: {name}")
         record = row.get("record")
-        if not isinstance(record, dict) or not isinstance(record.get("entries"), list) or not record["entries"]:
+        if not isinstance(record, dict):
             raise ValueError(f"dependency evidence RECORD missing: {name}")
-        if (
-            record.get("sha256") != fingerprint["record_sha256"]
-            or record.get("entries_sha256") != fingerprint["entries_sha256"]
-            or record.get("entries_count") != fingerprint["entries_count"]
-            or _canonical_json_sha256(record["entries"]) != fingerprint["entries_sha256"]
-        ):
-            raise ValueError(f"dependency evidence RECORD fingerprint drift: {name}")
-        empty_rows = []
-        record_paths = []
-        for record_entry in record["entries"]:
-            if not isinstance(record_entry, dict):
-                raise ValueError(f"dependency evidence RECORD row malformed: {name}")
-            validation = record_entry.get("validation")
-            if validation not in {"MATCH", "EMPTY_DECLARATION"}:
-                raise ValueError(f"dependency evidence RECORD contains non-success row: {name}")
-            declared = record_entry.get("declared")
-            if not isinstance(declared, dict) or not isinstance(declared.get("path"), str):
-                raise ValueError(f"dependency evidence RECORD path missing: {name}")
-            record_paths.append(declared["path"])
-            if validation == "EMPTY_DECLARATION":
-                empty_rows.append(record_entry)
-        expected_record_path = f"{row.get('dist_info')}/RECORD"
-        if len(empty_rows) != 1 or empty_rows[0]["declared"]["path"] != expected_record_path:
-            raise ValueError(f"dependency evidence RECORD self-row drift: {name}")
-        self_declared = empty_rows[0]["declared"]
-        if (
-            self_declared.get("hash", {}).get("status") != "EMPTY"
-            or self_declared.get("size", {}).get("status") != "EMPTY"
-        ):
-            raise ValueError(f"dependency evidence RECORD self-row declaration drift: {name}")
+        _validate_record_evidence(name, row, record, fingerprint)
+        record_paths = [
+            entry["declared"]["path"] for entry in record["entries"]
+        ]
         candidates = row.get("license_candidates")
         if not isinstance(candidates, list):
             raise ValueError(f"dependency evidence license candidates malformed: {name}")
@@ -430,9 +573,7 @@ def inspect_documents(
     else:
         try:
             if not isinstance(dependency_evidence, bytes):
-                raise ValueError("dependency evidence raw bytes are required for exact fingerprint validation")
-            if sha256_bytes(dependency_evidence) != EXPECTED_EVIDENCE_SHA256:
-                raise ValueError("dependency evidence raw fingerprint drift")
+                raise ValueError("dependency evidence raw bytes are required for exact evidence validation")
             evidence_report = _strict_json(dependency_evidence, "dependency evidence")
             evidence_contract = _validate_dependency_evidence(evidence_report, project_sha256, lock_sha256)
             evidence_status = evidence_contract["status"]
@@ -492,6 +633,21 @@ def _authoritative_negative_self_tests(evidence_bytes: bytes) -> None:
     terms_tamper = json.loads(json.dumps(evidence))
     terms_tamper["installed_distributions"][0]["record"]["entries"][0]["declared"]["path"] = "TERMS_OF_USE"
     mutations.append(("restrictive terms", terms_tamper))
+    installer_tamper = json.loads(json.dumps(evidence))
+    installer_record = installer_tamper["installed_distributions"][0]["record"]
+    installer_entry = next(
+        entry for entry in installer_record["entries"]
+        if entry["declared"]["path"].endswith("/INSTALLER")
+    )
+    installer_entry["actual"]["sha256"] = "0" * 64
+    installer_record["entries_sha256"] = _canonical_json_sha256(installer_record["entries"])
+    mutations.append(("installer-generated row", installer_tamper))
+    unpinned_tamper = json.loads(json.dumps(evidence))
+    unpinned_record = unpinned_tamper["installed_distributions"][0]["record"]
+    for key in ("installer_generated_rows", "normalized_entries_count", "normalized_entries_sha256"):
+        unpinned_record.pop(key, None)
+    unpinned_record["sha256"] = "0" * 64
+    mutations.append(("unpinned unknown raw RECORD", unpinned_tamper))
     for label, mutated in mutations:
         try:
             _validate_dependency_evidence(mutated, EXPECTED_PROJECT_SHA256, EXPECTED_LOCK_SHA256)
@@ -499,6 +655,92 @@ def _authoritative_negative_self_tests(evidence_bytes: bytes) -> None:
             continue
         raise AssertionError(f"tampered {label} evidence was accepted")
     assert _has_restrictive_terms_path(["package/TERMS_OF_USE"])
+
+
+def _normalization_self_tests() -> None:
+    record_path = "demo-1.0.dist-info/RECORD"
+    def entry(path: str, *, actual: dict[str, Any] | None, validation: str = "MATCH") -> dict[str, Any]:
+        return {
+            "row": 1,
+            "declared": {"path": path, "hash": {"status": "VALID"}, "size": {"status": "VALID"}},
+            "actual": actual,
+            "resolved_path": path,
+            "validation": validation,
+            "errors": [],
+        }
+    entries = [
+        entry("demo-1.0.dist-info/METADATA", actual={"sha256": "1" * 64, "bytes": 1}),
+        entry("demo-1.0.dist-info/INSTALLER", actual={"sha256": "2" * 64, "bytes": 2}),
+        entry("demo-1.0.dist-info/REQUESTED", actual={"sha256": "3" * 64, "bytes": 0}),
+        entry("demo-1.0.dist-info/EXTRA", actual={"sha256": "4" * 64, "bytes": 4}),
+        entry(record_path, actual={"sha256": "5" * 64, "bytes": 5}, validation="EMPTY_DECLARATION"),
+    ]
+    normalized = _normalized_record_entries(entries, record_path)
+    assert [item["declared"]["path"] for item in normalized] == [
+        "demo-1.0.dist-info/EXTRA",
+        "demo-1.0.dist-info/METADATA",
+        record_path,
+    ]
+    assert next(item for item in normalized if item["declared"]["path"] == record_path)["actual"] is None
+    altered = entries + [entry("demo-1.0.dist-info/OTHER", actual={"sha256": "6" * 64, "bytes": 6})]
+    assert len(_normalized_record_entries(altered, record_path)) == len(normalized) + 1
+
+
+def _record_path_contract_self_test() -> None:
+    """Keep the environment file path distinct from RECORD's declared path."""
+    dist_info = "demo-1.0.dist-info"
+    declared_record_path = f"{dist_info}/RECORD"
+    file_record_path = f"lib/python3.12/site-packages/{declared_record_path}"
+
+    def valid_entry(path: str, digest: str, size: int, *, empty: bool = False) -> dict[str, Any]:
+        return {
+            "row": 1,
+            "declared": {
+                "path": path,
+                "hash": {"algorithm": None, "value": None, "status": "EMPTY"}
+                if empty else {"algorithm": "sha256", "value": digest, "status": "VALID"},
+                "size": {"value": None, "status": "EMPTY"}
+                if empty else {"value": size, "status": "VALID"},
+            },
+            "actual": {"sha256": digest, "bytes": size},
+            "resolved_path": f"lib/python3.12/site-packages/{path}",
+            "validation": "EMPTY_DECLARATION" if empty else "MATCH",
+            "errors": [],
+        }
+
+    entries = [
+        valid_entry(f"{dist_info}/METADATA", "1" * 64, 1),
+        valid_entry(f"{dist_info}/INSTALLER", EXPECTED_INSTALLER_ROWS["INSTALLER"]["sha256"], 2),
+        valid_entry(f"{dist_info}/REQUESTED", EXPECTED_INSTALLER_ROWS["REQUESTED"]["sha256"], 0),
+        valid_entry(declared_record_path, "5" * 64, 5, empty=True),
+    ]
+    record = {
+        "path": file_record_path,
+        "bytes": 5,
+        "sha256": "5" * 64,
+        "entries": entries,
+        "entries_count": len(entries),
+        "entries_sha256": _canonical_json_sha256(entries),
+        "installer_generated_rows": _installer_generated_rows(entries, declared_record_path),
+        "normalized_entries_count": len(_normalized_record_entries(entries, declared_record_path)),
+        "normalized_entries_sha256": _canonical_json_sha256(_normalized_record_entries(entries, declared_record_path)),
+    }
+    fingerprint = {"record_sha256": record["sha256"], "entries_sha256": record["entries_sha256"], "entries_count": len(entries)}
+    row = {"dist_info": dist_info, "dist_info_path": f"lib/python3.12/site-packages/{dist_info}"}
+    EXPECTED_NORMALIZED_RECORD_FINGERPRINTS["demo"] = {
+        "sha256": record["normalized_entries_sha256"],
+        "entries_count": record["normalized_entries_count"],
+    }
+    _validate_record_evidence("demo", row, record, fingerprint)
+    wrong_path = json.loads(json.dumps(record))
+    wrong_path["path"] = declared_record_path
+    try:
+        _validate_record_evidence("demo", row, wrong_path, fingerprint)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("declared RECORD path was accepted as the file evidence path")
+    EXPECTED_NORMALIZED_RECORD_FINGERPRINTS.pop("demo")
 
 
 def self_test() -> int:
@@ -519,6 +761,8 @@ def self_test() -> int:
     assert not _metadata_license_declarations_present(
         {"license": ["  UNKNOWN  "], "license_expression": [], "license_classifiers": []}
     )
+    _normalization_self_tests()
+    _record_path_contract_self_test()
     evidence_path_value = os.environ.get("VOKRA_MWW_REFERENCE_EVIDENCE")
     if evidence_path_value:
         evidence_path = Path(evidence_path_value)

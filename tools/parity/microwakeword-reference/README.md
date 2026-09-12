@@ -4,9 +4,18 @@
 Python 3.12 dependency closure used by the independent LiteRT reference. It
 first inventories every `.dist-info` under site-packages and requires the
 inventory to exactly match the seven external lock packages (the virtual
-project is excluded). It then records installed distribution metadata, the exact `RECORD` identity, bounded
-case-insensitive `LICENSE`/`LICENCE`/`COPYING`/`NOTICE`/`COPYRIGHT` candidates,
-and native payload hashes with `readelf` `NEEDED` facts when available.
+project is excluded). It then records installed distribution metadata, the
+complete raw `RECORD` evidence, bounded case-insensitive
+`LICENSE`/`LICENCE`/`COPYING`/`NOTICE`/`COPYRIGHT` candidates, and native
+payload hashes with `readelf` `NEEDED` facts when available. Every declared and
+actual file hash/size is checked. uv's two standardized installer rows
+(`<dist-info>/INSTALLER` and `REQUESTED`) are retained verbatim under
+`installer_generated_rows` and checked against the current uv contract
+(`INSTALLER` is the two-byte `uv` marker and `REQUESTED` is empty). Only those
+two rows, plus the self-referential actual digest/size of `RECORD`, are omitted
+from `normalized_entries_*`; all other rows remain in the normalized identity.
+Unknown extra rows therefore remain fail-closed rather than being hidden as
+installer metadata.
 The worker passes both the synchronized venv root and the exact
 `sysconfig.get_path("purelib")` site-packages path. RECORD entries may point to
 venv-owned files such as `../../../bin/...`; lexical traversal and symlink

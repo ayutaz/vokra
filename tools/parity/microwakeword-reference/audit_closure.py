@@ -54,6 +54,11 @@ PROJECT_NAME = "vokra-microwakeword-reference"
 PLATFORM_MARKER = "platform_machine == 'x86_64' and sys_platform == 'linux'"
 LICENSE_BASENAMES = ("license", "licence", "copying", "notice", "copyright")
 NATIVE_SUFFIXES = (".dylib", ".dll", ".pyd")
+INSTALLER_GENERATED_FILENAMES = frozenset(("INSTALLER", "REQUESTED"))
+EXPECTED_INSTALLER_ROWS = {
+    "INSTALLER": {"bytes": 2, "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"},
+    "REQUESTED": {"bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+}
 
 
 def normalize_name(value: str) -> str:
@@ -199,6 +204,49 @@ def _metadata_license_declarations_present(metadata: dict[str, Any]) -> bool:
     )
 
 
+def _installer_generated_rows(entries: list[dict[str, Any]], record_path: str) -> list[dict[str, Any]]:
+    """Return only the two standardized installer-created dist-info rows.
+
+    These rows are kept as complete evidence, but excluded from the stable
+    package-record identity because their presence/content is controlled by
+    the environment installer rather than the wheel.
+    """
+    dist_info = record_path.rsplit("/", 1)[0]
+    paths = {f"{dist_info}/{name}" for name in INSTALLER_GENERATED_FILENAMES}
+    return [entry for entry in entries if entry.get("declared", {}).get("path") in paths]
+
+
+def _normalized_record_entries(entries: list[dict[str, Any]], record_path: str) -> list[dict[str, Any]]:
+    """Build a stable identity while retaining every non-installer row.
+
+    The RECORD row's actual digest/size are omitted because RECORD is
+    self-referential: adding an installer-created row necessarily changes the
+    RECORD file itself.  The collector still records and validates those
+    actual values in the raw entries.
+    """
+    installer_rows = _installer_generated_rows(entries, record_path)
+    installer_paths = {
+        entry.get("declared", {}).get("path") for entry in installer_rows
+    }
+    normalized: list[dict[str, Any]] = []
+    for entry in entries:
+        declared_path = entry.get("declared", {}).get("path")
+        if declared_path in installer_paths:
+            continue
+        item = {
+            "declared": entry.get("declared"),
+            "errors": entry.get("errors"),
+            "resolved_path": entry.get("resolved_path"),
+            "validation": entry.get("validation"),
+        }
+        if declared_path == record_path:
+            item["actual"] = None
+        else:
+            item["actual"] = entry.get("actual")
+        normalized.append(item)
+    return sorted(normalized, key=lambda item: str(item["declared"].get("path", "")).casefold())
+
+
 def _record_evidence(
     path: Path, environment_root: Path, site_packages: Path
 ) -> tuple[dict[str, Any], list[tuple[str, Path]], list[str]]:
@@ -302,7 +350,38 @@ def _record_evidence(
             entries.append(entry)
     except csv.Error as error:
         failures.append(f"invalid RECORD CSV: {error}")
+    record_path = f"{path.parent.name}/RECORD"
     canonical_entries = json.dumps(entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    normalized_entries = _normalized_record_entries(entries, record_path)
+    canonical_normalized_entries = json.dumps(
+        normalized_entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    installer_rows = _installer_generated_rows(entries, record_path)
+    installer_paths = {entry["declared"]["path"] for entry in installer_rows}
+    expected_installer_paths = {
+        f"{path.parent.name}/{filename}" for filename in INSTALLER_GENERATED_FILENAMES
+    }
+    if installer_paths != expected_installer_paths:
+        failures.append("RECORD installer-generated row set drift")
+    for entry in installer_rows:
+        basename = entry["declared"]["path"].rsplit("/", 1)[-1]
+        expected_installer = EXPECTED_INSTALLER_ROWS.get(basename)
+        actual = entry.get("actual")
+        declared = entry.get("declared", {})
+        if expected_installer is None or not isinstance(actual, dict) or not isinstance(declared, dict):
+            failures.append("RECORD installer-generated row malformed")
+            continue
+        if (
+            entry.get("validation") != "MATCH"
+            or actual.get("bytes") != expected_installer["bytes"]
+            or actual.get("sha256") != expected_installer["sha256"]
+            or declared.get("hash", {}).get("status") != "VALID"
+            or declared.get("hash", {}).get("algorithm") != "sha256"
+            or declared.get("hash", {}).get("value") != expected_installer["sha256"]
+            or declared.get("size", {}).get("status") != "VALID"
+            or declared.get("size", {}).get("value") != expected_installer["bytes"]
+        ):
+            failures.append(f"RECORD installer-generated row content drift: {basename}")
     return (
         {
             "path": path.name,
@@ -311,6 +390,9 @@ def _record_evidence(
             "entries": entries,
             "entries_count": len(entries),
             "entries_sha256": sha256_bytes(canonical_entries),
+            "installer_generated_rows": installer_rows,
+            "normalized_entries_count": len(normalized_entries),
+            "normalized_entries_sha256": sha256_bytes(canonical_normalized_entries),
         },
         owned,
         failures,
@@ -718,6 +800,10 @@ def self_test() -> int:
         executable.write_bytes(b"#!/bin/sh\n")
         license_path = dist / "LICENCE.txt"
         license_path.write_bytes(b"Copyright owner\n")
+        installer_path = dist / "INSTALLER"
+        installer_path.write_bytes(b"uv")
+        requested_path = dist / "REQUESTED"
+        requested_path.write_bytes(b"")
         native = package / "engine.so.1"
         native.write_bytes(b"not an ELF\n")
         metadata = b"Name: tqdm\nVersion: 4.70.0\nLicense: BSD-3-Clause\nLicense-File: LICENCE.txt\nClassifier: License :: OSI Approved :: BSD License\n\n"
@@ -729,6 +815,8 @@ def self_test() -> int:
         rows = [
             ("tqdm-4.70.0.dist-info/METADATA", record_hash(metadata), str(len(metadata))),
             ("tqdm-4.70.0.dist-info/LICENCE.txt", record_hash(license_path.read_bytes()), str(license_path.stat().st_size)),
+            ("tqdm-4.70.0.dist-info/INSTALLER", record_hash(installer_path.read_bytes()), str(installer_path.stat().st_size)),
+            ("tqdm-4.70.0.dist-info/REQUESTED", record_hash(requested_path.read_bytes()), str(requested_path.stat().st_size)),
             ("tqdm/engine.so.1", record_hash(native.read_bytes()), str(native.stat().st_size)),
             ("../../../bin/runner", record_hash(executable.read_bytes()), str(executable.stat().st_size)),
             ("tqdm-4.70.0.dist-info/RECORD", "", ""),
@@ -740,10 +828,30 @@ def self_test() -> int:
         assert result["status"] == "EVIDENCE_COLLECTED_OWNER_REVIEW_REQUIRED", result
         assert result["license_candidates"][0]["path"].endswith("LICENCE.txt")
         assert result["native_payloads"][0]["path"].endswith("engine.so.1")
-        assert len(result["record"]["entries"]) == 5
+        assert len(result["record"]["entries"]) == 7
+        assert [
+            item["declared"]["path"] for item in result["record"]["installer_generated_rows"]
+        ] == [
+            "tqdm-4.70.0.dist-info/INSTALLER",
+            "tqdm-4.70.0.dist-info/REQUESTED",
+        ]
+        assert result["record"]["normalized_entries_count"] == 5
         runner_entry = next(item for item in result["record"]["entries"] if item["declared"]["path"] == "../../../bin/runner")
         assert runner_entry["validation"] == "MATCH"
         assert runner_entry["resolved_path"] == "bin/runner"
+
+        installer_drift_rows = list(rows)
+        installer_path.write_bytes(b"xx")
+        installer_drift_rows[2] = (
+            installer_drift_rows[2][0],
+            record_hash(installer_path.read_bytes()),
+            str(installer_path.stat().st_size),
+        )
+        _write_record(dist / "RECORD", installer_drift_rows)
+        installer_drift = collect_distribution(root, site, "tqdm", "4.70.0", inventory["tqdm"], inventory_sha256)
+        assert installer_drift["status"] == "COLLECTION_FAILED_FAIL_CLOSED"
+        assert any("installer-generated row content drift" in failure for failure in installer_drift["failures"])
+        installer_path.write_bytes(b"uv")
 
         metadata_only_rows = [row for row in rows if "LICENCE.txt" not in row[0]]
         _write_record(dist / "RECORD", metadata_only_rows)
