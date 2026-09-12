@@ -203,12 +203,15 @@ def _marker_term(term: str, context: dict[str, str]) -> bool:
     actual = context.get(variable)
     if actual is None:
         raise AuditError(f"unknown uv marker variable: {variable}")
-    if variable in {"python_version", "python_full_version"}:
+    is_python_version = variable in {"python_version", "python_full_version"}
+    if is_python_version and operator not in {"in", "not in"}:
         try:
-            actual_value = tuple(int(part) for part in actual.split(".")[:3])
-            expected_value = tuple(int(part) for part in expected.split(".")[:3])
+            actual_value = tuple(int(part) for part in actual.split("."))
+            expected_value = tuple(int(part) for part in expected.split("."))
         except ValueError as error:
             raise AuditError(f"invalid Python version marker: {term!r}") from error
+        actual_value = actual_value + (0,) * (3 - len(actual_value))
+        expected_value = expected_value + (0,) * (3 - len(expected_value))
     else:
         actual_value, expected_value = actual, expected
     if operator == "==":
@@ -289,6 +292,26 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
 
 def normalized_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value.strip()).casefold()
+
+
+def verify_canonical_sources(repo_root: Path, project_path: Path, lock_path: Path, wrapper_path: Path) -> None:
+    """Ensure direct auditor callers cannot substitute external source files."""
+    root = regular_directory(repo_root, "repository root").resolve(strict=True)
+    expected = {
+        "project": root / "tools/parity/canary_1b_reference/pyproject.toml",
+        "lock": root / "tools/parity/canary_1b_reference/uv.lock",
+        "auditor": root / "tools/parity/canary_1b_reference/dependency_audit.py",
+        "wrapper": root / "scripts/publish/vast-ai/audit-canary-1b-dependencies.sh",
+    }
+    actual = {
+        "project": regular_file(project_path, "dedicated pyproject").resolve(strict=True),
+        "lock": regular_file(lock_path, "dedicated uv.lock").resolve(strict=True),
+        "auditor": regular_file(Path(__file__), "dependency auditor").resolve(strict=True),
+        "wrapper": regular_file(wrapper_path, "executed audit wrapper").resolve(strict=True),
+    }
+    for label in expected:
+        if actual[label] != expected[label]:
+            raise AuditError(f"{label} is outside the canonical repository path")
 
 
 def installed_inventory(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -505,6 +528,7 @@ def audit(project_path: Path, lock_path: Path, repo_root: Path, expected_head: s
     regular_directory(archive_dir, "license archive directory")
     if any(archive_dir.iterdir()):
         raise AuditError("license archive directory must be empty")
+    verify_canonical_sources(repo_root, project_path, lock_path, wrapper_path)
     project_bytes, lock_bytes, _project, rows, inactive, collector_failures = verify_project(project_path, lock_path)
     project_sha256 = sha256_bytes(project_bytes)
     lock_sha256 = sha256_bytes(lock_bytes)
@@ -628,12 +652,33 @@ def self_test() -> None:
     assert not marker_active("platform_machine == 'aarch64'", context=linux_context)
     assert marker_active("python_full_version > '3.12.9'", context=linux_context)
     assert not marker_active("python_full_version < '3.12.9'", context=linux_context)
+    assert marker_active("python_version == '3.12.0'", context=linux_context)
+    assert marker_active("python_full_version in '3.12.10'", context=linux_context)
+    assert marker_active("python_full_version not in '3.12.9'", context=linux_context)
     try:
         marker_active("unsupported_marker == 'value'", context=linux_context)
     except AuditError:
         pass
     else:
         raise SystemExit("self-test accepted an unsupported marker")
+    canonical_root = Path(__file__).resolve().parents[3]
+    verify_canonical_sources(
+        canonical_root,
+        canonical_root / "tools/parity/canary_1b_reference/pyproject.toml",
+        canonical_root / "tools/parity/canary_1b_reference/uv.lock",
+        canonical_root / "scripts/publish/vast-ai/audit-canary-1b-dependencies.sh",
+    )
+    try:
+        verify_canonical_sources(
+            canonical_root,
+            canonical_root / "tools/parity/canary_1b_reference/uv.lock",
+            canonical_root / "tools/parity/canary_1b_reference/pyproject.toml",
+            canonical_root / "scripts/publish/vast-ai/audit-canary-1b-dependencies.sh",
+        )
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted swapped external audit inputs")
     synthetic_lock = {
         "version": 1,
         "revision": 3,
