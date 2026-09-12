@@ -10,6 +10,8 @@ SOURCE_REVISION="2811af1c5f476b1f49f4744fabf56cf352be21e5"
 INSPECTOR="$ROOT/tools/parity/dia_1_6b_inspect.py"
 SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
+DEPENDENCY_AUDIT="$REFERENCE_PROJECT/dependency_audit.py"
+DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
 REFERENCE_LOCK_SHA256="ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
 REFERENCE_PYPROJECT_SHA256="56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
 # dedicated locked-reference project; its uv.lock is a hard pre-download gate
@@ -22,6 +24,8 @@ self_test(){
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || { echo 'missing source-only contract marker' >&2; fail=1; }
+ [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || { echo 'Dia dependency auditor missing or symlinked' >&2; fail=1; }
+ [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || { echo 'Dia dependency audit wrapper missing or symlinked' >&2; fail=1; }
  grep -Fq 'O_NOFOLLOW' "$INSPECTOR" "$SOURCE_CONTRACT" || { echo 'missing no-follow artifact publication gate' >&2; fail=1; }
  grep -Fq -- '--source-only' "$0" || { echo 'missing source-only worker mode' >&2; fail=1; }
  grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
@@ -40,6 +44,8 @@ self_test(){
  if grep -Eq 'librosa|soxr|gradio|triton|nvidia-|descript-audio-codec' "$REFERENCE_PROJECT/uv.lock"; then echo 'forbidden/UI/GPL/CUDA reference dependency in lock' >&2; fail=1; fi
  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || fail=1
  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_CONTRACT" --self-test || fail=1
+ UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_AUDIT" --self-test || fail=1
+ bash "$DEPENDENCY_AUDIT_WRAPPER" --self-test || fail=1
  (( fail == 0 )) || return 1
  echo 'run-dia-1-6b-inspection.sh self-test: OK'
 }
