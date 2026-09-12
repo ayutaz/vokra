@@ -88,3 +88,34 @@ probe.  Replacing that oracle with a lighter implementation would change the
 independent semantics under test.  The status consequently remains
 fail-closed until owner/legal review resolves the observed
 GPL/LGPL/unknown/native rows.
+
+The direct `hydra-core==1.3.6` requirement is intentional. NeMo 3.0.0's
+published extra metadata leaves `hydra-core` unconstrained; the old lock had
+selected 1.3.2. The dedicated uv project now directly pins the first fixed
+version (1.3.6) and records the same resolution in
+`tool.uv.override-dependencies`. This is a dependency decision for the
+owner's review, not an advisory allowlist.
+
+## Dependency approval transition
+
+`dependency_audit.py` always emits factual
+`BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD` evidence. It never creates an
+approval. Before either real-weight worker inspects a checkpoint, an owner
+must supply all of the following externally to the checkout:
+
+```text
+--dependency-approval <owner-signed-record.json>
+--dependency-approval-sha256 <sha256-of-record>
+--dependency-signer-key <trusted-owner-ed25519-public-key.pub>
+```
+
+The record schema is `vokra-canary-1b-dependency-approval-v1`. Its exact keys
+bind the variant, clean HEAD, audit report SHA-256,
+`candidate_owner_scope_sha256`, `BLOCKED_UNREVIEWED_TRANSITIVE`,
+`NO_UPLOAD`, `no_upload: true`, and `decision: APPROVED`. The record also
+includes a non-placeholder signer, ISO date, `signature_algorithm: ssh-ed25519-v1`,
+the trusted-key SHA-256, and a detached OpenSSH Ed25519 signature
+over the canonical record without `signature_base64`. The worker verifies
+the signature and all path boundaries before archive inspection, scratch
+creation, model work, or Cargo. Existing model-license approval is a separate
+gate; it cannot substitute for this dependency approval.

@@ -569,7 +569,7 @@ def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, d
     if indexes != [{"name": "pytorch-cpu", "url": PYTORCH_CPU, "explicit": True}]:
         raise AuditError("PyTorch CPU index is not explicit and pinned")
     dependencies = project.get("project", {}).get("dependencies", [])
-    if sorted(dependencies) != ["nemo-toolkit[asr]==3.0.0", "torch==2.7.1"]:
+    if sorted(dependencies) != ["hydra-core==1.3.6", "nemo-toolkit[asr]==3.0.0", "torch==2.7.1"]:
         raise AuditError("dedicated dependency contract drifted")
     rows, inactive, failures, dependency_paths = active_lock_rows(lock)
     if sha256_bytes(lock_bytes) == sha256_bytes(project_bytes):

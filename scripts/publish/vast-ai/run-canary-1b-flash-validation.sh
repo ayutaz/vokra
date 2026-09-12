@@ -11,6 +11,9 @@ Usage:
   run-canary-1b-flash-validation.sh --nemo <canary-1b-flash.nemo> \
     --approval-evidence <owner-approval.json> \
     --approval-sha256 <64-hex> \
+    --dependency-approval <dependency-approval.json> \
+    --dependency-approval-sha256 <64-hex> \
+    --dependency-signer-key <owner-ed25519-public-key.pub> \
     --expected-head <40-hex> \
     [--work-dir /workspace/vokra-canary-validation]
   run-canary-1b-flash-validation.sh --self-test
@@ -32,6 +35,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CANARY_REFERENCE_PROJECT="$REPO_ROOT/tools/parity/canary_1b_reference"
 PREFLIGHT_GATE="$REPO_ROOT/tools/parity/canary_1b/preflight_gate.py"
 PREFLIGHT_MANIFEST="$REPO_ROOT/tools/parity/canary_1b/license_gate_manifest.json"
+DEPENDENCY_GATE="$REPO_ROOT/tools/parity/canary_1b_reference/dependency_approval_gate.py"
 
 canonical_absent_path() {
   local target="$1" lexical current="/" component suffix="" real
@@ -160,6 +164,17 @@ production_order_ok() {
     && "$gate_line" -lt "$cargo_line" ]]
 }
 
+dependency_order_ok() {
+  local script_path="$1" audit_line dependency_line host_line checkpoint_line
+  audit_line="$(grep -nE '^bash scripts/publish/vast-ai/audit-canary-1b-dependencies\.sh' "$script_path" | tail -1 | cut -d: -f1 || true)"
+  dependency_line="$(grep -nF '"$DEPENDENCY_GATE"' "$script_path" | tail -1 | cut -d: -f1 || true)"
+  host_line="$(grep -nE '^[[:space:]]*\[\[ "\$\(uname -s\)" == "Linux" \]\]' "$script_path" | tail -1 | cut -d: -f1 || true)"
+  checkpoint_line="$(grep -nE '^[[:space:]]*verify_archive "\$nemo_path"[[:space:]]*$' "$script_path" | tail -1 | cut -d: -f1 || true)"
+  [[ -n "$audit_line" && -n "$dependency_line" && -n "$host_line" && -n "$checkpoint_line" \
+    && "$audit_line" -lt "$dependency_line" && "$dependency_line" -lt "$host_line" \
+    && "$dependency_line" -lt "$checkpoint_line" ]]
+}
+
 # shellcheck disable=SC2016
 run_self_test() {
   local script_path="${BASH_SOURCE[0]}" tmp fail=0 cases=0 required
@@ -176,6 +191,7 @@ run_self_test() {
     "$REFERENCE_TEXT_ENV" "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
     "--approval-evidence" "--approval-sha256" "tools/parity/canary_1b/preflight_gate.py" \
     "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
+    "dependency_approval_gate.py" "--dependency-approval" "--dependency-approval-sha256" "--dependency-signer-key" \
     "tools/parity/canary_1b_flash_prepare_checkpoint.py" \
     "tools/parity/canary_1b_flash_dump_reference.py" \
     "audit-canary-1b-dependencies.sh" \
@@ -251,6 +267,15 @@ run_self_test() {
     echo 'run-canary-1b-flash-validation: self-test FAIL: deleted production preflight was accepted' >&2
     fail=1
   fi
+  if ! dependency_order_ok "$script_path"; then
+    echo 'run-canary-1b-flash-validation: self-test FAIL: dependency approval is not before checkpoint boundaries' >&2
+    fail=1
+  fi
+  if sed '/"\$DEPENDENCY_GATE"/d' "$script_path" > "$tmp/without-dependency-preflight.sh" \
+    && dependency_order_ok "$tmp/without-dependency-preflight.sh"; then
+    echo 'run-canary-1b-flash-validation: self-test FAIL: deleted dependency approval was accepted' >&2
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if "$script_path" --self-test --work-dir "$tmp/nonempty" >/dev/null 2>&1; then
@@ -273,6 +298,10 @@ run_self_test() {
     echo "run-canary-1b-flash-validation: self-test FAIL: extra approval argument accepted" >&2
     fail=1
   fi
+  if "$script_path" --self-test --dependency-approval "$tmp/dependency.json" >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: extra dependency approval argument accepted" >&2
+    fail=1
+  fi
   if "$script_path" --nemo "$tmp/a" --approval-evidence >/dev/null 2>&1; then
     echo "run-canary-1b-flash-validation: self-test FAIL: missing approval value accepted" >&2
     fail=1
@@ -287,6 +316,10 @@ run_self_test() {
   fi
   if "$script_path" --nemo "$tmp/a" --approval-evidence "$tmp/a" --approval-sha256 "$(printf 'a%.0s' {1..64})" --approval-sha256 "$(printf 'b%.0s' {1..64})" >/dev/null 2>&1; then
     echo "run-canary-1b-flash-validation: self-test FAIL: duplicate approval SHA accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo "$tmp/a" --approval-evidence "$tmp/a" --approval-sha256 "$(printf 'a%.0s' {1..64})" --dependency-approval "$tmp/b" --dependency-approval-sha256 "$(printf 'a%.0s' {1..64})" --dependency-signer-key "$tmp/c" --dependency-approval "$tmp/d" >/dev/null 2>&1; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: duplicate dependency approval accepted" >&2
     fail=1
   fi
   if "$script_path" --nemo "$tmp/a" --approval-evidence "$tmp/a" --expected-head 0 >/dev/null 2>&1; then
@@ -314,11 +347,17 @@ run_self_test() {
 nemo_path=""
 approval_evidence=""
 approval_sha256=""
+dependency_approval=""
+dependency_approval_sha256=""
+dependency_signer_key=""
 expected_head=""
 work_dir="/workspace/vokra-canary-validation"
 seen_nemo=0
 seen_approval=0
 seen_approval_sha=0
+seen_dependency_approval=0
+seen_dependency_approval_sha=0
+seen_dependency_signer_key=0
 seen_expected_head=0
 seen_self_test=0
 self_test=0
@@ -351,6 +390,27 @@ while [[ $# -gt 0 ]]; do
       approval_sha256="$2"
       shift 2
       ;;
+    --dependency-approval)
+      (( seen_dependency_approval == 0 )) || die "duplicate --dependency-approval"
+      [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--dependency-approval requires a path"
+      seen_dependency_approval=1
+      dependency_approval="$2"
+      shift 2
+      ;;
+    --dependency-approval-sha256)
+      (( seen_dependency_approval_sha == 0 )) || die "duplicate --dependency-approval-sha256"
+      [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die "--dependency-approval-sha256 requires lowercase 64-hex"
+      seen_dependency_approval_sha=1
+      dependency_approval_sha256="$2"
+      shift 2
+      ;;
+    --dependency-signer-key)
+      (( seen_dependency_signer_key == 0 )) || die "duplicate --dependency-signer-key"
+      [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die "--dependency-signer-key requires a path"
+      seen_dependency_signer_key=1
+      dependency_signer_key="$2"
+      shift 2
+      ;;
     --expected-head)
       (( seen_expected_head == 0 )) || die "duplicate --expected-head"
       [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die "--expected-head requires 40 lowercase hex characters"
@@ -374,7 +434,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $self_test -eq 1 ]]; then
-  [[ -z "$nemo_path$approval_evidence$approval_sha256$expected_head" && "$work_dir" == "/workspace/vokra-canary-validation" ]] \
+  [[ -z "$nemo_path$approval_evidence$approval_sha256$dependency_approval$dependency_approval_sha256$dependency_signer_key$expected_head" && "$work_dir" == "/workspace/vokra-canary-validation" ]] \
     || die "--self-test accepts no other arguments"
   run_self_test
   exit $?
@@ -385,6 +445,9 @@ fi
 # model work, and Cargo so an unapproved scope cannot consume those resources.
 [[ -n "$approval_evidence" ]] || die "--approval-evidence is required"
 [[ -n "$approval_sha256" ]] || die "--approval-sha256 is required"
+[[ -n "$dependency_approval" ]] || die "--dependency-approval is required"
+[[ -n "$dependency_approval_sha256" ]] || die "--dependency-approval-sha256 is required"
+[[ -n "$dependency_signer_key" ]] || die "--dependency-signer-key is required"
 [[ -n "$expected_head" ]] || die "--expected-head is required"
 require_expected_head "$expected_head"
 license_preflight "$approval_evidence" "$approval_sha256"
@@ -394,6 +457,14 @@ license_preflight "$approval_evidence" "$approval_sha256"
 bash scripts/publish/vast-ai/audit-canary-1b-dependencies.sh \
   --repo-root "$REPO_ROOT" --expected-head "$expected_head" \
   --evidence-dir "/workspace/vokra-canary-1b-dependency-audit-$expected_head"
+
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+  "$DEPENDENCY_GATE" \
+  --audit-report "/workspace/vokra-canary-1b-dependency-audit-$expected_head/dependency-audit.json" \
+  --approval "$dependency_approval" --trusted-signer-key "$dependency_signer_key" \
+  --repo-root "$REPO_ROOT" --expected-head "$expected_head" --variant "$VARIANT" \
+  --approval-sha256 "$dependency_approval_sha256" \
+  || die "Canary dependency approval preflight is unresolved"
 
 [[ "$(uname -s)" == "Linux" ]] || die "actual validation is Linux/VAST-only"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
