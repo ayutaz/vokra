@@ -11,11 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PROJECT="$VOKRA_ROOT/tools/parity/dia_1_6b_reference"
+BUILD_CONSTRAINTS="$PROJECT/numpy-build-constraints.txt"
 LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
 PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 NUMPY_SDIST_URL="https://files.pythonhosted.org/packages/dc/b2/ce4b867d8cd9c0ee84938ae1e6a6f7926ebf928c9090d036fc3c6a04f946/numpy-2.2.5.tar.gz"
 NUMPY_SDIST_SHA256="a9c0d994680cd991b1cb772e8b297340085466a6fe964bc9d4e80f5e2f43c291"
 NUMPY_SDIST_BYTES=20273920
+BUILD_CONSTRAINTS_SHA256="3cfa1e8fcf7fc4ef9aeaa3a707b21f92b1d205c22b4e7f4231b99d85ecad8e3f"
 MIN_VAST_MEM_KIB=60000000
 
 log() { printf '[dia-reference-prep] %s\n' "$*" >&2; }
@@ -58,6 +60,8 @@ require_contract() {
   [[ -f "$PROJECT/uv.lock" && ! -L "$PROJECT/uv.lock" ]] || { die 'missing Dia uv.lock'; return 2; }
   [[ "$(sha256sum "$PROJECT/uv.lock" | awk '{print $1}')" == "$LOCK_SHA256" ]] || { die 'Dia uv.lock identity mismatch'; return 2; }
   [[ "$(sha256sum "$PROJECT/pyproject.toml" | awk '{print $1}')" == "$PYPROJECT_SHA256" ]] || { die 'Dia pyproject identity mismatch'; return 2; }
+  [[ -f "$BUILD_CONSTRAINTS" && ! -L "$BUILD_CONSTRAINTS" ]] || { die 'NumPy build constraints are missing'; return 2; }
+  [[ "$(sha256sum "$BUILD_CONSTRAINTS" | awk '{print $1}')" == "$BUILD_CONSTRAINTS_SHA256" ]] || { die 'NumPy build constraints identity mismatch'; return 2; }
 }
 
 download_sdist() {
@@ -97,6 +101,19 @@ for name in names:
         body = archive.read(name).casefold()
         if b"gnu general public license" in body or b"gnu lesser general public license" in body:
             raise SystemExit(f"GPL/LGPL NumPy license payload: {name}")
+PY
+}
+
+assert_build_requirements() {
+  local source="$1"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$source/pyproject.toml" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    build = tomllib.load(stream).get("build-system", {})
+if build.get("build-backend") != "mesonpy" or set(build.get("requires", ())) != {"meson-python>=0.15.0", "Cython>=3.0.6"}:
+    raise SystemExit("NumPy sdist build-system requirements drifted from the bound closure")
 PY
 }
 
@@ -178,8 +195,40 @@ with open(sys.argv[1], "w", encoding="utf-8") as stream:
 PY
 }
 
+write_build_dependency_evidence() {
+  local builder="$1" destination="$2"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python "$builder/bin/python" python - "$destination" "$BUILD_CONSTRAINTS" <<'PY'
+import hashlib
+import json
+import sys
+from importlib import metadata
+from pathlib import Path
+
+destination, constraints = sys.argv[1:]
+names = ("Cython", "meson", "meson-python", "packaging", "pyproject-metadata")
+rows = []
+for name in names:
+    dist = metadata.distribution(name)
+    license_files = []
+    for relative in dist.files or ():
+        if Path(relative).name.casefold() not in {"license", "licence", "copying", "notice"}:
+            continue
+        path = Path(dist.locate_file(relative))
+        if path.is_file() and not path.is_symlink():
+            license_files.append({"path": str(relative), "bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    license_metadata = dist.metadata.get("License")
+    if not license_metadata and not license_files:
+        raise SystemExit(f"build dependency has no publisher license fact: {name}")
+    rows.append({"name": dist.metadata["Name"], "version": dist.version, "license_metadata": license_metadata, "license_files": license_files})
+payload = {"schema": "vokra-dia-build-dependency-evidence-v1", "constraints": {"path": str(constraints), "sha256": hashlib.sha256(Path(constraints).read_bytes()).hexdigest()}, "packages": rows}
+with open(destination, "w", encoding="utf-8") as stream:
+    json.dump(payload, stream, sort_keys=True, indent=2)
+    stream.write("\n")
+PY
+}
+
 prepare() {
-  local output="$1" output_real sdist src wheel_dir wheel environment wheel_path
+  local output="$1" output_real sdist src wheel_dir wheel environment wheel_path builder
   require_vast || return 2
   require_contract || return 2
   [[ "$output" == /* && ! -e "$output" && ! -L "$output" ]] || { die 'preparation output must be an absent absolute path'; return 2; }
@@ -194,16 +243,21 @@ prepare() {
   src="$output_real/src"
   wheel_dir="$output_real/wheelhouse"
   environment="$output_real/venv"
+  builder="$output_real/build-venv"
   download_sdist "$sdist"
   tar -xzf "$sdist" -C "$output_real"
   [[ -d "$output_real/numpy-2.2.5" ]] || { die 'NumPy sdist extracted to an unexpected directory'; return 2; }
   mv "$output_real/numpy-2.2.5" "$src"
+  assert_build_requirements "$src"
   log 'Installing every locked dependency except NumPy'
   UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 UV_CACHE_DIR="${DIA_REFERENCE_UV_CACHE_DIR:-/tmp/vokra-dia-reference-uv-cache}" \
-    uv sync --project "$PROJECT" --frozen --no-install-project --no-install-package numpy --python 3.12
+  uv sync --project "$PROJECT" --frozen --no-install-project --no-install-package numpy --python 3.12
   assert_optional_audio_absent "$environment"
+  uv venv --python 3.12 "$builder"
+  UV_NO_CACHE=1 uv pip install --python "$builder/bin/python" --require-hashes --no-deps -r "$BUILD_CONSTRAINTS"
+  write_build_dependency_evidence "$builder" "$output_real/build-dependency-evidence.json"
   log 'Building exact NumPy sdist with BLAS/LAPACK disabled'
-  uv build --wheel --out-dir "$wheel_dir" \
+  uv build --no-build-isolation --python "$builder/bin/python" --wheel --out-dir "$wheel_dir" \
     -C setup-args=-Dblas=none -C setup-args=-Dlapack=none -C setup-args=-Dallow-noblas=true "$src"
   wheel_path="$(find "$wheel_dir" -maxdepth 1 -type f -name 'numpy-2.2.5-*.whl' -print -quit)"
   [[ -n "$wheel_path" && -f "$wheel_path" ]] || { die 'NumPy wheel was not produced'; return 2; }
@@ -245,13 +299,13 @@ with open(destination, "w", encoding="utf-8") as stream:
     json.dump(payload, stream, sort_keys=True, indent=2)
     stream.write("\n")
 PY
-  (cd "$output_real" && sha256sum preparation.json numpy-config.json numpy-2.2.5.tar.gz "$wheel_path") > "$output_real/SHA256SUMS"
+  (cd "$output_real" && sha256sum preparation.json build-dependency-evidence.json numpy-config.json numpy-2.2.5.tar.gz "$wheel_path") > "$output_real/SHA256SUMS"
   log "Prepared environment: $environment"
 }
 
 self_test() {
   local failed=0
-  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed'; do
+  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'build-dependency-evidence.json' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi

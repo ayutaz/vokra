@@ -97,7 +97,7 @@ run_audit() {
       --project "$PROJECT" --output "$out" 2>&1 | tee -a "$log_path"
   rc="${PIPESTATUS[0]}"
   set -e
-  [[ -f "$out" && -f "$log_path" ]] && (cd "$(canonicalize_uncreated "$output")" && sha256sum audit.log dependency-audit.json preparation/preparation.json preparation/numpy-config.json preparation/numpy-2.2.5.tar.gz preparation/wheelhouse/*.whl > SHA256SUMS)
+  [[ -f "$out" && -f "$log_path" ]] && (cd "$(canonicalize_uncreated "$output")" && sha256sum audit.log dependency-audit.json preparation/preparation.json preparation/build-dependency-evidence.json preparation/numpy-config.json preparation/numpy-2.2.5.tar.gz preparation/wheelhouse/*.whl > SHA256SUMS)
   return "$rc"
 }
 

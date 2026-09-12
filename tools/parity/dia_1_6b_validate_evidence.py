@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -37,24 +38,23 @@ REFERENCE_PROJECT_LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff
 REFERENCE_PROJECT_PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 DIRECT_DEPENDENCY_VERSIONS = {
     "einops": "0.8.2", "gguf": "0.19.0", "huggingface-hub": "0.30.2",
-    "numpy": "2.2.5", "pydantic": "2.11.3", "soundfile": "0.13.1",
-    "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu",
+    "numpy": "2.2.5", "pydantic": "2.11.3",
+    "torch": "2.6.0+cpu",
 }
 DEPENDENCY_LICENSE_CONCLUSIONS = {
     "annotated-types": "MIT_REVIEWED", "certifi": "MPL-2.0_BLOCKED_BY_POLICY",
-    "cffi": "MIT_NATIVE_LIBFFI_REVIEW_REQUIRED", "charset-normalizer": "MIT_REVIEWED",
+    "charset-normalizer": "MIT_REVIEWED",
     "colorama": "BSD-3-Clause_REVIEWED", "einops": "MIT_REVIEWED",
     "filelock": "UNLICENSE_POLICY_REVIEW_REQUIRED", "fsspec": "BSD-3-Clause_REVIEWED",
     "gguf": "MIT_REVIEWED", "huggingface-hub": "Apache-2.0_REVIEWED",
     "idna": "BSD-3-Clause_REVIEWED", "jinja2": "BSD-3-Clause_REVIEWED",
     "markupsafe": "BSD-3-Clause_REVIEWED", "mpmath": "BSD_STYLE_PRIMARY_REVIEW_REQUIRED",
-    "networkx": "BSD-3-Clause_REVIEWED", "numpy": "BSD-3-Clause_NATIVE_BUNDLE_REVIEW_REQUIRED",
-    "packaging": "Apache-2.0_REVIEWED", "pycparser": "BSD-3-Clause_REVIEWED",
+    "networkx": "BSD-3-Clause_REVIEWED", "numpy": "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED",
+    "packaging": "Apache-2.0_REVIEWED",
     "pydantic": "MIT_REVIEWED", "pydantic-core": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED",
     "pyyaml": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", "requests": "Apache-2.0_REVIEWED",
-    "setuptools": "MIT_REVIEWED", "soundfile": "BSD-3-Clause_NATIVE_LIBSNDFILE_REVIEW_REQUIRED",
+    "setuptools": "MIT_REVIEWED",
     "sympy": "BSD-3-Clause_REVIEWED", "torch": "BSD-3-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
-    "torchaudio": "BSD-2-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
     "tqdm": "MPL-2.0_OR_MIT_POLICY_REVIEW_REQUIRED", "typing-extensions": "PSF-2.0_BLOCKED_BY_POLICY",
     "typing-inspection": "MIT_REVIEWED", "urllib3": "MIT_REVIEWED",
     "vokra-dia-1-6b-reference": "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE",
@@ -64,6 +64,13 @@ SOURCE_CONTRACT_RUST_FILES = {
     "crates/vokra-models/src/dia/tokenizer.rs",
     "crates/vokra-models/src/dia/forward.rs",
     "crates/vokra-models/src/dia/mod.rs",
+}
+TORCHAUDIO_SEAM = {
+    "module": "torchaudio",
+    "marker": "dia-reference-torchaudio-audio-prompt-none-stub-v1",
+    "installed_distribution": False,
+    "audio_prompt": None,
+    "policy": "every audio load/use aborts loudly",
 }
 
 
@@ -104,6 +111,17 @@ def require_dac_proof(mapping: dict) -> None:
         raise ValueError("DAC exact checkpoint/Vokra manifest proof is unavailable")
 
 
+def require_audio_dependency_seam(seam: dict) -> None:
+    if seam != TORCHAUDIO_SEAM:
+        raise ValueError("Torchaudio fail-closed seam is missing or modified")
+
+
+def require_exact_evidence_entries(root: Path, paths: set[str]) -> None:
+    entries = tuple(root.iterdir())
+    if any(not entry.is_file() or entry.is_symlink() for entry in entries) or {entry.name for entry in entries} != paths | {"manifest.json"}:
+        raise ValueError("stale/orphan evidence file present")
+
+
 def require_reference_project(identity: dict) -> None:
     if not isinstance(identity, dict) or identity.get("project") != "dia_1_6b_reference" or identity.get("python") != "3.12":
         raise ValueError("dedicated Dia reference project identity is missing")
@@ -112,7 +130,7 @@ def require_reference_project(identity: dict) -> None:
     if identity.get("use_torch_compile") is not False:
         raise ValueError("torch.compile must remain disabled in the adapted reference closure")
     audit = identity.get("dependency_audit")
-    if not isinstance(audit, dict) or audit.get("schema") != "vokra-dia-uv-lock-license-audit-v1" or audit.get("status") != "BLOCKED_UNREVIEWED_TRANSITIVE" or audit.get("package_count") != 34 or not isinstance(audit.get("rows"), list) or len(audit["rows"]) != 34 or len(audit.get("rows_sha256", "")) != 64:
+    if not isinstance(audit, dict) or audit.get("schema") != "vokra-dia-uv-lock-license-audit-v1" or audit.get("status") != "BLOCKED_UNREVIEWED_TRANSITIVE" or audit.get("package_count") != 29 or not isinstance(audit.get("rows"), list) or len(audit["rows"]) != 29 or len(audit.get("rows_sha256", "")) != 64:
         raise ValueError("complete CPU lock license-audit rows are missing")
     canonical_rows = []
     for row in audit["rows"]:
@@ -207,6 +225,7 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
         raise ValueError("native/public status drift")
     if manifest.get("comparison_status") != "NOT_RUN_OFFICIAL_ONLY":
         raise ValueError("reference-only packet must say native comparison was not run")
+    require_audio_dependency_seam(manifest.get("audio_dependency_seam"))
     require_reference_project(manifest.get("reference_project"))
     require_source_contract(manifest.get("source_contract"))
     source = manifest.get("source")
@@ -267,8 +286,7 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
             array = np.load(file, allow_pickle=False)
             if list(array.shape) != entry["shape"] or array.dtype.name != entry["dtype"].removeprefix("torch.") or not np.isfinite(array).all() or entry["finite"] is not True:
                 raise ValueError(f"artifact shape/dtype/finiteness mismatch: {role}")
-    if {p.name for p in root.iterdir() if p.is_file()} != paths | {"manifest.json"}:
-        raise ValueError("stale/orphan evidence file present")
+    require_exact_evidence_entries(root, paths)
     sampling = manifest.get("sampling")
     logits = artifacts["decoder_logits"]
     probability = artifacts["decoder_sampling_probability"]
@@ -346,8 +364,27 @@ def main() -> int:
             pass
         assert set(DIRECT_DEPENDENCY_VERSIONS) == {
             "einops", "gguf", "huggingface-hub", "numpy", "pydantic",
-            "soundfile", "torch", "torchaudio",
+            "torch",
         }
+        assert "soundfile" not in DIRECT_DEPENDENCY_VERSIONS
+        assert "torchaudio" not in DIRECT_DEPENDENCY_VERSIONS
+        assert "cffi" not in DEPENDENCY_LICENSE_CONCLUSIONS
+        assert "pycparser" not in DEPENDENCY_LICENSE_CONCLUSIONS
+        assert DEPENDENCY_LICENSE_CONCLUSIONS["numpy"] == "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED"
+        assert require_audio_dependency_seam(dict(TORCHAUDIO_SEAM)) is None
+        for field, value in (("marker", "tampered"), ("installed_distribution", True), ("audio_prompt", "audio.wav"), ("policy", "allow")):
+            tampered = dict(TORCHAUDIO_SEAM)
+            tampered[field] = value
+            try:
+                require_audio_dependency_seam(tampered)
+                raise AssertionError(f"modified audio seam accepted: {field}")
+            except ValueError:
+                pass
+        try:
+            require_audio_dependency_seam({"module": "torchaudio"})
+            raise AssertionError("missing audio seam accepted")
+        except ValueError:
+            pass
         assert not set(DIRECT_DEPENDENCY_VERSIONS) & {
             "descript-audio-codec", "gradio", "librosa", "soxr", "triton",
         }
@@ -364,6 +401,16 @@ def main() -> int:
             raise AssertionError("orphan file accepted")
         except ValueError:
             pass
+        with tempfile.TemporaryDirectory(prefix="dia-validator-entries-") as directory:
+            scratch = Path(directory)
+            (scratch / "manifest.json").write_text("{}", encoding="utf-8")
+            (scratch / "text_ids-0000.npy").write_bytes(b"x")
+            (scratch / "preparation").mkdir()
+            try:
+                require_exact_evidence_entries(scratch, {"text_ids-0000.npy"})
+                raise AssertionError("preparation directory accepted in final evidence")
+            except ValueError:
+                pass
         print("dia evidence validator self-test: OK")
         return 0
     if args.evidence is None:

@@ -26,7 +26,7 @@ self_test(){
   [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || die 'Dia dependency auditor is missing or symlinked'
   [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || die 'Dia dependency audit wrapper is missing or symlinked'
   [[ -x "$DEPENDENCY_PREPARER" && ! -L "$DEPENDENCY_PREPARER" ]] || die 'Dia dependency preparation helper is missing or symlinked'
-  grep -Fq -- 'preparation="$evidence_real/preparation"' "$0" || die 'shared Dia dependency preparation path missing'
+  grep -Fq -- 'preparation="${evidence_real}.preparation"' "$0" || die 'shared Dia dependency preparation scratch path missing'
   grep -Fq -- '--no-sync' "$0" || die 'prepared Dia runtime must use uv --no-sync'
   check_project_identity
   grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$PROJECT/pyproject.toml" || die 'dependency audit gate missing'
@@ -106,7 +106,12 @@ for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_eviden
 done
 mkdir "$evidence"
 ( set -C; : > "$adapter_log" ) || die 'adapter log claim failed (existing path or race)'
-preparation="$evidence_real/preparation"
+preparation="${evidence_real}.preparation"
+canonical_absent_path "$preparation" >/dev/null || die 'preparation scratch path must be absent and canonical'
+for protected in "$root_real" "$approval_real" "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
+  protected_real="$(canonical_existing_path "$protected")" || die 'preparation scratch protection path is invalid'
+  paths_overlap "$(canonical_absent_path "$preparation")" "$protected_real" && die 'preparation scratch overlaps a protected path'
+done
 VOKRA_PUBLISH_ON_VAST=1 DIA_REFERENCE_UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" "$DEPENDENCY_PREPARER" --output-dir "$preparation" >>"$adapter_log" 2>&1 || die 'Dia dependency preparation failed; inspect adapter log'
 reference_environment="$preparation/venv"
 UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
