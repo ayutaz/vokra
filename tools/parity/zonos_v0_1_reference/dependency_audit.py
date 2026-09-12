@@ -685,12 +685,20 @@ def _numpy_config_forbidden(config: Any) -> list[str]:
     return sorted(set(forbidden))
 
 
+def _require_no_bytecode_writes() -> None:
+    if os.environ.get("PYTHONDONTWRITEBYTECODE") != "1" or not sys.dont_write_bytecode:
+        raise RuntimeError(
+            "Zonos audit requires PYTHONDONTWRITEBYTECODE=1 before runtime inspection"
+        )
+
+
 def installed_audit(
     preparation_path: Path, publisher_archive: Path | None = None
 ) -> dict[str, Any]:
     """Collect exact installed distribution/native/license evidence on VAST."""
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise RuntimeError("installed closure audit requires Linux x86_64")
+    _require_no_bytecode_writes()
     preparation = _validate_preparation(preparation_path)
     prepared_venv = Path(preparation["venv"]["path"])
     lock_rows = _lock_rows()
@@ -1407,6 +1415,7 @@ def validate_report(path: Path) -> None:
     preparation_path = Path(preparation_path_value)
     if sha256(preparation_path) != scope["preparation_sha256"]:
         raise RuntimeError("candidate scope preparation identity does not match evidence directory")
+    _require_no_bytecode_writes()
     preparation = _validate_preparation(preparation_path)
     prepared_venv = Path(preparation["venv"]["path"]).resolve()
     expected_executable = Path(preparation["venv"]["interpreter"]["executable"]).resolve()
@@ -1602,6 +1611,34 @@ def validate_report(path: Path) -> None:
 def self_test() -> None:
     assert project_identity()["python"] == "3.12"
     assert pep503_name("Foo_bar.baz") == "foo-bar-baz"
+    original_bytecode_env = os.environ.get("PYTHONDONTWRITEBYTECODE")
+    original_bytecode_flag = sys.dont_write_bytecode
+    try:
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+        sys.dont_write_bytecode = True
+        _require_no_bytecode_writes()
+        os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        sys.dont_write_bytecode = False
+        try:
+            _require_no_bytecode_writes()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("absent bytecode guard must fail closed")
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "0"
+        sys.dont_write_bytecode = False
+        try:
+            _require_no_bytecode_writes()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("false bytecode guard must fail closed")
+    finally:
+        if original_bytecode_env is None:
+            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        else:
+            os.environ["PYTHONDONTWRITEBYTECODE"] = original_bytecode_env
+        sys.dont_write_bytecode = original_bytecode_flag
     report = audit()
     assert report["status"] == AUDIT_STATUS
     assert report["publication"] == PUBLICATION
@@ -1812,6 +1849,34 @@ def self_test() -> None:
         *script_paths,
         *("numpy-2.2.2.dist-info/" + name for name in GENERATED_NUMPY_METADATA),
     }
+    original_bytecode_env = os.environ.get("PYTHONDONTWRITEBYTECODE")
+    original_bytecode_flag = sys.dont_write_bytecode
+    try:
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+        sys.dont_write_bytecode = True
+        second_evidence = _numpy_record_evidence(
+            SyntheticDistribution(), synthetic_wheel, synthetic_venv, []
+        )
+        assert second_evidence == extra_evidence
+        assert not any(
+            row.get("reason") == "pyc-not-wheel-recorded"
+            for row in second_evidence["generated"]
+        )
+    finally:
+        if original_bytecode_env is None:
+            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        else:
+            os.environ["PYTHONDONTWRITEBYTECODE"] = original_bytecode_env
+        sys.dont_write_bytecode = original_bytecode_flag
+    pycache = record_root / "numpy" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "generated.cpython-312.pyc").write_bytes(b"pyc")
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, synthetic_venv, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("unrecorded generated pyc" in failure for failure in record_failures)
+    shutil.rmtree(pycache)
     for missing_row in (
         b"numpy-2.2.2.dist-info/REQUESTED",
         b"../../../bin/f2py",
@@ -2270,6 +2335,10 @@ def self_test() -> None:
     complete["candidate_scope_sha256"] = _digest(complete["candidate_scope"])
     broken_path = archive_dir / ".audit-self-test.json"
     environment_broken_path = archive_dir / ".audit-environment-self-test.json"
+    validation_bytecode_env = os.environ.get("PYTHONDONTWRITEBYTECODE")
+    validation_bytecode_flag = sys.dont_write_bytecode
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
     bad_preparation = json.loads(json.dumps(fake_preparation))
     bad_preparation["venv"] = {
         "path": str(archive_dir / "different-venv"),
@@ -2313,6 +2382,11 @@ def self_test() -> None:
     finally:
         globals()["execution_identity"] = original_execution_identity
         globals()["_validate_preparation"] = original_validate_preparation
+        if validation_bytecode_env is None:
+            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        else:
+            os.environ["PYTHONDONTWRITEBYTECODE"] = validation_bytecode_env
+        sys.dont_write_bytecode = validation_bytecode_flag
         broken_path.unlink(missing_ok=True)
         preparation_path.unlink(missing_ok=True)
         archive_manifest.unlink(missing_ok=True)

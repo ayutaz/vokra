@@ -55,6 +55,8 @@ self_test() {
   grep -Fq -- ' -d "$ROOT/.git" || -f "$ROOT/.git" ' "$0" || failed=1
   local env_token="UV_PROJECT_"'ENVIRONMENT='
   [[ "$(grep -Fc "$env_token\"\$environment\"" "$0")" == 2 ]] || failed=1
+  local bytecode_token="PYTHONDONTWRITEBYTECODE="'1'
+  [[ "$(grep -Fc "$bytecode_token" "$0")" == 2 ]] || failed=1
   for forbidden in \
     'git '"clone" \
     'hugging'"face" \
@@ -139,7 +141,7 @@ environment="$preparation/venv"
 [[ -d "$environment" && ! -L "$environment" ]] || die 'no-BLAS preparation environment is missing or symlinked'
 [[ -f "$preparation/preparation.json" && ! -L "$preparation/preparation.json" ]] || die 'no-BLAS preparation identity is missing or symlinked'
 set +e
-UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
   --installed --expected-head "$expected_head" --publisher-archive "$publisher_archive" \
   --preparation "$preparation/preparation.json" --output "$output"
@@ -150,7 +152,7 @@ set -e
 grep -Fq '"status": "BLOCKED_UNREVIEWED_TRANSITIVE"' "$output" || die 'blocked status marker missing'
 grep -Fq '"publication": "NO_UPLOAD"' "$output" || die 'NO_UPLOAD marker missing'
 set +e
-UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+PYTHONDONTWRITEBYTECODE=1 UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
   --validate-output "$output"
 validation_status=$?
