@@ -120,7 +120,7 @@ jobs:
             unity-library-il2cpp-
 
       - name: Build Linux IL2CPP Standalone (headless)
-        uses: game-ci/unity-builder@d829bfc901f2347c8fe18898f06712b66916ef42
+        uses: game-ci/unity-builder@adaf7cd8f42fd48fbbf2d4f5f67ca30d87f819f1
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
         with:
