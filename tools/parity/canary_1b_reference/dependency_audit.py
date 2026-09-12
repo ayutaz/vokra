@@ -291,7 +291,7 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
             for selected_extra in new_extras:
                 for dependency in optional.get(selected_extra, []):
                     if isinstance(dependency, dict) and marker_active(dependency.get("marker"), extra=selected_extra):
-                        queue.append((str(dependency["name"]), [], dependency.get("marker"), (*dependency_path, f"{dependency['name']}[extra={selected_extra}]")))
+                        queue.append((str(dependency["name"]), [], dependency.get("marker"), (*dependency_path, f"{dependency['name']}[selected-by={dependency_path[-1]};extra={selected_extra}]")))
     inactive = [row for row in rows if row.get("source") != {"virtual": "."} and (
         str(row["name"]).casefold(), str(row["version"]), canonical(row["source"]), canonical(row.get("resolution-markers", []))
     ) not in active]
@@ -315,6 +315,44 @@ def active_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
 
 def normalized_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value.strip()).casefold()
+
+
+def row_identity(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row["name"]).casefold(),
+        str(row["version"]),
+        canonical(row["source"]),
+        canonical(row.get("resolution-markers", [])),
+    )
+
+
+def validate_dependency_paths(package_rows: list[dict[str, Any]], dependency_paths: list[dict[str, Any]]) -> None:
+    """Require one path-evidence row for every active lock identity."""
+    expected = [row_identity(row) for row in package_rows]
+    actual = [
+        (
+            str(row.get("name")).casefold(),
+            str(row.get("version")),
+            canonical(row.get("source")),
+            canonical(row.get("resolution_markers", [])),
+        )
+        for row in dependency_paths
+    ]
+    if len(actual) != len(expected) or Counter(actual) != Counter(expected):
+        raise AuditError("dependency path rows do not exactly match active lock identities")
+    if not dependency_paths or dependency_paths[0].get("paths") != [["project"]]:
+        raise AuditError("virtual root dependency path must be exactly [project]")
+    for row in dependency_paths:
+        paths = row.get("paths")
+        checked_paths = [] if paths == [["project"]] else paths
+        if not isinstance(paths, list) or not paths or any(
+            not isinstance(path, list)
+            or len(path) < 2
+            or path[0] != "project"
+            or normalized_name(path[-1].split("[", 1)[0]) != normalized_name(str(row["name"]))
+            for path in checked_paths
+        ) or len({tuple(path) for path in paths}) != len(paths):
+            raise AuditError("dependency path evidence is missing or malformed")
 
 
 def verify_canonical_sources(repo_root: Path, project_path: Path, lock_path: Path, wrapper_path: Path) -> None:
@@ -652,8 +690,11 @@ def validate_report_semantics(report: dict[str, Any]) -> None:
     if not isinstance(report.get("collector_failures"), list) or not isinstance(report.get("inactive_lock_rows"), list):
         raise AuditError("active/inactive closure evidence is incomplete")
     paths = report.get("dependency_paths")
-    if not isinstance(paths, list) or any(not isinstance(row, dict) or not row.get("paths") for row in paths):
+    if not isinstance(paths, list):
         raise AuditError("dependency closure paths are incomplete")
+    if report.get("dependency_paths_sha256") != digest(paths):
+        raise AuditError("dependency closure path digest does not match evidence")
+    validate_dependency_paths(report.get("package_rows", []), paths)
 
 
 def self_test() -> None:
@@ -714,19 +755,38 @@ def self_test() -> None:
         "package": [
             {
                 "name": "root", "version": "0", "source": {"virtual": "."},
-                "metadata": {"requires-dist": [{"name": "demo", "specifier": "==1"}]},
+                "metadata": {"requires-dist": [{"name": "demo", "specifier": "==1"}, {"name": "other", "specifier": "==1"}]},
             },
             {"name": "demo", "version": "1", "source": {"registry": PYPI}, "dependencies": [{"name": "extra-target", "extra": ["http"]}]},
+            {"name": "other", "version": "1", "source": {"registry": PYPI}, "dependencies": [{"name": "extra-target"}]},
             {"name": "extra-target", "version": "1", "source": {"registry": PYPI}, "optional-dependencies": {"http": [{"name": "http-child"}]}},
             {"name": "http-child", "version": "1", "source": {"registry": PYPI}},
             {"name": "darwin-only", "version": "1", "source": {"registry": PYPI}, "resolution-markers": ["sys_platform == 'darwin'"]},
         ],
     }
     active, inactive, failures, paths = active_lock_rows(synthetic_lock)
-    assert [row["name"] for row in active] == ["root", "demo", "extra-target", "http-child"]
+    assert [row["name"] for row in active] == ["root", "demo", "other", "extra-target", "http-child"]
     assert [row["name"] for row in inactive] == ["darwin-only"]
     assert failures == []
     assert paths[1]["paths"] == [["project", "demo"]]
+    extra_target_paths = next(row["paths"] for row in paths if row["name"] == "extra-target")
+    assert len(extra_target_paths) == 2
+    validate_dependency_paths(active, paths)
+    for malformed in (paths[:-1], [*paths, paths[1]]):
+        try:
+            validate_dependency_paths(active, malformed)
+        except AuditError:
+            pass
+        else:
+            raise SystemExit("self-test accepted missing or duplicate path rows")
+    tampered = [dict(row) for row in paths]
+    tampered[1] = {**tampered[1], "paths": [["project", "tampered"]]}
+    try:
+        validate_dependency_paths(active, tampered)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted tampered path evidence")
     try:
         validate_report_semantics({"schema": SCHEMA, "status": STATUS, "publication": PUBLICATION})
     except AuditError:
