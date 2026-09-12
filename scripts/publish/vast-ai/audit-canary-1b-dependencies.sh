@@ -40,7 +40,7 @@ require_absent() {
 require_clean_head() {
   local root="$1" expected="$2" actual
   [[ "$expected" =~ $HEX40 ]] || die "expected HEAD must be lowercase 40-hex"
-  [[ -d "$root/.git" && ! -L "$root" ]] || die "repository root is missing or symlinked"
+  [[ -d "$root" && ! -L "$root" && -e "$root/.git" && ! -L "$root/.git" ]] || die "repository root is missing or symlinked"
   [[ -z "$(git -C "$root" status --porcelain --untracked-files=all)" ]] || die "repository must be clean"
   actual="$(git -C "$root" rev-parse HEAD)" || die "cannot read repository HEAD"
   [[ "$actual" == "$expected" ]] || die "HEAD $actual != expected $expected"
