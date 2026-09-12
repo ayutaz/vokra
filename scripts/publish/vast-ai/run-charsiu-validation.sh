@@ -364,7 +364,7 @@ expected_values = {
     "vokra.provenance.model_id": "charsiu",
     "vokra.provenance.source": "charsiu/en_w2v2_fc_10ms",
     "vokra.schema.version": 1,
-    "vokra.schema.producer": "vokra-convert 0.3.0",
+    "vokra.schema.producer": "vokra-core 0.3.0",
 }
 for key, expected in expected_values.items():
     actual = metadata.get(key)
@@ -470,6 +470,13 @@ run_self_test() (
   fi
   grep -Fq '"vokra.model.arch": "charsiu"' "$script_path" || {
     log 'self-test missing canonical Vokra architecture key'; fail=1;
+  }
+  local obsolete_producer='vokra-convert '"0.3.0"
+  if grep -Fq "\"vokra.schema.producer\": \"$obsolete_producer\"" "$script_path"; then
+    log 'self-test found obsolete converter producer stamp'; fail=1
+  fi
+  grep -Fq '"vokra.schema.producer": "vokra-core 0.3.0"' "$script_path" || {
+    log 'self-test missing canonical core producer stamp'; fail=1;
   }
   verify_charsiu_license_signoff "$VOKRA_ROOT/docs/license-audit.md" >/dev/null || {
     log 'self-test rejected the current Charsiu license row'; fail=1;
