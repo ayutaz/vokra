@@ -45,6 +45,7 @@ require_absent_output() {
   project="$(canonicalize_uncreated "$PROJECT")" || return 1
   paths_overlap "$canonical" "$root" && return 1
   paths_overlap "$canonical" "$project" && return 1
+  return 0
 }
 
 require_vast() {
@@ -111,6 +112,7 @@ self_test() {
     trap 'rm -rf "$temp_root"' EXIT
     if VOKRA_PUBLISH_ON_VAST=0 run_audit "$temp_root/blocked" >/dev/null 2>&1; then failed=1; fi
     [[ ! -e "$temp_root/blocked" ]] || failed=1
+    if ! require_absent_output "$temp_root/valid-output"; then failed=1; fi
     if require_absent_output "$VOKRA_ROOT/audit.json"; then failed=1; fi
     if require_absent_output "$PROJECT/audit.json"; then failed=1; fi
     fake_repo="$temp_root/fake-repo"
