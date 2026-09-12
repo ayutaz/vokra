@@ -24,6 +24,8 @@ import tempfile
 import tomllib
 import urllib.parse
 import urllib.request
+import base64
+import csv
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -105,6 +107,9 @@ OWNER_CANDIDATE_SCOPE = (
 MAX_SDIST_TAR_MEMBERS = 8192
 MAX_PUBLISHER_MEMBER_BYTES = 1 << 20
 MAX_PUBLISHER_TOTAL_BYTES = 8 << 20
+GENERATED_NUMPY_METADATA = frozenset(
+    {"INSTALLER", "REQUESTED", "direct_url.json", "uv_cache.json"}
+)
 
 
 def _digest(value: Any) -> str:
@@ -776,6 +781,12 @@ def installed_audit(
         "wheel": preparation["wheel"],
         "direct_url": None,
     }
+    numpy_record: dict[str, Any] = {
+        "schema": "vokra-zonos-numpy-record-v1",
+        "status": "FAIL_DISTRIBUTION_MISSING",
+        "rows": [],
+        "generated": [],
+    }
     if numpy_distribution is None:
         failures.append("NumPy distribution is missing from the prepared environment")
     else:
@@ -786,11 +797,11 @@ def installed_audit(
             else:
                 direct_url = _strict_json_text(direct_url_text)
                 numpy_installation["direct_url"] = direct_url
-                archive_info = direct_url.get("archive_info", {})
-                if archive_info.get("hash") != "sha256=" + preparation["wheel"]["sha256"]:
-                    failures.append("NumPy direct_url wheel hash does not match preparation")
-        except (OSError, ValueError) as error:
+                wheel_path = preparation_path.parent / "wheelhouse" / preparation["wheel"]["basename"]
+                _validate_numpy_direct_url(direct_url, wheel_path, preparation["wheel"])
+        except (OSError, RuntimeError, ValueError) as error:
             failures.append(f"NumPy installed wheel direct_url.json is invalid: {error}")
+        numpy_record = _numpy_record_evidence(numpy_distribution, failures)
     numpy_config = _numpy_runtime_config(failures)
     numpy_native_policy = {
         "schema": "vokra-zonos-numpy-native-policy-v1",
@@ -877,12 +888,14 @@ def installed_audit(
         "publisher_archive": archive_manifest,
         "preparation": preparation,
         "numpy_installation": numpy_installation,
+        "numpy_record": numpy_record,
         "numpy_runtime_config": numpy_config,
         "numpy_native_policy": numpy_native_policy,
         "digests": {
             "installed_closure_sha256": _digest(installed_rows),
             "native_files_sha256": _digest(native),
             "publisher_files_sha256": _digest(publisher_files),
+            "numpy_record_sha256": _digest(numpy_record),
             "numpy_runtime_config_sha256": _digest(numpy_config),
         },
     }
@@ -937,6 +950,7 @@ def audit(
         "installed_closure_sha256": installed_report.get("digests", {}).get("installed_closure_sha256"),
         "native_files_sha256": installed_report.get("digests", {}).get("native_files_sha256"),
         "publisher_files_sha256": installed_report.get("digests", {}).get("publisher_files_sha256"),
+        "numpy_record_sha256": installed_report.get("digests", {}).get("numpy_record_sha256"),
         "numpy_native_policy_sha256": _digest(installed_report.get("numpy_native_policy")),
         "numpy_runtime_config_sha256": _digest(installed_report.get("numpy_runtime_config")),
         "publisher_archive_manifest_sha256": (
@@ -987,6 +1001,138 @@ def _strict_json_text(value: str) -> Any:
     return json.loads(value, object_pairs_hook=unique_pairs)
 
 
+def _validate_numpy_direct_url(
+    direct_url: Any, wheel_path: Path, wheel: dict[str, Any]
+) -> None:
+    if not isinstance(direct_url, dict) or direct_url.get("url") != wheel_path.as_uri():
+        raise RuntimeError("NumPy direct_url does not match the prepared wheel URL")
+    archive_info = direct_url.get("archive_info")
+    if not isinstance(archive_info, dict):
+        raise RuntimeError("NumPy direct_url archive_info is malformed")
+    if archive_info and archive_info.get("hash") != "sha256=" + str(wheel["sha256"]):
+        raise RuntimeError("NumPy direct_url wheel hash does not match preparation")
+
+
+def _numpy_record_evidence(
+    distribution: importlib.metadata.Distribution,
+    failures: list[str],
+) -> dict[str, Any]:
+    record_text = distribution.read_text("RECORD")
+    if record_text is None:
+        failures.append("NumPy installed RECORD evidence is missing")
+        return {"schema": "vokra-zonos-numpy-record-v1", "status": "FAIL_RECORD_MISSING", "rows": [], "generated": []}
+    rows: list[dict[str, Any]] = []
+    generated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        parsed = csv.reader(io.StringIO(record_text))
+        for fields in parsed:
+            if len(fields) != 3:
+                raise ValueError("RECORD row must have path, hash, and size")
+            relative, encoded_hash, size_text = fields
+            if not relative or relative in seen:
+                raise ValueError(f"RECORD path is empty or duplicated: {relative!r}")
+            relative_path = Path(relative)
+            if relative_path.is_absolute() or "\\" in relative or ".." in relative_path.parts:
+                raise ValueError(f"RECORD path is unsafe: {relative!r}")
+            seen.add(relative)
+            target = Path(distribution.locate_file(relative_path))
+            if target.is_symlink() or not target.is_file():
+                raise ValueError(f"RECORD installed file is missing or symlinked: {relative}")
+            if not encoded_hash and not size_text:
+                if relative.endswith(".dist-info/RECORD"):
+                    rows.append(
+                        {
+                            "path": relative,
+                            "bytes": target.stat().st_size,
+                            "sha256": None,
+                            "generated": True,
+                        }
+                    )
+                    continue
+                if not relative.endswith(".pyc"):
+                    raise ValueError(
+                        f"RECORD unhashed row is not generated metadata: {relative}"
+                    )
+                generated.append(
+                    {
+                        "path": relative,
+                        "bytes": target.stat().st_size,
+                        "sha256": sha256(target),
+                        "reason": "pyc-not-wheel-recorded",
+                    }
+                )
+                continue
+            if not encoded_hash.startswith("sha256=") or not size_text.isdigit():
+                raise ValueError(f"RECORD row is not hash/size authenticated: {relative}")
+            expected_hash = base64.urlsafe_b64decode(encoded_hash.removeprefix("sha256=") + "==")
+            actual_hash = bytes.fromhex(sha256(target))
+            actual_size = target.stat().st_size
+            if actual_hash != expected_hash or actual_size != int(size_text):
+                raise ValueError(f"RECORD hash/size mismatch: {relative}")
+            rows.append(
+                {
+                    "path": relative,
+                    "bytes": actual_size,
+                    "sha256": sha256(target),
+                    "generated": False,
+                }
+            )
+
+        # uv writes these files after installation and they are intentionally
+        # outside wheel RECORD.  Record their bytes rather than treating them
+        # as an unreviewed part of the wheel.  Any other unrecorded file,
+        # including an unexpected dist-info payload, is a closure failure.
+        record_paths = {row["path"] for row in rows} | {
+            row["path"] for row in generated
+        }
+        package_roots = sorted({PurePosixPath(path).parts[0] for path in record_paths})
+        site_packages = Path(distribution.locate_file(""))
+        for root_name in package_roots:
+            root = site_packages / root_name
+            if not root.exists() or root.is_symlink():
+                continue
+            paths = [root] if root.is_file() else sorted(root.rglob("*"))
+            for path in paths:
+                if not path.is_file() or path.is_symlink():
+                    continue
+                relative = path.relative_to(site_packages).as_posix()
+                if relative in record_paths:
+                    continue
+                parts = PurePosixPath(relative).parts
+                if parts[0].endswith(".dist-info") and path.name in GENERATED_NUMPY_METADATA:
+                    generated.append(
+                        {
+                            "path": relative,
+                            "bytes": path.stat().st_size,
+                            "sha256": sha256(path),
+                            "reason": "installer-generated-metadata",
+                        }
+                    )
+                    record_paths.add(relative)
+                elif path.suffix == ".pyc":
+                    generated.append(
+                        {
+                            "path": relative,
+                            "bytes": path.stat().st_size,
+                            "sha256": sha256(path),
+                            "reason": "pyc-not-wheel-recorded",
+                        }
+                    )
+                    record_paths.add(relative)
+                else:
+                    raise ValueError(f"unrecorded NumPy installed file: {relative}")
+    except (OSError, ValueError) as error:
+        failures.append(f"NumPy installed RECORD audit failed: {error}")
+        return {"schema": "vokra-zonos-numpy-record-v1", "status": "FAIL_RECORD_INVALID", "rows": rows, "generated": generated}
+    return {
+        "schema": "vokra-zonos-numpy-record-v1",
+        "status": "PASS",
+        "rows": rows,
+        "generated": sorted(generated, key=lambda row: row["path"]),
+    }
+
+
 def _validate_preparation(path: Path) -> dict[str, Any]:
     """Validate the exact no-BLAS build artifact handed to the installed audit."""
     if not path.is_absolute() or not path.is_file() or path.is_symlink():
@@ -1029,12 +1175,8 @@ def _validate_preparation(path: Path) -> dict[str, Any]:
     for artifact in (sdist_path, wheel_path):
         if not artifact.is_file() or artifact.is_symlink():
             raise RuntimeError(f"NumPy preparation artifact is missing or symlinked: {artifact}")
-    if (
-        wheel.get("sha256") != sha256(wheel_path)
-        or wheel.get("bytes") != wheel_path.stat().st_size
-        or sdist_path.stat().st_size != NUMPY_SDIST_BYTES
-        or sha256(sdist_path) != NUMPY_SDIST_SHA256
-    ):
+    _validate_prepared_wheel(wheel_path, wheel)
+    if sdist_path.stat().st_size != NUMPY_SDIST_BYTES or sha256(sdist_path) != NUMPY_SDIST_SHA256:
         raise RuntimeError("NumPy preparation artifact bytes/hash drifted")
     sums_path = preparation_root / "SHA256SUMS"
     if not sums_path.is_file() or sums_path.is_symlink():
@@ -1075,6 +1217,18 @@ def _validate_preparation(path: Path) -> dict[str, Any]:
     return document
 
 
+def _validate_prepared_wheel(path: Path, wheel: dict[str, Any]) -> None:
+    if (
+        not isinstance(wheel.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", wheel["sha256"])
+        or not isinstance(wheel.get("bytes"), int)
+        or wheel["bytes"] < 1
+        or wheel.get("sha256") != sha256(path)
+        or wheel.get("bytes") != path.stat().st_size
+    ):
+        raise RuntimeError("NumPy prepared wheel bytes/hash drifted")
+
+
 def _validate_numpy_native_policy(native: list[Any], policy: Any) -> None:
     numpy_rows = [
         row for row in native
@@ -1111,7 +1265,7 @@ def validate_report(path: Path) -> None:
     required_scope = {
         "schema", "lock_rows_sha256", "preparation_path", "preparation_sha256", "constraints_sha256",
         "sdist_identity", "wheel_identity", "installed_closure_sha256", "native_files_sha256",
-        "publisher_files_sha256", "numpy_native_policy_sha256", "numpy_runtime_config_sha256",
+        "publisher_files_sha256", "numpy_record_sha256", "numpy_native_policy_sha256", "numpy_runtime_config_sha256",
         "publisher_archive_manifest_sha256", "failures",
         "model_access", "source_access", "checkpoint_access", "publication",
         "execution_identity",
@@ -1153,7 +1307,7 @@ def validate_report(path: Path) -> None:
         raise RuntimeError("audit code, repository, or platform identity drifted")
     for key in (
         "lock_rows_sha256", "installed_closure_sha256", "native_files_sha256",
-        "publisher_files_sha256", "numpy_native_policy_sha256", "publisher_archive_manifest_sha256",
+        "publisher_files_sha256", "numpy_record_sha256", "numpy_native_policy_sha256", "publisher_archive_manifest_sha256",
     ):
         if not isinstance(scope[key], str) or not hex64.fullmatch(scope[key]):
             raise RuntimeError(f"candidate scope digest is missing or malformed: {key}")
@@ -1206,13 +1360,27 @@ def validate_report(path: Path) -> None:
     ):
         raise RuntimeError("installed NumPy wheel identity is incomplete")
     direct_url = numpy_installation.get("direct_url")
+    wheel_path = preparation_path.parent / "wheelhouse" / preparation["wheel"]["basename"]
+    try:
+        _validate_numpy_direct_url(direct_url, wheel_path, preparation["wheel"])
+    except RuntimeError as error:
+        raise RuntimeError(f"installed NumPy direct_url is not wheel-bound: {error}") from error
+    numpy_record = installed.get("numpy_record")
     if (
-        not isinstance(direct_url, dict)
-        or not isinstance(direct_url.get("archive_info"), dict)
-        or direct_url["archive_info"].get("hash")
-        != "sha256=" + preparation["wheel"]["sha256"]
+        not isinstance(numpy_record, dict)
+        or numpy_record.get("schema") != "vokra-zonos-numpy-record-v1"
+        or numpy_record.get("status") != "PASS"
+        or not isinstance(numpy_record.get("rows"), list)
+        or not isinstance(numpy_record.get("generated"), list)
+        or scope["numpy_record_sha256"] != _digest(numpy_record)
+        or digests.get("numpy_record_sha256") != _digest(numpy_record)
     ):
-        raise RuntimeError("installed NumPy direct_url hash is not wheel-bound")
+        raise RuntimeError("installed NumPy RECORD evidence is incomplete or not hash-bound")
+    current_numpy = importlib.metadata.distribution("numpy")
+    record_failures: list[str] = []
+    current_numpy_record = _numpy_record_evidence(current_numpy, record_failures)
+    if record_failures or current_numpy_record != numpy_record:
+        raise RuntimeError("installed NumPy RECORD/file identity drifted")
     if not isinstance(archive, dict):
         raise RuntimeError("publisher archive evidence is missing")
     archive_root = Path(archive.get("directory", ""))
@@ -1267,6 +1435,7 @@ def validate_report(path: Path) -> None:
         "installed_closure_sha256": _digest(installed_rows),
         "native_files_sha256": _digest(native),
         "publisher_files_sha256": _digest(publisher),
+        "numpy_record_sha256": _digest(numpy_record),
     }
     for key, digest in expected_digests.items():
         if digests.get(key) != digest or scope[key] != digest:
@@ -1388,6 +1557,89 @@ def self_test() -> None:
         token in " ".join(native_failures)
         for token in ("libgfortran", "libquadmath", "libopenblas")
     )
+    direct_url_root = Path(tempfile.mkdtemp(prefix="vokra-zonos-direct-url-"))
+    direct_url_wheel = direct_url_root / "numpy-2.2.2-cp312-cp312-linux_x86_64.whl"
+    direct_url_wheel.write_bytes(b"wheel")
+    wheel_identity = {"sha256": sha256(direct_url_wheel), "bytes": direct_url_wheel.stat().st_size}
+    _validate_numpy_direct_url(
+        {"url": direct_url_wheel.as_uri(), "archive_info": {}},
+        direct_url_wheel,
+        wheel_identity,
+    )
+    direct_url_wheel.write_bytes(b"tampered wheel")
+    try:
+        _validate_prepared_wheel(direct_url_wheel, wheel_identity)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("tampered prepared wheel must fail closed")
+    direct_url_wheel.write_bytes(b"wheel")
+    try:
+        _validate_numpy_direct_url(
+            {"url": direct_url_wheel.as_uri() + "?tampered=1", "archive_info": {}},
+            direct_url_wheel,
+            wheel_identity,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("tampered direct_url URL must fail closed")
+    try:
+        _validate_numpy_direct_url(
+            {
+                "url": direct_url_wheel.as_uri(),
+                "archive_info": {"hash": "sha256:" + wheel_identity["sha256"]},
+            },
+            direct_url_wheel,
+            wheel_identity,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("tampered direct_url wheel hash must fail closed")
+    record_root = Path(tempfile.mkdtemp(prefix="vokra-zonos-record-site-"))
+    dist_info = record_root / "numpy-2.2.2.dist-info"
+    package_file = record_root / "numpy" / "core.py"
+    dist_info.mkdir(parents=True)
+    package_file.parent.mkdir()
+    package_file.write_bytes(b"numpy payload")
+    for generated_name in sorted(GENERATED_NUMPY_METADATA):
+        (dist_info / generated_name).write_bytes(generated_name.encode())
+    record_path = dist_info / "RECORD"
+    package_hash = base64.urlsafe_b64encode(bytes.fromhex(sha256(package_file))).decode().rstrip("=")
+    record_path.write_text(
+        "numpy/core.py,sha256=" + package_hash + "," + str(package_file.stat().st_size) + "\n"
+        "numpy-2.2.2.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+
+    class SyntheticDistribution:
+        def read_text(self, name: str) -> str | None:
+            if name == "RECORD":
+                return record_path.read_text(encoding="utf-8")
+            return None
+
+        def locate_file(self, relative: str | Path) -> Path:
+            return record_root / relative
+
+    record_failures: list[str] = []
+    record_evidence = _numpy_record_evidence(SyntheticDistribution(), record_failures)
+    assert not record_failures and record_evidence["status"] == "PASS"
+    assert {row["path"] for row in record_evidence["generated"]} == {
+        "numpy-2.2.2.dist-info/" + name for name in GENERATED_NUMPY_METADATA
+    }
+    package_file.write_bytes(b"tampered numpy payload")
+    record_failures = []
+    assert _numpy_record_evidence(SyntheticDistribution(), record_failures)["status"] == "FAIL_RECORD_INVALID"
+    assert any("hash/size mismatch" in failure for failure in record_failures)
+    package_file.write_bytes(b"numpy payload")
+    record_path.write_text("../escape,sha256=bad,1\n", encoding="utf-8")
+    record_failures = []
+    assert _numpy_record_evidence(SyntheticDistribution(), record_failures)["status"] == "FAIL_RECORD_INVALID"
+    assert any("unsafe" in failure for failure in record_failures)
+    direct_url_wheel.unlink(missing_ok=True)
+    shutil.rmtree(direct_url_root, ignore_errors=True)
+    shutil.rmtree(record_root, ignore_errors=True)
     synthetic_sdist_fd, synthetic_sdist_name = tempfile.mkstemp(
         prefix="vokra-zonos-sdist-", suffix=".tar.gz"
     )
@@ -1539,6 +1791,8 @@ def self_test() -> None:
     archive_manifest.write_text("[]\n", encoding="utf-8")
     preparation_path = archive_dir / "preparation.json"
     preparation_path.write_text("{}\n", encoding="utf-8")
+    (archive_dir / "wheelhouse").mkdir()
+    (archive_dir / "wheelhouse" / "numpy-2.2.2-cp312-cp312-linux_x86_64.whl").write_bytes(b"x")
     current_head = subprocess.run(
         ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"],
         capture_output=True,
@@ -1582,6 +1836,12 @@ def self_test() -> None:
         "config": {},
         "forbidden_boundaries": [],
     }
+    fake_numpy_record = {
+        "schema": "vokra-zonos-numpy-record-v1",
+        "status": "PASS",
+        "rows": [],
+        "generated": [],
+    }
     complete["preparation_path"] = str(preparation_path)
     complete["execution_identity"] = execution_identity(current_head)
     complete["installed"]["publisher_archive"] = {
@@ -1611,8 +1871,12 @@ def self_test() -> None:
             "version": "2.2.2",
             "expected_version": "2.2.2",
             "wheel": fake_preparation["wheel"],
-            "direct_url": {},
+            "direct_url": {
+                "url": (archive_dir / "wheelhouse" / fake_preparation["wheel"]["basename"]).as_uri(),
+                "archive_info": {},
+            },
         },
+        "numpy_record": fake_numpy_record,
         "numpy_runtime_config": fake_numpy_config,
         "publisher_archive": {
             "directory": str(archive_dir),
@@ -1624,6 +1888,7 @@ def self_test() -> None:
             "installed_closure_sha256": _digest([]),
             "native_files_sha256": _digest([]),
             "publisher_files_sha256": _digest([]),
+            "numpy_record_sha256": _digest(fake_numpy_record),
             "numpy_runtime_config_sha256": _digest(fake_numpy_config),
         },
     }
@@ -1639,6 +1904,7 @@ def self_test() -> None:
             "sdist_identity": fake_preparation["sdist"],
             "wheel_identity": fake_preparation["wheel"],
             "numpy_native_policy_sha256": _digest(complete["installed"]["numpy_native_policy"]),
+            "numpy_record_sha256": _digest(fake_numpy_record),
             "numpy_runtime_config_sha256": _digest(complete["installed"]["numpy_runtime_config"]),
             "publisher_archive_manifest_sha256": complete["installed"]["publisher_archive"]["manifest_sha256"],
             "failures": [],
@@ -1668,7 +1934,7 @@ def self_test() -> None:
         broken_path.unlink(missing_ok=True)
         preparation_path.unlink(missing_ok=True)
         archive_manifest.unlink(missing_ok=True)
-        archive_dir.rmdir()
+        shutil.rmtree(archive_dir, ignore_errors=True)
     try:
         original = set(FORBIDDEN_PACKAGES)
         globals()["FORBIDDEN_PACKAGES"] = frozenset((*original, "torch"))
@@ -1749,6 +2015,7 @@ def main() -> int:
                         "installed_closure_sha256": None,
                         "native_files_sha256": None,
                         "publisher_files_sha256": None,
+                        "numpy_record_sha256": None,
                         "numpy_native_policy_sha256": None,
                         "numpy_runtime_config_sha256": None,
                     "publisher_archive_manifest_sha256": None,
