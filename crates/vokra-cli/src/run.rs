@@ -8104,7 +8104,7 @@ mod tests {
         bytes.extend_from_slice(BICODEC_MAGIC);
         bytes.extend_from_slice(&BICODEC_VERSION.to_le_bytes());
         bytes.extend_from_slice(&(BICODEC_HEADER_LEN as u16).to_le_bytes());
-        for value in [16_000, 320, 1, 32, 8_192, 4_096, 0] {
+        for value in [16_000_u32, 320, 1, 32, 8_192, 4_096, 0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend(std::iter::repeat(0xabu8).take(32));
