@@ -66,7 +66,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
                     ("model.gguf",),
                     "bicodec",
                 ),
-                "no-runtime-binder",
+                "partial",
                 "CC-BY-NC-SA-4.0",
             ),
             (
@@ -144,8 +144,17 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 "ed0ba92cac023a4bc8cb20d9c8328272e03336c9b9da0dfe1c97ec2f41092f84",
                 625491648,
                 "bicodec",
-                "partial",
-                "blocked-by-cpu",
+                "full",
+                "full",
+            ),
+            "vokra/sgmse-voicebank": (
+                "c37e93159b4129b2c582c44f8170b44cf6e3e531",
+                "sgmse-voicebank.gguf",
+                "173e4079c5af65eab1fda027ea55aad502cbd9012ee33f00c484167e72d36e8a",
+                262470272,
+                "sgmse_voicebank",
+                "full",
+                "full",
             ),
         }
         for repo, (
@@ -189,7 +198,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 "vokra/bicodec",
                 "2c8d12edb7fec5a95173f5b2ef4970949e936c6c",
                 "bicodec",
-                "no-runtime-binder",
+                "partial",
                 "CC-BY-NC-SA-4.0",
             ),
         )
@@ -208,6 +217,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ("vokra/reazonspeech-nemo-v2", "reazonspeech_nemo_v2"),
             ("vokra/voice-gender-classifier", "voice_gender_classifier"),
             ("vokra/bicodec", "bicodec"),
+            ("vokra/sgmse-voicebank", "sgmse_voicebank"),
         ):
             with self.subTest(repo=repo, revision="unknown"):
                 coverage = audit.classify(
@@ -241,10 +251,24 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 "sgmse_voicebank",
             ),
             {"sgmse_voicebank"},
-            {"sgmse_voicebank"},
+            set(),
         )
-        self.assertEqual(sgmse.cpu_code, "partial")
-        self.assertEqual(sgmse.metal_code, "blocked-by-cpu")
+        self.assertEqual(sgmse.cpu_code, "full")
+        self.assertEqual(sgmse.metal_code, "full")
+
+        sgmse_mismatched = audit.classify(
+            audit.RepoRecord(
+                "vokra/sgmse-voicebank",
+                "c37e93159b4129b2c582c44f8170b44cf6e3e531",
+                ("legacy.gguf",),
+                "sgmse_voicebank",
+            ),
+            {"sgmse_voicebank"},
+            set(),
+        )
+        self.assertEqual(sgmse_mismatched.cpu_code, "unknown")
+        self.assertEqual(sgmse_mismatched.metal_code, "blocked-by-cpu")
+        self.assertIn("unexpected GGUF filename set", sgmse_mismatched.reason)
 
     def test_owsm_manifest_binder_stays_cpu_partial_until_forward_exists(self):
         record = audit.RepoRecord(
@@ -271,6 +295,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "magnet_small_10secs",
             "csm",
             "dac",
+            "bicodec",
             "nsnet2",
             "pyannote-segmentation",
             "pyannote-speaker-diarization",
@@ -295,6 +320,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "denoise",
             "dnsmos",
             "nisqa_v2_weight",
+            "sgmse_voicebank",
             "emotion2vec",
             "utmos",
             "metricgan_plus",

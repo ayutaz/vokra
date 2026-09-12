@@ -237,10 +237,12 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
     ),
 }
 
-# The three repositories below have a verified replacement revision. Keep the
-# historical blocker attached to the exact old commit: a repo-level blocker
-# would incorrectly keep the replacement partial forever, while an open-ended
-# exception would make an unreviewed future commit look complete.
+# These repositories have exact-revision artifact gates. Keep each historical
+# blocker attached to its exact old commit: a repo-level blocker would
+# incorrectly keep a reviewed replacement partial forever, while an open-ended
+# exception would make an unreviewed future commit look complete. SGMSE has no
+# historical blocker row; its reviewed allowlist still makes unknown revisions
+# fail closed.
 PUBLIC_ARTIFACT_CPU_REVISION_BLOCKERS = {
     "vokra/reazonspeech-nemo-v2": {
         "9b72cc988397a02b9d3561fe4a40979a61d4cf8d": (
@@ -262,11 +264,11 @@ PUBLIC_ARTIFACT_CPU_REVISION_BLOCKERS = {
     },
     "vokra/bicodec": {
         "2c8d12edb7fec5a95173f5b2ef4970949e936c6c": (
-            "no-runtime-binder",
-            "the live 840-tensor GGUF has no runtime binder and stamps Apache-2.0/"
-            "permissive provenance, while the pinned SparkAudio weight audit classifies "
-            "the released weights as CC-BY-NC-SA-4.0 research-only. Refuse the public "
-            "artifact pending a gated provenance-correct replacement",
+            "partial",
+            "the live 840-tensor GGUF has a native BiCodec decode route but stamps "
+            "Apache-2.0/permissive provenance, while the pinned SparkAudio weight "
+            "audit classifies the released weights as CC-BY-NC-SA-4.0 research-only. "
+            "Refuse the public artifact pending a gated provenance-correct replacement",
         ),
     },
 }
@@ -297,6 +299,13 @@ PUBLIC_ARTIFACT_CPU_REVISION_ALLOWLIST = {
             625491648,
         ),
     },
+    "vokra/sgmse-voicebank": {
+        "c37e93159b4129b2c582c44f8170b44cf6e3e531": (
+            "sgmse-voicebank.gguf",
+            "173e4079c5af65eab1fda027ea55aad502cbd9012ee33f00c484167e72d36e8a",
+            262470272,
+        ),
+    },
 }
 
 # Conservative code-path inventory. Every entry must also be a full routed
@@ -307,6 +316,7 @@ METAL_CODE_ARCHES = {
     "audioseal_real_weight",
     "ast",
     "bark",
+    "bicodec",
     "bert_base",
     "bigvgan",
     "campplus",
@@ -373,6 +383,7 @@ METAL_CODE_ARCHES = {
     "rmvpe",
     "sbv2",
     "silero-vad",
+    "sgmse_voicebank",
     "snac",
     "sepformer",
     "smart_turn",
@@ -473,10 +484,10 @@ def parse_engine_arches(source: str) -> tuple[set[str], set[str]]:
 
 def _revision_scoped_artifact_coverage(record: RepoRecord) -> Coverage | None:
     """Apply the exact-revision gate for repositories with corrected artifacts."""
-    blockers = PUBLIC_ARTIFACT_CPU_REVISION_BLOCKERS.get(record.repo)
     allowlist = PUBLIC_ARTIFACT_CPU_REVISION_ALLOWLIST.get(record.repo)
-    if blockers is None or allowlist is None:
+    if allowlist is None:
         return None
+    blockers = PUBLIC_ARTIFACT_CPU_REVISION_BLOCKERS.get(record.repo, {})
 
     public_blocker = blockers.get(record.revision)
     if public_blocker is not None:
