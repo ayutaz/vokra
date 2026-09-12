@@ -177,4 +177,90 @@ workflow runs.
 
 Numerical execution, evidence recovery, VAST destruction, Scaleway deletion,
 and follow-up PR creation are complete. The follow-up is PR #88. Public
-artifact reconciliation remains a separate owner-approved action.
+artifact reconciliation remained a separate owner-approved action at the time
+this Apple execution record was first captured.
+
+## Post-batch public artifact reconciliation (2026-09-12)
+
+A later, explicit repository-scoped approval authorized the existing local
+Hugging Face token to be passed only over encrypted SSH standard input to VAST
+instance `50600828`. The token was not placed in a command argument, log, or
+remote file. All four uploads used `scripts/publish/publish-one.sh --push`
+after that script's dry-run completed successfully; no manual upload path was
+used.
+
+Before publication, SGMSE was replayed at exact clean consumer head
+`bed6cc3f059adf77f4d7d7dbf1307aac13cf85d1`. Its strict 647-tensor GGUF bind,
+independent score reference, native CPU score parity, official 4,096-sample
+enhancement reference, and 61-call native CPU enhancement parity passed. The
+enhancement comparison reported maximum absolute error
+`1.3494491577148438e-4` and RMSE `1.569286825642952e-5` at bound `0.01`.
+The package test reported 1,101 passed and 16 ignored; the workspace all-target
+test, all-target Clippy, deny, audit, formatting, zero-dependency, forbidden
+symbol, fixture-pin, bound-architecture, and no-dynamic-load gates also
+passed. The SGMSE summary SHA-256 is
+`f601ab76db543e3832594051bcac293d8d13671adceab6dcb978661f9840524e`,
+and the orchestration log SHA-256 is
+`5d4bc60a832e6ec8b5ba5e63668694451882add0c2b788cd8011eeb047dd80ba`.
+No model was executed on the maintainer Mac.
+
+The published identities independently returned by the Hugging Face model API
+were:
+
+| Repository | Published revision | Exact GGUF | Bytes | LFS SHA-256 | Live audit result |
+|---|---|---|---:|---|---|
+| `vokra/reazonspeech-nemo-v2` | `d626a5dc5ca3bf17ea4582f8f1641f93e35477c4` | `reazonspeech-nemo-v2.gguf` | 2,477,292,896 | `ff761a7bc04bed0f45d47535fcfc54a929d4b6aa2fb04c03160be60ec75ca35a` | CPU `full`; Metal `full` |
+| `vokra/voice-gender-classifier` | `f1bb0985d62504dcead1012460ee045220f821a3` | `voice-gender-classifier.restamped.gguf` | 61,899,328 | `afb03696d8a640d5d701ea0c136bb065cac648cbfe905a5dcc4eae04e0769b1a` | CPU `full`; Metal `full` |
+| `vokra/bicodec` | `9760a082df544265b2b6410581c5e4a3945c93e8` | `model.gguf` | 625,491,648 | `ed0ba92cac023a4bc8cb20d9c8328272e03336c9b9da0dfe1c97ec2f41092f84` | CPU `partial`; Metal `blocked-by-cpu` (CLI remains bounded) |
+| `vokra/sgmse-voicebank` | `c37e93159b4129b2c582c44f8170b44cf6e3e531` | `sgmse-voicebank.gguf` | 262,470,272 | `173e4079c5af65eab1fda027ea55aad502cbd9012ee33f00c484167e72d36e8a` | CPU `partial`; Metal `blocked-by-cpu` (CLI remains bounded) |
+
+The API snapshot log SHA-256 is
+`2d030fedda3ed6661df3beaf3fd35976facd245cd65ac868ef191d144391fc7d`.
+Dry-run log SHA-256 values were `1a8a1d5d658fc055c00caa1ac32aa2fae66f1e602b9bd467aef87f241933501c`
+(ReazonSpeech), `20d00d21dd287dec8dc3c0bb7525bbe03dfac70c01030440ad8ed065df24ab8c`
+(Voice Gender), `e7ca6db89c9c151e1ba09c3451b091d10445b476d540525ac9093bad0fc22f94`
+(BiCodec), and `e5a65eeaaeb5e890870cf30d46831e963d4e24df5d0221da809c7493a57bdfd7`
+(SGMSE). Push log SHA-256 values were
+`19033f71737b1746f96d54f22bdd35185451c9f0ef4bf710b98fc52e319cd5d5`,
+`83269fd88648504f2bb80cf80e4fe0144e64a82c2c08912be040ebb28065b1cc`,
+`3a025577c65d57bce915fadc846129ffb8a533a12723da7bdfd966e539228e8c`,
+and `b4c20d23fc972efde37e783d1a03f6eb2911d0c0b6673daf1e48d6560cee74a9`
+in the same order; all four push status files contained `0`.
+
+The revision-aware audit update is commit
+`67ba18ecc2684f0e48f36a525f9f1ff70dab39cf`. It keeps each historical
+artifact failure attached to its exact old revision, allows only the reviewed
+replacement revision, and fails closed for an unknown revision or unexpected
+GGUF filename. At that exact clean head, the focused SGMSE CLI diagnostic test
+passed once, all 13 audit unit tests passed, and the live audit returned:
+
+```text
+public_repos=194
+gguf_repos=193
+gguf_files=198
+cpu_code=full:133,no-runtime-binder:15,not-artifact:1,partial:45
+metal_code=blocked-by-cpu:60,full:133,not-artifact:1
+```
+
+The exact-head status, CLI, Python, and live-audit log SHA-256 values are
+`55326d648fa7c3f36c6a35e044ba0ae04535f147236ef0da46f1df6ac025b5d2`,
+`b6068e8a55637c9cdcfce9286c9461fba8202d55c14b2858671c59c00755409c`,
+`eb55bdeb232a5345b812b14974fa3803a4265c20b50cb28f1fb75acf884da36e`,
+and `b67a5bd8d6cbc211fd4fa99759ebee1a834f8b54d07917ae96b41c78df19e07a`,
+respectively. Publication corrected artifact identity; it did not invent a CLI
+route. Consequently ReazonSpeech and Voice Gender move to `full`, while
+BiCodec and SGMSE remain `partial` until their explicit bounded CLI work is
+implemented.
+
+The final small-evidence archive is
+`/private/tmp/vokra-vast-50600828-evidence/vokra-public-evidence-final.tar.gz`
+(470,788 bytes), SHA-256
+`dd0bb555da0b3cf10561906f42201ef389eaeaf7b9e09e608cd44f44419ec36d`;
+its local digest matched the remote digest before cleanup. VAST instance
+`50600828` (`vokra-public-artifact-reconcile-20260911`) was then destroyed
+with its 200 GB instance storage. Its individual API returned
+`instances: null`; the full instance and standard volume inventories both
+returned `[]`. The available API key lacks the `machine_read` permission needed
+to enumerate network disks, so this record does not claim a network-disk
+inventory result. The previously deleted Scaleway M4-M instance was not
+reprovisioned for publication.

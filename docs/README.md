@@ -1,6 +1,6 @@
 # Vokra documentation
 
-**Current-state review:** 2026-09-11
+**Current-state review:** 2026-09-12
 
 **Reviewed implementation baseline:** GitHub `main` at
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
@@ -19,7 +19,17 @@ The bounded post-merge VAST and Scaleway execution is recorded in the
 Those accepted hardware verdicts apply only to the rows and exact heads named
 there. They do not change the audit-start inventory of 131 Mac-CPU-complete and
 131 Apple-Metal-source-complete repositories or its 63 unresolved public rows,
-and they do not authorize an artifact upload. UTMOS numeric parity remains
+and did not themselves authorize an artifact upload. A separate, explicit
+publication approval on 2026-09-12 subsequently replaced the reviewed
+ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
+artifacts through the gated publisher; the exact revisions and hashes are in
+the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
+The resulting live audit reports 194 public repositories, 193 repositories
+with GGUFs, and 198 GGUF files. CPU code status is 133 full, 45 partial,
+15 without a runtime binder, and 1 non-artifact; Metal code status is 133 full,
+60 blocked by CPU, and 1 non-artifact. BiCodec and SGMSE remain honestly
+partial at the CLI routing boundary despite successful artifact publication
+and the recorded Apple library-level parity. UTMOS numeric parity remains
 unclaimed.
 
 This directory contains public guides, generated-surface pointers, design
