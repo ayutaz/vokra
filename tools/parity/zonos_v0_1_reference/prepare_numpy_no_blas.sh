@@ -244,6 +244,18 @@ document = {
 PY
 }
 
+write_sha256_sums() {
+  local output_root="$1" sdist="$2" wheel="$3" sums_path
+  sums_path="$output_root/SHA256SUMS"
+  [[ "$output_root" == /* && -d "$output_root" && ! -L "$output_root" ]] || return 2
+  [[ ! -e "$sums_path" && ! -L "$sums_path" ]] || return 2
+  (
+    cd "$output_root"
+    set -o noclobber
+    sha256sum preparation.json "$(basename "$sdist")" "wheelhouse/$(basename "$wheel")" > "$sums_path"
+  )
+}
+
 prepare() {
   local output="$1" output_real sdist src wheel_dir environment builder wheel_path
   require_vast || return 2
@@ -296,9 +308,7 @@ PY
 )"
   write_preparation_json "$output_real" "$sdist" "$wheel_path" "$environment" \
     "$wheel_sha" "$wheel_bytes" "$preparer_sha" "$venv_identity"
-  {
-    sha256sum preparation.json "$(basename "$sdist")" "wheelhouse/$(basename "$wheel_path")"
-  } > "$output_real/SHA256SUMS"
+  write_sha256_sums "$output_real" "$sdist" "$wheel_path" || { die 'could not create no-clobber SHA256SUMS'; return 2; }
   log "Prepared no-BLAS NumPy environment: $environment"
 }
 
@@ -333,6 +343,22 @@ assert document["sdist"] == {"url": url, "sha256": digest, "bytes": int(size)}
 assert "__" not in pathlib.Path(path).read_text(encoding="utf-8")
 PY
     if grep -Fq -- '__' "$temporary/preparation/preparation.json"; then failed=1; fi
+    mkdir -p "$temporary/preparation/wheelhouse"
+    : > "$temporary/preparation/numpy-2.2.2.tar.gz"
+    : > "$temporary/preparation/wheelhouse/numpy-2.2.2-cp312-cp312-linux_x86_64.whl"
+    (cd / && write_sha256_sums "$temporary/preparation" "$temporary/preparation/numpy-2.2.2.tar.gz" \
+      "$temporary/preparation/wheelhouse/numpy-2.2.2-cp312-cp312-linux_x86_64.whl") || failed=1
+    if write_sha256_sums "$temporary/preparation" "$temporary/preparation/numpy-2.2.2.tar.gz" \
+      "$temporary/preparation/wheelhouse/numpy-2.2.2-cp312-cp312-linux_x86_64.whl"; then
+      failed=1
+    fi
+    rm "$temporary/preparation/SHA256SUMS"
+    ln -s "$temporary/preparation/missing-sums" "$temporary/preparation/SHA256SUMS"
+    if write_sha256_sums "$temporary/preparation" "$temporary/preparation/numpy-2.2.2.tar.gz" \
+      "$temporary/preparation/wheelhouse/numpy-2.2.2-cp312-cp312-linux_x86_64.whl"; then
+      failed=1
+    fi
+    rm "$temporary/preparation/SHA256SUMS"
     mkdir "$temporary/malformed"
     if write_preparation_json "$temporary/malformed" "$temporary/numpy-2.2.2.tar.gz" \
       "$temporary/malformed/numpy.whl" "$temporary/malformed/venv" "$fake_sha" \
