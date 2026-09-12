@@ -1292,3 +1292,24 @@ fn parity_microwakeword_end_to_end_output() {
         "Path-C authenticated streaming parity PASS: 512 invocations, 11 preserved intermediates, final output, reset replay=4"
     );
 }
+
+/// Apple integration contract: this embedded/no_std crate has no Metal
+/// backend seam.  Keep the absence explicit so an Apple worker cannot turn
+/// its scalar CPU path into a fabricated Metal result or a silent fallback.
+/// A future Metal implementation must replace this contract and add an
+/// independent CPU/reference and Metal/reference parity path before this
+/// test is changed.
+#[test]
+fn microwakeword_metal_backend_is_explicitly_unsupported() {
+    const CARGO_MANIFEST: &str = include_str!("../Cargo.toml");
+    assert!(
+        !CARGO_MANIFEST.contains("vokra-backend-metal")
+            && !CARGO_MANIFEST.contains("BackendKind::Metal")
+            && !CARGO_MANIFEST.contains("feature = \"metal\"")
+            && !CARGO_MANIFEST.contains("metal ="),
+        "microWakeWord unexpectedly gained a Metal seam; review the Apple worker before running it"
+    );
+    eprintln!(
+        "MICROWAKEWORD_METAL_UNSUPPORTED_OP backend=metal reason=no-vokra-kws-micro-metal-seam CPU_FALLBACK=FORBIDDEN"
+    );
+}

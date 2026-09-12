@@ -156,6 +156,38 @@ directory. A successful worker run supplies the evidence needed to
 close the currently blocked parity status; this README does not claim that
 the run has already occurred.
 
+### Apple Silicon verification
+
+The Apple worker consumes the reviewed VAST packet only; it never downloads or
+recreates a model. The packet must contain the reviewed GGUF, the complete
+`microwakeword-reference-v2` fixture directory, the VAST
+`microwakeword-validation.json` and `path-c.log`, and the exact dependency
+evidence file. All packet paths and the new evidence directory must be
+absolute, outside the checkout, and the checkout must be clean at the exact
+VAST commit:
+
+```sh
+scripts/verify/apple-silicon-microwakeword.sh \
+  --gguf /absolute/vast/hey_jarvis.reviewed.gguf \
+  --fixtures /absolute/vast/fixtures \
+  --validation-json /absolute/vast/microwakeword-validation.json \
+  --path-c-log /absolute/vast/path-c.log \
+  --dependency-evidence /absolute/vast/dependency-evidence.json \
+  --expected-head <exact-lowercase-40-hex-commit> \
+  --evidence-dir /absolute/empty/apple-microwakeword-evidence
+```
+
+The worker reruns the non-ignored `parity_microwakeword_end_to_end_output`
+test, which checks the independent LiteRT trace, all 512 invocations, 11
+preserved stages, and the four-invocation reset replay. `vokra-kws-micro` is
+an embedded/no_std scalar INT8 crate and currently has no Metal backend seam;
+the worker therefore runs the non-ignored
+`microwakeword_metal_backend_is_explicitly_unsupported` contract test and
+records Metal/reference and Metal/CPU as `UNSUPPORTED_OP` with
+`CPU_FALLBACK=FORBIDDEN`. This is an honest blocked result, not Apple Metal
+completion. The worker exits 3 for that explicit unsupported status and always
+records `NO_UPLOAD`.
+
 ## Historical conversion notes (not an execution procedure)
 
 Earlier drafts described local dependency sync, raw GitHub model retrieval,
