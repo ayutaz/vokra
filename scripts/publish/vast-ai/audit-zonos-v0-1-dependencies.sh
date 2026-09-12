@@ -51,6 +51,7 @@ self_test() {
   grep -Fq 'zonos_v0_1_reference' "$0" || failed=1
   grep -Fq 'prepare_numpy_no_blas.sh' "$0" || failed=1
   grep -Fq -- 'uv sync --frozen --no-install-project' "$0" || failed=1
+  grep -Fq -- '--preparation' "$0" || failed=1
   grep -Fq -- ' -d "$ROOT/.git" || -f "$ROOT/.git" ' "$0" || failed=1
   for forbidden in \
     'git '"clone" \
@@ -134,10 +135,12 @@ cd "$ROOT"
 VOKRA_PUBLISH_ON_VAST=1 bash "$PREPARER" --output-dir "$preparation"
 environment="$preparation/venv"
 [[ -d "$environment" && ! -L "$environment" ]] || die 'no-BLAS preparation environment is missing or symlinked'
+[[ -f "$preparation/preparation.json" && ! -L "$preparation/preparation.json" ]] || die 'no-BLAS preparation identity is missing or symlinked'
 set +e
 UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
-  --installed --expected-head "$expected_head" --publisher-archive "$publisher_archive" --output "$output"
+  --installed --expected-head "$expected_head" --publisher-archive "$publisher_archive" \
+  --preparation "$preparation/preparation.json" --output "$output"
 audit_status=$?
 set -e
 [[ "$audit_status" == 0 || "$audit_status" == 2 ]] || die "dependency collector failed with status $audit_status"

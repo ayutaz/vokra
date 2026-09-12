@@ -30,11 +30,17 @@ from typing import Any
 PROJECT_DIR = Path(__file__).resolve().parent
 PROJECT_PATH = PROJECT_DIR / "pyproject.toml"
 LOCK_PATH = PROJECT_DIR / "uv.lock"
+CONSTRAINTS_PATH = PROJECT_DIR / "numpy-build-constraints.txt"
 REPOSITORY_ROOT = PROJECT_DIR.parents[2]
 AUDITOR_PATH = Path(__file__).resolve()
 WRAPPER_PATH = REPOSITORY_ROOT / "scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
+PREPARER_PATH = PROJECT_DIR / "prepare_numpy_no_blas.sh"
 EXPECTED_PROJECT_SHA256 = "5cb58da85195f8f0812aa18bedd6a320226c7a3ef94e64c33e5782414c115b29"
 EXPECTED_LOCK_SHA256 = "40fa51a7cffcfed126e073ecf0813fcbdb0935ea1bef05f51be1e75585fbcf76"
+EXPECTED_CONSTRAINTS_SHA256 = "812ab3e215d7756738ab9a9aca7b8c94b53a3b10e8f1e43228e1b74965be020a"
+NUMPY_SDIST_URL = "https://files.pythonhosted.org/packages/ec/d0/c12ddfd3a02274be06ffc71f3efc6d0e457b0409c4481596881e748cb264/numpy-2.2.2.tar.gz"
+NUMPY_SDIST_SHA256 = "ed6906f61834d687738d25988ae117683705636936cc605be0bb208b23df4d8f"
+NUMPY_SDIST_BYTES = 20233295
 AUDIT_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 PUBLICATION = "NO_UPLOAD"
 DIRECT_DEPENDENCIES = {
@@ -135,15 +141,23 @@ def project_identity() -> dict[str, Any]:
         raise RuntimeError("dedicated Zonos pyproject.toml is missing or symlinked")
     if not LOCK_PATH.is_file() or LOCK_PATH.is_symlink():
         raise RuntimeError("dedicated Zonos uv.lock is missing or symlinked")
+    if not CONSTRAINTS_PATH.is_file() or CONSTRAINTS_PATH.is_symlink():
+        raise RuntimeError("dedicated NumPy builder constraints are missing or symlinked")
     project_sha = sha256(PROJECT_PATH)
     lock_sha = sha256(LOCK_PATH)
-    if project_sha != EXPECTED_PROJECT_SHA256 or lock_sha != EXPECTED_LOCK_SHA256:
+    constraints_sha = sha256(CONSTRAINTS_PATH)
+    if (
+        project_sha != EXPECTED_PROJECT_SHA256
+        or lock_sha != EXPECTED_LOCK_SHA256
+        or constraints_sha != EXPECTED_CONSTRAINTS_SHA256
+    ):
         raise RuntimeError("dedicated Zonos project identity drifted")
     return {
         "project": PROJECT_DIR.name,
         "python": "3.12",
         "pyproject_sha256": project_sha,
         "uv_lock_sha256": lock_sha,
+        "constraints_sha256": constraints_sha,
         "expected_direct_versions": dict(DIRECT_DEPENDENCIES),
     }
 
@@ -162,7 +176,7 @@ def execution_identity(expected_head: str) -> dict[str, Any]:
         raise RuntimeError(f"cannot bind repository HEAD: {error}") from error
     if actual_head != expected_head:
         raise RuntimeError(f"repository HEAD {actual_head} differs from expected {expected_head}")
-    for path in (AUDITOR_PATH, WRAPPER_PATH):
+    for path in (AUDITOR_PATH, WRAPPER_PATH, PREPARER_PATH):
         if not path.is_file() or path.is_symlink():
             raise RuntimeError(f"audit identity file is missing or symlinked: {path}")
     identity = {
@@ -170,8 +184,10 @@ def execution_identity(expected_head: str) -> dict[str, Any]:
         "actual_head": actual_head,
         "dependency_audit_sha256": sha256(AUDITOR_PATH),
         "wrapper_sha256": sha256(WRAPPER_PATH),
+        "preparer_sha256": sha256(PREPARER_PATH),
         "pyproject_sha256": sha256(PROJECT_PATH),
         "uv_lock_sha256": sha256(LOCK_PATH),
+        "constraints_sha256": sha256(CONSTRAINTS_PATH),
         "platform": {
             "system": platform.system(),
             "machine": platform.machine(),
@@ -596,16 +612,87 @@ def _sdist_license_fallback(
         temporary.unlink(missing_ok=True)
 
 
-def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return repr(value)
+
+
+def _numpy_runtime_config(failures: list[str]) -> dict[str, Any]:
+    try:
+        import numpy
+
+        config = _json_safe(numpy.__config__.show(mode="dicts"))
+    except Exception as error:  # pragma: no cover - depends on installed VAST wheel
+        failures.append(f"NumPy runtime build config collection failed: {error}")
+        return {
+            "schema": "vokra-zonos-numpy-runtime-config-v1",
+            "status": "FAIL_CONFIG_UNAVAILABLE",
+            "config": None,
+            "forbidden_boundaries": ["config-unavailable"],
+        }
+    forbidden = _numpy_config_forbidden(config)
+    if forbidden:
+        failures.append("NumPy runtime config policy boundary: " + ",".join(forbidden))
+    return {
+        "schema": "vokra-zonos-numpy-runtime-config-v1",
+        "status": "PASS_NO_FORBIDDEN_BLAS" if not forbidden else "FAIL_FORBIDDEN_BLAS",
+        "config": config,
+        "forbidden_boundaries": forbidden,
+    }
+
+
+def _numpy_config_forbidden(config: Any) -> list[str]:
+    """Return active/native BLAS boundaries named by a NumPy config object."""
+    serialized = json.dumps(config, sort_keys=True, separators=(",", ":")).casefold()
+    forbidden = [
+        token for token in ("openblas", "gfortran", "quadmath") if token in serialized
+    ]
+
+    def active_backend_values(value: Any, under_backend: bool = False) -> list[str]:
+        if isinstance(value, dict):
+            values: list[str] = []
+            for key, item in value.items():
+                key_backend = under_backend or any(
+                    token in str(key).casefold() for token in ("blas", "lapack")
+                )
+                values.extend(active_backend_values(item, key_backend))
+            return values
+        if under_backend and isinstance(value, bool) and value:
+            return ["active-blas-lapack-flag"]
+        if under_backend and isinstance(value, str) and value.casefold() not in {
+            "none", "unknown", "false", "not found", "not-found",
+        }:
+            return [value]
+        return []
+
+    forbidden.extend(active_backend_values(config))
+    return sorted(set(forbidden))
+
+
+def installed_audit(
+    preparation_path: Path, publisher_archive: Path | None = None
+) -> dict[str, Any]:
     """Collect exact installed distribution/native/license evidence on VAST."""
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise RuntimeError("installed closure audit requires Linux x86_64")
+    preparation = _validate_preparation(preparation_path)
+    prepared_venv = Path(preparation["venv"]["path"])
     lock_rows = _lock_rows()
     active_rows = _active_lock_rows(lock_rows)
     expected_versions = {
         pep503_name(row["name"]): row["version"] for row in active_rows
     }
     failures: list[str] = []
+    if Path(sys.prefix).resolve() != prepared_venv.resolve():
+        failures.append("installed audit sys.prefix is outside the prepared venv")
+    executable = Path(sys.executable).absolute()
+    if not executable.is_relative_to(prepared_venv):
+        failures.append("installed audit sys.executable is outside the prepared venv")
     distributions: dict[str, importlib.metadata.Distribution] = {}
     duplicate_distributions: set[str] = set()
     for distribution in importlib.metadata.distributions():
@@ -626,6 +713,7 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
     for name in sorted(actual_names - expected_names):
         failures.append(f"unexpected installed distribution: {name}")
     installed_rows: list[dict[str, Any]] = []
+    numpy_distribution: importlib.metadata.Distribution | None = None
     for name, distribution in sorted(distributions.items()):
         version = distribution.version
         if name in {"torch", "torchaudio"} and version == "2.6.0":
@@ -635,6 +723,8 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
             failures.append(f"installed version mismatch: {name}={version!r}, expected {expected!r}")
         if name in FORBIDDEN_PACKAGES:
             failures.append(f"forbidden installed distribution: {name}")
+        if name == "numpy":
+            numpy_distribution = distribution
         installed_rows.append(
             {
                 "name": name,
@@ -677,6 +767,28 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
         failures.append(
             "NumPy no-BLAS policy boundary detected: " + ",".join(numpy_forbidden)
         )
+    numpy_installation: dict[str, Any] = {
+        "version": numpy_distribution.version if numpy_distribution is not None else None,
+        "expected_version": "2.2.2",
+        "wheel": preparation["wheel"],
+        "direct_url": None,
+    }
+    if numpy_distribution is None:
+        failures.append("NumPy distribution is missing from the prepared environment")
+    else:
+        try:
+            direct_url_text = numpy_distribution.read_text("direct_url.json")
+            if direct_url_text is None:
+                failures.append("NumPy installed wheel direct_url.json evidence is missing")
+            else:
+                direct_url = _strict_json_text(direct_url_text)
+                numpy_installation["direct_url"] = direct_url
+                archive_info = direct_url.get("archive_info", {})
+                if archive_info.get("hash") != "sha256=" + preparation["wheel"]["sha256"]:
+                    failures.append("NumPy direct_url wheel hash does not match preparation")
+        except (OSError, ValueError) as error:
+            failures.append(f"NumPy installed wheel direct_url.json is invalid: {error}")
+    numpy_config = _numpy_runtime_config(failures)
     numpy_native_policy = {
         "schema": "vokra-zonos-numpy-native-policy-v1",
         "status": "PASS_NO_FORBIDDEN_BLAS" if numpy_native and not numpy_forbidden else "FAIL_FORBIDDEN_BLAS",
@@ -760,11 +872,15 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
         "native_files": native,
         "publisher_license_notice_files": publisher_files,
         "publisher_archive": archive_manifest,
+        "preparation": preparation,
+        "numpy_installation": numpy_installation,
+        "numpy_runtime_config": numpy_config,
         "numpy_native_policy": numpy_native_policy,
         "digests": {
             "installed_closure_sha256": _digest(installed_rows),
             "native_files_sha256": _digest(native),
             "publisher_files_sha256": _digest(publisher_files),
+            "numpy_runtime_config_sha256": _digest(numpy_config),
         },
     }
 
@@ -774,10 +890,15 @@ def audit(
     installed: bool = False,
     expected_head: str | None = None,
     publisher_archive: Path | None = None,
+    preparation: Path | None = None,
 ) -> dict[str, Any]:
     identity = project_identity()
     if installed and expected_head is None:
         raise RuntimeError("installed audit requires expected clean HEAD")
+    if installed and preparation is None:
+        raise RuntimeError("installed audit requires the prepared NumPy environment identity")
+    if not installed and preparation is not None:
+        raise RuntimeError("preparation identity is only valid for installed audit")
     execution = execution_identity(expected_head) if expected_head is not None else None
     report: dict[str, Any] = {
         "schema": "vokra-zonos-dependency-audit-v1",
@@ -786,18 +907,35 @@ def audit(
         "project": identity,
         "lock": lock_audit(),
         "execution_identity": execution,
+        "preparation_path": str(preparation) if preparation is not None else None,
     }
     report["installed"] = (
-        installed_audit(publisher_archive) if installed else {"status": "NOT_COLLECTED_PRE_ACQUISITION"}
+        installed_audit(preparation, publisher_archive)
+        if installed
+        else {"status": "NOT_COLLECTED_PRE_ACQUISITION"}
     )
     installed_report = report["installed"]
     report["candidate_scope"] = {
         "schema": "vokra-zonos-dependency-approval-scope-v1",
         "lock_rows_sha256": report["lock"]["rows_sha256"],
+        "preparation_path": str(preparation) if preparation is not None else None,
+        "preparation_sha256": sha256(preparation) if preparation is not None else None,
+        "constraints_sha256": identity["constraints_sha256"],
+        "sdist_identity": (
+            installed_report.get("preparation", {}).get("sdist")
+            if installed
+            else None
+        ),
+        "wheel_identity": (
+            installed_report.get("preparation", {}).get("wheel")
+            if installed
+            else None
+        ),
         "installed_closure_sha256": installed_report.get("digests", {}).get("installed_closure_sha256"),
         "native_files_sha256": installed_report.get("digests", {}).get("native_files_sha256"),
         "publisher_files_sha256": installed_report.get("digests", {}).get("publisher_files_sha256"),
         "numpy_native_policy_sha256": _digest(installed_report.get("numpy_native_policy")),
+        "numpy_runtime_config_sha256": _digest(installed_report.get("numpy_runtime_config")),
         "publisher_archive_manifest_sha256": (
             installed_report.get("publisher_archive") or {}
         ).get("manifest_sha256"),
@@ -828,8 +966,127 @@ def _strict_json(path: Path) -> Any:
             result[key] = value
         return result
 
-    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_pairs)
+    value = json.loads(
+        path.read_text(encoding="utf-8"), object_pairs_hook=unique_pairs
+    )
     return value
+
+
+def _strict_json_text(value: str) -> Any:
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = item
+        return result
+
+    return json.loads(value, object_pairs_hook=unique_pairs)
+
+
+def _validate_preparation(path: Path) -> dict[str, Any]:
+    """Validate the exact no-BLAS build artifact handed to the installed audit."""
+    if not path.is_absolute() or not path.is_file() or path.is_symlink():
+        raise RuntimeError("NumPy preparation JSON must be an absolute regular non-symlink file")
+    document = _strict_json(path)
+    if not isinstance(document, dict):
+        raise RuntimeError("NumPy preparation JSON must be an object")
+    if (
+        document.get("schema") != "vokra-zonos-numpy-no-blas-preparation-v2"
+        or document.get("status") != "PREPARED_NO_BLAS"
+        or document.get("publication") != PUBLICATION
+    ):
+        raise RuntimeError("NumPy preparation status/publication is not exact")
+    project = document.get("project")
+    if not isinstance(project, dict) or project != {
+        "name": PROJECT_DIR.name,
+        "pyproject_sha256": EXPECTED_PROJECT_SHA256,
+        "uv_lock_sha256": EXPECTED_LOCK_SHA256,
+        "constraints_sha256": EXPECTED_CONSTRAINTS_SHA256,
+    }:
+        raise RuntimeError("NumPy preparation project identity drifted")
+    if document.get("preparer_sha256") != sha256(PREPARER_PATH):
+        raise RuntimeError("NumPy preparation helper identity drifted")
+    sdist = document.get("sdist")
+    if sdist != {
+        "url": NUMPY_SDIST_URL,
+        "sha256": NUMPY_SDIST_SHA256,
+        "bytes": NUMPY_SDIST_BYTES,
+    }:
+        raise RuntimeError("NumPy preparation sdist identity drifted")
+    wheel = document.get("wheel")
+    if not isinstance(wheel, dict):
+        raise RuntimeError("NumPy preparation wheel identity is missing")
+    basename = wheel.get("basename")
+    if not isinstance(basename, str) or not re.fullmatch(r"numpy-2\.2\.2-[^/]+\.whl", basename):
+        raise RuntimeError("NumPy preparation wheel basename is not exact")
+    preparation_root = path.parent.resolve()
+    wheel_path = preparation_root / "wheelhouse" / basename
+    sdist_path = preparation_root / "numpy-2.2.2.tar.gz"
+    for artifact in (sdist_path, wheel_path):
+        if not artifact.is_file() or artifact.is_symlink():
+            raise RuntimeError(f"NumPy preparation artifact is missing or symlinked: {artifact}")
+    if (
+        wheel.get("sha256") != sha256(wheel_path)
+        or wheel.get("bytes") != wheel_path.stat().st_size
+        or sdist_path.stat().st_size != NUMPY_SDIST_BYTES
+        or sha256(sdist_path) != NUMPY_SDIST_SHA256
+    ):
+        raise RuntimeError("NumPy preparation artifact bytes/hash drifted")
+    sums_path = preparation_root / "SHA256SUMS"
+    if not sums_path.is_file() or sums_path.is_symlink():
+        raise RuntimeError("NumPy preparation SHA256SUMS is missing or symlinked")
+    expected_sum_lines = {
+        f"{sha256(path)}  preparation.json",
+        f"{sha256(sdist_path)}  numpy-2.2.2.tar.gz",
+        f"{sha256(wheel_path)}  wheelhouse/{wheel_path.name}",
+    }
+    actual_sum_lines = {
+        line.strip() for line in sums_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    }
+    if actual_sum_lines != expected_sum_lines:
+        raise RuntimeError("NumPy preparation SHA256SUMS does not bind the artifacts")
+    build = document.get("build")
+    if build != {
+        "no_build_isolation": True,
+        "arguments": ["-Dblas=none", "-Dlapack=none", "-Dallow-noblas=true"],
+    }:
+        raise RuntimeError("NumPy preparation build arguments drifted")
+    venv = document.get("venv")
+    if not isinstance(venv, dict) or not isinstance(venv.get("path"), str):
+        raise RuntimeError("NumPy preparation venv identity is missing")
+    venv_path = Path(venv["path"])
+    if not venv_path.is_absolute() or venv_path.resolve() != preparation_root / "venv":
+        raise RuntimeError("NumPy preparation venv path is not canonical")
+    interpreter = venv.get("interpreter")
+    if not isinstance(interpreter, dict):
+        raise RuntimeError("NumPy preparation interpreter identity is missing")
+    executable = Path(str(interpreter.get("executable", "")))
+    if (
+        interpreter.get("prefix") != str(venv_path)
+        or executable != venv_path / "bin" / "python"
+        or interpreter.get("implementation") != "CPython"
+        or not re.fullmatch(r"3\.12\.\d+", str(interpreter.get("version", "")))
+    ):
+        raise RuntimeError("NumPy preparation interpreter identity is not venv-bound")
+    return document
+
+
+def _validate_numpy_native_policy(native: list[Any], policy: Any) -> None:
+    numpy_rows = [
+        row for row in native
+        if isinstance(row, dict)
+        and str(row.get("path", "")).casefold().startswith(("numpy/", "numpy.libs/"))
+    ]
+    if (
+        not isinstance(policy, dict)
+        or policy.get("schema") != "vokra-zonos-numpy-native-policy-v1"
+        or policy.get("status") != "PASS_NO_FORBIDDEN_BLAS"
+        or policy.get("forbidden_boundaries") != []
+        or policy.get("native_file_count") != len(numpy_rows)
+        or not numpy_rows
+    ):
+        raise RuntimeError("NumPy native policy does not prove a no-BLAS closure")
 
 
 def validate_report(path: Path) -> None:
@@ -847,9 +1104,12 @@ def validate_report(path: Path) -> None:
         raise RuntimeError("installed closure was not completely collected")
     if not isinstance(scope, dict):
         raise RuntimeError("candidate scope is missing")
+    hex64 = re.compile(r"[0-9a-f]{64}")
     required_scope = {
-        "schema", "lock_rows_sha256", "installed_closure_sha256", "native_files_sha256",
-        "publisher_files_sha256", "numpy_native_policy_sha256", "publisher_archive_manifest_sha256", "failures",
+        "schema", "lock_rows_sha256", "preparation_path", "preparation_sha256", "constraints_sha256",
+        "sdist_identity", "wheel_identity", "installed_closure_sha256", "native_files_sha256",
+        "publisher_files_sha256", "numpy_native_policy_sha256", "numpy_runtime_config_sha256",
+        "publisher_archive_manifest_sha256", "failures",
         "model_access", "source_access", "checkpoint_access", "publication",
         "execution_identity",
     }
@@ -861,6 +1121,25 @@ def validate_report(path: Path) -> None:
         raise RuntimeError("audit evidence crosses the acquisition boundary")
     if scope["publication"] != PUBLICATION:
         raise RuntimeError("candidate scope publication is not NO_UPLOAD")
+    if not isinstance(scope["preparation_sha256"], str) or not hex64.fullmatch(scope["preparation_sha256"]):
+        raise RuntimeError("prepared NumPy identity is missing from candidate scope")
+    preparation_path_value = report.get("preparation_path")
+    if (
+        not isinstance(preparation_path_value, str)
+        or not Path(preparation_path_value).is_absolute()
+        or scope["preparation_path"] != preparation_path_value
+    ):
+        raise RuntimeError("prepared NumPy path is missing from candidate scope")
+    preparation_path = Path(preparation_path_value)
+    if sha256(preparation_path) != scope["preparation_sha256"]:
+        raise RuntimeError("candidate scope preparation identity does not match evidence directory")
+    preparation = _validate_preparation(preparation_path)
+    if installed.get("preparation") != preparation:
+        raise RuntimeError("installed report preparation identity is not file-bound")
+    if scope["constraints_sha256"] != preparation["project"]["constraints_sha256"]:
+        raise RuntimeError("candidate scope constraints identity is not preparation-bound")
+    if scope["sdist_identity"] != preparation["sdist"] or scope["wheel_identity"] != preparation["wheel"]:
+        raise RuntimeError("candidate scope build artifacts are not preparation-bound")
     execution = report.get("execution_identity")
     if not isinstance(execution, dict) or scope["execution_identity"] != execution:
         raise RuntimeError("execution identity is missing or not scope-bound")
@@ -869,7 +1148,6 @@ def validate_report(path: Path) -> None:
         raise RuntimeError("execution identity HEAD is missing")
     if execution_identity(expected_head) != execution:
         raise RuntimeError("audit code, repository, or platform identity drifted")
-    hex64 = re.compile(r"[0-9a-f]{64}")
     for key in (
         "lock_rows_sha256", "installed_closure_sha256", "native_files_sha256",
         "publisher_files_sha256", "numpy_native_policy_sha256", "publisher_archive_manifest_sha256",
@@ -904,18 +1182,34 @@ def validate_report(path: Path) -> None:
         or not isinstance(numpy_native_policy, dict)
     ):
         raise RuntimeError("installed closure/native/publisher facts are incomplete")
-    numpy_rows = [
-        row for row in native
-        if isinstance(row, dict)
-        and str(row.get("path", "")).casefold().startswith(("numpy/", "numpy.libs/"))
-    ]
+    _validate_numpy_native_policy(native, numpy_native_policy)
+    numpy_config = installed.get("numpy_runtime_config")
     if (
-        numpy_native_policy.get("schema") != "vokra-zonos-numpy-native-policy-v1"
-        or numpy_native_policy.get("status") != "PASS_NO_FORBIDDEN_BLAS"
-        or numpy_native_policy.get("forbidden_boundaries") != []
-        or numpy_native_policy.get("native_file_count") != len(numpy_rows)
+        not isinstance(numpy_config, dict)
+        or numpy_config.get("schema") != "vokra-zonos-numpy-runtime-config-v1"
+        or numpy_config.get("status") != "PASS_NO_FORBIDDEN_BLAS"
+        or numpy_config.get("forbidden_boundaries") != []
+        or scope["numpy_runtime_config_sha256"] != _digest(numpy_config)
     ):
-        raise RuntimeError("NumPy native policy does not prove a no-BLAS closure")
+        raise RuntimeError("NumPy runtime build config does not prove a no-BLAS closure")
+    if digests.get("numpy_runtime_config_sha256") != _digest(numpy_config):
+        raise RuntimeError("NumPy runtime config digest is not hash-bound")
+    numpy_installation = installed.get("numpy_installation")
+    if (
+        not isinstance(numpy_installation, dict)
+        or numpy_installation.get("version") != "2.2.2"
+        or numpy_installation.get("expected_version") != "2.2.2"
+        or numpy_installation.get("wheel") != preparation["wheel"]
+    ):
+        raise RuntimeError("installed NumPy wheel identity is incomplete")
+    direct_url = numpy_installation.get("direct_url")
+    if (
+        not isinstance(direct_url, dict)
+        or not isinstance(direct_url.get("archive_info"), dict)
+        or direct_url["archive_info"].get("hash")
+        != "sha256=" + preparation["wheel"]["sha256"]
+    ):
+        raise RuntimeError("installed NumPy direct_url hash is not wheel-bound")
     if not isinstance(archive, dict):
         raise RuntimeError("publisher archive evidence is missing")
     archive_root = Path(archive.get("directory", ""))
@@ -1047,6 +1341,24 @@ def self_test() -> None:
     assert report["candidate_scope"]["installed_closure_sha256"] is None
     assert re.fullmatch(r"[0-9a-f]{64}", report["candidate_scope_sha256"])
     assert report["candidate_scope_sha256"] == _digest(report["candidate_scope"])
+    config_forbidden = _numpy_config_forbidden(
+        {"Build Dependencies": {"blas": {"name": "openblas", "found": True}}}
+    )
+    assert "openblas" in config_forbidden
+    try:
+        _validate_numpy_native_policy(
+            [],
+            {
+                "schema": "vokra-zonos-numpy-native-policy-v1",
+                "status": "PASS_NO_FORBIDDEN_BLAS",
+                "native_file_count": 0,
+                "forbidden_boundaries": [],
+            },
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("zero NumPy native files must never validate as PASS")
     synthetic_native = Path(tempfile.mkdtemp(prefix="vokra-zonos-native-")) / "synthetic.so"
     synthetic_native.write_bytes(b"\x7fELFsynthetic")
     size, digest, is_elf = _streaming_binary_facts(synthetic_native)
@@ -1222,6 +1534,8 @@ def self_test() -> None:
     archive_dir = Path(tempfile.mkdtemp(prefix="vokra-zonos-publisher-"))
     archive_manifest = archive_dir / "manifest.json"
     archive_manifest.write_text("[]\n", encoding="utf-8")
+    preparation_path = archive_dir / "preparation.json"
+    preparation_path.write_text("{}\n", encoding="utf-8")
     current_head = subprocess.run(
         ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"],
         capture_output=True,
@@ -1234,8 +1548,10 @@ def self_test() -> None:
         "actual_head": current_head,
         "dependency_audit_sha256": sha256(AUDITOR_PATH),
         "wrapper_sha256": sha256(WRAPPER_PATH),
+        "preparer_sha256": sha256(PREPARER_PATH),
         "pyproject_sha256": sha256(PROJECT_PATH),
         "uv_lock_sha256": sha256(LOCK_PATH),
+        "constraints_sha256": sha256(CONSTRAINTS_PATH),
         "platform": {
             "system": "Linux",
             "machine": "x86_64",
@@ -1244,6 +1560,26 @@ def self_test() -> None:
         },
     }
     globals()["execution_identity"] = lambda _expected: fake_execution_identity
+    fake_preparation = {
+        "project": {
+            "name": PROJECT_DIR.name,
+            "pyproject_sha256": EXPECTED_PROJECT_SHA256,
+            "uv_lock_sha256": EXPECTED_LOCK_SHA256,
+            "constraints_sha256": EXPECTED_CONSTRAINTS_SHA256,
+        },
+        "sdist": {"url": NUMPY_SDIST_URL, "sha256": NUMPY_SDIST_SHA256, "bytes": NUMPY_SDIST_BYTES},
+        "wheel": {"basename": "numpy-2.2.2-cp312-cp312-linux_x86_64.whl", "sha256": "0" * 64, "bytes": 1},
+        "venv": {"path": str(archive_dir / "venv"), "interpreter": {}},
+    }
+    original_validate_preparation = globals()["_validate_preparation"]
+    globals()["_validate_preparation"] = lambda _path: fake_preparation
+    fake_numpy_config = {
+        "schema": "vokra-zonos-numpy-runtime-config-v1",
+        "status": "PASS_NO_FORBIDDEN_BLAS",
+        "config": {},
+        "forbidden_boundaries": [],
+    }
+    complete["preparation_path"] = str(preparation_path)
     complete["execution_identity"] = execution_identity(current_head)
     complete["installed"]["publisher_archive"] = {
         "directory": str(archive_dir),
@@ -1267,6 +1603,14 @@ def self_test() -> None:
             "forbidden_boundaries": [],
         },
         "publisher_license_notice_files": [],
+        "preparation": fake_preparation,
+        "numpy_installation": {
+            "version": "2.2.2",
+            "expected_version": "2.2.2",
+            "wheel": fake_preparation["wheel"],
+            "direct_url": {},
+        },
+        "numpy_runtime_config": fake_numpy_config,
         "publisher_archive": {
             "directory": str(archive_dir),
             "manifest": str(archive_manifest),
@@ -1277,6 +1621,7 @@ def self_test() -> None:
             "installed_closure_sha256": _digest([]),
             "native_files_sha256": _digest([]),
             "publisher_files_sha256": _digest([]),
+            "numpy_runtime_config_sha256": _digest(fake_numpy_config),
         },
     }
     complete["failures"] = []
@@ -1285,16 +1630,27 @@ def self_test() -> None:
             "installed_closure_sha256": complete["installed"]["digests"]["installed_closure_sha256"],
             "native_files_sha256": complete["installed"]["digests"]["native_files_sha256"],
             "publisher_files_sha256": complete["installed"]["digests"]["publisher_files_sha256"],
+            "preparation_sha256": sha256(preparation_path),
+            "preparation_path": str(preparation_path),
+            "constraints_sha256": EXPECTED_CONSTRAINTS_SHA256,
+            "sdist_identity": fake_preparation["sdist"],
+            "wheel_identity": fake_preparation["wheel"],
             "numpy_native_policy_sha256": _digest(complete["installed"]["numpy_native_policy"]),
+            "numpy_runtime_config_sha256": _digest(complete["installed"]["numpy_runtime_config"]),
             "publisher_archive_manifest_sha256": complete["installed"]["publisher_archive"]["manifest_sha256"],
             "failures": [],
         }
     )
     complete["candidate_scope_sha256"] = _digest(complete["candidate_scope"])
-    broken_path = PROJECT_DIR / ".audit-self-test.json"
+    broken_path = archive_dir / ".audit-self-test.json"
     try:
         broken_path.write_text(json.dumps(complete), encoding="utf-8")
-        validate_report(broken_path)
+        try:
+            validate_report(broken_path)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("zero NumPy native files must fail report validation")
         complete["candidate_scope"]["installed_closure_sha256"] = None
         broken_path.write_text(json.dumps(complete), encoding="utf-8")
         try:
@@ -1305,7 +1661,9 @@ def self_test() -> None:
             raise AssertionError("incomplete candidate scope must fail closed")
     finally:
         globals()["execution_identity"] = original_execution_identity
+        globals()["_validate_preparation"] = original_validate_preparation
         broken_path.unlink(missing_ok=True)
+        preparation_path.unlink(missing_ok=True)
         archive_manifest.unlink(missing_ok=True)
         archive_dir.rmdir()
     try:
@@ -1334,21 +1692,23 @@ def main() -> int:
     parser.add_argument("--validate-output", type=Path)
     parser.add_argument("--expected-head")
     parser.add_argument("--publisher-archive", type=Path)
+    parser.add_argument("--preparation", type=Path)
     args = parser.parse_args()
     if args.self_test:
         if (
             args.preflight_only or args.installed or args.output is not None
             or args.validate_output is not None or args.expected_head is not None
-            or args.publisher_archive is not None
+            or args.publisher_archive is not None or args.preparation is not None
         ):
             parser.error("--self-test accepts no other arguments")
         self_test()
         return 0
-    if args.preflight_only and (args.installed or args.output is not None):
+    if args.preflight_only and (args.installed or args.output is not None or args.preparation is not None):
         parser.error("--preflight-only accepts no installed scan or output")
     if args.validate_output is not None and (
         args.preflight_only or args.installed or args.output is not None
         or args.expected_head is not None or args.publisher_archive is not None
+        or args.preparation is not None
     ):
         parser.error("--validate-output accepts no audit collection arguments")
     if args.validate_output is not None:
@@ -1365,6 +1725,7 @@ def main() -> int:
             installed=args.installed,
             expected_head=args.expected_head,
             publisher_archive=args.publisher_archive,
+            preparation=args.preparation,
         )
     except (OSError, RuntimeError, ValueError) as error:
         if args.output is not None and not args.output.exists() and not args.output.is_symlink():
@@ -1374,12 +1735,19 @@ def main() -> int:
                 "publication": PUBLICATION,
                 "execution_identity": None,
                 "failures": [str(error)],
-                "candidate_scope": {
-                    "schema": "vokra-zonos-dependency-approval-scope-v1",
-                    "lock_rows_sha256": None,
-                    "installed_closure_sha256": None,
-                    "native_files_sha256": None,
-                    "publisher_files_sha256": None,
+                    "candidate_scope": {
+                        "schema": "vokra-zonos-dependency-approval-scope-v1",
+                        "preparation_path": None,
+                        "lock_rows_sha256": None,
+                        "preparation_sha256": None,
+                        "constraints_sha256": None,
+                        "sdist_identity": None,
+                        "wheel_identity": None,
+                        "installed_closure_sha256": None,
+                        "native_files_sha256": None,
+                        "publisher_files_sha256": None,
+                        "numpy_native_policy_sha256": None,
+                        "numpy_runtime_config_sha256": None,
                     "publisher_archive_manifest_sha256": None,
                     "failures": [str(error)],
                     "model_access": False,

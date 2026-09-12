@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$SCRIPT_DIR"
 REPOSITORY_ROOT="$(cd "$PROJECT/../../.." && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 CONSTRAINTS="$PROJECT/numpy-build-constraints.txt"
 LOCK_SHA256="40fa51a7cffcfed126e073ecf0813fcbdb0935ea1bef05f51be1e75585fbcf76"
 PYPROJECT_SHA256="5cb58da85195f8f0812aa18bedd6a320226c7a3ef94e64c33e5782414c115b29"
@@ -205,20 +206,90 @@ prepare() {
   [[ -n "$wheel_path" && -f "$wheel_path" ]] || { die 'NumPy no-BLAS wheel was not produced'; return 2; }
   inspect_wheel "$wheel_path"
   UV_NO_CACHE=1 uv pip install --python "$environment/bin/python" --no-deps --force-reinstall "$wheel_path"
+  local wheel_sha wheel_bytes venv_identity preparer_sha
+  wheel_sha="$(sha256sum "$wheel_path" | awk '{print $1}')"
+  wheel_bytes="$(stat -c '%s' "$wheel_path")"
+  preparer_sha="$(sha256sum "$SCRIPT_PATH" | awk '{print $1}')"
+  venv_identity="$(UV_NO_CACHE=1 uv run --no-cache --no-project --python "$environment/bin/python" python - "$environment" <<'PY'
+import json
+import pathlib
+import platform
+import sys
+
+expected = pathlib.Path(sys.argv[1]).resolve()
+prefix = pathlib.Path(sys.prefix).resolve()
+executable = pathlib.Path(sys.executable).absolute()
+if prefix != expected or executable != expected / "bin" / "python":
+    raise SystemExit("NumPy preparation interpreter is not inside the prepared venv")
+print(json.dumps({
+    "executable": str(executable),
+    "prefix": str(prefix),
+    "implementation": platform.python_implementation(),
+    "version": platform.python_version(),
+}, sort_keys=True, separators=(",", ":")))
+PY
+)"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --python 3.12 python - "$output_real" "$sdist" "$wheel_path" "$environment" "$wheel_sha" "$wheel_bytes" "$preparer_sha" "$venv_identity" <<'PY'
+import json
+import pathlib
+import sys
+
+output, sdist, wheel, venv, wheel_sha, wheel_bytes, preparer_sha, identity = sys.argv[1:]
+root = pathlib.Path(output).resolve()
+venv_path = pathlib.Path(venv).resolve()
+if venv_path.parent != root:
+    raise SystemExit("prepared venv is outside preparation output")
+document = {
+    "schema": "vokra-zonos-numpy-no-blas-preparation-v2",
+    "status": "PREPARED_NO_BLAS",
+    "publication": "NO_UPLOAD",
+    "project": {
+        "name": pathlib.Path("tools/parity/zonos_v0_1_reference").name,
+        "pyproject_sha256": "__PYPROJECT_SHA256__",
+        "uv_lock_sha256": "__LOCK_SHA256__",
+        "constraints_sha256": "__CONSTRAINTS_SHA256__",
+    },
+    "preparer_sha256": preparer_sha,
+    "sdist": {
+        "url": "__SDIST_URL__",
+        "sha256": "__SDIST_SHA256__",
+        "bytes": int("__SDIST_BYTES__"),
+    },
+    "wheel": {
+        "basename": pathlib.Path(wheel).name,
+        "sha256": wheel_sha,
+        "bytes": int(wheel_bytes),
+    },
+    "build": {
+        "no_build_isolation": True,
+        "arguments": ["-Dblas=none", "-Dlapack=none", "-Dallow-noblas=true"],
+    },
+    "venv": {
+        "path": str(venv_path),
+        "interpreter": json.loads(identity),
+    },
+}
+(root / "preparation.json").write_text(
+    json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+  sed -i \
+    -e "s/__PYPROJECT_SHA256__/$PYPROJECT_SHA256/" \
+    -e "s/__LOCK_SHA256__/$LOCK_SHA256/" \
+    -e "s/__CONSTRAINTS_SHA256__/$CONSTRAINTS_SHA256/" \
+    -e "s#__SDIST_URL__#$NUMPY_SDIST_URL#" \
+    -e "s/__SDIST_SHA256__/$NUMPY_SDIST_SHA256/" \
+    -e "s/__SDIST_BYTES__/$NUMPY_SDIST_BYTES/" \
+    "$output_real/preparation.json"
   {
-    printf 'schema=vokra-zonos-numpy-no-blas-preparation-v1\n'
-    printf 'status=PREPARED_NO_BLAS\npublication=NO_UPLOAD\n'
-    printf 'sdist_url=%s\nsdist_sha256=%s\nsdist_bytes=%s\n' "$NUMPY_SDIST_URL" "$NUMPY_SDIST_SHA256" "$NUMPY_SDIST_BYTES"
-    printf 'wheel_sha256=%s\nwheel_bytes=%s\n' "$(sha256sum "$wheel_path" | awk '{print $1}')" "$(stat -c '%s' "$wheel_path")"
-    printf 'build_arguments=-Dblas=none,-Dlapack=none,-Dallow-noblas=true\n'
-  } > "$output_real/preparation.txt"
-  (cd "$output_real" && sha256sum preparation.txt "$sdist" "$wheel_path") > "$output_real/SHA256SUMS"
+    sha256sum preparation.json "$(basename "$sdist")" "wheelhouse/$(basename "$wheel_path")"
+  } > "$output_real/SHA256SUMS"
   log "Prepared no-BLAS NumPy environment: $environment"
 }
 
 self_test() {
   local failed=0 token temporary diagnostic
-  for token in 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '-Dblas=none' '-Dlapack=none' '-Dallow-noblas=true' 'PREPARED_NO_BLAS' 'NO_UPLOAD' 'NUMPY_SDIST_SHA256' 'redirect is forbidden' 'assert_build_requirements' 'member.issym()' 'member.islnk()' 'maximum_members' 'maximum_bytes'; do
+  for token in 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '-Dblas=none' '-Dlapack=none' '-Dallow-noblas=true' 'PREPARED_NO_BLAS' 'NO_UPLOAD' 'NUMPY_SDIST_SHA256' 'preparation.json' 'SHA256SUMS' 'redirect is forbidden' 'assert_build_requirements' 'member.issym()' 'member.islnk()' 'maximum_members' 'maximum_bytes'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
   if temporary="$(mktemp -d "${TMPDIR:-/tmp}/zonos-numpy-selftest.XXXXXX")"; then
