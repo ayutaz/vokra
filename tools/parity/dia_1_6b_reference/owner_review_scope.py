@@ -71,7 +71,7 @@ def require_audit(report: dict[str, Any]) -> None:
     if not isinstance(contract, dict) or contract.get("gate_status") != GATE or contract.get("uv_lock_sha256") != LOCK_SHA256 or contract.get("pyproject_sha256") != PYPROJECT_SHA256:
         raise ScopeError("audit contract identity is stale or not fail-closed")
     closure = report.get("closure")
-    if not isinstance(closure, dict) or closure.get("exact") is not True or closure.get("missing") != [] or closure.get("unexpected") != [] or closure.get("duplicate_identities") != [] or len(closure.get("expected", [])) != 26 or closure.get("expected") != closure.get("installed"):
+    if not isinstance(closure, dict) or closure.get("exact") is not True or closure.get("missing") != [] or closure.get("unexpected") != [] or closure.get("duplicate_identities") != [] or len(closure.get("expected", [])) != 26 or closure.get("expected") != sorted(closure.get("expected", [])) or closure.get("expected") != closure.get("installed"):
         raise ScopeError("audit is not the exact 26-package Linux closure")
     packages = report.get("packages")
     if not isinstance(packages, list) or len(packages) != 26:
@@ -82,8 +82,11 @@ def require_audit(report: dict[str, Any]) -> None:
         installed = item.get("installed") if isinstance(item, dict) else None
         if not isinstance(lock, dict) or not isinstance(lock.get("name"), str) or not isinstance(lock.get("version"), str) or not isinstance(installed, dict) or not isinstance(installed.get("identity"), str):
             raise ScopeError("audit package row is malformed")
-        identities.append(lock["name"] + "==" + lock["version"])
-    if len(identities) != 26 or len(set(identities)) != 26:
+        lock_identity = lock["name"] + "==" + lock["version"]
+        if installed["identity"] != lock_identity:
+            raise ScopeError("installed package identity differs from its lock row")
+        identities.append(lock_identity)
+    if len(identities) != 26 or len(set(identities)) != 26 or sorted(identities) != closure["expected"]:
         raise ScopeError("audit package identities are incomplete or duplicated")
     license_facts = report.get("license_facts")
     if not isinstance(license_facts, dict) or license_facts.get("packages") != 26 or license_facts.get("publisher_license_evidence_missing") != [] or license_facts.get("publisher_bytes_recorded") != 50:
@@ -169,12 +172,24 @@ def self_test() -> int:
         try: require_output(root / "link-alias" / "scope.json")
         except ScopeError: pass
         else: raise AssertionError("symlinked owner scope output accepted")
-        report = {"schema": "vokra-dia-dependency-audit-v1", "status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": GATE, "publication": PUBLICATION, "repository": {"head": "0" * 40, "clean": True}, "contract": {"gate_status": GATE, "uv_lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256}, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": [f"p{i}==1" for i in range(26)], "installed": [f"p{i}==1" for i in range(26)]}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(26)], "license_facts": {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}, "native_facts": {"files": [{"package_identity": "p0==1", "sha256": "a" * 64, "path": "x.so"}]}, "failures": []}
+        identities = sorted(f"p{i}==1" for i in range(26))
+        report = {"schema": "vokra-dia-dependency-audit-v1", "status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": GATE, "publication": PUBLICATION, "repository": {"head": "0" * 40, "clean": True}, "contract": {"gate_status": GATE, "uv_lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256}, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": identities, "installed": identities}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(26)], "license_facts": {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}, "native_facts": {"files": [{"package_identity": "p0==1", "sha256": "a" * 64, "path": "x.so"}]}, "failures": []}
         preparation = {"schema": "vokra-dia-reference-preparation-v1", "status": "PREPARED_NO_BLAS", "publication": PUBLICATION, "build": {"isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"}, "runtime": {"soundfile_installed": False, "torchaudio_installed": False}}
         report_path, preparation_path = root / "report.json", root / "preparation.json"
         report_path.write_text(json.dumps(report), encoding="utf-8"); preparation_path.write_text(json.dumps(preparation), encoding="utf-8")
         scope = build_scope(report_path, preparation_path, "0" * 40)
         validate_scope(scope, report_path, preparation_path, "0" * 40)
+        for mutation in ("installed_identity", "closure_set"):
+            drifted = json.loads(json.dumps(report))
+            if mutation == "installed_identity":
+                drifted["packages"][0]["installed"]["identity"] = "wrong==9"
+            else:
+                drifted["closure"]["expected"][-1] = "wrong==9"; drifted["closure"]["installed"][-1] = "wrong==9"
+            report_path.write_text(json.dumps(drifted), encoding="utf-8")
+            try: build_scope(report_path, preparation_path, "0" * 40)
+            except ScopeError: pass
+            else: raise AssertionError(f"audit identity drift accepted: {mutation}")
+        report_path.write_text(json.dumps(report), encoding="utf-8")
         for key, value in (("head", "1" * 40), ("clean", False)):
             drifted = json.loads(json.dumps(report)); drifted["repository"][key] = value; report_path.write_text(json.dumps(drifted), encoding="utf-8")
             try: build_scope(report_path, preparation_path, "0" * 40)
