@@ -16,6 +16,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -26,6 +27,7 @@ import urllib.parse
 import urllib.request
 import base64
 import csv
+import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -782,7 +784,7 @@ def installed_audit(
         "direct_url": None,
     }
     numpy_record: dict[str, Any] = {
-        "schema": "vokra-zonos-numpy-record-v1",
+        "schema": "vokra-zonos-numpy-record-v2",
         "status": "FAIL_DISTRIBUTION_MISSING",
         "rows": [],
         "generated": [],
@@ -801,7 +803,11 @@ def installed_audit(
                 _validate_numpy_direct_url(direct_url, wheel_path, preparation["wheel"])
         except (OSError, RuntimeError, ValueError) as error:
             failures.append(f"NumPy installed wheel direct_url.json is invalid: {error}")
-        numpy_record = _numpy_record_evidence(numpy_distribution, failures)
+        numpy_record = _numpy_record_evidence(
+            numpy_distribution,
+            preparation_path.parent / "wheelhouse" / preparation["wheel"]["basename"],
+            failures,
+        )
     numpy_config = _numpy_runtime_config(failures)
     numpy_native_policy = {
         "schema": "vokra-zonos-numpy-native-policy-v1",
@@ -1015,16 +1021,73 @@ def _validate_numpy_direct_url(
 
 def _numpy_record_evidence(
     distribution: importlib.metadata.Distribution,
+    wheel_path: Path,
     failures: list[str],
 ) -> dict[str, Any]:
-    record_text = distribution.read_text("RECORD")
-    if record_text is None:
-        failures.append("NumPy installed RECORD evidence is missing")
-        return {"schema": "vokra-zonos-numpy-record-v1", "status": "FAIL_RECORD_MISSING", "rows": [], "generated": []}
+    evidence: dict[str, Any] = {
+        "schema": "vokra-zonos-numpy-record-v2",
+        "status": "FAIL_RECORD_MISSING",
+        "wheel": None,
+        "installed": None,
+        "rows": [],
+        "generated": [],
+    }
     rows: list[dict[str, Any]] = []
     generated: list[dict[str, Any]] = []
     seen: set[str] = set()
     try:
+        if not wheel_path.is_file() or wheel_path.is_symlink():
+            raise ValueError("prepared NumPy wheel is missing or symlinked")
+        wheel_record_path: str | None = None
+        wheel_record_bytes: bytes | None = None
+        wheel_files: set[str] = set()
+        with zipfile.ZipFile(wheel_path, "r") as archive:
+            names: set[str] = set()
+            for info in archive.infolist():
+                name = info.filename
+                if not name or "\\" in name:
+                    raise ValueError(f"wheel member path is unsafe: {name!r}")
+                member_path = PurePosixPath(name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ValueError(f"wheel member path is unsafe: {name!r}")
+                if name in names:
+                    raise ValueError(f"wheel member is duplicated: {name}")
+                names.add(name)
+                mode = (info.external_attr >> 16) & 0xFFFF
+                file_type = stat.S_IFMT(mode)
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"wheel member is symlinked: {name}")
+                if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                    raise ValueError(f"wheel member has unsafe file type: {name}")
+                if not name.endswith("/"):
+                    wheel_files.add(name)
+                if name.endswith(".dist-info/RECORD"):
+                    if wheel_record_path is not None:
+                        raise ValueError("wheel contains multiple dist-info RECORD files")
+                    wheel_record_path = name
+                    wheel_record_bytes = archive.read(info)
+            if wheel_record_path is None or wheel_record_bytes is None:
+                raise ValueError("wheel dist-info RECORD is missing")
+        if not wheel_record_bytes.endswith(b"\n"):
+            raise ValueError("wheel RECORD does not end with a newline")
+        wheel_record_sha256 = hashlib.sha256(wheel_record_bytes).hexdigest()
+        installed_record_path = Path(distribution.locate_file(wheel_record_path))
+        if installed_record_path.is_symlink() or not installed_record_path.is_file():
+            raise ValueError("installed NumPy RECORD is missing or symlinked")
+        installed_record_bytes = installed_record_path.read_bytes()
+        evidence["wheel"] = {
+            "path": wheel_record_path,
+            "bytes": len(wheel_record_bytes),
+            "sha256": wheel_record_sha256,
+        }
+        evidence["installed"] = {
+            "path": wheel_record_path,
+            "bytes": len(installed_record_bytes),
+            "sha256": hashlib.sha256(installed_record_bytes).hexdigest(),
+        }
+        if installed_record_bytes != wheel_record_bytes:
+            raise ValueError("installed NumPy RECORD differs from prepared wheel RECORD")
+        record_text = wheel_record_bytes.decode("utf-8")
         parsed = csv.reader(io.StringIO(record_text))
         for fields in parsed:
             if len(fields) != 3:
@@ -1035,6 +1098,8 @@ def _numpy_record_evidence(
             relative_path = Path(relative)
             if relative_path.is_absolute() or "\\" in relative or ".." in relative_path.parts:
                 raise ValueError(f"RECORD path is unsafe: {relative!r}")
+            if relative not in wheel_files:
+                raise ValueError(f"wheel RECORD names missing member: {relative}")
             seen.add(relative)
             target = Path(distribution.locate_file(relative_path))
             if target.is_symlink() or not target.is_file():
@@ -1079,6 +1144,15 @@ def _numpy_record_evidence(
                 }
             )
 
+        if wheel_files != seen:
+            unexpected = sorted(wheel_files - seen)
+            missing = sorted(seen - wheel_files)
+            raise ValueError(
+                f"wheel RECORD member set mismatch: unexpected={unexpected}, missing={missing}"
+            )
+        if wheel_record_path not in seen:
+            raise ValueError("wheel RECORD does not contain its own RECORD row")
+
         # uv writes these files after installation and they are intentionally
         # outside wheel RECORD.  Record their bytes rather than treating them
         # as an unreviewed part of the wheel.  Any other unrecorded file,
@@ -1111,26 +1185,19 @@ def _numpy_record_evidence(
                     )
                     record_paths.add(relative)
                 elif path.suffix == ".pyc":
-                    generated.append(
-                        {
-                            "path": relative,
-                            "bytes": path.stat().st_size,
-                            "sha256": sha256(path),
-                            "reason": "pyc-not-wheel-recorded",
-                        }
-                    )
-                    record_paths.add(relative)
+                    raise ValueError(f"unrecorded generated pyc file: {relative}")
                 else:
                     raise ValueError(f"unrecorded NumPy installed file: {relative}")
     except (OSError, ValueError) as error:
         failures.append(f"NumPy installed RECORD audit failed: {error}")
-        return {"schema": "vokra-zonos-numpy-record-v1", "status": "FAIL_RECORD_INVALID", "rows": rows, "generated": generated}
-    return {
-        "schema": "vokra-zonos-numpy-record-v1",
-        "status": "PASS",
-        "rows": rows,
-        "generated": sorted(generated, key=lambda row: row["path"]),
-    }
+        evidence["status"] = "FAIL_RECORD_INVALID"
+        evidence["rows"] = rows
+        evidence["generated"] = generated
+        return evidence
+    evidence["status"] = "PASS"
+    evidence["rows"] = rows
+    evidence["generated"] = sorted(generated, key=lambda row: row["path"])
+    return evidence
 
 
 def _validate_preparation(path: Path) -> dict[str, Any]:
@@ -1368,7 +1435,7 @@ def validate_report(path: Path) -> None:
     numpy_record = installed.get("numpy_record")
     if (
         not isinstance(numpy_record, dict)
-        or numpy_record.get("schema") != "vokra-zonos-numpy-record-v1"
+        or numpy_record.get("schema") != "vokra-zonos-numpy-record-v2"
         or numpy_record.get("status") != "PASS"
         or not isinstance(numpy_record.get("rows"), list)
         or not isinstance(numpy_record.get("generated"), list)
@@ -1378,7 +1445,7 @@ def validate_report(path: Path) -> None:
         raise RuntimeError("installed NumPy RECORD evidence is incomplete or not hash-bound")
     current_numpy = importlib.metadata.distribution("numpy")
     record_failures: list[str] = []
-    current_numpy_record = _numpy_record_evidence(current_numpy, record_failures)
+    current_numpy_record = _numpy_record_evidence(current_numpy, wheel_path, record_failures)
     if record_failures or current_numpy_record != numpy_record:
         raise RuntimeError("installed NumPy RECORD/file identity drifted")
     if not isinstance(archive, dict):
@@ -1612,6 +1679,29 @@ def self_test() -> None:
         "numpy-2.2.2.dist-info/RECORD,,\n",
         encoding="utf-8",
     )
+    original_record_bytes = record_path.read_bytes()
+    synthetic_wheel = direct_url_root / "numpy-2.2.2-cp312-cp312-linux_x86_64.whl"
+
+    def write_synthetic_wheel(
+        destination: Path,
+        record_bytes: bytes | None = original_record_bytes,
+        duplicate: bool = False,
+        include_record: bool = True,
+        symlink: bool = False,
+    ) -> None:
+        with zipfile.ZipFile(destination, "w") as archive:
+            archive.writestr("numpy/core.py", package_file.read_bytes())
+            if duplicate:
+                archive.writestr("numpy/core.py", package_file.read_bytes())
+            if symlink:
+                link = zipfile.ZipInfo("numpy/link.so")
+                link.create_system = 3
+                link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(link, b"link")
+            if include_record and record_bytes is not None:
+                archive.writestr("numpy-2.2.2.dist-info/RECORD", record_bytes)
+
+    write_synthetic_wheel(synthetic_wheel)
 
     class SyntheticDistribution:
         def read_text(self, name: str) -> str | None:
@@ -1623,20 +1713,71 @@ def self_test() -> None:
             return record_root / relative
 
     record_failures: list[str] = []
-    record_evidence = _numpy_record_evidence(SyntheticDistribution(), record_failures)
+    record_evidence = _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, record_failures
+    )
     assert not record_failures and record_evidence["status"] == "PASS"
+    assert record_evidence["wheel"]["bytes"] == len(original_record_bytes)
+    assert record_evidence["wheel"]["sha256"] == hashlib.sha256(original_record_bytes).hexdigest()
+    assert record_evidence["installed"] == record_evidence["wheel"]
     assert {row["path"] for row in record_evidence["generated"]} == {
         "numpy-2.2.2.dist-info/" + name for name in GENERATED_NUMPY_METADATA
     }
     package_file.write_bytes(b"tampered numpy payload")
     record_failures = []
-    assert _numpy_record_evidence(SyntheticDistribution(), record_failures)["status"] == "FAIL_RECORD_INVALID"
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
     assert any("hash/size mismatch" in failure for failure in record_failures)
     package_file.write_bytes(b"numpy payload")
     record_path.write_text("../escape,sha256=bad,1\n", encoding="utf-8")
     record_failures = []
-    assert _numpy_record_evidence(SyntheticDistribution(), record_failures)["status"] == "FAIL_RECORD_INVALID"
-    assert any("unsafe" in failure for failure in record_failures)
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("differs from prepared wheel RECORD" in failure for failure in record_failures)
+    record_path.write_bytes(original_record_bytes)
+    package_file.write_bytes(b"tampered numpy payload")
+    tampered_installed_record = (
+        b"numpy/core.py,sha256=bad,21\n"
+        b"numpy-2.2.2.dist-info/RECORD,,\n"
+    )
+    record_path.write_bytes(tampered_installed_record)
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), synthetic_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("differs from prepared wheel RECORD" in failure for failure in record_failures)
+    package_file.write_bytes(b"numpy payload")
+    record_path.write_bytes(original_record_bytes)
+    tampered_wheel = direct_url_root / "tampered-record.whl"
+    write_synthetic_wheel(tampered_wheel, b"../escape,sha256=bad,1\n")
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), tampered_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("wheel RECORD" in failure for failure in record_failures)
+    duplicate_wheel = direct_url_root / "duplicate-record.whl"
+    write_synthetic_wheel(duplicate_wheel, duplicate=True)
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), duplicate_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("duplicated" in failure for failure in record_failures)
+    missing_wheel = direct_url_root / "missing-record.whl"
+    write_synthetic_wheel(missing_wheel, include_record=False)
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), missing_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("RECORD is missing" in failure for failure in record_failures)
+    symlink_wheel = direct_url_root / "symlink-member.whl"
+    write_synthetic_wheel(symlink_wheel, symlink=True)
+    record_failures = []
+    assert _numpy_record_evidence(
+        SyntheticDistribution(), symlink_wheel, record_failures
+    )["status"] == "FAIL_RECORD_INVALID"
+    assert any("symlink" in failure for failure in record_failures)
     direct_url_wheel.unlink(missing_ok=True)
     shutil.rmtree(direct_url_root, ignore_errors=True)
     shutil.rmtree(record_root, ignore_errors=True)
@@ -1837,7 +1978,7 @@ def self_test() -> None:
         "forbidden_boundaries": [],
     }
     fake_numpy_record = {
-        "schema": "vokra-zonos-numpy-record-v1",
+        "schema": "vokra-zonos-numpy-record-v2",
         "status": "PASS",
         "rows": [],
         "generated": [],
