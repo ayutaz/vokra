@@ -42,20 +42,19 @@
 //! - [`DiaWeights`] — a text-encoder + decoder weight store with a strict
 //!   343-tensor GGUF loader and a deterministic
 //!   [`DiaWeights::synthesized`] fixture for shape-only tests.
-//! - [`DiaTts`] — shape-test engine handle carrying config + weights and an
-//!   optional low-level DAC GGUF bind; it is not a complete TTS runtime.
-//!   [`DiaTts::synthesize`] returns [`VokraError::NotImplemented`] until real
-//!   weights are bound (the real forward — encoder embed → per-layer prenorm
-//!   attn/FFN → decoder channel-embed sum → delayed AR sampling per channel →
-//!   DAC decode → PCM — remains gated on the real-checkpoint tensor manifest
-//!   and separate DAC/tokenizer provenance; the crate-private staged route is
-//!   in `dia::forward`.
+//! - [`DiaTts`] — authenticated engine handle carrying config + weights and an
+//!   optional DAC bind. [`DiaTts::generate_codes_with_options`] is the
+//!   explicit production code route (backend, sampler options, optional prompt,
+//!   and caller-owned draws); [`DiaTts::synthesize_with_options`] composes it
+//!   only with an independently authenticated [`crate::dac::Dac`].
 //!
 //! Real-checkpoint parity and public PCM remain deferred until the VAST and
 //! Apple evidence gates pass. [`DiaGenerationState`] and
-//! [`DiaGeneratedCodes`] expose only the model-free delayed-layout and strict
-//! DAC-packet seams; learned forward/cache execution remains crate-private.
+//! [`DiaGeneratedCodes`] expose the model-free delayed-layout and strict
+//! DAC-packet seams; learned forward/cache execution stays behind the
+//! authenticated `DiaTts` production methods.
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
@@ -743,13 +742,13 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// Dia TTS engine handle.
 ///
 /// Carries the resolved config, weight store, and an optional DAC codec
-/// bind ([`DacCodecGguf`] — MIT). [`Self::synthesize`] is the primary text →
-/// PCM entry point; until real weights are bound (see the module docstring)
-/// it returns [`VokraError::NotImplemented`] with a message naming the
-/// blocker (FR-EX-08 — never a silent zero-fill fallback). A separately
-/// authenticated [`crate::dac::Dac`] can decode a validated
-/// [`DiaGeneratedCodes`] packet through [`Self::decode_codes`], but this does
-/// not waive the independent generation-parity gate.
+/// bind ([`DacCodecGguf`] — MIT). [`Self::synthesize_with_options`] is the
+/// production text → PCM entry point. The legacy [`Self::synthesize`] remains
+/// a validation-only compatibility surface because it cannot infer a backend,
+/// sampler options, or caller-owned draws. A separately authenticated
+/// [`crate::dac::Dac`] can decode a validated [`DiaGeneratedCodes`] packet
+/// through [`Self::decode_codes`], but this does not waive the independent
+/// generation-parity gate.
 #[derive(Debug, Clone)]
 pub struct DiaTts {
     cfg: DiaConfig,
@@ -1018,6 +1017,110 @@ impl DiaTts {
         dac.decode_codes(codes.as_frame_major())
     }
 
+    /// Generates a strict, frame-major Dia code packet from source byte ids.
+    ///
+    /// The caller chooses every execution control: `backend` is passed through
+    /// the [`crate::compute::Compute`] seam, `options` supplies the complete
+    /// delayed-AR sampler configuration, and `draws` owns every stochastic
+    /// candidate draw. Greedy generation (`options.temperature == 0.0`) must
+    /// pass an empty draw slice. Stochastic generation must pass exactly one
+    /// positive finite draw per candidate consumed by the official sampler;
+    /// no hidden RNG or inferred sampler default exists.
+    ///
+    /// An optional prompt is supplied in strict frame-major `[frames,
+    /// channels]` codebook order. The returned packet is sanitized and
+    /// validated by [`DiaGeneratedCodes::from_frames`] before crossing the
+    /// model boundary. Synthesized fixtures, invalid input, and unsupported
+    /// backend coverage fail before a production packet is returned.
+    pub fn generate_codes_with_options(
+        &self,
+        text_ids: &[i64],
+        prompt: Option<&[Vec<u32>]>,
+        options: DiaGenerationOptions,
+        backend: BackendKind,
+        draws: &[f32],
+    ) -> Result<DiaGeneratedCodes> {
+        if text_ids.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "dia generate_codes: text_ids is empty".to_owned(),
+            ));
+        }
+        if text_ids.len() > self.cfg.text_length {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia generate_codes: text_ids.len()={} > text_length cap {}",
+                text_ids.len(),
+                self.cfg.text_length,
+            )));
+        }
+        let vocab = self.cfg.src_vocab_size;
+        let mut source_ids = Vec::with_capacity(text_ids.len());
+        for (i, &id) in text_ids.iter().enumerate() {
+            if id < 0 || (id as u64) >= vocab as u64 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "dia generate_codes: text_ids[{i}]={id} out of [0, {vocab})",
+                )));
+            }
+            source_ids.push(u32::try_from(id).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "dia generate_codes: text_ids[{i}]={id} does not fit the source id type"
+                ))
+            })?);
+        }
+        options.validate_for(&self.cfg)?;
+
+        let mut route =
+            forward::DiaCfgBatchOne::from_authenticated(&self.cfg, &self.weights, backend)?;
+        let frames = route.generate_codes(
+            &self.cfg,
+            &source_ids,
+            prompt,
+            options.max_tokens,
+            options.cfg_scale,
+            forward::SamplingParams {
+                temperature: options.temperature,
+                top_p: options.top_p,
+                top_k: options.top_k,
+            },
+            draws,
+        )?;
+        DiaGeneratedCodes::from_frames(&self.cfg, frames)
+    }
+
+    /// Generates Dia codes and decodes them through the independently
+    /// authenticated [`crate::dac::Dac`] bound with
+    /// [`Self::with_authenticated_dac`]. The legacy [`Self::with_dac`]
+    /// metadata container is never accepted as a PCM decoder.
+    pub fn synthesize_with_options(
+        &self,
+        text_ids: &[i64],
+        prompt: Option<&[Vec<u32>]>,
+        options: DiaGenerationOptions,
+        backend: BackendKind,
+        draws: &[f32],
+    ) -> Result<Vec<f32>> {
+        let Some(dac) = self.production_dac.as_ref() else {
+            return Err(VokraError::NotImplemented(
+                "dia synthesize_with_options: an independently authenticated crate::dac::Dac is required before model generation; legacy with_dac(...) is only a metadata container",
+            ));
+        };
+        if dac.sample_rate() != self.cfg.sample_rate || dac.n_codebooks() != self.cfg.channels {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia synthesize_with_options: expected {} Hz/{} codebooks, got {} Hz/{}",
+                self.cfg.sample_rate,
+                self.cfg.channels,
+                dac.sample_rate(),
+                dac.n_codebooks(),
+            )));
+        }
+        if dac.backend() != backend {
+            return Err(VokraError::InvalidArgument(
+                "dia synthesize_with_options: main model and DAC backends must match".to_owned(),
+            ));
+        }
+        let codes = self.generate_codes_with_options(text_ids, prompt, options, backend, draws)?;
+        self.decode_codes(&codes)
+    }
+
     /// True iff the weight store was built by [`DiaWeights::synthesized`]
     /// (never a real upstream checkpoint).
     #[must_use]
@@ -1031,14 +1134,11 @@ impl DiaTts {
     /// (byte-level for Dia: `src_vocab_size == 256`); the caller performs
     /// UTF-8 → byte-id mapping.
     ///
-    /// This is the primary text → PCM entry point. **Real weights required**:
-    /// synthesized-weight builds cannot produce meaningful audio (they'd be
-    /// noise or a hallucinated "silence"), so this returns
-    /// [`VokraError::NotImplemented`] naming the blocker. Callers verify the
-    /// shape flow through [`DiaTts::new`] + [`DiaWeights::synthesized`]
-    /// today; [`DiaCheckpoint::load_weights`] binds the complete main-model
-    /// tensor set, while the separately authenticated [`crate::dac::Dac`]
-    /// and execution evidence remain required for PCM.
+    /// This compatibility entry point intentionally cannot infer production
+    /// controls. It validates the source ids and then returns
+    /// [`VokraError::NotImplemented`]; use [`Self::synthesize_with_options`]
+    /// with explicit backend, sampler options, caller-owned draws, and an
+    /// independently authenticated [`crate::dac::Dac`] for PCM.
     ///
     /// # Errors
     ///
@@ -1381,6 +1481,62 @@ mod tests {
         assert!(matches!(
             tts.synthesize(&too_long),
             Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn production_code_api_requires_real_weights_and_explicit_options() {
+        let c = DiaConfig::tiny_for_tests();
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c.clone(), w).expect("dia tts");
+        let options = DiaGenerationOptions {
+            max_tokens: 5,
+            cfg_scale: 1.0,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: c.tgt_vocab_size,
+        };
+        assert!(matches!(
+            tts.generate_codes_with_options(&[1], None, options, BackendKind::Cpu, &[]),
+            Err(VokraError::InvalidArgument(message)) if message.contains("synthesized")
+        ));
+        assert!(matches!(
+            tts.generate_codes_with_options(
+                &[1],
+                None,
+                DiaGenerationOptions { max_tokens: 0, ..options },
+                BackendKind::Cpu,
+                &[],
+            ),
+            Err(VokraError::InvalidArgument(message)) if message.contains("max_tokens")
+        ));
+    }
+
+    #[test]
+    fn production_pcm_api_requires_authenticated_dac_before_model_route() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        // Keep the tiny tensor fixture shape-valid while making the route
+        // eligible for the real-weight branch. Bind only the legacy metadata
+        // container: the authenticated DAC check must still win before an
+        // unsupported backend or forward can be reached.
+        w.is_synthesized = false;
+        let tts = DiaTts::new(c.clone(), w)
+            .expect("dia tts")
+            .with_dac(stub_dac(c.channels, c.sample_rate))
+            .expect("legacy DAC metadata bind");
+        let options = DiaGenerationOptions {
+            max_tokens: 5,
+            cfg_scale: 1.0,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: c.tgt_vocab_size,
+        };
+        assert!(matches!(
+            tts.synthesize_with_options(&[1], None, options, BackendKind::Vulkan, &[]),
+            Err(VokraError::NotImplemented(message))
+                if message.contains("independently authenticated")
+                    && message.contains("before model generation")
         ));
     }
 
