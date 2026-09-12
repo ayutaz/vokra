@@ -91,8 +91,9 @@ GPL/LGPL/unknown/native rows.
 
 The direct `hydra-core==1.3.6` requirement is intentional. NeMo 3.0.0's
 published extra metadata leaves `hydra-core` unconstrained; the old lock had
-selected 1.3.2. The dedicated uv project now directly pins the first fixed
-version (1.3.6) and records the same resolution in
+selected 1.3.2. The dedicated uv project now directly pins a current patched
+release (1.3.6; the first patched version is 1.3.4) and
+records the same resolution in
 `tool.uv.override-dependencies`. This is a dependency decision for the
 owner's review, not an advisory allowlist.
 
