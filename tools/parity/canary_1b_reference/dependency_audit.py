@@ -195,6 +195,14 @@ def marker_active(marker: str | None, *, extra: str | None = None, context: dict
     return False
 
 
+def numeric_python_version(value: str, term: str) -> tuple[int, ...]:
+    try:
+        parts = tuple(int(part) for part in value.split("."))
+    except ValueError as error:
+        raise AuditError(f"invalid Python version marker: {term!r}") from error
+    return parts + (0,) * max(0, 3 - len(parts))
+
+
 def _marker_term(term: str, context: dict[str, str]) -> bool:
     match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(not in|in|==|!=|<=|>=|<|>)\s*(['\"])(.*?)\3\s*", term)
     if match is None:
@@ -205,13 +213,8 @@ def _marker_term(term: str, context: dict[str, str]) -> bool:
         raise AuditError(f"unknown uv marker variable: {variable}")
     is_python_version = variable in {"python_version", "python_full_version"}
     if is_python_version and operator not in {"in", "not in"}:
-        try:
-            actual_value = tuple(int(part) for part in actual.split("."))
-            expected_value = tuple(int(part) for part in expected.split("."))
-        except ValueError as error:
-            raise AuditError(f"invalid Python version marker: {term!r}") from error
-        actual_value = actual_value + (0,) * (3 - len(actual_value))
-        expected_value = expected_value + (0,) * (3 - len(expected_value))
+        actual_value = numeric_python_version(actual, term)
+        expected_value = numeric_python_version(expected, term)
     else:
         actual_value, expected_value = actual, expected
     if operator == "==":
