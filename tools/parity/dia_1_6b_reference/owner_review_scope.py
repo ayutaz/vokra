@@ -126,17 +126,23 @@ def build_scope(report_path: Path, preparation_path: Path, expected_head: str) -
     native_inventory = report["native_facts"]["files"]
     native_rows = []
     package_identity_set = set(package_identities)
+    native_paths = set()
     for item in native_inventory:
-        if not isinstance(item, dict) or not isinstance(item.get("package_identity"), str) or item["package_identity"] not in package_identity_set or not SHA_RE.fullmatch(item.get("sha256", "")):
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(item, dict) or not isinstance(item.get("package_identity"), str) or item["package_identity"] not in package_identity_set or not isinstance(path, str) or not path or path.startswith("/") or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/")) or path in native_paths or not SHA_RE.fullmatch(item.get("sha256", "")):
             raise ScopeError("native inventory row lacks package identity or digest")
+        native_paths.add(path)
         native_rows.append(item)
+    package_evidence_sha256 = hashlib.sha256(canonical(packages)).hexdigest()
+    native_evidence_sha256 = hashlib.sha256(canonical(native_rows)).hexdigest()
+    publisher_evidence_sha256 = hashlib.sha256(canonical(report["license_facts"])).hexdigest()
     scope = {
         "schema": SCHEMA,
         "status": "PENDING_OWNER_REVIEW",
         "dependency_license_audit": GATE,
         "publication": PUBLICATION,
         "owner_review": {"decision": None, "required": "owner/legal must classify every package and native/bundled payload", "approval_schema": APPROVAL_SCHEMA},
-        "audit": {"report_sha256": digest_bytes(report_path), "report_bytes": report_path.stat().st_size, "expected_head": expected_head, "project_lock_sha256": LOCK_SHA256, "project_pyproject_sha256": PYPROJECT_SHA256, "package_count": 26, "package_identities": package_identities, "publisher_bytes_recorded": 50, "native_file_count": len(native_rows), "native_inventory_sha256": hashlib.sha256(canonical(native_rows)).hexdigest(), "failures": []},
+        "audit": {"report_sha256": digest_bytes(report_path), "report_bytes": report_path.stat().st_size, "expected_head": expected_head, "project_lock_sha256": LOCK_SHA256, "project_pyproject_sha256": PYPROJECT_SHA256, "package_count": 26, "package_identities": package_identities, "package_evidence_sha256": package_evidence_sha256, "publisher_bytes_recorded": 50, "publisher_evidence_sha256": publisher_evidence_sha256, "native_file_count": len(native_rows), "native_inventory_sha256": native_evidence_sha256, "native_evidence_sha256": native_evidence_sha256, "failures": []},
         "native_inventory": native_rows,
         "preparation": {"evidence_sha256": digest_bytes(preparation_path), "schema": preparation["schema"], "status": preparation["status"], "publication": preparation["publication"]},
     }

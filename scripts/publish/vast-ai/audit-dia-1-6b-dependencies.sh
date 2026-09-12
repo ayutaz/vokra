@@ -10,6 +10,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PROJECT="$VOKRA_ROOT/tools/parity/dia_1_6b_reference"
 AUDITOR="$PROJECT/dependency_audit.py"
 OWNER_SCOPE="$PROJECT/owner_review_scope.py"
+DEPENDENCY_APPROVAL="$PROJECT/dependency_approval.py"
 PREPARER="$VOKRA_ROOT/scripts/publish/vast-ai/prepare-dia-1-6b-reference.sh"
 LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
 PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
@@ -65,7 +66,7 @@ require_contract() {
   local path
   [[ -d "$VOKRA_ROOT/.git" || -f "$VOKRA_ROOT/.git" ]] || { die 'VOKRA_ROOT is not a Vokra checkout'; return 2; }
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || { die 'VAST checkout must be clean'; return 2; }
-  for path in pyproject.toml uv.lock dependency_audit.py owner_review_scope.py; do
+  for path in pyproject.toml uv.lock dependency_audit.py owner_review_scope.py dependency_approval.py; do
     [[ -f "$PROJECT/$path" && ! -L "$PROJECT/$path" ]] || { die "missing or symlinked Dia audit input: $path"; return 2; }
   done
   [[ -x "$PREPARER" && ! -L "$PREPARER" ]] || { die 'missing or symlinked Dia preparation helper'; return 2; }
@@ -134,7 +135,7 @@ run_audit() {
 
 self_test() {
   local temp_root fake_repo fake_project fake_output fake_log rc temp_parent failed=0 exit_probe
-  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'prepare-dia-1-6b-reference.sh' '--no-install-package numpy' '--no-sync' 'dependency_audit.py' 'owner_review_scope.py' 'owner-review-scope.json' 'dependency-audit.json' 'publisher LICENSE/NOTICE bytes' 'native payload facts' 'NO_UPLOAD'; do
+  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'prepare-dia-1-6b-reference.sh' '--no-install-package numpy' '--no-sync' 'dependency_audit.py' 'owner_review_scope.py' 'dependency_approval.py' 'owner-review-scope.json' 'dependency-audit.json' 'publisher LICENSE/NOTICE bytes' 'native payload facts' 'NO_UPLOAD'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$0" | grep -v 'grep -En' >/dev/null; then failed=1; fi
