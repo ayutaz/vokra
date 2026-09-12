@@ -4037,6 +4037,11 @@ impl ModelKind {
             | "kotoba-whisper-v2_0"
             | "kotoba-whisper-v2.1"
             | "kotoba-whisper-v2_1"
+            // v2.2 is shape-identical to the family, so this spelling is
+            // parsed explicitly and dispatched by `convert_file_with_slug`
+            // to the authenticated v2.2 conversion surface below.
+            | "kotoba-whisper-v2.2"
+            | "kotoba-whisper-v2_2"
             | "kotoba-whisper-bilingual"
             | "kotoba-whisper-bilingual-v1.0"
             | "kotoba-whisper-bilingual-v1_0" => Some(Self::KotobaWhisper),
@@ -6383,6 +6388,14 @@ pub fn convert_file_with_slug(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ConvertSummary, ConvertError> {
+    if model == ModelKind::KotobaWhisper
+        && matches!(
+            slug.to_ascii_lowercase().as_str(),
+            "kotoba-whisper-v2.2" | "kotoba-whisper-v2_2"
+        )
+    {
+        return convert_kotoba_whisper_v22_file(input, output, license);
+    }
     match model {
         ModelKind::Qwen3Tts => convert_qwen3_tts_file_summary(
             model,
@@ -15013,6 +15026,43 @@ pub fn convert_kotoba_whisper_file(
     convert_file(ModelKind::KotobaWhisper, input, output)
 }
 
+/// Convert an explicitly selected Kotoba v2.2 checkpoint.
+///
+/// Shape-identical Kotoba releases remain on [`convert_kotoba_whisper_file`]
+/// and retain the historical v2.0 family stamp. The v2.2 identity is chosen
+/// only by the explicit `kotoba-whisper-v2.2` CLI selector and carries the
+/// authenticated HF repo and immutable revision in dedicated metadata.
+pub fn convert_kotoba_whisper_v22_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    if license.is_some() {
+        return Err(ConvertError::Usage(
+            "kotoba-whisper-v2.2 has an audited Apache-2.0 weight license; --license cannot override the authenticated release provenance"
+                .to_owned(),
+        ));
+    }
+    let bytes = std::fs::read(input)?;
+    let (builder, report) = models::kotoba_whisper::convert_v22(bytes)?;
+    let tensor_count = report.written;
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    write_new_file(output, &out_bytes)?;
+    Ok(ConvertSummary {
+        model: ModelKind::KotobaWhisper,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes: vec![format!(
+            "kotoba-whisper-v2.2: {} float weights written verbatim, {} non-float skipped; authenticated upstream revision {}",
+            report.written,
+            report.skipped_non_float,
+            models::kotoba_whisper::V22_REVISION,
+        )],
+    })
+}
+
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its
 /// tensor payloads.
 ///
@@ -15782,6 +15832,8 @@ mod modelkind_alias_and_roundtrip_tests {
                     "kotoba-whisper-v2_0",
                     "kotoba-whisper-v2.1",
                     "kotoba-whisper-v2_1",
+                    "kotoba-whisper-v2.2",
+                    "kotoba-whisper-v2_2",
                     "kotoba-whisper-bilingual",
                     "kotoba-whisper-bilingual-v1.0",
                     "kotoba-whisper-bilingual-v1_0",

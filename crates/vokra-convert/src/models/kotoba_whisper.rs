@@ -88,6 +88,22 @@ use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
 /// `WhisperConfig` reads the same chunk.
 pub(crate) const ARCH: &str = "kotoba-whisper";
 
+/// Authenticated Kotoba v2.2 source identity. The selector, not tensor
+/// shape, chooses this release; shape validation below only rejects a
+/// checkpoint that cannot be bound by the supported Whisper topology.
+pub(crate) const V22_UPSTREAM_HF: &str = "kotoba-tech/kotoba-whisper-v2.2";
+pub(crate) const V22_REVISION: &str = "9d33482a0eb9b57f1ad80708e8ac5538246d8355";
+/// `<|ja|>` from the v2.2 snapshot's `generation_config.json.lang_to_id`.
+/// The official v2.2 pipeline passes `language="ja"`; this id is kept next
+/// to the immutable revision so a shape-identical release cannot inherit it.
+const V22_JA_TOKEN_ID: u32 = 50_266;
+const V22_CHECKPOINT_BYTES: usize = 3_025_686_376;
+const V22_CHECKPOINT_SHA256: &str =
+    "e0ef3e7b379515f0c35d0e7885638ddef0fa9f5c8e3e3f88cbc6da9b39edd1e9";
+const V22_SOURCE: &str = "kotoba-tech/kotoba-whisper-v2.2@9d33482a0eb9b57f1ad80708e8ac5538246d8355 (Apache-2.0) — Kotoba Technologies Japanese-distilled Whisper";
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+
 // The vokra.whisper.* keys duplicated verbatim from `models/whisper.rs`
 // (kept as constants because the two arms cannot share private items
 // across the file boundary without more surface than this scaffold
@@ -229,6 +245,42 @@ pub(crate) struct KotobaWhisperReport {
 /// **Apache-2.0** (`Permissive`) — no runtime-side attribution
 /// obligation.
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KotobaWhisperReport), ConvertError> {
+    convert_variant(bytes, None)
+}
+
+/// Converts a checkpoint selected explicitly as Kotoba v2.2. The release
+/// identity is never inferred from the shape-identical family; callers must
+/// opt into this function through the `kotoba-whisper-v2.2` selector.
+pub(crate) fn convert_v22(
+    bytes: Vec<u8>,
+) -> Result<(GgufBuilder, KotobaWhisperReport), ConvertError> {
+    validate_v22_checkpoint_identity(&bytes)?;
+    convert_variant(bytes, Some(V22_REVISION))
+}
+
+/// Authenticate the exact v2.2 safetensors payload before its selector can
+/// stamp v2.2 provenance. Shape-identical Kotoba/v2.0 payloads are rejected.
+pub(crate) fn validate_v22_checkpoint_identity(bytes: &[u8]) -> Result<(), ConvertError> {
+    if bytes.len() != V22_CHECKPOINT_BYTES {
+        return Err(ConvertError::Parse(format!(
+            "kotoba-whisper-v2.2: checkpoint byte count mismatch (got {}, expected {})",
+            bytes.len(),
+            V22_CHECKPOINT_BYTES
+        )));
+    }
+    let actual = super::canary_1b_flash::hex(&super::canary_1b_flash::sha256(bytes));
+    if actual != V22_CHECKPOINT_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "kotoba-whisper-v2.2: checkpoint SHA-256 mismatch (got {actual}, expected {V22_CHECKPOINT_SHA256})"
+        )));
+    }
+    Ok(())
+}
+
+fn convert_variant(
+    bytes: Vec<u8>,
+    v22_revision: Option<&str>,
+) -> Result<(GgufBuilder, KotobaWhisperReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
 
     // Derive the model-name label from the checkpoint's shape
@@ -240,12 +292,17 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KotobaWhisperRepor
     let n_audio_layer = count_layers(&st, "model.encoder.layers.");
     let n_text_layer = count_layers(&st, "model.decoder.layers.");
     let n_vocab = tensor_dim(&st, "model.decoder.embed_tokens.weight", 0);
-    let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels, n_vocab) {
-        Ok(n) => n,
-        Err(_) if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels) => {
+    let name = match (
+        v22_revision,
+        derive_name(d_model, n_audio_layer, n_text_layer, n_mels, n_vocab),
+    ) {
+        (Some(_), Ok(_)) => "kotoba-whisper-v2.2",
+        (None, Ok(n)) => n,
+        (Some(_), Err(e)) => return Err(e),
+        (None, Err(_)) if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels) => {
             "kotoba-whisper-unknown"
         }
-        Err(e) => return Err(e),
+        (None, Err(e)) => return Err(e),
     };
     // The distil invariant: `n_text_layer < n_audio_layer`. A real
     // kotoba-whisper checkpoint always satisfies this; a mis-labelled
@@ -280,12 +337,19 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KotobaWhisperRepor
         LicenseClass::Permissive,
         "Apache-2.0",
         Some(name),
-        Some(
-            "kotoba-tech/kotoba-whisper-v2.0 (Apache-2.0) — Kotoba Technologies \
-             Japanese-distilled Whisper",
-        ),
+        Some(match v22_revision {
+            Some(_) => V22_SOURCE,
+            None => {
+                "kotoba-tech/kotoba-whisper-v2.0 (Apache-2.0) — Kotoba Technologies \
+                     Japanese-distilled Whisper"
+            }
+        }),
     );
-    write_hparams(&mut b, &st);
+    if let Some(revision) = v22_revision {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_HF, V22_UPSTREAM_HF);
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, revision);
+    }
+    write_hparams(&mut b, &st, v22_revision.is_some());
 
     let mut report = KotobaWhisperReport::default();
     for t in st.tensors() {
@@ -340,7 +404,7 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KotobaWhisperRepor
 /// `vokra.whisper.n_text_layer = 2`, which the runtime
 /// `WhisperConfig::from_gguf` (already data-driven since M0) honors
 /// end-to-end.
-fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) {
+fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile, is_v22: bool) {
     let d_model = tensor_dim(st, "model.encoder.conv1.weight", 0);
     let n_mels = tensor_dim(st, "model.encoder.conv1.weight", 1);
     let n_audio_ctx = tensor_dim(st, "model.encoder.embed_positions.weight", 0);
@@ -369,22 +433,22 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) {
     b.add_u32(KEY_FFN_DIM, ffn_dim as u32);
     b.add_u32(KEY_EOT, WHISPER_EOT);
 
-    // Default English-transcription decode prefix
-    // `<|startoftranscript|> <|en|> <|transcribe|> <|notimestamps|>`
-    // — derived from n_vocab so large-v3's +1 vocab shift lands the
-    // tail specials at the right ids. Note: kotoba-whisper is
-    // Japanese-specialized; a JA-specific decode prefix
-    // `<|startoftranscript|> <|ja|> <|transcribe|>
-    // <|notimestamps|>` may be a better default (a follow-up),
-    // but the current shape-driven prefix matches large-v3 semantics
-    // and the runtime can override at decode time.
+    // The legacy family path retains the historical English prefix. The
+    // explicit v2.2 path follows the official pipeline's language="ja"
+    // contract, with the language id authenticated by the pinned snapshot's
+    // generation_config.json. Task and no-timestamps ids remain derived from
+    // the vocabulary size as in the established Whisper converter.
     // `saturating_sub` keeps the converter infallible on tiny
     // synthetic n_vocab (the runtime rejects such a degenerate
     // model anyway).
     let n_vocab_u32 = n_vocab as u32;
     let decoder_start_ids = [
-        WHISPER_EOT + 1,                  // <|startoftranscript|>
-        WHISPER_EOT + 2,                  // <|en|> (first language)
+        WHISPER_EOT + 1, // <|startoftranscript|>
+        if is_v22 {
+            V22_JA_TOKEN_ID
+        } else {
+            WHISPER_EOT + 2
+        },
         n_vocab_u32.saturating_sub(1506), // <|transcribe|>
         n_vocab_u32.saturating_sub(1502), // <|notimestamps|>
     ];
@@ -633,5 +697,22 @@ mod tests {
             matches!(err, ConvertError::Parse(_)),
             "expected ConvertError::Parse, got {err:?}"
         );
+    }
+
+    #[test]
+    fn v22_identity_rejects_noncanonical_payload_without_model_parse() {
+        let err = validate_v22_checkpoint_identity(b"not-the-v2.2-checkpoint")
+            .expect_err("noncanonical v2.2 input must fail closed");
+        assert!(matches!(err, ConvertError::Parse(_)));
+    }
+
+    #[test]
+    fn v22_identity_checks_byte_count_before_hash() {
+        let err = validate_v22_checkpoint_identity(&[0u8; 32])
+            .expect_err("wrong-size v2.2 input must fail before provenance");
+        let ConvertError::Parse(message) = err else {
+            panic!("expected a parse error for wrong-size v2.2 input");
+        };
+        assert!(message.contains("byte count mismatch"));
     }
 }

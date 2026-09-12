@@ -592,7 +592,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          campplus | kokoro | cosyvoice2 | cosyvoice2-hift | cosyvoice3 | voxtral | mimi | nanocodec | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper | \
+                         distil-whisper | kotoba-whisper | kotoba-whisper-v2.2 | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
                          qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
                          sbv2 | deberta-v2 | deberta-v3 | xcodec2 | \
@@ -2614,6 +2614,7 @@ mod tests {
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("kotoba-whisper-v2.2", ModelKind::KotobaWhisper),
             ("whisper-medusa-v1", ModelKind::WhisperMedusaV1),
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
