@@ -5,9 +5,9 @@ description = "Pinned independent Transformers reference for distil/kotoba Whisp
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "numpy==1.26.4",
-  "torch==2.6.0",
   "transformers==5.10.4",
   "safetensors>=0.4,<1",
+  "torch==2.10.0",
 ]
 
 [tool.uv]
