@@ -31,6 +31,11 @@ jobs:
     name: model-free gates
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Forward pins for the two official HF repositories; this job remains
+      # model-free and does not download either checkpoint.
+      DISTIL_LARGE_V3_5_HF_ID: "distil-whisper/distil-large-v3.5"
+      KOTOBA_WHISPER_V2_2_HF_ID: "kotoba-tech/kotoba-whisper-v2.2"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
