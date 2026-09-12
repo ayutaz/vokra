@@ -22,6 +22,7 @@ import sysconfig
 import tarfile
 import tempfile
 import tomllib
+import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -92,6 +93,9 @@ OWNER_CANDIDATE_SCOPE = (
     "owner/legal: review every resolved Linux x86_64 package, Torch/torchaudio "
     "bundled/native files, and publisher LICENSE/NOTICE bytes before execution"
 )
+MAX_SDIST_TAR_MEMBERS = 4096
+MAX_PUBLISHER_MEMBER_BYTES = 1 << 20
+MAX_PUBLISHER_TOTAL_BYTES = 8 << 20
 
 
 def _digest(value: Any) -> str:
@@ -448,6 +452,32 @@ def _sdist_license_fallback(
         failures.append(f"locked sdist identity is malformed: {name}")
         return []
     expected_sha = locked_hash.removeprefix("sha256:")
+    expected_version = row.get("version", "")
+    parsed_url = urllib.parse.urlsplit(url)
+    path_parts = parsed_url.path.split("/")
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc != "files.pythonhosted.org"
+        or parsed_url.query
+        or parsed_url.fragment
+        or len(path_parts) != 6
+        or path_parts[1] != "packages"
+        or not re.fullmatch(r"[0-9a-f]{2}", path_parts[2] or "")
+        or not re.fullmatch(r"[0-9a-f]{2}", path_parts[3] or "")
+        or not re.fullmatch(r"[0-9a-f]{32,64}", path_parts[4] or "")
+        or not path_parts[5].endswith(".tar.gz")
+    ):
+        failures.append(f"locked sdist URL is not an exact files.pythonhosted.org path: {name}")
+        return []
+    filename_stem = path_parts[5][:-len(".tar.gz")]
+    package_prefix, separator, filename_version = filename_stem.rpartition("-")
+    if (
+        not separator
+        or filename_version != expected_version
+        or pep503_name(package_prefix) != pep503_name(name)
+    ):
+        failures.append(f"locked sdist filename is not bound to the package row: {name}")
+        return []
     temporary_fd, temporary_name = tempfile.mkstemp(prefix=f"zonos-{name}-", suffix=".tar.gz")
     os.close(temporary_fd)
     temporary = Path(temporary_name)
@@ -456,7 +486,20 @@ def _sdist_license_fallback(
         size = 0
         try:
             with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as output:
+                response_url = response.geturl()
+                if response_url != url:
+                    failures.append(f"locked sdist redirect is forbidden: {name}")
+                    return []
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None and (
+                    not content_length.isdigit() or int(content_length) != locked_size
+                ):
+                    failures.append(f"locked sdist Content-Length mismatch: {name}")
+                    return []
                 for block in iter(lambda: response.read(1 << 20), b""):
+                    if size + len(block) > locked_size:
+                        failures.append(f"locked sdist stream exceeds locked size: {name}")
+                        return []
                     digest.update(block)
                     size += len(block)
                     output.write(block)
@@ -469,14 +512,30 @@ def _sdist_license_fallback(
         recovered: list[dict[str, Any]] = []
         try:
             with tarfile.open(temporary, "r:*") as package:
-                for member in sorted(package.getmembers(), key=lambda item: item.name):
+                members = package.getmembers()
+                if len(members) > MAX_SDIST_TAR_MEMBERS:
+                    failures.append(f"locked sdist has too many tar members: {name}")
+                    return []
+                seen_members: set[str] = set()
+                extracted_total = 0
+                for member in sorted(members, key=lambda item: item.name):
                     member_path = PurePosixPath(member.name)
                     basename = member_path.name.lower()
                     if not basename.startswith(("license", "licence", "notice", "copying")):
                         continue
+                    if member.name in seen_members:
+                        failures.append(f"duplicate publisher member in locked sdist: {name}:{member.name}")
+                        continue
+                    seen_members.add(member.name)
                     if member.issym() or member.islnk() or not member.isfile() or member_path.is_absolute() or ".." in member_path.parts:
                         failures.append(f"unsafe publisher member in locked sdist: {name}:{member.name}")
                         continue
+                    if member.size > MAX_PUBLISHER_MEMBER_BYTES:
+                        failures.append(f"publisher member exceeds byte bound: {name}:{member.name}")
+                        continue
+                    if extracted_total + member.size > MAX_PUBLISHER_TOTAL_BYTES:
+                        failures.append(f"publisher members exceed cumulative byte bound: {name}")
+                        return []
                     source = package.extractfile(member)
                     if source is None:
                         failures.append(f"publisher member cannot be read: {name}:{member.name}")
@@ -496,6 +555,9 @@ def _sdist_license_fallback(
                     try:
                         with source:
                             for block in iter(lambda: source.read(1 << 20), b""):
+                                if payload_size + len(block) > MAX_PUBLISHER_MEMBER_BYTES:
+                                    failures.append(f"publisher member stream exceeds byte bound: {name}:{member.name}")
+                                    break
                                 payload_digest.update(block)
                                 payload_size += len(block)
                                 if target is not None:
@@ -503,6 +565,12 @@ def _sdist_license_fallback(
                     finally:
                         if target is not None:
                             target.close()
+                    if payload_size > MAX_PUBLISHER_MEMBER_BYTES or payload_size != member.size:
+                        if destination is not None:
+                            destination.unlink(missing_ok=True)
+                        failures.append(f"publisher member size is not exact: {name}:{member.name}")
+                        continue
+                    extracted_total += payload_size
                     row_value: dict[str, Any] = {
                         "distribution": name,
                         "path": member.name,
@@ -588,6 +656,33 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
                 failures.append(f"native file is unsafe: {path}")
                 continue
             native.append(_native_record(path, root, failures))
+    numpy_native = [
+        row for row in native
+        if str(row.get("path", "")).casefold().startswith(("numpy/", "numpy.libs/"))
+    ]
+    numpy_forbidden = sorted(
+        {
+            item
+            for row in numpy_native
+            for item in [row.get("path", ""), *row.get("needed", [])]
+            if any(
+                token in str(item).casefold()
+                for token in ("openblas", "libgfortran", "libquadmath")
+            )
+        }
+    )
+    if not numpy_native:
+        failures.append("NumPy native payload evidence is missing")
+    if numpy_forbidden:
+        failures.append(
+            "NumPy no-BLAS policy boundary detected: " + ",".join(numpy_forbidden)
+        )
+    numpy_native_policy = {
+        "schema": "vokra-zonos-numpy-native-policy-v1",
+        "status": "PASS_NO_FORBIDDEN_BLAS" if numpy_native and not numpy_forbidden else "FAIL_FORBIDDEN_BLAS",
+        "native_file_count": len(numpy_native),
+        "forbidden_boundaries": numpy_forbidden,
+    }
     archive_root = _prepare_archive(publisher_archive)
     publisher_files: list[dict[str, Any]] = []
     archived_files: list[dict[str, Any]] = []
@@ -665,6 +760,7 @@ def installed_audit(publisher_archive: Path | None = None) -> dict[str, Any]:
         "native_files": native,
         "publisher_license_notice_files": publisher_files,
         "publisher_archive": archive_manifest,
+        "numpy_native_policy": numpy_native_policy,
         "digests": {
             "installed_closure_sha256": _digest(installed_rows),
             "native_files_sha256": _digest(native),
@@ -701,6 +797,7 @@ def audit(
         "installed_closure_sha256": installed_report.get("digests", {}).get("installed_closure_sha256"),
         "native_files_sha256": installed_report.get("digests", {}).get("native_files_sha256"),
         "publisher_files_sha256": installed_report.get("digests", {}).get("publisher_files_sha256"),
+        "numpy_native_policy_sha256": _digest(installed_report.get("numpy_native_policy")),
         "publisher_archive_manifest_sha256": (
             installed_report.get("publisher_archive") or {}
         ).get("manifest_sha256"),
@@ -752,7 +849,7 @@ def validate_report(path: Path) -> None:
         raise RuntimeError("candidate scope is missing")
     required_scope = {
         "schema", "lock_rows_sha256", "installed_closure_sha256", "native_files_sha256",
-        "publisher_files_sha256", "publisher_archive_manifest_sha256", "failures",
+        "publisher_files_sha256", "numpy_native_policy_sha256", "publisher_archive_manifest_sha256", "failures",
         "model_access", "source_access", "checkpoint_access", "publication",
         "execution_identity",
     }
@@ -775,7 +872,7 @@ def validate_report(path: Path) -> None:
     hex64 = re.compile(r"[0-9a-f]{64}")
     for key in (
         "lock_rows_sha256", "installed_closure_sha256", "native_files_sha256",
-        "publisher_files_sha256", "publisher_archive_manifest_sha256",
+        "publisher_files_sha256", "numpy_native_policy_sha256", "publisher_archive_manifest_sha256",
     ):
         if not isinstance(scope[key], str) or not hex64.fullmatch(scope[key]):
             raise RuntimeError(f"candidate scope digest is missing or malformed: {key}")
@@ -800,8 +897,25 @@ def validate_report(path: Path) -> None:
     publisher = installed.get("publisher_license_notice_files")
     digests = installed.get("digests")
     archive = installed.get("publisher_archive")
-    if not all(isinstance(value, list) for value in (installed_rows, native, publisher)) or not isinstance(digests, dict):
+    numpy_native_policy = installed.get("numpy_native_policy")
+    if (
+        not all(isinstance(value, list) for value in (installed_rows, native, publisher))
+        or not isinstance(digests, dict)
+        or not isinstance(numpy_native_policy, dict)
+    ):
         raise RuntimeError("installed closure/native/publisher facts are incomplete")
+    numpy_rows = [
+        row for row in native
+        if isinstance(row, dict)
+        and str(row.get("path", "")).casefold().startswith(("numpy/", "numpy.libs/"))
+    ]
+    if (
+        numpy_native_policy.get("schema") != "vokra-zonos-numpy-native-policy-v1"
+        or numpy_native_policy.get("status") != "PASS_NO_FORBIDDEN_BLAS"
+        or numpy_native_policy.get("forbidden_boundaries") != []
+        or numpy_native_policy.get("native_file_count") != len(numpy_rows)
+    ):
+        raise RuntimeError("NumPy native policy does not prove a no-BLAS closure")
     if not isinstance(archive, dict):
         raise RuntimeError("publisher archive evidence is missing")
     archive_root = Path(archive.get("directory", ""))
@@ -862,6 +976,8 @@ def validate_report(path: Path) -> None:
             raise RuntimeError(f"{key} is not hash-bound")
     if scope["publisher_archive_manifest_sha256"] != archive["manifest_sha256"]:
         raise RuntimeError("publisher archive manifest is not scope-bound")
+    if scope["numpy_native_policy_sha256"] != _digest(numpy_native_policy):
+        raise RuntimeError("NumPy native policy is not scope-bound")
     for row in native:
         if not isinstance(row, dict) or not isinstance(row.get("sha256"), str) or not hex64.fullmatch(row["sha256"]):
             raise RuntimeError("native file hash evidence is malformed")
@@ -982,12 +1098,16 @@ def self_test() -> None:
         class SyntheticResponse:
             def __init__(self, value: bytes):
                 self.value = value
+                self.headers = {"Content-Length": str(len(value))}
 
             def __enter__(self):
                 return self
 
             def __exit__(self, *_args):
                 return False
+
+            def geturl(self):
+                return safetensors_row["sdist"]["url"]
 
             def read(self, size: int = -1) -> bytes:
                 value, self.value = self.value[:size], self.value[size:]
@@ -1009,6 +1129,91 @@ def self_test() -> None:
             "bytes": sdist_bytes,
         }
         assert (archive_root / recovered[0]["archive_path"]).is_file()
+        def synthetic_row_for(path: Path) -> dict[str, Any]:
+            value = dict(safetensors_row)
+            value["sdist"] = {
+                "url": safetensors_row["sdist"]["url"],
+                "hash": f"sha256:{sha256(path)}",
+                "size": path.stat().st_size,
+            }
+            return value
+
+        malformed_failures: list[str] = []
+        malformed_row = dict(synthetic_row)
+        malformed_row["sdist"] = dict(synthetic_row["sdist"], url="http://files.pythonhosted.org/bad.tar.gz")
+        assert not _sdist_license_fallback(
+            "safetensors", malformed_row, archive_root / "bad-url", malformed_failures
+        )
+        assert any("exact files.pythonhosted.org path" in failure for failure in malformed_failures)
+
+        oversized_failures: list[str] = []
+        oversized_data = b"x" * (sdist_bytes + 1)
+
+        class OversizedResponse(SyntheticResponse):
+            def __init__(self, value: bytes):
+                super().__init__(value)
+                self.headers = {}
+
+        original_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = lambda _url, timeout=60: OversizedResponse(oversized_data)
+        try:
+            assert not _sdist_license_fallback(
+                "safetensors", synthetic_row, archive_root / "oversized", oversized_failures
+            )
+        finally:
+            urllib.request.urlopen = original_urlopen
+        assert any("stream exceeds locked size" in failure for failure in oversized_failures)
+
+        redirect_failures: list[str] = []
+
+        class RedirectResponse(SyntheticResponse):
+            def geturl(self):
+                return "https://files.pythonhosted.org/redirected.tar.gz"
+
+        urllib.request.urlopen = lambda _url, timeout=60: RedirectResponse(synthetic_sdist.read_bytes())
+        try:
+            assert not _sdist_license_fallback(
+                "safetensors", synthetic_row, archive_root / "redirect", redirect_failures
+            )
+        finally:
+            urllib.request.urlopen = original_urlopen
+        assert any("redirect is forbidden" in failure for failure in redirect_failures)
+
+        unsafe_sdist = synthetic_sdist.with_name("unsafe.tar.gz")
+        with tarfile.open(unsafe_sdist, "w:gz") as package:
+            safe_payload = b"safe\n"
+            safe_member = tarfile.TarInfo("safetensors/LICENSE")
+            safe_member.size = len(safe_payload)
+            package.addfile(safe_member, io.BytesIO(safe_payload))
+            duplicate = tarfile.TarInfo("safetensors/LICENSE")
+            duplicate.size = len(safe_payload)
+            package.addfile(duplicate, io.BytesIO(safe_payload))
+            traversal = tarfile.TarInfo("../LICENSE")
+            traversal.size = len(safe_payload)
+            package.addfile(traversal, io.BytesIO(safe_payload))
+            link = tarfile.TarInfo("LICENSE-link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "safetensors/LICENSE"
+            package.addfile(link)
+            oversized_member = tarfile.TarInfo("LICENSE-oversized")
+            oversized_member.size = MAX_PUBLISHER_MEMBER_BYTES + 1
+            package.addfile(oversized_member, io.BytesIO(b"x" * (MAX_PUBLISHER_MEMBER_BYTES + 1)))
+        unsafe_row = synthetic_row_for(unsafe_sdist)
+        unsafe_failures: list[str] = []
+        urllib.request.urlopen = lambda _url, timeout=60: SyntheticResponse(unsafe_sdist.read_bytes())
+        unsafe_archive = archive_root / "unsafe"
+        unsafe_archive.mkdir()
+        try:
+            unsafe_recovered = _sdist_license_fallback(
+                "safetensors", unsafe_row, unsafe_archive, unsafe_failures
+            )
+        finally:
+            urllib.request.urlopen = original_urlopen
+        assert len(unsafe_recovered) == 1
+        assert any("duplicate publisher member" in failure for failure in unsafe_failures)
+        assert any("unsafe publisher member" in failure for failure in unsafe_failures)
+        assert any("exceeds byte bound" in failure for failure in unsafe_failures)
+        unsafe_sdist.unlink(missing_ok=True)
     finally:
         urllib.request.urlopen = original_urlopen
         synthetic_sdist.unlink(missing_ok=True)
@@ -1055,6 +1260,12 @@ def self_test() -> None:
         "installed_distributions": [],
         "failures": [],
         "native_files": [],
+        "numpy_native_policy": {
+            "schema": "vokra-zonos-numpy-native-policy-v1",
+            "status": "PASS_NO_FORBIDDEN_BLAS",
+            "native_file_count": 0,
+            "forbidden_boundaries": [],
+        },
         "publisher_license_notice_files": [],
         "publisher_archive": {
             "directory": str(archive_dir),
@@ -1074,6 +1285,7 @@ def self_test() -> None:
             "installed_closure_sha256": complete["installed"]["digests"]["installed_closure_sha256"],
             "native_files_sha256": complete["installed"]["digests"]["native_files_sha256"],
             "publisher_files_sha256": complete["installed"]["digests"]["publisher_files_sha256"],
+            "numpy_native_policy_sha256": _digest(complete["installed"]["numpy_native_policy"]),
             "publisher_archive_manifest_sha256": complete["installed"]["publisher_archive"]["manifest_sha256"],
             "failures": [],
         }
