@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/zonos_v0_1_reference"
 AUDITOR="$PROJECT/dependency_audit.py"
+PREPARER="$PROJECT/prepare_numpy_no_blas.sh"
 
 die() { echo "zonos-dependency-audit: ERROR: $*" >&2; exit 2; }
 
@@ -46,7 +47,9 @@ require_host() {
 self_test() {
   local failed=0 temporary output archive test_repo test_worktree test_head saved_root
   [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" ]] || failed=1
+  [[ -x "$PREPARER" && ! -L "$PREPARER" ]] || failed=1
   grep -Fq 'zonos_v0_1_reference' "$0" || failed=1
+  grep -Fq 'prepare_numpy_no_blas.sh' "$0" || failed=1
   grep -Fq -- 'uv sync --frozen --no-install-project' "$0" || failed=1
   grep -Fq -- ' -d "$ROOT/.git" || -f "$ROOT/.git" ' "$0" || failed=1
   for forbidden in \
@@ -102,6 +105,7 @@ self_test() {
     failed=1
   fi
   rm -rf "$temporary"
+  bash "$PREPARER" --self-test || failed=1
   (( failed == 0 )) || return 1
   echo 'audit-zonos-v0-1-dependencies.sh self-test: OK'
 }
@@ -119,15 +123,19 @@ publisher_archive="$6"
 require_clean_head "$expected_head"
 require_absent_canonical_output "$output"
 require_absent_canonical_output "$publisher_archive"
+preparation="${ZONOS_NUMPY_PREPARATION:-${publisher_archive}.numpy-no-blas}"
+require_absent_canonical_output "$preparation"
 require_host
 [[ "${VOKRA_ZONOS_DEPENDENCY_AUDIT:-0}" == 1 ]] || die 'VOKRA_ZONOS_DEPENDENCY_AUDIT=1 is absent'
-for command in git realpath awk uv; do command -v "$command" >/dev/null || die "missing tool: $command"; done
+for command in git realpath awk uv bash; do command -v "$command" >/dev/null || die "missing tool: $command"; done
+[[ -x "$PREPARER" && ! -L "$PREPARER" ]] || die 'NumPy no-BLAS preparation helper is missing or symlinked'
 
 cd "$ROOT"
-UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv sync --frozen --no-install-project --project "$PROJECT" --python 3.12
+VOKRA_PUBLISH_ON_VAST=1 bash "$PREPARER" --output-dir "$preparation"
+environment="$preparation/venv"
+[[ -d "$environment" && ! -L "$environment" ]] || die 'no-BLAS preparation environment is missing or symlinked'
 set +e
-UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+UV_PROJECT_ENVIRONMENT="$environment" UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
   uv run --frozen --project "$PROJECT" --no-sync --python 3.12 python "$AUDITOR" \
   --installed --expected-head "$expected_head" --publisher-archive "$publisher_archive" --output "$output"
 audit_status=$?
