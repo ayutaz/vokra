@@ -119,7 +119,68 @@ def hypothesis_tokens(hypothesis: object) -> list[int]:
     return tokens
 
 
+def cpu_reference_device(torch_module: object) -> object:
+    """Return the only device allowed for the independent NeMo oracle.
+
+    VAST workers may expose an incompatible CUDA device.  The ReazonSpeech
+    reference is the CPU leg, so CUDA visibility must never change where the
+    official model is restored or executed.
+    """
+    device = torch_module.device("cpu")
+    if getattr(device, "type", None) != "cpu":
+        raise RuntimeError(f"reference device policy returned non-CPU device: {device}")
+    return device
+
+
+def cuda_device_diagnostic(torch_module: object) -> str | None:
+    """Record the visible CUDA device without making it the reference device."""
+    try:
+        available = bool(torch_module.cuda.is_available())
+    except Exception:  # diagnostics must not block the CPU oracle
+        return None
+    if not available:
+        return None
+    try:
+        return str(torch_module.cuda.get_device_name(0))
+    except Exception:  # an incompatible driver must not block the CPU oracle
+        return None
+
+
 def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert 'device = cpu_reference_device(torch)' in source
+    assert 'torch.device("' + 'cuda" if' not in source
+    assert "torch.cuda." + "manual_seed_all" not in source
+    assert '"reference_' + 'device_policy"' not in source
+    assert '"cuda_' + 'available"' not in source
+    assert '"cuda_device": cuda_device' in source
+
+    class FakeDevice:
+        type = "cpu"
+
+    class FakeTorch:
+        @staticmethod
+        def device(name: str) -> FakeDevice:
+            assert name == "cpu"
+            return FakeDevice()
+
+    assert getattr(cpu_reference_device(FakeTorch()), "type") == "cpu"
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_name(index: int) -> str:
+            assert index == 0
+            return "diagnostic-only"
+
+    class FakeTorchWithCuda:
+        cuda = FakeCuda()
+
+    assert cuda_device_diagnostic(FakeTorchWithCuda()) == "diagnostic-only"
+
     class Hypothesis:
         y_sequence = [1, 2, 2]
 
@@ -197,9 +258,8 @@ def main() -> int:
 
     torch.set_num_threads(1)
     torch.manual_seed(1234)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1234)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = cpu_reference_device(torch)
+    cuda_device = cuda_device_diagnostic(torch)
     cpu_capability = getattr(torch.backends.cpu, "get_cpu_capability", None)
     environment = {
         "platform": platform.platform(),
@@ -210,9 +270,7 @@ def main() -> int:
             cpu_capability() if callable(cpu_capability) else "unavailable"
         ),
         "device": str(device),
-        "cuda_device": (
-            torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
-        ),
+        "cuda_device": cuda_device,
     }
     print(
         json.dumps({"reference_environment": environment}, sort_keys=True),

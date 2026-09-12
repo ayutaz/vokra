@@ -18,7 +18,10 @@ import re
 import subprocess
 import sys
 import sysconfig
+import tempfile
 from pathlib import Path
+
+from torch_compat import install_float8_import_compat
 
 
 COMPACT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
@@ -56,7 +59,7 @@ EXPECTED = {
     "typer": "0.9.0",
     "typing-extensions": "4.16.0",
 }
-NATIVE_TOP_LEVELS = {"hf_xet", "markupsafe", "numpy", "yaml", "regex", "safetensors", "sentencepiece", "tokenizers", "torch"}
+NATIVE_TOP_LEVELS = {"hf_xet", "functorch", "markupsafe", "numpy", "yaml", "regex", "safetensors", "sentencepiece", "tokenizers", "torch"}
 SYSTEM_NEEDED = {
     "linux-vdso.so.1",
     "libc.so.6",
@@ -151,6 +154,73 @@ def elf_needed(path: Path) -> list[str]:
     return sorted(set(NEEDED_RE.findall(result.stdout)))
 
 
+def needed_allowlist(relative: str) -> set[str]:
+    """Return the reviewed ELF dependency set for an installed native path."""
+    return TORCH_NEEDED if relative.startswith(("torch/", "functorch/")) else SYSTEM_NEEDED
+
+
+def unreviewed_needed(relative: str, needed: list[str]) -> list[str]:
+    return sorted(set(needed) - needed_allowlist(relative))
+
+
+def require_import_shim_order(source: str) -> None:
+    """Keep the torch compatibility shim before every Transformers import."""
+    if "def run(" in source:
+        source = source.split("def run(", 1)[1]
+    markers = (
+        'torch = importlib.import_module("torch")',
+        "float8_import_compat = install_float8_import_compat(torch)",
+        'transformers = importlib.import_module("transformers")',
+    )
+    positions = [source.find(marker) for marker in markers]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        fail("post-sync audit must apply the torch compatibility shim before Transformers import")
+
+
+def self_test() -> int:
+    require_import_shim_order(Path(__file__).read_text(encoding="utf-8"))
+    try:
+        require_import_shim_order(
+            'torch = importlib.import_module("torch")\n'
+            'transformers = importlib.import_module("transformers")\n'
+            'float8_import_compat = install_float8_import_compat(torch)\n'
+        )
+    except RuntimeError:
+        pass
+    else:
+        fail("out-of-order Transformers import was accepted by the self-test")
+    functorch_path = "functorch/_C.cpython-312-x86_64-linux-gnu.so"
+    if "functorch" not in NATIVE_TOP_LEVELS:
+        fail("functorch native namespace is not allowlisted")
+    if needed_allowlist(functorch_path) is not TORCH_NEEDED:
+        fail("functorch native files do not use the torch NEEDED allowlist")
+    if "libtorch_cpu.so" not in needed_allowlist(functorch_path):
+        fail("torch NEEDED allowlist is incomplete for functorch")
+    if unreviewed_needed(functorch_path, ["libc.so.6", "libtorch.so"]):
+        fail("self-test fixture did not exercise the reviewed functorch dependencies")
+    if not unreviewed_needed(functorch_path, ["libunknown.so"]):
+        fail("unknown NEEDED entry was accidentally allowed")
+    with tempfile.TemporaryDirectory(prefix="speecht5-post-sync-audit-") as directory:
+        root = Path(directory)
+        fixture = root / functorch_path
+        fixture.parent.mkdir(parents=True)
+        fixture.write_bytes(b"fixture")
+        if native_files(root) != [fixture]:
+            fail("functorch native fixture was not discovered")
+        unknown = root / "unknown_namespace" / "_C.so"
+        unknown.parent.mkdir()
+        unknown.write_bytes(b"fixture")
+        try:
+            native_files(root)
+        except RuntimeError as exc:
+            if "unexpected native artifact" not in str(exc):
+                raise
+        else:
+            fail("unknown native top-level namespace was accepted")
+    print("speecht5 post-sync audit self-test: PASS")
+    return 0
+
+
 def run(compact_path: Path, output_path: Path) -> int:
     compact = audit_compact(compact_path)
     if sys.platform != "linux" or sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12):
@@ -161,8 +231,7 @@ def run(compact_path: Path, output_path: Path) -> int:
     for path in native_files(site_packages):
         relative = path.relative_to(site_packages).as_posix()
         needed = elf_needed(path)
-        allowed = TORCH_NEEDED if relative.startswith("torch/") else SYSTEM_NEEDED
-        unknown = sorted(set(needed) - allowed)
+        unknown = unreviewed_needed(relative, needed)
         if unknown:
             fail(f"unreviewed ELF NEEDED entries in {relative}: {unknown}")
         observed_native.append({"path": relative, "sha256": sha256(path), "needed": needed})
@@ -178,11 +247,14 @@ def run(compact_path: Path, output_path: Path) -> int:
         fail("torch bundled libgomp identity drifted")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    for module in ("numpy", "torch", "transformers"):
-        importlib.import_module(module)
+    importlib.import_module("numpy")
+    torch = importlib.import_module("torch")
+    float8_import_compat = install_float8_import_compat(torch)
     transformers = importlib.import_module("transformers")
     if not hasattr(transformers, "SpeechT5ForTextToSpeech"):
         fail("locked Transformers package does not expose SpeechT5ForTextToSpeech")
+    if float8_import_compat not in {"native", "shimmed"}:
+        fail(f"unexpected torch compatibility status: {float8_import_compat}")
     result = {
         "schema": "vokra-speecht5-post-sync-audit-v1",
         "full_audit_sha256": compact["full_audit_sha256"],
@@ -192,19 +264,31 @@ def run(compact_path: Path, output_path: Path) -> int:
         "native_files": observed_native,
         "numpy_source_build": {"numpy_libs_entries": 0, "forbidden_bundled_libraries": [], "setup_args": ["-Dblas=none", "-Dlapack=none"]},
         "torch_gomp": {"path": TORCH_GOMP, "sha256": TORCH_GOMP_SHA256},
+        "float8_import_compat": float8_import_compat,
         "verdict": "PASS",
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    print(f"SPEECHT5_POST_SYNC_AUDIT packages={len(installed)} native_files={len(observed_native)} verdict=PASS")
+    print(
+        f"SPEECHT5_POST_SYNC_AUDIT packages={len(installed)} "
+        f"native_files={len(observed_native)} "
+        f"float8_import_compat={float8_import_compat} verdict=PASS"
+    )
     return 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--compact-evidence", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--compact-evidence", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.self_test:
+        if args.compact_evidence is not None or args.output is not None:
+            parser.error("--self-test accepts no audit paths")
+        raise SystemExit(self_test())
+    if args.compact_evidence is None or args.output is None:
+        parser.error("--compact-evidence and --output are required")
     try:
         raise SystemExit(run(args.compact_evidence, args.output))
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:

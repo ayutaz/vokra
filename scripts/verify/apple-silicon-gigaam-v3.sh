@@ -37,11 +37,17 @@ if [[ "${1:-}" == --self-test ]]; then
   grep -En 'VOKRA_REMOTE_APPLE_SILICON=1|VOKRA_EXPECTED_COMMIT|git rev-parse HEAD|status --porcelain|REMOTE_BUNDLE_NO_LOCAL_PULL|parity_gigaam_v3_real|validation-summary.json|GIGAAM_V3_APPLE_EVIDENCE_DIR' "$SELF" >/dev/null || die "Apple contract missing"
   grep -En 'uname -s.*Darwin|uname -m.*arm64|xcrun -f metal|shasum -a 256' "$SELF" >/dev/null || die "Apple platform/tool gate missing"
   grep -En -- '--features metal' "$SELF" >/dev/null || die "Metal feature build gate missing"
-  grep -En 'grep -Ec.*real_gigaam_v3_trace_matches_official|test result: ok.*1 passed' "$SELF" >/dev/null || die "Apple parity log gate missing"
-  grep -En '== 1 \]\]|test result: ok\\\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$SELF" >/dev/null || die "Apple exact parity result gate missing"
+  grep -En 'require_named_test_pass|named_line|ok_line|result_line|real_gigaam_v3_trace_matches_official|test result: ok.*1 passed' "$SELF" >/dev/null || die "Apple parity log gate missing"
+  grep -En '== 1 \]\]|test result: ok\\\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out' "$SELF" >/dev/null || die "Apple exact parity result gate missing"
+  legacy_result='0 filtered'
+  legacy_result+=' out'
+  if grep -Fq -- "$legacy_result" "$SELF"; then die "legacy zero-filter Cargo result is still accepted"; fi
   grep -En 'REMOTE_PACKET_REAL=|TARGET_REAL=|EVIDENCE_REAL=|REMOTE_PACKET_REAL/\*|validation-summary.json' "$SELF" >/dev/null || die "remote packet/evidence containment gate missing"
   grep -En 'git_commit|metal_apple_status.*PENDING_APPLE|input_metal_apple_status|fingerprint.txt' "$SELF" >/dev/null || die "commit/PENDING_APPLE/fingerprint gate missing"
-  grep -En 'tools/parity/gigaam_v3/uv.lock|V3_PROJECT' "$SELF" >/dev/null || die "dedicated dependency gate missing"
+  grep -En 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python' "$SELF" >/dev/null || die "stdlib-only portable route missing"
+  forbidden_project="--frozen --project \"\$V3_"
+  forbidden_project+='PROJECT"'
+  if grep -Fq -- "$forbidden_project" "$SELF"; then die "Apple route must not resolve the Linux-only dedicated project"; fi
   echo "apple-silicon-gigaam-v3.sh self-test: OK"
   exit 0
 fi
@@ -70,8 +76,6 @@ fi
 ACTUAL_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 [[ "$ACTUAL_COMMIT" == "$VOKRA_EXPECTED_COMMIT" ]] || die "checkout commit does not match VOKRA_EXPECTED_COMMIT"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
-[[ -f "$ROOT/tools/parity/gigaam_v3/pyproject.toml" && -f "$ROOT/tools/parity/gigaam_v3/uv.lock" ]] || die "dedicated GigaAM v3 pyproject.toml+uv.lock are not reviewed"
-V3_PROJECT="$ROOT/tools/parity/gigaam_v3"
 [[ "${REMOTE_BUNDLE_NO_LOCAL_PULL:-0}" == 1 ]] || die "REMOTE_BUNDLE_NO_LOCAL_PULL=1 is required"
 [[ -n "${GIGAAM_REMOTE_PACKET:-}" && -n "${GIGAAM_V3_GGUF:-}" && -n "${GIGAAM_V3_REFERENCE_DIR:-}" && -n "${GIGAAM_V3_APPROVAL_JSON:-}" && -n "${GIGAAM_V3_APPLE_EVIDENCE_DIR:-}" ]] || die "set remote packet, GGUF, reference, approval, and external evidence paths"
 for path in "$GIGAAM_REMOTE_PACKET" "$GIGAAM_V3_GGUF" "$GIGAAM_V3_REFERENCE_DIR" "$GIGAAM_V3_APPROVAL_JSON" "$GIGAAM_V3_APPLE_EVIDENCE_DIR"; do
@@ -98,8 +102,8 @@ GGUF_SHA256="$(hash_file "$GIGAAM_V3_GGUF")"
 [[ "$GGUF_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "GGUF SHA-256 is invalid"
 REFERENCE_MANIFEST_SHA256="$(hash_file "$GIGAAM_V3_REFERENCE_DIR/manifest.json")"
 [[ "$REFERENCE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "reference manifest SHA-256 is invalid"
-uv run --frozen --project "$V3_PROJECT" --python 3.12 python "$ROOT/tools/parity/gigaam_v3_validation.py" --portable "$GIGAAM_V3_REFERENCE_DIR"
-uv run --frozen --project "$V3_PROJECT" --python 3.12 python - "$GIGAAM_V3_APPROVAL_JSON" "$GGUF_SHA256" "$REFERENCE_MANIFEST_SHA256" "$ACTUAL_COMMIT" <<'PY'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/gigaam_v3_validation.py" --portable "$GIGAAM_V3_REFERENCE_DIR"
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$GIGAAM_V3_APPROVAL_JSON" "$GGUF_SHA256" "$REFERENCE_MANIFEST_SHA256" "$ACTUAL_COMMIT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -155,15 +159,34 @@ mkdir "$EVIDENCE_DIR"
 } > "$EVIDENCE_DIR/fingerprint.txt"
 [[ -f "$EVIDENCE_DIR/fingerprint.txt" && ! -L "$EVIDENCE_DIR/fingerprint.txt" ]] || die "fingerprint evidence was not written safely"
 export GIGAAM_V3_REFERENCE_MANIFEST_SHA256="$REFERENCE_MANIFEST_SHA256"
+require_named_test_pass() {
+  local log_file="$1" test_name="$2" named_count inline_pass standalone_pass
+  local named_match result_match named_line result_line ok_match ok_line
+  named_count="$(grep -Ec "^test [^ ]*${test_name} \.\.\.($| )" "$log_file" || true)"
+  [[ "$named_count" == 1 ]] || die "Apple parity log named test mismatch"
+  named_match="$(grep -nE "^test [^ ]*${test_name} \.\.\.($| )" "$log_file" || true)"
+  named_line="${named_match%%:*}"
+  result_match="$(grep -nE '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_file" || true)"
+  [[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_file" || true)" == 1 ]] || die "Apple parity log result mismatch"
+  result_line="${result_match%%:*}"
+  [[ "$named_line" -lt "$result_line" ]] || die "Apple parity result is not after named test"
+  inline_pass="$(grep -Ec "^test [^ ]*${test_name} \.\.\. ok$" "$log_file" || true)"
+  [[ "$inline_pass" == 1 ]] && return 0
+  ok_match="$(grep -nE '^ok$' "$log_file" || true)"
+  standalone_pass="$(grep -Ec '^ok$' "$log_file" || true)"
+  [[ "$standalone_pass" == 1 ]] || die "Apple parity log named test did not pass"
+  ok_line="${ok_match%%:*}"
+  [[ "$named_line" -lt "$ok_line" && "$ok_line" -lt "$result_line" ]] || die "standalone ok is not bound to the named test"
+}
 PARITY_LOG="$EVIDENCE_DIR/parity.log"
 [[ ! -e "$PARITY_LOG" && ! -L "$PARITY_LOG" ]] || die "Apple parity log must be absent"
 export GIGAAM_BACKEND="$BACKEND"
 CARGO_BUILD_JOBS=1 cargo test --locked --features metal -p vokra-models --test parity_gigaam_v3_real real_gigaam_v3_trace_matches_official -- --exact --ignored --nocapture --test-threads=1 > "$PARITY_LOG" 2>&1
-[[ "$(grep -Ec '^test [^ ]*real_gigaam_v3_trace_matches_official \.\.\. ok$' "$PARITY_LOG")" == 1 ]] || die "Apple parity log named test mismatch"
+require_named_test_pass "$PARITY_LOG" real_gigaam_v3_trace_matches_official
 EXPECTED_BACKEND_SENTINEL="Cpu"
 [[ "$BACKEND" == metal ]] && EXPECTED_BACKEND_SENTINEL="Metal"
 [[ "$(grep -Ec "^GIGAAM_V3_PARITY backend=$EXPECTED_BACKEND_SENTINEL PASS; publication NO_UPLOAD$" "$PARITY_LOG")" == 1 ]] || die "Apple backend sentinel mismatch"
-[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$PARITY_LOG")" == 1 ]] || die "Apple parity log result mismatch"
+[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$PARITY_LOG")" == 1 ]] || die "Apple parity log result mismatch"
 if [[ "$BACKEND" == cpu ]]; then
   STATUS=CPU_PARITY_PASS
 else

@@ -21,6 +21,13 @@ if grep -Eq '(^|[[:space:]])uv[[:space:]]+add([[:space:]]|$)|uv[[:space:]]+run[[
 fi
 grep -Fq 'command -v ninja' "$provision" || fail "native build probe omits ninja"
 grep -Fq 'ninja-build' "$provision" || fail "Debian native build install omits ninja-build"
+grep -Fq 'have_libsndfile' "$provision" || fail "libsndfile probe is missing"
+grep -Fq 'apt-get install -y libsndfile1' "$provision" || fail "Debian libsndfile install is missing"
+grep -Fq 'have_ripgrep' "$provision" || fail "ripgrep probe is missing"
+grep -Fq 'apt-get install -y ripgrep' "$provision" || fail "Debian ripgrep install is missing"
+grep -Fq 'persist_uv_path' "$provision" || fail "uv PATH persistence function is missing"
+grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' "$provision" || fail "uv PATH persistence marker is missing"
+grep -Fq '"$HOME/.bashrc" "$HOME/.profile"' "$provision" || fail "uv PATH persistence rc targets are missing"
 
 fixture="$tmp_dir/checkout"
 fake_bin="$tmp_dir/bin"

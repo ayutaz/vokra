@@ -21,8 +21,22 @@ import math
 import os
 import platform
 import sys
+import tempfile
 import types
 from pathlib import Path
+
+SPEECHT5_PARITY_DIR = Path(__file__).resolve().parent / "speecht5_tts"
+if str(SPEECHT5_PARITY_DIR) not in sys.path:
+    sys.path.insert(0, str(SPEECHT5_PARITY_DIR))
+from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+from api_smoke import (
+    SAFE_TENSOR_LOAD_CONTRACT,
+    SAFE_TENSOR_WEIGHT,
+    SAFE_TENSOR_WEIGHT_SHA256,
+    SOURCE_WEIGHT,
+    SOURCE_WEIGHT_SHA256,
+    authenticate_api_smoke_evidence,
+)
 
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
@@ -104,7 +118,24 @@ def verify_checkpoint(checkpoint: Path) -> dict[str, str]:
                 f"pinned {expected_sha256}"
             )
         verified[name] = actual_sha256
+    verify_safe_tensor(checkpoint)
+    verified[SAFE_TENSOR_WEIGHT] = SAFE_TENSOR_WEIGHT_SHA256
     return verified
+
+
+def verify_safe_tensor(checkpoint: Path) -> None:
+    path = checkpoint / SAFE_TENSOR_WEIGHT
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(
+            f"SpeechT5 parity: derived {SAFE_TENSOR_WEIGHT} is missing, "
+            "non-regular, or symlinked"
+        )
+    actual_sha256 = digest_file(path)
+    if actual_sha256 != SAFE_TENSOR_WEIGHT_SHA256:
+        raise SystemExit(
+            f"SpeechT5 parity: {SAFE_TENSOR_WEIGHT} SHA-256 {actual_sha256} != "
+            f"derived pinned {SAFE_TENSOR_WEIGHT_SHA256}"
+        )
 
 
 def require_vast() -> None:
@@ -202,6 +233,11 @@ class OfficialPrenetDropout:
 
 
 def self_test() -> None:
+    torch_compat_self_test()
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert "use_safetensors=" + "False" not in source
+    assert "use_safetensors=True" in source
+    assert SAFE_TENSOR_LOAD_CONTRACT["pickle_fallback"] == "DISABLED"
     global TRANSFORMERS_COMPATIBILITY_STATUS
     assert PREVIOUS_ISOLATED_TRANSFORMERS_PIN == "transformers==5.5.0"
     assert REFERENCE_PACKAGE == "transformers==5.10.4"
@@ -241,6 +277,29 @@ def self_test() -> None:
     assert all(math.isfinite(value) for value in speaker)
     assert any(value < 0.0 for value in speaker)
     assert any(value > 0.0 for value in speaker)
+    with tempfile.TemporaryDirectory(prefix="speecht5-reference-safe-tensor-") as directory:
+        checkpoint = Path(directory)
+        try:
+            verify_safe_tensor(checkpoint)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("missing derived safe tensor was accepted")
+        (checkpoint / SAFE_TENSOR_WEIGHT).write_bytes(b"drift")
+        try:
+            verify_safe_tensor(checkpoint)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("drifted derived safe tensor was accepted")
+        (checkpoint / SAFE_TENSOR_WEIGHT).unlink()
+        (checkpoint / SAFE_TENSOR_WEIGHT).symlink_to(checkpoint / "missing")
+        try:
+            verify_safe_tensor(checkpoint)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("symlinked derived safe tensor was accepted")
     print("speecht5_tts_dump_reference: self-test PASS")
 
 
@@ -257,28 +316,44 @@ def write_u32(path: Path, values: list[int], numpy_module) -> tuple[int, str]:
 
 
 def main() -> int:
+    global TRANSFORMERS_COMPATIBILITY_STATUS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--project-dir", type=Path)
+    parser.add_argument("--api-smoke-evidence", type=Path)
+    parser.add_argument("--api-smoke-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
+        if any(value is not None for value in (args.project_dir, args.api_smoke_evidence, args.api_smoke_sha256, args.expected_head)):
+            parser.error("--self-test accepts no authentication arguments")
         self_test()
         return 0
-    if args.checkpoint is None or args.output_dir is None:
+    if args.checkpoint is None or args.output_dir is None or args.project_dir is None or args.api_smoke_evidence is None or args.api_smoke_sha256 is None or args.expected_head is None:
         parser.error(
-            "--checkpoint and --output-dir are required unless --self-test is used"
+            "--checkpoint, --output-dir, --project-dir, --api-smoke-evidence, "
+            "--api-smoke-sha256, and --expected-head are required unless --self-test is used"
         )
     if not args.text or args.text != args.text.strip():
         parser.error("--text must be non-empty and have no leading/trailing space")
 
+    authenticate_api_smoke_evidence(
+        args.api_smoke_evidence,
+        args.api_smoke_sha256,
+        args.expected_head,
+        args.project_dir,
+    )
+    TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
     require_vast()
     require_transformers_api_smoke()
     checkpoint = args.checkpoint.resolve()
     if not checkpoint.is_dir():
         parser.error(f"checkpoint is not a directory: {checkpoint}")
     verified_files = verify_checkpoint(checkpoint)
+    require_non_quantized_config(checkpoint)
     output_dir = args.output_dir.resolve()
     if output_dir.exists() and any(output_dir.iterdir()):
         parser.error(f"--output-dir must be absent or empty: {output_dir}")
@@ -287,6 +362,7 @@ def main() -> int:
     try:
         import numpy as np
         import torch
+        float8_import_compat = install_float8_import_compat(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
     except ImportError as error:
@@ -322,7 +398,7 @@ def main() -> int:
     model = SpeechT5ForTextToSpeech.from_pretrained(
         checkpoint,
         local_files_only=True,
-        use_safetensors=False,
+        use_safetensors=True,
     ).eval().to(device="cpu", dtype=torch.float32)
     config_contract = {
         "hidden_size": 768,
@@ -430,8 +506,18 @@ def main() -> int:
         "transformers_security_advisory": TRANSFORMERS_SECURITY_ADVISORY,
         "transformers_security_patched_minimum": TRANSFORMERS_SECURITY_PATCHED_MINIMUM,
         "transformers_compatibility_status": TRANSFORMERS_COMPATIBILITY_STATUS,
+        "quantization_policy": {
+            "mode": "non-quantized",
+            "finegrained_fp8": "not_used",
+        },
+        "weight_loading": SAFE_TENSOR_LOAD_CONTRACT,
+        "provenance": {
+            "conversion_source": {"file": SOURCE_WEIGHT, "sha256": SOURCE_WEIGHT_SHA256},
+            "loaded_weight": {"file": SAFE_TENSOR_WEIGHT, "sha256": SAFE_TENSOR_WEIGHT_SHA256},
+        },
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,
+        "float8_import_compat": float8_import_compat,
         "platform": platform.platform(),
         "machine": platform.machine(),
         "upstream_hf": UPSTREAM_HF,

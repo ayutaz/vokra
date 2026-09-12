@@ -61,7 +61,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ),
             (
                 audit.RepoRecord(
-                    "vokra/bicodec", "abc", ("model.gguf",), "bicodec"
+                    "vokra/bicodec",
+                    "2c8d12edb7fec5a95173f5b2ef4970949e936c6c",
+                    ("model.gguf",),
+                    "bicodec",
                 ),
                 "no-runtime-binder",
                 "CC-BY-NC-SA-4.0",
@@ -114,6 +117,134 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 self.assertEqual(coverage.cpu_code, cpu_code)
                 self.assertEqual(coverage.metal_code, "blocked-by-cpu")
                 self.assertIn(reason_fragment, coverage.reason)
+
+    def test_revision_scoped_live_artifacts_and_fail_closed_unknowns(self):
+        contracts = {
+            "vokra/reazonspeech-nemo-v2": (
+                "d626a5dc5ca3bf17ea4582f8f1641f93e35477c4",
+                "reazonspeech-nemo-v2.gguf",
+                "ff761a7bc04bed0f45d47535fcfc54a929d4b6aa2fb04c03160be60ec75ca35a",
+                2477292896,
+                "reazonspeech_nemo_v2",
+                "full",
+                "full",
+            ),
+            "vokra/voice-gender-classifier": (
+                "f1bb0985d62504dcead1012460ee045220f821a3",
+                "voice-gender-classifier.restamped.gguf",
+                "afb03696d8a640d5d701ea0c136bb065cac648cbfe905a5dcc4eae04e0769b1a",
+                61899328,
+                "voice_gender_classifier",
+                "full",
+                "full",
+            ),
+            "vokra/bicodec": (
+                "9760a082df544265b2b6410581c5e4a3945c93e8",
+                "model.gguf",
+                "ed0ba92cac023a4bc8cb20d9c8328272e03336c9b9da0dfe1c97ec2f41092f84",
+                625491648,
+                "bicodec",
+                "partial",
+                "blocked-by-cpu",
+            ),
+        }
+        for repo, (
+            revision,
+            filename,
+            sha256,
+            size,
+            architecture,
+            cpu_code,
+            metal_code,
+        ) in contracts.items():
+            with self.subTest(repo=repo):
+                self.assertEqual(
+                    audit.PUBLIC_ARTIFACT_CPU_REVISION_ALLOWLIST[repo][revision],
+                    (filename, sha256, size),
+                )
+                coverage = audit.classify(
+                    audit.RepoRecord(repo, revision, (filename,), architecture),
+                    {architecture},
+                    {architecture} if cpu_code == "partial" else set(),
+                )
+                self.assertEqual(coverage.cpu_code, cpu_code)
+                self.assertEqual(coverage.metal_code, metal_code)
+
+        old_cases = (
+            (
+                "vokra/reazonspeech-nemo-v2",
+                "9b72cc988397a02b9d3561fe4a40979a61d4cf8d",
+                "reazonspeech_nemo_v2",
+                "partial",
+                "3,000-piece tokenizer vocabulary",
+            ),
+            (
+                "vokra/voice-gender-classifier",
+                "94c8d0ba41cfe2f7b8a773eb4a7982cf4facbc84",
+                "voice_gender_classifier",
+                "partial",
+                "mis-stamped as canonical SpeechBrain ECAPA",
+            ),
+            (
+                "vokra/bicodec",
+                "2c8d12edb7fec5a95173f5b2ef4970949e936c6c",
+                "bicodec",
+                "no-runtime-binder",
+                "CC-BY-NC-SA-4.0",
+            ),
+        )
+        for repo, revision, architecture, cpu_code, reason_fragment in old_cases:
+            with self.subTest(repo=repo, revision=revision):
+                coverage = audit.classify(
+                    audit.RepoRecord(repo, revision, ("legacy.gguf",), architecture),
+                    {architecture},
+                    {architecture},
+                )
+                self.assertEqual(coverage.cpu_code, cpu_code)
+                self.assertEqual(coverage.metal_code, "blocked-by-cpu")
+                self.assertIn(reason_fragment, coverage.reason)
+
+        for repo, architecture in (
+            ("vokra/reazonspeech-nemo-v2", "reazonspeech_nemo_v2"),
+            ("vokra/voice-gender-classifier", "voice_gender_classifier"),
+            ("vokra/bicodec", "bicodec"),
+        ):
+            with self.subTest(repo=repo, revision="unknown"):
+                coverage = audit.classify(
+                    audit.RepoRecord(repo, "unknown", ("model.gguf",), architecture),
+                    {architecture},
+                    {architecture},
+                )
+                self.assertEqual(coverage.cpu_code, "unknown")
+                self.assertEqual(coverage.metal_code, "blocked-by-cpu")
+                self.assertIn("not in the verified public revision allowlist", coverage.reason)
+
+        mismatched = audit.classify(
+            audit.RepoRecord(
+                "vokra/reazonspeech-nemo-v2",
+                "d626a5dc5ca3bf17ea4582f8f1641f93e35477c4",
+                ("wrong.gguf",),
+                "reazonspeech_nemo_v2",
+            ),
+            {"reazonspeech_nemo_v2"},
+            {"reazonspeech_nemo_v2"},
+        )
+        self.assertEqual(mismatched.cpu_code, "unknown")
+        self.assertEqual(mismatched.metal_code, "blocked-by-cpu")
+        self.assertIn("unexpected GGUF filename set", mismatched.reason)
+
+        sgmse = audit.classify(
+            audit.RepoRecord(
+                "vokra/sgmse-voicebank",
+                "c37e93159b4129b2c582c44f8170b44cf6e3e531",
+                ("sgmse-voicebank.gguf",),
+                "sgmse_voicebank",
+            ),
+            {"sgmse_voicebank"},
+            {"sgmse_voicebank"},
+        )
+        self.assertEqual(sgmse.cpu_code, "partial")
+        self.assertEqual(sgmse.metal_code, "blocked-by-cpu")
 
     def test_owsm_manifest_binder_stays_cpu_partial_until_forward_exists(self):
         record = audit.RepoRecord(
@@ -422,7 +553,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         missing = audit.RepoRecord("vokra/other", "abc", ("model.gguf",), "other")
         bad_ecapa = audit.RepoRecord(
-            "vokra/voice-gender-classifier", "abc", ("model.gguf",), "ecapa_tdnn"
+            "vokra/voice-gender-classifier",
+            "94c8d0ba41cfe2f7b8a773eb4a7982cf4facbc84",
+            ("model.gguf",),
+            "ecapa_tdnn",
         )
         corrupt_ecapa = audit.RepoRecord(
             "vokra/speechbrain-spkrec-ecapa-voxceleb",

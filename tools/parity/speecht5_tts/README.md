@@ -10,6 +10,13 @@ The lock and project bytes, all canonical dependency rows, fixed TTS and
 HiFi-GAN revisions/artifact hashes, and the historical public GGUF identity
 are bound by `license_gate_manifest.json`.
 
+The exact PyPI closure supports `torch>=2.4`; the pinned Transformers 5.10.4
+optional FP8 integration nevertheless names a newer dtype at import time. A
+narrow, identity-checked alias is therefore installed only for this exact
+closure and only to unlock that import. The pinned SpeechT5 configuration
+rejects every quantization or fine-grained FP8 route, and the model-free VAST
+compatibility smoke must pass before any checkpoint is acquired.
+
 `preflight_gate.py` is standard-library-only and runs with
 `uv run --no-project --offline` before scratch creation, synchronization,
 source/model download, conversion, or Cargo. It binds the exact Linux lock,
@@ -81,6 +88,11 @@ Python 3.12 project, the exact SpeechT5 checkpoint above, and the official
 input. It emits only hashed API evidence and `NO_UPLOAD`; it does not run
 Vokra or upload/publish any artifact. Keep the status
 `BLOCKED_UNVERIFIED_API_SMOKE` until that evidence is reviewed.
+The original upstream `pytorch_model.bin` remains hash-verified as conversion
+provenance, but model loading requires the derived `model.safetensors` with
+SHA-256 `87d96b215548dfba6251e15ad0b861e9d01d640d4715767759d6b12a12c62582`;
+`use_safetensors=True` disables pickle fallback to satisfy the pinned
+Transformers security gate.
 
 The approval file is the authenticated evidence consumed by the existing
 `preflight_gate.py` against `license_gate_manifest.json`. It must match that
@@ -88,3 +100,9 @@ manifest's reviewed scope and operator signer. This worker does not introduce
 a parallel approval schema; the current manifest remains blocked while its
 existing dependency/model/operator reviews are unresolved. The Python worker
 also invokes this same gate in-process, so direct invocation cannot bypass it.
+The real-weight validation worker additionally requires
+`--api-smoke-evidence`, its explicit `--api-smoke-sha256`, and
+`--expected-head` before synchronization, source/checkpoint access, or Cargo.
+The validator rechecks the evidence against the current clean checkout and
+canonical approval bytes; the checked-in compatibility status remains blocked
+until this authenticated hand-off succeeds.

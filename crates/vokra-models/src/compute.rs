@@ -4380,6 +4380,19 @@ impl vokra_ops::conformer::ConformerCompute for Compute {
             }
             return Ok(());
         }
+        #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+        if let Be::Metal(ctx) = &self.be {
+            ctx.log_softmax_f32(input, output, rows, cols)?;
+            if output.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(
+                    "Conformer log-softmax device normalization failed".into(),
+                ));
+            }
+            return Ok(());
+        }
+        // CUDA/WebGPU retain their established device-softmax plus scalar-log
+        // adapter. Metal has the dedicated native path above; no Metal input
+        // reaches this branch.
         self.softmax_f32(input, output, rows, cols)?;
         if output
             .iter()
@@ -4768,6 +4781,23 @@ fn fir_resample_2d_cpu(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conformer_log_softmax_keeps_tiny_probabilities_finite() {
+        let input = [1_000.0f32, -1_000.0];
+        let mut output = [0.0f32; 2];
+        <Compute as vokra_ops::conformer::ConformerCompute>::log_softmax(
+            &Compute::cpu(),
+            &input,
+            &mut output,
+            1,
+            2,
+        )
+        .unwrap();
+        assert!(output.iter().all(|value| value.is_finite()));
+        assert_eq!(output[0], 0.0);
+        assert_eq!(output[1], -2_000.0);
+    }
 
     #[test]
     fn cpu_compute_matches_direct_kernel_bit_for_bit() {

@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-09-11 post-PR #79 execution note:** PR #79 was merged as
+> `1787818e702bdaba488d52aa1666fd5f08c5ae16`. The subsequently authorized,
+> bounded VAST and Scaleway batch is recorded in
+> [the dated Apple results](mac-cpu-metal-scaleway-results-2026-09-11.md).
+> That record supersedes the statements below that Scaleway had not started,
+> but it does not rewrite this ledger's historical evidence or reduce the 63
+> unresolved-public-row denominator. Withheld and provenance/runtime-blocked
+> rows remain blocked, UTMOS parity remains unclaimed, and no public artifact
+> upload was authorized.
+
 > **2026-09-09 audit-start snapshot (canonical status before this refresh):** PR #79 was at
 > `9efcd16e` (`CLEAN` / `MERGEABLE`), with 110 successful CI checks, 13
 > intentional skips and 0 failures. The exact implementation VAST replay is

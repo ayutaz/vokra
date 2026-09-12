@@ -26,14 +26,26 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
 UPSTREAM_REVISION = "30fcde30f19b87502b8435427b5f5068e401d5f6"
 SOURCE_WEIGHT = "pytorch_model.bin"
 SOURCE_WEIGHT_BYTES = 585_476_837
 SOURCE_WEIGHT_SHA256 = "d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
+SAFE_TENSOR_WEIGHT = "model.safetensors"
+SAFE_TENSOR_WEIGHT_SHA256 = "87d96b215548dfba6251e15ad0b861e9d01d640d4715767759d6b12a12c62582"
+SAFE_TENSOR_LOAD_CONTRACT = {
+    "file": SAFE_TENSOR_WEIGHT,
+    "format": "safetensors",
+    "pickle_fallback": "DISABLED",
+    "sha256": SAFE_TENSOR_WEIGHT_SHA256,
+    "use_safetensors": True,
+}
 TOKENIZER_SHA256 = "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560"
 EXPECTED_TRANSFORMERS = "5.10.4"
+APPROVAL_SCHEMA = "vokra-speecht5-owner-approval-v1"
 PREVIOUS_TRANSFORMERS = "transformers==5.5.0"
 SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
 SECURITY_FLOOR = "5.10.0"
@@ -54,6 +66,9 @@ PASS_EVIDENCE_KEYS = {
     "upstream_hf", "upstream_revision", "upload", "vocoder", "vokra_head", "vokra_root",
     "vokra_clean", "approval_evidence_sha256", "approval_scope_sha256", "approval_signer", "project_dir",
     "preflight_gate", "preflight_gate_sha256", "preflight_manifest_sha256",
+    "float8_import_compat",
+    "conversion_source_sha256",
+    "weight_loading",
 }
 FAIL_EVIDENCE_KEYS = {
     "approval_evidence_sha256", "approval_scope_sha256", "approval_signer", "error",
@@ -130,6 +145,19 @@ def require_disjoint_paths(named_paths: dict[str, Path]) -> None:
         for right_name in names[index + 1 :]:
             if paths_overlap(named_paths[left_name], named_paths[right_name]):
                 raise RuntimeError(f"{left_name} overlaps {right_name}")
+
+
+def require_canonical_approval_path(project_dir: Path, approval_path: Path) -> Path:
+    """Accept only the committed approval evidence beside the project manifest."""
+    expected = project_dir / "license_gate_evidence.json"
+    if approval_path != expected:
+        raise RuntimeError(
+            "approval evidence must be the committed project path: "
+            f"{expected}"
+        )
+    require_absolute_no_symlink_path(approval_path, "approval evidence", exists=True)
+    require_regular(approval_path, "approval evidence")
+    return approval_path
 
 
 def git_checkout_context(vokra_root: Path) -> dict[str, Any]:
@@ -235,9 +263,11 @@ def validate_approval_file(project_dir: Path, path: Path) -> dict[str, str]:
         raise RuntimeError(f"approval evidence is not strict JSON: {error}") from error
     if not isinstance(approval, dict) or not isinstance(manifest, dict):
         raise RuntimeError("preflight approval or manifest is not an object")
-    required = {"decision", "scope_sha256", "manifest_sha256", "signer", "digest"}
+    required = {"decision", "digest", "manifest_sha256", "scope_sha256", "schema", "signer"}
     if set(approval) != required:
         raise RuntimeError("authenticated preflight approval schema is not exact")
+    if approval.get("schema") != APPROVAL_SCHEMA:
+        raise RuntimeError("authenticated preflight approval schema value is not exact")
     if approval.get("decision") != "APPROVED":
         raise RuntimeError("preflight approval decision is not APPROVED")
     signer = approval.get("signer")
@@ -305,10 +335,109 @@ def validate_evidence_document(path: Path, status: str) -> dict[str, Any]:
         for key in ("input_sha256", "output_sha256", "call_checkpoint_sha256", "project_sha256", "lock_sha256", "package_rows_sha256", "package_sha256"):
             if not HEX64.fullmatch(str(value.get(key))):
                 raise RuntimeError(f"API smoke evidence has invalid {key}")
+        if value.get("float8_import_compat") not in {"native", "shimmed"}:
+            raise RuntimeError("API smoke evidence has invalid float8_import_compat")
+        if value.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
+            raise RuntimeError("API smoke evidence lacks the original conversion source hash")
+        if value.get("weight_loading") != SAFE_TENSOR_LOAD_CONTRACT:
+            raise RuntimeError("API smoke evidence does not require safe-tensor loading")
+        call = value.get("call")
+        if not isinstance(call, dict):
+            raise RuntimeError("API smoke evidence lacks its call record")
+        if call.get("checkpoint_sha256") != SAFE_TENSOR_WEIGHT_SHA256:
+            raise RuntimeError("API smoke call record does not bind loaded safe-tensor bytes")
+        if call.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
+            raise RuntimeError("API smoke call record lacks the conversion source hash")
+        if call.get("weight_loading") != SAFE_TENSOR_LOAD_CONTRACT:
+            raise RuntimeError("API smoke call record does not require safe-tensor loading")
     else:
         if not isinstance(value.get("stage"), str) or not value["stage"] or not isinstance(value.get("error_type"), str) or not value["error_type"] or not isinstance(value.get("error"), str) or "\n" in value["error"]:
             raise RuntimeError("API smoke failure evidence lacks stage/error type")
     return value
+
+
+def authenticate_api_smoke_evidence(
+    evidence_path: Path,
+    supplied_sha256: str,
+    expected_head: str,
+    project_dir: Path,
+) -> dict[str, Any]:
+    """Authenticate one PASS packet against this clean checkout and approval."""
+    if not HEX64.fullmatch(supplied_sha256):
+        raise RuntimeError("API smoke evidence SHA-256 must be lowercase 64-hex")
+    if not HEX40.fullmatch(expected_head):
+        raise RuntimeError("expected Vokra HEAD must be lowercase 40-hex")
+    require_absolute_no_symlink_path(project_dir, "parity project", exists=True)
+    require_regular(evidence_path, "API smoke evidence")
+    if sha256_file(evidence_path) != supplied_sha256:
+        raise RuntimeError("API smoke evidence SHA-256 differs from supplied binding")
+    evidence = validate_evidence_document(evidence_path, "PASS")
+    if evidence["vokra_head"] != expected_head:
+        raise RuntimeError("API smoke evidence Vokra HEAD differs from expected HEAD")
+    checkout = git_checkout_context(Path(evidence["vokra_root"]))
+    if checkout["vokra_head"] != expected_head or checkout["vokra_clean"] is not True:
+        raise RuntimeError("current Vokra checkout is not the authenticated clean expected HEAD")
+    if Path(evidence["project_dir"]).resolve() != project_dir.resolve():
+        raise RuntimeError("API smoke evidence parity project differs from current project")
+    project_sha, lock_sha, package_rows_sha = verify_project(project_dir)
+    for key, actual in (
+        ("project_sha256", project_sha),
+        ("lock_sha256", lock_sha),
+        ("package_rows_sha256", package_rows_sha),
+    ):
+        if evidence[key] != actual:
+            raise RuntimeError(f"API smoke evidence {key} differs from current project")
+
+    approval_path = require_canonical_approval_path(
+        project_dir, project_dir / "license_gate_evidence.json"
+    )
+    approval = validate_approval_file(project_dir, approval_path)
+    expected_approval = {
+        "approval_evidence_sha256": approval["approval_evidence_sha256"],
+        "approval_scope_sha256": approval["approval_scope_sha256"],
+        "approval_signer": approval["approval_signer"],
+        "preflight_gate_sha256": sha256_file(project_dir / "preflight_gate.py"),
+        "preflight_manifest_sha256": sha256_file(project_dir / "license_gate_manifest.json"),
+    }
+    for key, actual in expected_approval.items():
+        if evidence[key] != actual:
+            raise RuntimeError(f"API smoke evidence {key} differs from current approval")
+
+    checkpoint_files = evidence.get("checkpoint_files")
+    expected_files = {
+        SOURCE_WEIGHT,
+        "spm_char.model",
+        "config.json",
+        "tokenizer_config.json",
+        "added_tokens.json",
+        "special_tokens_map.json",
+        SAFE_TENSOR_WEIGHT,
+    }
+    if not isinstance(checkpoint_files, dict) or set(checkpoint_files) != expected_files:
+        raise RuntimeError("API smoke checkpoint file inventory is not exact")
+    if checkpoint_files[SOURCE_WEIGHT].get("sha256") != SOURCE_WEIGHT_SHA256:
+        raise RuntimeError("API smoke evidence lost original checkpoint provenance")
+    if checkpoint_files[SAFE_TENSOR_WEIGHT] != {"sha256": SAFE_TENSOR_WEIGHT_SHA256}:
+        raise RuntimeError("API smoke evidence safe-tensor identity drifted")
+    if evidence["upstream_hf"] != UPSTREAM_HF or evidence["upstream_revision"] != UPSTREAM_REVISION:
+        raise RuntimeError("API smoke official upstream identity drifted")
+    if evidence["revision_sha256"] != sha256_bytes(UPSTREAM_REVISION.encode()):
+        raise RuntimeError("API smoke upstream revision digest drifted")
+    if evidence["reference_implementation"] != "transformers.models.speecht5.modeling_speecht5.SpeechT5ForTextToSpeech.generate_speech":
+        raise RuntimeError("API smoke reference implementation drifted")
+    if evidence["reference_package"] != f"transformers=={EXPECTED_TRANSFORMERS}":
+        raise RuntimeError("API smoke Transformers package identity drifted")
+    environment = evidence.get("environment")
+    if not isinstance(environment, dict) or environment.get("torch") != "2.4.1+cpu" or environment.get("transformers") != EXPECTED_TRANSFORMERS:
+        raise RuntimeError("API smoke torch/Transformers runtime identity drifted")
+    call = evidence.get("call")
+    if not isinstance(call, dict) or evidence["call_checkpoint_sha256"] != sha256_bytes(canonical(call)):
+        raise RuntimeError("API smoke call record hash is not internally consistent")
+    if call.get("checkpoint_sha256") != SAFE_TENSOR_WEIGHT_SHA256 or call.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
+        raise RuntimeError("API smoke call record load/source hashes drifted")
+    if call.get("weight_loading") != SAFE_TENSOR_LOAD_CONTRACT or evidence["weight_loading"] != SAFE_TENSOR_LOAD_CONTRACT:
+        raise RuntimeError("API smoke safe-tensor load contract drifted")
+    return evidence
 
 
 def validate_evidence_output(output_dir: Path, status: str) -> dict[str, Any]:
@@ -347,7 +476,20 @@ def verify_checkpoint(checkpoint: Path) -> dict[str, dict[str, Any]]:
                 f"bytes={actual_bytes} sha256={actual_hash}"
             )
         verified[name] = {"bytes": actual_bytes, "sha256": actual_hash}
+    verified[SAFE_TENSOR_WEIGHT] = verify_safe_tensor(checkpoint)
     return verified
+
+
+def verify_safe_tensor(checkpoint: Path) -> dict[str, str]:
+    path = checkpoint / SAFE_TENSOR_WEIGHT
+    require_regular(path, f"derived checkpoint file {SAFE_TENSOR_WEIGHT}")
+    actual_hash = sha256_file(path)
+    if actual_hash != SAFE_TENSOR_WEIGHT_SHA256:
+        raise RuntimeError(
+            f"derived checkpoint identity drifted for {SAFE_TENSOR_WEIGHT}: "
+            f"sha256={actual_hash}"
+        )
+    return {"sha256": actual_hash}
 
 
 def write_f32(path: Path, values: Any) -> tuple[int, str]:
@@ -366,17 +508,16 @@ def validate_preflight(
         project_dir.relative_to(vokra_root)
     except ValueError as error:
         raise RuntimeError("parity project is outside --vokra-root") from error
-    require_absolute_no_symlink_path(approval_path, "approval evidence", exists=True)
-    require_regular(approval_path, "approval evidence")
+    require_canonical_approval_path(project_dir, approval_path)
     gate_context = run_preflight_gate(project_dir, approval_path)
     approval = validate_approval_file(project_dir, approval_path)
     require_absolute_no_symlink_path(checkpoint, "checkpoint", exists=True)
     require_absolute_no_symlink_path(output_dir, "output directory", exists=False)
     require_disjoint_paths({"checkpoint": checkpoint, "output": output_dir, "approval": approval_path})
-    if paths_overlap(vokra_root, checkpoint) or paths_overlap(vokra_root, output_dir) or paths_overlap(vokra_root, approval_path):
-        raise RuntimeError("checkpoint/output/approval overlaps --vokra-root")
-    if paths_overlap(project_dir, checkpoint) or paths_overlap(project_dir, output_dir) or paths_overlap(project_dir, approval_path):
-        raise RuntimeError("checkpoint/output/approval overlaps parity project")
+    if paths_overlap(vokra_root, checkpoint) or paths_overlap(vokra_root, output_dir):
+        raise RuntimeError("checkpoint/output overlaps --vokra-root")
+    if paths_overlap(project_dir, checkpoint) or paths_overlap(project_dir, output_dir):
+        raise RuntimeError("checkpoint/output overlaps parity project")
     return {**root_context, **gate_context, **approval, "project_dir": str(project_dir)}
 
 
@@ -412,10 +553,12 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
     try:
         project_sha, lock_sha, package_rows_sha = verify_project(project_dir)
         checkpoint_files = verify_checkpoint(checkpoint)
+        require_non_quantized_config(checkpoint)
         stage = "third_party_import"
         # Imports are intentionally kept inside the post-preflight block.
         import numpy as np
         import torch
+        float8_import_compat = install_float8_import_compat(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
         stage = "model_load"
@@ -449,7 +592,7 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
         (output_dir / "input.json").write_text(json.dumps(input_record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
         model = SpeechT5ForTextToSpeech.from_pretrained(
-            checkpoint, local_files_only=True, use_safetensors=False
+            checkpoint, local_files_only=True, use_safetensors=True
         ).eval().to(device="cpu", dtype=torch.float32)
         stage = "api_call"
         call_record = {
@@ -463,9 +606,14 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
                 "speaker_embeddings": "input_speaker_embeddings",
                 "threshold": 0.5,
                 "vocoder": None,
+                "quantization": "disabled",
+                "finegrained_fp8": "not_used",
+                "float8_import_compat": float8_import_compat,
             },
             "input_sha256": input_sha,
-            "checkpoint_sha256": SOURCE_WEIGHT_SHA256,
+            "checkpoint_sha256": SAFE_TENSOR_WEIGHT_SHA256,
+            "conversion_source_sha256": SOURCE_WEIGHT_SHA256,
+            "weight_loading": SAFE_TENSOR_LOAD_CONTRACT,
         }
         call_checkpoint_sha = sha256_bytes(canonical(call_record))
         with torch.inference_mode():
@@ -512,6 +660,9 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
             "mel_bins": int(generated.shape[-1]),
             "call_checkpoint_sha256": call_checkpoint_sha,
             "call": call_record,
+            "float8_import_compat": float8_import_compat,
+            "conversion_source_sha256": SOURCE_WEIGHT_SHA256,
+            "weight_loading": call_record["weight_loading"],
             "environment": {"python": platform.python_version(), "torch": torch.__version__, "transformers": transformers.__version__, "platform": platform.platform()},
             **context,
         }
@@ -532,6 +683,7 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
 
 
 def self_test() -> int:
+    torch_compat_self_test()
     assert PREVIOUS_TRANSFORMERS == "transformers==5.5.0"
     assert EXPECTED_TRANSFORMERS == "5.10.4"
     assert SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
@@ -565,6 +717,29 @@ def self_test() -> int:
         pass
     else:
         raise AssertionError("missing model checkpoint was accepted")
+    with tempfile.TemporaryDirectory(prefix="speecht5-safe-tensor-selftest-") as directory:
+        safe_checkpoint = Path(directory)
+        try:
+            verify_safe_tensor(safe_checkpoint)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("missing safe-tensor checkpoint was accepted")
+        (safe_checkpoint / SAFE_TENSOR_WEIGHT).write_bytes(b"not-the-reviewed-safe-tensor")
+        try:
+            verify_safe_tensor(safe_checkpoint)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("drifted safe-tensor checkpoint was accepted")
+        (safe_checkpoint / SAFE_TENSOR_WEIGHT).unlink()
+        (safe_checkpoint / SAFE_TENSOR_WEIGHT).symlink_to(safe_checkpoint / "missing")
+        try:
+            verify_safe_tensor(safe_checkpoint)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlinked safe-tensor checkpoint was accepted")
     with tempfile.TemporaryDirectory(prefix="speecht5-api-smoke-selftest-") as directory:
         root = Path(directory).resolve()
         existing = root / "existing"
@@ -597,10 +772,42 @@ def self_test() -> int:
         if not paths_overlap(root / "work", root / "work" / "approval.json"):
             raise AssertionError("approval path overlap was not detected")
         manifest_path = Path(__file__).resolve().parent / "license_gate_manifest.json"
+        committed_approval_path = manifest_path.parent / "license_gate_evidence.json"
+        if require_canonical_approval_path(manifest_path.parent, committed_approval_path) != committed_approval_path:
+            raise AssertionError("committed approval path was not accepted")
+        approval_copy = root / "approval-copy.json"
+        approval_copy.write_bytes(committed_approval_path.read_bytes())
+        try:
+            require_canonical_approval_path(manifest_path.parent, approval_copy)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("external approval copy was accepted")
+        other_project = root / "other-project"
+        other_project.mkdir()
+        other_approval = other_project / "license_gate_evidence.json"
+        other_approval.write_bytes(committed_approval_path.read_bytes())
+        try:
+            require_canonical_approval_path(manifest_path.parent, other_approval)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("approval from another project was accepted")
+        symlink_project = root / "symlink-project"
+        symlink_project.mkdir()
+        (symlink_project / "license_gate_evidence.json").symlink_to(committed_approval_path)
+        try:
+            require_canonical_approval_path(
+                symlink_project, symlink_project / "license_gate_evidence.json"
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("symlinked canonical approval was accepted")
         approval_path = root / "approval.json"
         manifest_digest = sha256_file(manifest_path)
         scope = strict_json_loads(manifest_path.read_text(encoding="utf-8"))["approval_scope_sha256"]
-        valid_approval = {"decision": "APPROVED", "scope_sha256": scope, "manifest_sha256": manifest_digest, "signer": "self-test", "digest": scope}
+        valid_approval = {"decision": "APPROVED", "digest": scope, "manifest_sha256": manifest_digest, "scope_sha256": scope, "schema": APPROVAL_SCHEMA, "signer": "self-test"}
         approval_path.write_text(json.dumps(valid_approval), encoding="utf-8")
         approval = validate_approval_file(manifest_path.parent, approval_path)
         if approval["approval_scope_sha256"] != scope:
@@ -621,17 +828,35 @@ def self_test() -> int:
             pass
         else:
             raise AssertionError("tampered preflight approval was accepted")
+        missing_schema = dict(valid_approval)
+        del missing_schema["schema"]
+        approval_path.write_text(json.dumps(missing_schema), encoding="utf-8")
+        try:
+            validate_approval_file(manifest_path.parent, approval_path)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("approval missing schema was accepted")
         unknown = dict(valid_approval)
-        unknown["unknown"] = True
+        unknown["schema"] = "vokra-speecht5-owner-approval-unknown"
         approval_path.write_text(json.dumps(unknown), encoding="utf-8")
         try:
             validate_approval_file(manifest_path.parent, approval_path)
         except RuntimeError:
             pass
         else:
-            raise AssertionError("unknown preflight approval field was accepted")
+            raise AssertionError("unknown approval schema was accepted")
+        extra = dict(valid_approval)
+        extra["unknown"] = True
+        approval_path.write_text(json.dumps(extra), encoding="utf-8")
+        try:
+            validate_approval_file(manifest_path.parent, approval_path)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("unknown extra approval field was accepted")
         pass_doc: dict[str, Any] = {key: None for key in PASS_EVIDENCE_KEYS}
-        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64})
+        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "shimmed", "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT, "call": {"checkpoint_sha256": SAFE_TENSOR_WEIGHT_SHA256, "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT}})
         pass_dir = root / "pass"
         pass_dir.mkdir()
         pass_path = pass_dir / "evidence.json"
@@ -643,6 +868,36 @@ def self_test() -> int:
                 raise AssertionError("PASS evidence directory CLI validation failed")
         finally:
             sys.argv = original_argv
+        pass_sha256 = sha256_file(pass_path)
+        try:
+            authenticate_api_smoke_evidence(
+                root / "missing-api-evidence.json", pass_sha256, "a" * 40, manifest_path.parent
+            )
+        except (OSError, RuntimeError):
+            pass
+        else:
+            raise AssertionError("missing authenticated API evidence was accepted")
+        try:
+            authenticate_api_smoke_evidence(pass_path, "0" * 64, "a" * 40, manifest_path.parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong API evidence SHA was accepted")
+        try:
+            authenticate_api_smoke_evidence(pass_path, pass_sha256, "b" * 40, manifest_path.parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("wrong API evidence HEAD was accepted")
+        tampered_auth = dict(pass_doc)
+        tampered_auth["weight_loading"] = {"format": "pickle"}
+        pass_path.write_text(json.dumps(tampered_auth), encoding="utf-8")
+        try:
+            authenticate_api_smoke_evidence(pass_path, sha256_file(pass_path), "a" * 40, manifest_path.parent)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("tampered API evidence was accepted")
         pass_doc["unknown"] = True
         pass_path.write_text(json.dumps(pass_doc), encoding="utf-8")
         try:
@@ -703,18 +958,32 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--approval-evidence", type=Path)
     parser.add_argument("--vokra-root", type=Path)
+    parser.add_argument("--api-smoke-evidence", type=Path)
+    parser.add_argument("--api-smoke-sha256")
+    parser.add_argument("--expected-head")
     parser.add_argument("--validate-approval", action="store_true")
     parser.add_argument("--validate-evidence", action="store_true")
     parser.add_argument("--status", choices=("PASS", "FAIL"))
     parser.add_argument("--text", default=SMOKE_TEXT)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    auth_args = (args.api_smoke_evidence, args.api_smoke_sha256, args.expected_head)
     if args.self_test:
-        if any(value is not None for value in (args.checkpoint, args.project_dir, args.output_dir, args.approval_evidence, args.vokra_root, args.status)) or args.validate_approval or args.validate_evidence or args.text != SMOKE_TEXT:
+        if any(value is not None for value in (args.checkpoint, args.project_dir, args.output_dir, args.approval_evidence, args.vokra_root, args.status, *auth_args)) or args.validate_approval or args.validate_evidence or args.text != SMOKE_TEXT:
             parser.error("--self-test accepts no production arguments")
         return self_test()
+    if any(value is not None for value in auth_args):
+        if any(value is None for value in auth_args) or args.project_dir is None or any(value is not None for value in (args.checkpoint, args.output_dir, args.approval_evidence, args.vokra_root, args.status)) or args.validate_approval or args.validate_evidence or args.text != SMOKE_TEXT:
+            parser.error("API smoke authentication requires --project-dir, --api-smoke-evidence, --api-smoke-sha256, and --expected-head only")
+        try:
+            authenticate_api_smoke_evidence(args.api_smoke_evidence, args.api_smoke_sha256, args.expected_head, args.project_dir)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"speecht5 API smoke authentication: BLOCKED: {error}", file=sys.stderr)
+            return 2
+        print("SPEECHT5_API_SMOKE_AUTHENTICATION status=PASS publication=NO_UPLOAD")
+        return 0
     if args.validate_evidence:
-        if args.output_dir is None or args.status is None or any(value is not None for value in (args.checkpoint, args.project_dir, args.approval_evidence, args.vokra_root)) or args.validate_approval:
+        if args.output_dir is None or args.status is None or any(value is not None for value in (args.checkpoint, args.project_dir, args.approval_evidence, args.vokra_root, *auth_args)) or args.validate_approval:
             parser.error("--validate-evidence requires only --output-dir and --status")
         try:
             validate_evidence_output(args.output_dir, args.status)
@@ -724,7 +993,7 @@ def main() -> int:
         print(f"SPEECHT5_API_SMOKE_EVIDENCE status={args.status} verdict=PASS")
         return 0
     if args.validate_approval:
-        if args.project_dir is None or args.approval_evidence is None or args.vokra_root is None or any(value is not None for value in (args.checkpoint, args.output_dir, args.status)) or args.validate_evidence:
+        if args.project_dir is None or args.approval_evidence is None or args.vokra_root is None or any(value is not None for value in (args.checkpoint, args.output_dir, args.status, *auth_args)) or args.validate_evidence:
             parser.error("--validate-approval requires --vokra-root, --project-dir, and --approval-evidence")
         try:
             git_checkout_context(args.vokra_root)
@@ -733,8 +1002,7 @@ def main() -> int:
                 args.project_dir.relative_to(args.vokra_root)
             except ValueError as error:
                 raise RuntimeError("parity project is outside --vokra-root") from error
-            require_absolute_no_symlink_path(args.approval_evidence, "approval evidence", exists=True)
-            require_regular(args.approval_evidence, "approval evidence")
+            require_canonical_approval_path(args.project_dir, args.approval_evidence)
             gate = run_preflight_gate(args.project_dir, args.approval_evidence)
             scope = validate_approval_file(args.project_dir, args.approval_evidence)
         except (OSError, RuntimeError, ValueError) as error:
