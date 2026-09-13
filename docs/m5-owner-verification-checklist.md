@@ -4,7 +4,7 @@
 
 **2026-09-13 current-state / supersession note:** the observed `main` baseline
 for this campaign is `08b206c4`. The latest live, read-only public audit,
-evaluated with audit logic through `87da78dc`, reports 194 repositories, 193
+evaluated with audit logic through `a4af7800`, reports 194 repositories, 193
 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal status is
 `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved

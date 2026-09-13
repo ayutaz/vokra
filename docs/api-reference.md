@@ -67,7 +67,7 @@ The current release line is workspace version `0.3.0`.
 
 **2026-09-13 current snapshot:** the observed `main` baseline is `50981d60`.
 The latest live, read-only public audit, evaluated with audit logic through
-`87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
+`a4af7800`, reports 194 repositories, 193 GGUF-bearing repositories and 198
 GGUF files. CPU status is `full=136`, `partial=43`,
 `no-runtime-binder=14`, `not-artifact=1`; Metal status is `full=136`,
 `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. The

@@ -24,7 +24,7 @@ publication approval on 2026-09-12 subsequently replaced the reviewed
 ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
 artifacts through the gated publisher; the exact revisions and hashes are in
 the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
-The latest live audit, evaluated with audit logic through `87da78dc`, reports
+The latest live audit, evaluated with audit logic through `a4af7800`, reports
 194 public repositories, 193 repositories with GGUFs, and 198 GGUF files. CPU
 code status is 136 full, 43 partial, 14 without a runtime binder, and 1
 non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1

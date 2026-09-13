@@ -18,7 +18,7 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 > **Development status (2026-09-13):** the workspace is `0.3.0` development;
 > the observed `main` baseline for this campaign is `50981d60`. The latest
 > live, read-only public inventory, evaluated with audit logic through
-> `87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
+> `a4af7800`, reports 194 repositories, 193 GGUF-bearing repositories and 198
 > GGUF files: 136 Mac-CPU-complete, 43 partial, 14 without a runtime binder and
 > 1 non-artifact; Apple Metal is 136 full, 57 blocked by CPU and 1
 > non-artifact. VibeVoice Realtime-0.5B now has a strict structural
