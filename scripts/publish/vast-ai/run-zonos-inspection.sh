@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSPECTOR="$ROOT/tools/parity/zonos_inspect.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
 DEPENDENCY_APPROVAL_VALIDATOR="$ROOT/tools/parity/zonos_v0_1_reference/dependency_approval.py"
+TRANSFORMERS_COMPATIBILITY_GATE="$ROOT/scripts/publish/vast-ai/check-zonos-transformers-compatibility.sh"
 HF_REPOSITORY="vokra/zonos-v0.1-transformer"
 HF_REVISION="b1bf5c56d470eb9097e9b04f9deca364576574ba"
 UPSTREAM_HF_REPOSITORY="Zyphra/Zonos-v0.1-transformer"
@@ -108,7 +109,7 @@ write_transfer_manifest() {
 }
 
 self_test() {
-  local failed=0 token temporary valid_log audit_line approval_line acquisition_line
+  local failed=0 token temporary valid_log audit_line approval_line compatibility_line acquisition_line
   for token in \
     "$HF_REPOSITORY" "$HF_REVISION" "$UPSTREAM_HF_REPOSITORY" "$UPSTREAM_HF_REVISION" \
     "$SOURCE_REPOSITORY" "$SOURCE_REVISION" 'zonos_vast_stage.py' 'zonos_dump_reference.py' \
@@ -121,7 +122,7 @@ self_test() {
     'parity_zonos_real.rs' 'VOKRA_ZONOS_DAC_GGUF' 'cargo test --locked -p vokra-models' \
     'reference-codes.u32le' 'native-cpu.log' '--native-log' 'AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE' 'exit 2' \
     '--approval-evidence' '--approval-evidence-sha256' '--expected-head' 'preflight-only' 'write_transfer_manifest' \
-    'dependency_approval.py' 'ZONOS_DEPENDENCY_APPROVAL' 'ZONOS_DEPENDENCY_APPROVAL_SHA256' 'dependency_approval_sha256=' \
+    'dependency_approval.py' 'check-zonos-transformers-compatibility.sh' 'BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE' 'ZONOS_DEPENDENCY_APPROVAL' 'ZONOS_DEPENDENCY_APPROVAL_SHA256' 'dependency_approval_sha256=' \
     'APPROVED_FOR_PRE_ACQUISITION' 'DEPENDENCY_SCOPE_ONLY' 'ALLOW_SOURCE_CHECKPOINT_ACQUISITION' \
     'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD' \
     'LICENSE' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'apache-2.0' 'card_data_license' \
@@ -133,9 +134,10 @@ self_test() {
   done
   audit_line="$(awk '/VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash/{print NR; exit}' "$0")"
   approval_line="$(awk '/--approval \"\$dependency_approval\"/{print NR; exit}' "$0")"
+  compatibility_line="$(awk '/^bash .*TRANSFORMERS_COMPATIBILITY_GATE"$/{print NR; exit}' "$0")"
   acquisition_line="$(awk '/^for command in git uv awk cp sha256sum cargo;/{print NR; exit}' "$0")"
-  if [[ ! "$audit_line" =~ ^[0-9]+$ || ! "$approval_line" =~ ^[0-9]+$ || ! "$acquisition_line" =~ ^[0-9]+$ ]] || \
-    (( audit_line >= approval_line || approval_line >= acquisition_line )); then
+  if [[ ! "$audit_line" =~ ^[0-9]+$ || ! "$approval_line" =~ ^[0-9]+$ || ! "$compatibility_line" =~ ^[0-9]+$ || ! "$acquisition_line" =~ ^[0-9]+$ ]] || \
+    (( audit_line >= approval_line || approval_line >= compatibility_line || compatibility_line >= acquisition_line )); then
     echo 'dependency approval transition is not ordered after audit and before acquisition' >&2
     failed=1
   fi
@@ -191,6 +193,7 @@ self_test() {
     uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_v0_1_reference/dependency_audit.py" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
     uv run --no-project --offline --python 3.12 python "$DEPENDENCY_APPROVAL_VALIDATOR" --self-test || failed=1
+  bash "$TRANSFORMERS_COMPATIBILITY_GATE" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
     uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_v0_1_reference/import_policy.py" || failed=1
   (( failed == 0 )) || return 1
@@ -243,6 +246,11 @@ dependency_approval_status=$?
 set -e
 [[ "$dependency_approval_status" == 0 ]] || die 'Zonos dependency approval did not authenticate the exact audit scope before acquisition'
 echo 'Zonos dependency approval PASS; factual audit remains BLOCKED_UNREVIEWED_TRANSITIVE; publication=NO_UPLOAD' >&2
+
+# A patched Transformers lock is not source/API compatibility evidence. Stop
+# before any source or checkpoint acquisition until an authorized VAST API
+# smoke test proves the exact upstream Zonos contract.
+bash "$TRANSFORMERS_COMPATIBILITY_GATE"
 
 for command in git uv awk cp sha256sum cargo; do command -v "$command" >/dev/null || die "missing tool: $command"; done
 UV_NO_CACHE=1 uv run --no-cache --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \

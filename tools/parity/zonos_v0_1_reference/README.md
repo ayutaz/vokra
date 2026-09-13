@@ -20,6 +20,14 @@ and publisher LICENSE/NOTICE bytes. No model/source/checkpoint acquisition,
 execution, or publication is authorized by this project alone; all workers
 remain `NO_UPLOAD`.
 
+The security-fixed closure pins `transformers==5.10.4` and its compatible
+`huggingface-hub==1.5.0`; the previous `transformers==4.48.1` was in the
+`GHSA-xrqw-3rrv-vx5w` affected range. The upstream Zonos source/API has not
+yet been smoke-tested against this patched closure. Consequently the worker
+stops with `BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE` before any source or
+checkpoint acquisition, and no compatibility result is inferred from the
+lock alone.
+
 ## Dependency approval transition
 
 The model-free audit emits `BLOCKED_UNREVIEWED_TRANSITIVE` because dependency

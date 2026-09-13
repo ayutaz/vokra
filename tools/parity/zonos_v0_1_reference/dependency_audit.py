@@ -40,8 +40,8 @@ REPOSITORY_ROOT = PROJECT_DIR.parents[2]
 AUDITOR_PATH = Path(__file__).resolve()
 WRAPPER_PATH = REPOSITORY_ROOT / "scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
 PREPARER_PATH = PROJECT_DIR / "prepare_numpy_no_blas.sh"
-EXPECTED_PROJECT_SHA256 = "5cb58da85195f8f0812aa18bedd6a320226c7a3ef94e64c33e5782414c115b29"
-EXPECTED_LOCK_SHA256 = "40fa51a7cffcfed126e073ecf0813fcbdb0935ea1bef05f51be1e75585fbcf76"
+EXPECTED_PROJECT_SHA256 = "d1147745ce62515adfa4aaa28a896a1f8765592f77404ed3e9b8ba4a4c0d7f97"
+EXPECTED_LOCK_SHA256 = "d533b5917f820cca4bb0776b282ffa3749d89152acf94fca755dc78fdfcb82a1"
 EXPECTED_CONSTRAINTS_SHA256 = "812ab3e215d7756738ab9a9aca7b8c94b53a3b10e8f1e43228e1b74965be020a"
 NUMPY_SDIST_URL = "https://files.pythonhosted.org/packages/ec/d0/c12ddfd3a02274be06ffc71f3efc6d0e457b0409c4481596881e748cb264/numpy-2.2.2.tar.gz"
 NUMPY_SDIST_SHA256 = "ed6906f61834d687738d25988ae117683705636936cc605be0bb208b23df4d8f"
@@ -49,13 +49,13 @@ NUMPY_SDIST_BYTES = 20233295
 AUDIT_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 PUBLICATION = "NO_UPLOAD"
 DIRECT_DEPENDENCIES = {
-    "huggingface-hub": "0.28.1",
+    "huggingface-hub": "1.5.0",
     "numpy": "2.2.2",
     "safetensors": "0.5.3",
     "torch": "2.6.0+cpu",
     "torchaudio": "2.6.0+cpu",
     "tqdm": "4.67.1",
-    "transformers": "4.48.1",
+    "transformers": "5.10.4",
 }
 FORBIDDEN_PACKAGES = frozenset(
     {
@@ -72,29 +72,41 @@ FORBIDDEN_PACKAGES = frozenset(
     }
 )
 LICENSE_CONCLUSIONS = {
+    "annotated-doc": "OWNER_REVIEW_REQUIRED",
+    "anyio": "OWNER_REVIEW_REQUIRED",
     "certifi": "MPL-2.0_POLICY_REVIEW_REQUIRED",
     "charset-normalizer": "MIT_REVIEWED",
     "colorama": "BSD-3-Clause_REVIEWED",
     "filelock": "UNLICENSE_POLICY_REVIEW_REQUIRED",
     "fsspec": "BSD-3-Clause_REVIEWED",
+    "h11": "OWNER_REVIEW_REQUIRED",
+    "hf-xet": "OWNER_REVIEW_REQUIRED",
+    "httpcore": "OWNER_REVIEW_REQUIRED",
+    "httpx": "OWNER_REVIEW_REQUIRED",
     "huggingface-hub": "Apache-2.0_REVIEWED",
     "idna": "BSD-3-Clause_REVIEWED",
     "jinja2": "BSD-3-Clause_REVIEWED",
     "markupsafe": "BSD-3-Clause_REVIEWED",
+    "markdown-it-py": "OWNER_REVIEW_REQUIRED",
+    "mdurl": "OWNER_REVIEW_REQUIRED",
     "mpmath": "BSD_STYLE_PRIMARY_REVIEW_REQUIRED",
     "networkx": "BSD-3-Clause_REVIEWED",
     "numpy": "BSD-3-Clause_NATIVE_BUNDLE_REVIEW_REQUIRED",
     "packaging": "Apache-2.0_REVIEWED",
     "pyyaml": "MIT_REVIEWED",
+    "pygments": "OWNER_REVIEW_REQUIRED",
     "regex": "Apache-2.0_REVIEWED",
     "requests": "Apache-2.0_REVIEWED",
+    "rich": "OWNER_REVIEW_REQUIRED",
     "safetensors": "Apache-2.0_REVIEWED",
     "setuptools": "MIT_REVIEWED",
+    "shellingham": "OWNER_REVIEW_REQUIRED",
     "sympy": "BSD-3-Clause_REVIEW_REQUIRED",
     "tokenizers": "Apache-2.0_REVIEWED",
     "torch": "BSD-3-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
     "torchaudio": "BSD-2-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
     "tqdm": "MPL-2.0_OR_MIT_POLICY_REVIEW_REQUIRED",
+    "typer": "OWNER_REVIEW_REQUIRED",
     "transformers": "Apache-2.0_REVIEWED",
     "typing-extensions": "PSF-2.0_POLICY_REVIEW_REQUIRED",
     "urllib3": "MIT_REVIEWED",
@@ -1642,10 +1654,10 @@ def self_test() -> None:
     report = audit()
     assert report["status"] == AUDIT_STATUS
     assert report["publication"] == PUBLICATION
-    assert report["lock"]["package_count"] == 29
+    assert report["lock"]["package_count"] == 38
     assert not set(row["name"].lower() for row in report["lock"]["rows"]) & FORBIDDEN_PACKAGES
     active = _active_lock_rows(report["lock"]["rows"])
-    assert len(active) == 25
+    assert len(active) == 34
     assert all(row["source"].get("virtual") is None for row in active)
     assert {row["version"] for row in active if row["name"] in {"torch", "torchaudio"}} == {"2.6.0+cpu"}
     darwin = _active_lock_rows(
