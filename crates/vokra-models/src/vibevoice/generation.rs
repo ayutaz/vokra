@@ -261,6 +261,11 @@ impl VibeVoiceComposite {
                 "vibevoice prompt draws/replacements require prompt PCM".to_owned(),
             ));
         };
+        // Reject the legacy prompt path before touching the tokenizer.  The
+        // scalar draw is part of the official sampling contract, and doing
+        // any prompt work before checking it would waste work before the
+        // intentional fail-closed error.
+        let prompt_std_draw = require_prompt_std_draw(prompt_std_draw)?;
         // The pinned source's `_process_speech_inputs` replaces prompt rows
         // with the acoustic connector only. Semantic conditioning starts
         // after generated PCM is re-encoded below; do not encode prompt PCM
@@ -279,13 +284,6 @@ impl VibeVoiceComposite {
                 "vibevoice prompt row/draw/replacement count mismatch".to_owned(),
             ));
         }
-        let prompt_std_draw = prompt_std_draw.ok_or_else(|| {
-            VokraError::InvalidArgument(
-                "vibevoice prompt sampling requires one scalar Gaussian draw per batch item; \
-                 call generate_with_prompt_std_draw"
-                    .to_owned(),
-            )
-        })?;
         // The official tokenizer first draws one batch scalar with
         // `fix_std / 0.8`, then multiplies that scalar by the element-wise
         // `randn_like(mean)` draw.  Keep both draws caller-owned so no hidden
@@ -438,6 +436,16 @@ fn constrained_greedy_token(logits: &[f32]) -> Result<u32> {
         .ok_or_else(|| VokraError::ModelLoad("vibevoice constrained token set is empty".to_owned()))
 }
 
+fn require_prompt_std_draw(prompt_std_draw: Option<f32>) -> Result<f32> {
+    prompt_std_draw.ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "vibevoice prompt sampling requires one scalar Gaussian draw per batch item; \
+             call generate_with_prompt_std_draw"
+                .to_owned(),
+        )
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TokenPlan {
     /// Conditions are read from the current hidden before cache advancement.
@@ -530,6 +538,12 @@ mod tests {
             prompt_sample_value(mean, scalar_draw, latent_draw),
             expected
         );
+    }
+
+    #[test]
+    fn legacy_prompt_path_requires_scalar_before_sampling() {
+        assert!(require_prompt_std_draw(None).is_err());
+        assert_eq!(require_prompt_std_draw(Some(0.25)).unwrap(), 0.25);
     }
 
     #[test]
@@ -627,6 +641,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 fn prompt_sample_value(mean: f32, scalar_draw: f32, latent_draw: f32) -> f32 {
     mean + (PROMPT_STD * scalar_draw) * latent_draw
 }
