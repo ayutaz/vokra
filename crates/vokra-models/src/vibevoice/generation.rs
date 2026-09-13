@@ -518,6 +518,11 @@ fn token_plan(token: u32) -> TokenPlan {
 }
 
 #[cfg(test)]
+fn prompt_sample_value(mean: f32, scalar_draw: f32, latent_draw: f32) -> f32 {
+    mean + (PROMPT_STD * scalar_draw) * latent_draw
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -639,9 +644,4 @@ mod tests {
         packet.prompt_latent_draws[0] = f32::NAN;
         assert!(validate_packet(&packet).is_err());
     }
-}
-
-#[cfg(test)]
-fn prompt_sample_value(mean: f32, scalar_draw: f32, latent_draw: f32) -> f32 {
-    mean + (PROMPT_STD * scalar_draw) * latent_draw
 }
