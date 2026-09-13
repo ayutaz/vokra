@@ -35,6 +35,17 @@ OWNER_REVIEW = "PENDING_OWNER_APPROVAL"
 PYPI = "https://pypi.org/simple"
 PYTORCH_CPU = "https://download.pytorch.org/whl/cpu"
 REGISTRIES = {PYPI, PYTORCH_CPU}
+DIRECT_DEPENDENCIES = (
+    "hydra-core==1.3.6",
+    "nemo-toolkit[asr]==3.0.0",
+    "torch==2.13.0",
+)
+DIRECT_LOCK_DEPENDENCIES = (
+    {"name": "hydra-core", "specifier": "==1.3.6"},
+    {"name": "nemo-toolkit", "extras": ["asr"], "specifier": "==3.0.0"},
+    {"name": "torch", "specifier": "==2.13.0", "index": PYTORCH_CPU},
+)
+LOCK_TORCH_VERSION = "2.13.0+cpu"
 LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".a"}
 ELF_MAGIC = b"\x7fELF"
@@ -552,6 +563,67 @@ def memory_bytes() -> int | None:
     return None
 
 
+def validate_dependency_contract(project: dict[str, Any], lock: dict[str, Any]) -> None:
+    """Keep the declared project pins and frozen lock roots in sync.
+
+    The lock's dependency markers are generated for the Linux x86_64 target;
+    direct requirements must still agree across both lock representations.
+    This prevents a dependency-only update from leaving the model-free audit
+    bound to an older Torch release.
+    """
+    dependencies = project.get("project", {}).get("dependencies")
+    if not isinstance(dependencies, list) or not all(isinstance(item, str) for item in dependencies):
+        raise AuditError("dedicated dependency contract is malformed")
+    if sorted(dependencies) != sorted(DIRECT_DEPENDENCIES):
+        raise AuditError("dedicated dependency contract drifted")
+
+    packages = lock.get("package")
+    roots = [
+        row for row in packages
+        if isinstance(row, dict) and row.get("source") == {"virtual": "."}
+    ] if isinstance(packages, list) else []
+    if len(roots) != 1:
+        raise AuditError(f"expected one virtual project row, found {len(roots)}")
+    root = roots[0]
+    metadata = root.get("metadata", {})
+    lock_requires_dist = metadata.get("requires-dist") if isinstance(metadata, dict) else None
+    canonical_lock_requires_dist = (
+        sorted(canonical(item) for item in lock_requires_dist if isinstance(item, dict))
+        if isinstance(lock_requires_dist, list) else []
+    )
+    if (
+        canonical_lock_requires_dist != sorted(canonical(item) for item in DIRECT_LOCK_DEPENDENCIES)
+        or not isinstance(lock_requires_dist, list)
+        or len(lock_requires_dist) != len(DIRECT_LOCK_DEPENDENCIES)
+    ):
+        raise AuditError("uv lock root dependency contract drifted")
+
+    root_dependencies = root.get("dependencies")
+    expected_root_dependencies = [
+        {"name": "hydra-core"},
+        {"name": "nemo-toolkit", "extra": ["asr"]},
+        {"name": "torch"},
+    ]
+    canonical_root_dependencies = (
+        sorted(canonical(item) for item in root_dependencies if isinstance(item, dict))
+        if isinstance(root_dependencies, list) else []
+    )
+    if (
+        canonical_root_dependencies != sorted(canonical(item) for item in expected_root_dependencies)
+        or not isinstance(root_dependencies, list)
+        or len(root_dependencies) != len(expected_root_dependencies)
+    ):
+        raise AuditError("uv lock project dependency edges drifted")
+
+    torch_rows = [
+        row for row in packages
+        if isinstance(row, dict) and row.get("name") == "torch"
+        and row.get("source") == {"registry": PYTORCH_CPU}
+    ]
+    if len(torch_rows) != 1 or torch_rows[0].get("version") != LOCK_TORCH_VERSION:
+        raise AuditError("uv lock Torch CPU pin drifted")
+
+
 def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     project_bytes, project = load_toml(project_path, "dedicated pyproject")
     lock_bytes, lock = load_toml(lock_path, "dedicated uv.lock")
@@ -568,9 +640,7 @@ def verify_project(project_path: Path, lock_path: Path) -> tuple[bytes, bytes, d
     indexes = tool_uv.get("index", [])
     if indexes != [{"name": "pytorch-cpu", "url": PYTORCH_CPU, "explicit": True}]:
         raise AuditError("PyTorch CPU index is not explicit and pinned")
-    dependencies = project.get("project", {}).get("dependencies", [])
-    if sorted(dependencies) != ["hydra-core==1.3.6", "nemo-toolkit[asr]==3.0.0", "torch==2.7.1"]:
-        raise AuditError("dedicated dependency contract drifted")
+    validate_dependency_contract(project, lock)
     rows, inactive, failures, dependency_paths = active_lock_rows(lock)
     if sha256_bytes(lock_bytes) == sha256_bytes(project_bytes):
         raise AuditError("project and lock unexpectedly share digest")
@@ -737,6 +807,55 @@ def self_test() -> None:
         canonical_root / "tools/parity/canary_1b_reference/uv.lock",
         canonical_root / "scripts/publish/vast-ai/audit-canary-1b-dependencies.sh",
     )
+    project_data = tomllib.loads(
+        (canonical_root / "tools/parity/canary_1b_reference/pyproject.toml").read_text(encoding="utf-8")
+    )
+    lock_data = tomllib.loads(
+        (canonical_root / "tools/parity/canary_1b_reference/uv.lock").read_text(encoding="utf-8")
+    )
+    validate_dependency_contract(project_data, lock_data)
+
+    drifted_project = {
+        **project_data,
+        "project": {
+            **project_data["project"],
+            "dependencies": [
+                "hydra-core==1.3.6",
+                "nemo-toolkit[asr]==3.0.0",
+                "torch==2.7.1",
+            ],
+        },
+    }
+    try:
+        validate_dependency_contract(drifted_project, lock_data)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted a stale project Torch pin")
+
+    drifted_lock_packages = []
+    for row in lock_data["package"]:
+        if row.get("source") != {"virtual": "."}:
+            drifted_lock_packages.append(row)
+            continue
+        metadata = row["metadata"]
+        stale_requires_dist = [
+            {**item, "specifier": "==2.7.1"}
+            if item.get("name") == "torch" else item
+            for item in metadata["requires-dist"]
+        ]
+        drifted_lock_packages.append({
+            **row,
+            "metadata": {**metadata, "requires-dist": stale_requires_dist},
+        })
+    drifted_lock = {**lock_data, "package": drifted_lock_packages}
+    try:
+        validate_dependency_contract(project_data, drifted_lock)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted a stale lock Torch pin")
+
     try:
         verify_canonical_sources(
             canonical_root,
