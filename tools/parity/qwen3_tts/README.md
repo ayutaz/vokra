@@ -133,18 +133,28 @@ imports model code, invokes Cargo, or uploads anything. The dependency audit
 evidence is currently `STALE_REQUIRES_VAST_AUDIT` because the security removal
 of `accelerate==1.12.0` (and its `psutil` transitive dependency) invalidated the
 prior installed-payload and native facts; an authorized Linux x86_64 VAST audit
-must rerun before owner approval. This stale marker is intentional and does
-not bypass dependency review.
+must rerun before replacing the stale projection. A model-free VAST audit was
+collected as a factual supersession candidate (compact SHA-256
+`4a9671cc9c828e93cdcbba84639480dd2dee090ea1a761b1e2158c0cb2964665`; full
+report SHA-256
+`c788f0aa638a3cce9fd9e474fb6658d9720c7f817bcec9392e564a62d5a06381`). The
+candidate must be rerun at the clean post-review HEAD. This stale marker is
+intentional and does not bypass dependency review.
 The owner-approval scope intentionally excludes this volatile dependency-audit
 reference to avoid a hash cycle; the compact bytes, full-report SHA-256, input
 hashes, closure/facts, and approval state remain bound separately by the gate.
 Every factual package/component record has a canonical full-fact digest bound
-back to its manifest row; inactive rows remain pending and carry no installed
-license/native claim. The compact evidence records factual installed metadata
-only and is not an owner legal conclusion. Owner approval and checkpoint/full
-API smoke remain blocked until a fresh exact-head VAST audit and legitimate
-dependency/component reviews are recorded; dependency synchronization and
-model-free API smoke are independent and may proceed.
+back to its manifest row. The owner-review transition uses the fixed signer
+handle `yousan` and canonical row/component subjects. The dependency/reference
+package boundary is internal-only: SciPy's GPL-with-GCC-exception/LGPL closure
+and torchaudio's native libsox/libav inventory remain audit facts and are not
+embedded in Vokra runtime or GGUF publication payloads. No model bytes are
+committed or uploaded, and the publication decision remains `NO_UPLOAD`. The
+compact evidence records factual installed metadata only and is not an owner
+legal conclusion. A fresh exact-head VAST audit is required before the stale
+projection can be superseded; only then may the authorized real-weight
+smoke/parity sequence proceed. The follow-on Scaleway Apple CPU/Metal
+no-fallback check remains after that VAST gate.
 Run its `--self-test` locally; do not run the production audit on the
 maintainer machine. The production audit can optionally emit the compact
 projection with `--compact-output <absent-path>` when a separately authorized

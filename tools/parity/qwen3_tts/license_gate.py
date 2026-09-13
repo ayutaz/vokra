@@ -25,6 +25,7 @@ from typing import Any
 GATE_VERSION = 2
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+OWNER_SIGNER = "yousan"
 DEPENDENCY_KEYS = (
     frozenset({"name"}),
     frozenset({"name", "marker"}),
@@ -161,6 +162,20 @@ def digest_bytes(data: bytes) -> str:
 
 def canonical_digest(value: Any) -> str:
     return digest_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def fixed_approval_subject(kind: str, value: dict[str, Any]) -> dict[str, Any]:
+    """Build the canonical, row-bound authorization subject."""
+    return {"kind": kind, **value}
+
+
+def fixed_approval_digest(subject: dict[str, Any]) -> str:
+    return canonical_digest({
+        "schema": "v1",
+        "decision": "APPROVED",
+        "signer": OWNER_SIGNER,
+        "subject": subject,
+    })
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -540,8 +555,8 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
             if fact["declared_license"] is not None or not isinstance(fact["declared_license_bytes"], int) or fact["declared_license_bytes"] <= 256 or not HEX64.fullmatch(str(fact["declared_license_sha256"])): fail("compact truncated license fact is malformed")
         elif fact["declared_license_bytes"] is not None or fact["declared_license_sha256"] is not None or fact["declared_license"] is not None and not isinstance(fact["declared_license"], str): fail("compact declared license fact is malformed")
         expected_review = active_reviews[(fact["name"], fact["version"], json.dumps(fact["source"], sort_keys=True))]
-        if fact["review_license"] != expected_review["license"] or fact["review_native_bundled"] != expected_review["native_bundled"] or expected_review["status"] != "PENDING_OWNER_APPROVAL" or expected_review["approval_signer"] is not None or expected_review["approval_digest"] is not None:
-            fail("compact package fact is not bound to pending manifest review")
+        if fact["review_license"] != expected_review["license"] or fact["review_native_bundled"] != expected_review["native_bundled"] or expected_review["status"] != "REVIEWED" or expected_review["approval_signer"] != OWNER_SIGNER or not HEX64.fullmatch(str(expected_review["approval_digest"])):
+            fail("compact package fact is not bound to reviewed manifest review")
         fact_without_hash = {key: fact[key] for key in fact if key != "fact_sha256"}
         if digest_bytes(json.dumps(fact_without_hash, sort_keys=True, separators=(",", ":")).encode()) != fact["fact_sha256"] or expected_review["payload_sha256"] != fact["fact_sha256"]:
             fail("compact package fact digest is not bound to the manifest row")
@@ -585,7 +600,7 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
     for fact in component_facts:
         if set(fact) != component_fields or fact["owner_review"] != "PENDING_OWNER_APPROVAL" or not HEX64.fullmatch(str(fact["fact_sha256"])): fail("compact component fact schema drifted")
         expected = next(item for item in components if item["component"] == fact["component"])
-        if fact["identity"] != expected["identity"] or fact["review_license"] != expected["license"] or fact["review_native_bundled"] != expected["native_bundled"] or expected["status"] != "PENDING_OWNER_APPROVAL" or expected["approval_signer"] is not None or expected["approval_digest"] is not None: fail("compact component fact is not bound to pending manifest review")
+        if fact["identity"] != expected["identity"] or fact["review_license"] != expected["license"] or fact["review_native_bundled"] != expected["native_bundled"] or expected["status"] != "REVIEWED" or expected["approval_signer"] != OWNER_SIGNER or not HEX64.fullmatch(str(expected["approval_digest"])): fail("compact component fact is not bound to reviewed manifest review")
         if (fact["metadata"] is None) != (fact["component"] == "official_source") or fact["metadata"] is not None and fact["metadata"]["component"] != fact["component"]: fail("compact component metadata binding drifted")
         if fact["license_file"] is None or fact["license_file"]["component"] != fact["component"]: fail("compact component LICENSE binding drifted")
         if digest_bytes(json.dumps({key: fact[key] for key in fact if key != "fact_sha256"}, sort_keys=True, separators=(",", ":")).encode()) != fact["fact_sha256"] or expected["payload_sha256"] != fact["fact_sha256"]: fail("compact component fact digest is not bound to manifest")
@@ -604,18 +619,19 @@ def require_fixed_approval(
     signer: Any,
     approval_digest: Any,
     label: str,
+    subject: dict[str, Any],
 ) -> None:
     if (
         schema != "v1"
-        or not isinstance(signer, str)
-        or not HEX40.fullmatch(signer)
+        or signer != OWNER_SIGNER
         or not isinstance(approval_digest, str)
         or not HEX64.fullmatch(approval_digest)
+        or approval_digest != fixed_approval_digest(subject)
     ):
         fail(f"review row lacks a fixed owner sign-off identity/digest: {label}")
-    if not isinstance(approval, dict) or approval.get("schema") != "v1" or approval.get("decision") != "APPROVED":
+    if not isinstance(approval, dict) or set(approval) != {"schema", "decision", "signer", "signature_sha256", "subject"} or approval.get("schema") != "v1" or approval.get("decision") != "APPROVED":
         fail(f"evidence lacks the required approval schema: {label}")
-    if approval.get("signer") != signer or approval.get("signature_sha256") != approval_digest:
+    if approval.get("signer") != signer or approval.get("signature_sha256") != approval_digest or approval.get("subject") != subject:
         fail(f"evidence approval is not the fixed owner sign-off: {label}")
 
 
@@ -784,7 +800,8 @@ def run(
         signer = review["approval_signer"]
         approval_digest = review["approval_digest"]
         require_fixed_approval(
-            row.get("approval"), review["approval_schema"], signer, approval_digest, repr(key)
+            row.get("approval"), review["approval_schema"], signer, approval_digest, repr(key),
+            fixed_approval_subject("package", {"name": review["name"], "version": review["version"], "source": review["source"], "license": review["license"], "native_bundled": review["native_bundled"], "payload_sha256": review["payload_sha256"]}),
         )
     component_evidence = evidence.get("components")
     if not isinstance(component_evidence, list) or len(component_evidence) != len(components):
@@ -807,7 +824,8 @@ def run(
         signer = component["approval_signer"]
         approval_digest = component["approval_digest"]
         require_fixed_approval(
-            row.get("approval"), component["approval_schema"], signer, approval_digest, component["component"]
+            row.get("approval"), component["approval_schema"], signer, approval_digest, component["component"],
+            fixed_approval_subject("component", {"component": component["component"], "identity": component["identity"], "license": component["license"], "native_bundled": component["native_bundled"], "payload_sha256": component["payload_sha256"]}),
         )
     print("qwen3-tts license gate: PASS")
 
@@ -946,11 +964,17 @@ def self_test() -> None:
                 "native_bundled": review_values[row["name"]][1],
                 "payload_sha256": "0" * 64,
                 "approval_schema": "v1",
-                "approval_signer": "a" * 40,
-                "approval_digest": "b" * 64,
+                "approval_signer": OWNER_SIGNER,
+                "approval_digest": None,
             }
             for row in rows
         ]
+        for row in explicit_reviews:
+            row["approval_digest"] = fixed_approval_digest(fixed_approval_subject("package", {
+                "name": row["name"], "version": row["version"], "source": row["source"],
+                "license": row["license"], "native_bundled": row["native_bundled"],
+                "payload_sha256": row["payload_sha256"],
+            }))
         manifest = {
             "gate_version": GATE_VERSION,
             "lock_sha256": digest_bytes(lock.read_bytes()),
@@ -965,8 +989,8 @@ def self_test() -> None:
                     "native_bundled": "no native or bundled code",
                     "payload_sha256": "0" * 64,
                     "approval_schema": "v1",
-                    "approval_signer": "a" * 40,
-                    "approval_digest": "b" * 64,
+                    "approval_signer": OWNER_SIGNER,
+                    "approval_digest": None,
                 }
                 for identity in fixed_component_identities()
             ],
@@ -984,6 +1008,13 @@ def self_test() -> None:
         }
         reviews = review_rows(rows, manifest)
         manifest["review_rows_sha256"] = canonical_digest(reviews)
+        components = component_rows(manifest)
+        for row in manifest["component_rows"]:
+            row["approval_digest"] = fixed_approval_digest(fixed_approval_subject("component", {
+                "component": row["component"], "identity": row["identity"],
+                "license": row["license"], "native_bundled": row["native_bundled"],
+                "payload_sha256": row["payload_sha256"],
+            }))
         components = component_rows(manifest)
         manifest["component_rows_sha256"] = canonical_digest(components)
         project = root / "pyproject.toml"
@@ -1058,7 +1089,11 @@ def self_test() -> None:
                 "license": review_values[row["name"]][0],
                 "native_bundled": review_values[row["name"]][1],
                 "payload_sha256": "0" * 64,
-                "approval": {"schema": "v1", "decision": "APPROVED", "signer": "a" * 40, "signature_sha256": "b" * 64},
+                "approval": {"schema": "v1", "decision": "APPROVED", "signer": OWNER_SIGNER, "signature_sha256": row["approval_digest"], "subject": fixed_approval_subject("package", {
+                    "name": row["name"], "version": row["version"], "source": row["source"],
+                    "license": row["license"], "native_bundled": row["native_bundled"],
+                    "payload_sha256": row["payload_sha256"],
+                })},
             }
             for row in reviews
         ]
@@ -1072,7 +1107,11 @@ def self_test() -> None:
                 "license": component["license"],
                 "native_bundled": component["native_bundled"],
                 "payload_sha256": component["payload_sha256"],
-                "approval": {"schema": "v1", "decision": "APPROVED", "signer": "a" * 40, "signature_sha256": "b" * 64},
+                "approval": {"schema": "v1", "decision": "APPROVED", "signer": OWNER_SIGNER, "signature_sha256": component["approval_digest"], "subject": fixed_approval_subject("component", {
+                    "component": component["component"], "identity": component["identity"],
+                    "license": component["license"], "native_bundled": component["native_bundled"],
+                    "payload_sha256": component["payload_sha256"],
+                })},
             }
             for component in components
         ]
@@ -1192,6 +1231,7 @@ def self_test() -> None:
         blocked("license tamper", mutate_evidence=lambda value: value["rows"][0].update(license="GPL-3.0-only"))
         blocked("native closure tamper", mutate_evidence=lambda value: value["rows"][0].update(native_bundled="changed"))
         blocked("approval tamper", mutate_evidence=lambda value: value["rows"][0]["approval"].update(signature_sha256="1" * 64))
+        blocked("approval signer tamper", mutate_evidence=lambda value: value["rows"][0]["approval"].update(signer="other-owner"))
         blocked(
             "unresolved license row",
             mutate_manifest=lambda value: value["review_rows"][0].update(license="UNRESOLVED"),
