@@ -35,8 +35,9 @@ torchaudio 2.13.0 release is available, so the synchronized 2.11.0 pair is
 the highest resolvable official CPU pair and avoids an unsupported mixed
 installation.
 
-The lock also pins `setuptools==84.0.0`, the first release outside the
-`GHSA-h35f-9h28-mq5c` vulnerable `<83.0.0` range. Torch 2.11.0's published
+The lock also pins `setuptools==84.0.0`, a safe release after the
+`GHSA-h35f-9h28-mq5c` first patched release `83.0.0` (the vulnerable range is
+`<83.0.0`). Torch 2.11.0's published
 wheel metadata still declares `setuptools<82`; the dedicated project records
 this explicit `tool.uv.override-dependencies` decision because the worker
 installs the prebuilt CPU wheel and does not build Torch from source. The
