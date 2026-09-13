@@ -36,6 +36,7 @@ CANARY_REFERENCE_PROJECT="$REPO_ROOT/tools/parity/canary_1b_reference"
 PREFLIGHT_GATE="$REPO_ROOT/tools/parity/canary_1b/preflight_gate.py"
 PREFLIGHT_MANIFEST="$REPO_ROOT/tools/parity/canary_1b/license_gate_manifest.json"
 DEPENDENCY_GATE="$REPO_ROOT/tools/parity/canary_1b_reference/dependency_approval_gate.py"
+COMPATIBILITY_GATE="$REPO_ROOT/tools/parity/canary_1b_reference/compatibility_gate.py"
 
 canonical_absent_path() {
   local target="$1" lexical current="/" component suffix="" real
@@ -194,6 +195,7 @@ run_self_test() {
     "--approval-evidence" "--approval-sha256" "tools/parity/canary_1b/preflight_gate.py" \
     "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
     "dependency_approval_gate.py" "--dependency-approval" "--dependency-approval-sha256" "--dependency-signer-key" \
+    "compatibility_gate.py" "BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE" \
     "$MAIN_CHECKPOINT_MEMBER" "$MAIN_CHECKPOINT_BYTES" \
     "tools/parity/canary_1b_v2_prepare_checkpoint.py" \
     "tools/parity/canary_1b_v2_dump_reference.py" \
@@ -213,6 +215,12 @@ run_self_test() {
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
     "$REPO_ROOT/$REFERENCE_PACKET_VERIFIER" --self-test >/dev/null || {
       echo 'run-canary-1b-v2-validation: self-test FAIL: packet verifier self-test failed' >&2
+      fail=1
+    }
+
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$COMPATIBILITY_GATE" --self-test >/dev/null || {
+      echo 'run-canary-1b-v2-validation: self-test FAIL: compatibility gate self-test failed' >&2
       fail=1
     }
 
@@ -453,6 +461,13 @@ fi
 [[ -n "$expected_head" ]] || die "--expected-head is required"
 require_expected_head "$expected_head"
 license_preflight "$approval_evidence" "$approval_sha256"
+
+# NeMo 3.0.0's Lightning cap is incompatible with the security-fixed release
+# and the released NVIDIA OneLogger integration. Stop explicitly before the
+# dependency sync, archive inspection, scratch creation, or model work until
+# an upstream-compatible pair has been reviewed on VAST.
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+  "$COMPATIBILITY_GATE" --lock "$CANARY_REFERENCE_PROJECT/uv.lock"
 
 # Resolve and audit the dedicated dependency closure before archive inspection,
 # scratch creation, model processing, or Cargo.

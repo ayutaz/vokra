@@ -106,6 +106,21 @@ allowlist fix. The official NeMo oracle and its source contract remain
 unchanged. This resolver override must still be covered by the authorized
 VAST import probe before a real checkpoint is inspected.
 
+### Security-compatible import closure (currently blocked)
+
+The authorized VAST import probe found that the locked pair
+`lightning==2.6.6` / `nv-one-logger-pytorch-lightning-integration==2.3.1`
+cannot be imported: the released NVIDIA OneLogger trainer override has a
+`save_checkpoint(weights_only: bool)` signature while Lightning 2.6.6
+requires `Optional[bool]`, and the upstream `overrides` check rejects the
+class at import time. NVIDIA has no newer released OneLogger PTL integration
+to resolve this mismatch. The real-weight workers therefore run
+`compatibility_gate.py` and stop with
+`BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE` before checkpoint inspection.
+No older vulnerable Lightning release, advisory allowlist, or local
+monkeypatch is permitted. A future upstream-compatible pair requires a new
+VAST import probe before this gate can be relaxed.
+
 ## Dependency approval transition
 
 `dependency_audit.py` always emits factual
