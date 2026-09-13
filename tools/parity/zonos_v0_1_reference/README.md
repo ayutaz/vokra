@@ -45,6 +45,39 @@ override remains visible to the dependency audit and does not change the
 audit status (`BLOCKED_UNREVIEWED_TRANSITIVE`) or publication disposition
 (`NO_UPLOAD`).
 
+## Dependency license closure
+
+`license_gate_manifest.json` records the evidence review for all 34 active
+Linux x86_64 lock rows. The classifications are based on the captured
+publisher bytes, including the compound `regex` and `typing-extensions`
+notices, the dual-license `packaging` notice, the MPL boundary in `certifi`
+and `tqdm`, Setuptools' vendored notices, and the 21-file no-BLAS NumPy
+native policy. Torch/torchaudio have 12/4 native files in the 50-file native
+closure and retain an owner review boundary for bundled components.
+
+The supplied capture is bound to clean Vokra head
+`5a30084dcea18b9e72d7befb776f98a61a2a4286`, audit JSON SHA-256
+`1432d2ddb45a2f7b2d0f8490b83e2151c4a61e226899224963bd9f3d17ec7a9e`, and
+publisher archive manifest SHA-256
+`1f6b3bb82a6f4cf6f0eaca43ae6333bcb1b50b52e869d8d4aee2f4291b0a1332`.
+Because the capture predates the current Torch 2.11.0 lock, the gate treats
+it as historical review evidence and refuses to authorize the current
+closure. A fresh VAST capture is required before owner/legal sign-off or any
+publication transition.
+
+The gate is model-free and reads only external evidence:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python 3.12 \
+  tools/parity/zonos_v0_1_reference/license_gate.py --self-test \
+  --evidence-dir /path/to/evidence-5a30084d
+```
+
+The command verifies the directory `SHA256SUMS`, exact active-row/native/
+publisher set and canonical digests, and the legal archive payloads. It exits
+successfully only for the self-test; the normal gate remains exit 2 with
+`OWNER_SIGNOFF_REQUIRED` and `NO_UPLOAD`.
+
 ## Transformers compatibility smoke
 
 The VAST-only wrapper
