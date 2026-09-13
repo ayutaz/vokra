@@ -45,6 +45,13 @@ uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 \
   --project-sha256 <64-hex> --lock-sha256 <64-hex> --audit-sha256 <64-hex>
 ```
 
+The dedicated direct contract is `hydra-core==1.3.6`,
+`nemo-toolkit[asr]==3.0.0`, and `torch==2.13.0` from the explicit PyTorch CPU
+index.  The auditor also checks the frozen lock's root requirements and the
+resolved CPU row (`2.13.0+cpu`) against those pins, so a future dependency
+update must change the project, lock, and audit contract together.  Its
+stdlib self-test exercises both stale-project and stale-lock Torch pins.
+
 The report is factual evidence, not a publication or legal approval.  It is
 always `BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD`; native payloads, ELF
 `NEEDED` entries, publisher license metadata, and license-file bytes copied to
