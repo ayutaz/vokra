@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
+#!/usr/bin/env -S uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 python
 """Dump an independent NVIDIA NeMo reference for Canary-1B-Flash.
 
 The oracle is the official ``EncDecMultiTaskModel`` imported from
@@ -9,7 +9,7 @@ the committed 16 kHz JFK clip.
 
 Run with the pinned NeMo optional environment on VAST::
 
-    VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity --extra titanet \
+    VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity/canary_1b_reference --frozen \
       --python 3.12 python tools/parity/canary_1b_flash_dump_reference.py \
       --nemo /workspace/canary-1b-flash.nemo \
       --source-language en --target-language en \
@@ -199,8 +199,8 @@ def main() -> int:
         from nemo.collections.asr.models import EncDecMultiTaskModel
     except ImportError as error:
         raise SystemExit(
-            "official NVIDIA NeMo is required; run through tools/parity with "
-            f"--extra titanet. Import failed: {error}"
+            "official NVIDIA NeMo is required; run through the dedicated "
+            f"Canary reference project. Import failed: {error}"
         ) from error
 
     pcm, sample_rate = sf.read(

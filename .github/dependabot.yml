@@ -102,6 +102,7 @@ updates:
       - "/tools/parity/bark"
       - "/tools/parity/bf16_gemm"
       - "/tools/parity/bigvgan"
+      - "/tools/parity/canary_1b_reference"
       - "/tools/parity/chatterbox_t3"
       - "/tools/parity/chattts"
       - "/tools/parity/clap"
@@ -159,6 +160,7 @@ updates:
       - "/tools/parity/xcodec2"
       - "/tools/parity/xy_tokenizer_reference"
       - "/tools/parity/yue_xcodec_mini"
+      - "/tools/parity/zonos_v0_1_reference"
     schedule:
       interval: "weekly"
       day: "wednesday"

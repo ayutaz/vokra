@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+#!/usr/bin/env -S uv run --frozen --project tools/parity/zonos_v0_1_reference --python 3.12 python
 """Run the pinned upstream Zonos implementation for a typed packet.
 
 This is an independent reference runner, not a Rust mirror.  It loads the
@@ -29,6 +29,9 @@ import struct
 from pathlib import Path
 from typing import Any
 
+from zonos_v0_1_reference import dependency_audit
+from zonos_v0_1_reference.import_policy import install as install_import_policy
+
 SOURCE_REPOSITORY = "https://github.com/Zyphra/Zonos.git"
 SOURCE_REVISION = "bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
 UPSTREAM_REPOSITORY = "Zyphra/Zonos-v0.1-transformer"
@@ -41,6 +44,8 @@ DAC_SAMPLE_RATE = 44_100
 MASKED = 1025
 MAX_PHONEMES = 1 << 20
 MAX_PREFIX_VALUES = 1 << 24
+REFERENCE_PROJECT_LOCK_SHA256 = dependency_audit.EXPECTED_LOCK_SHA256
+REFERENCE_PROJECT_PYPROJECT_SHA256 = dependency_audit.EXPECTED_PROJECT_SHA256
 
 
 def no_dupes(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -293,6 +298,9 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
     pcm_parent = pcm_output.parent.resolve()
     if output_parent != pcm_parent or record_path.parent.resolve() != output_parent:
         raise RuntimeError("codes, PCM, and reference record must share one evidence directory")
+    project = dependency_audit.project_identity()
+    if project["uv_lock_sha256"] != REFERENCE_PROJECT_LOCK_SHA256 or project["pyproject_sha256"] != REFERENCE_PROJECT_PYPROJECT_SHA256:
+        raise RuntimeError("dedicated Zonos reference project identity changed")
     fixed_source(source)
     packet = parse_packet(packet_path)
     config = snapshot / "config.json"
@@ -307,6 +315,7 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
         # companion.  Never let a reference run silently fetch a mutable
         # companion; VAST must pre-stage the reviewed DAC cache instead.
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        install_import_policy()
         import torch
         from zonos.model import Zonos
 
@@ -390,6 +399,7 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             "pcm_sample_rate": DAC_SAMPLE_RATE,
             "runtime_status": "REFERENCE_ONLY_NO_NATIVE_VERDICT",
             "publication": "NO_UPLOAD",
+            "reference_project": project,
         }
         with record_path.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
@@ -400,6 +410,8 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
 def self_test() -> None:
     assert len(SOURCE_REVISION) == len(UPSTREAM_REVISION) == 40
     assert PACKET_MAGIC == b"ZONOSCP1" and CODEBOOKS == 9 and MASKED == 1025
+    assert REFERENCE_PROJECT_LOCK_SHA256 == dependency_audit.EXPECTED_LOCK_SHA256
+    assert REFERENCE_PROJECT_PYPROJECT_SHA256 == dependency_audit.EXPECTED_PROJECT_SHA256
     try:
         json.loads('{"x":1,"x":2}', object_pairs_hook=no_dupes)
     except ValueError:

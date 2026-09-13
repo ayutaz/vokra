@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import json
 import re
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -33,28 +35,27 @@ SOURCE_ROLE_BLOBS = {
     "dia/state.py": "172ec52c7c344781aad0552a6cddd6e5f1933894",
     "pyproject.toml": "dd844dd2fb0ab0c016520c4b070beaa7c159e3e1",
 }
-REFERENCE_PROJECT_LOCK_SHA256 = "ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
-REFERENCE_PROJECT_PYPROJECT_SHA256 = "56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
+REFERENCE_PROJECT_LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
+REFERENCE_PROJECT_PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 DIRECT_DEPENDENCY_VERSIONS = {
     "einops": "0.8.2", "gguf": "0.19.0", "huggingface-hub": "0.30.2",
-    "numpy": "2.2.5", "pydantic": "2.11.3", "soundfile": "0.13.1",
-    "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu",
+    "numpy": "2.2.5", "pydantic": "2.11.3",
+    "torch": "2.6.0+cpu",
 }
 DEPENDENCY_LICENSE_CONCLUSIONS = {
     "annotated-types": "MIT_REVIEWED", "certifi": "MPL-2.0_BLOCKED_BY_POLICY",
-    "cffi": "MIT_NATIVE_LIBFFI_REVIEW_REQUIRED", "charset-normalizer": "MIT_REVIEWED",
+    "charset-normalizer": "MIT_REVIEWED",
     "colorama": "BSD-3-Clause_REVIEWED", "einops": "MIT_REVIEWED",
     "filelock": "UNLICENSE_POLICY_REVIEW_REQUIRED", "fsspec": "BSD-3-Clause_REVIEWED",
     "gguf": "MIT_REVIEWED", "huggingface-hub": "Apache-2.0_REVIEWED",
     "idna": "BSD-3-Clause_REVIEWED", "jinja2": "BSD-3-Clause_REVIEWED",
     "markupsafe": "BSD-3-Clause_REVIEWED", "mpmath": "BSD_STYLE_PRIMARY_REVIEW_REQUIRED",
-    "networkx": "BSD-3-Clause_REVIEWED", "numpy": "BSD-3-Clause_NATIVE_BUNDLE_REVIEW_REQUIRED",
-    "packaging": "Apache-2.0_REVIEWED", "pycparser": "BSD-3-Clause_REVIEWED",
+    "networkx": "BSD-3-Clause_REVIEWED", "numpy": "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED",
+    "packaging": "Apache-2.0_REVIEWED",
     "pydantic": "MIT_REVIEWED", "pydantic-core": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED",
     "pyyaml": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", "requests": "Apache-2.0_REVIEWED",
-    "setuptools": "MIT_REVIEWED", "soundfile": "BSD-3-Clause_NATIVE_LIBSNDFILE_REVIEW_REQUIRED",
+    "setuptools": "MIT_REVIEWED",
     "sympy": "BSD-3-Clause_REVIEWED", "torch": "BSD-3-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
-    "torchaudio": "BSD-2-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
     "tqdm": "MPL-2.0_OR_MIT_POLICY_REVIEW_REQUIRED", "typing-extensions": "PSF-2.0_BLOCKED_BY_POLICY",
     "typing-inspection": "MIT_REVIEWED", "urllib3": "MIT_REVIEWED",
     "vokra-dia-1-6b-reference": "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE",
@@ -64,6 +65,17 @@ SOURCE_CONTRACT_RUST_FILES = {
     "crates/vokra-models/src/dia/tokenizer.rs",
     "crates/vokra-models/src/dia/forward.rs",
     "crates/vokra-models/src/dia/mod.rs",
+}
+TORCHAUDIO_SEAM = {
+    "module": "torchaudio",
+    "marker": "dia-reference-torchaudio-audio-prompt-none-stub-v1",
+    "installed_distribution": False,
+    "audio_prompt": None,
+    "policy": "every audio load/use aborts loudly",
+}
+DEPENDENCY_BINDING_KEYS = {
+    "status", "approval_sha256", "scope_sha256", "expected_head",
+    "dependency_license_audit", "publication",
 }
 
 
@@ -104,6 +116,50 @@ def require_dac_proof(mapping: dict) -> None:
         raise ValueError("DAC exact checkpoint/Vokra manifest proof is unavailable")
 
 
+def require_audio_dependency_seam(seam: dict) -> None:
+    if seam != TORCHAUDIO_SEAM:
+        raise ValueError("Torchaudio fail-closed seam is missing or modified")
+
+
+def require_exact_evidence_entries(root: Path, paths: set[str]) -> None:
+    entries = tuple(root.iterdir())
+    if any(not entry.is_file() or entry.is_symlink() for entry in entries) or {entry.name for entry in entries} != paths | {"manifest.json"}:
+        raise ValueError("stale/orphan evidence file present")
+
+
+def require_dependency_approval_binding(
+    binding: dict,
+    root: Path,
+    scope_path: Path,
+    approval_path: Path,
+    approval_sha256: str,
+    scope_sha256: str,
+    expected_head: str,
+) -> None:
+    """Revalidate the external approval behind the manifest summary."""
+    if not isinstance(binding, dict) or set(binding) != DEPENDENCY_BINDING_KEYS:
+        raise ValueError("exact external dependency approval binding is missing")
+    if binding.get("status") != "VALIDATED" or binding.get("approval_sha256") != approval_sha256 or binding.get("scope_sha256") != scope_sha256 or binding.get("expected_head") != expected_head or binding.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE" or binding.get("publication") != "NO_UPLOAD":
+        raise ValueError("dependency approval binding is stale, wrong-head, or not NO_UPLOAD")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_head) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256) or not re.fullmatch(r"[0-9a-f]{64}", scope_sha256):
+        raise ValueError("dependency approval binding digest format is invalid")
+    dependency_dir = Path(__file__).parent / "dia_1_6b_reference"
+    if str(dependency_dir) not in sys.path:
+        sys.path.insert(0, str(dependency_dir))
+    from dependency_approval import ApprovalError, validate_approval
+    try:
+        root_real = root.resolve(strict=True)
+        scope_real = scope_path.resolve(strict=True)
+        approval_real = approval_path.resolve(strict=True)
+        if root_real in scope_real.parents or root_real in approval_real.parents or scope_real == approval_real:
+            raise ValueError("dependency approval evidence must be external and separate")
+        approval = validate_approval(scope_path, approval_path, approval_sha256, expected_head)
+    except (ApprovalError, OSError, RuntimeError) as error:
+        raise ValueError(f"external dependency approval is invalid: {error}") from error
+    if approval.get("scope_sha256") != scope_sha256 or approval.get("expected_head") != expected_head or approval.get("publication") != "NO_UPLOAD" or approval.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE":
+        raise ValueError("external dependency approval does not match manifest binding")
+
+
 def require_reference_project(identity: dict) -> None:
     if not isinstance(identity, dict) or identity.get("project") != "dia_1_6b_reference" or identity.get("python") != "3.12":
         raise ValueError("dedicated Dia reference project identity is missing")
@@ -112,7 +168,7 @@ def require_reference_project(identity: dict) -> None:
     if identity.get("use_torch_compile") is not False:
         raise ValueError("torch.compile must remain disabled in the adapted reference closure")
     audit = identity.get("dependency_audit")
-    if not isinstance(audit, dict) or audit.get("schema") != "vokra-dia-uv-lock-license-audit-v1" or audit.get("status") != "BLOCKED_UNREVIEWED_TRANSITIVE" or audit.get("package_count") != 34 or not isinstance(audit.get("rows"), list) or len(audit["rows"]) != 34 or len(audit.get("rows_sha256", "")) != 64:
+    if not isinstance(audit, dict) or audit.get("schema") != "vokra-dia-uv-lock-license-audit-v1" or audit.get("status") != "BLOCKED_UNREVIEWED_TRANSITIVE" or audit.get("package_count") != 29 or not isinstance(audit.get("rows"), list) or len(audit["rows"]) != 29 or len(audit.get("rows_sha256", "")) != 64:
         raise ValueError("complete CPU lock license-audit rows are missing")
     canonical_rows = []
     for row in audit["rows"]:
@@ -144,8 +200,8 @@ def require_reference_project(identity: dict) -> None:
     expected_digest = hashlib.sha256(json.dumps(expected_rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if audit["rows"] != expected_rows or audit["rows_sha256"] != expected_digest:
         raise ValueError("manifest lock license-audit rows do not match the dedicated lock")
-    if identity.get("dependency_license_audit") != "AUDITED_ALLOW":
-        raise ValueError("Dia dependency license/provenance audit is not affirmatively allowed")
+    if identity.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE":
+        raise ValueError("Dia dependency license/provenance audit status drifted")
     if identity.get("expected_versions") != DIRECT_DEPENDENCY_VERSIONS or identity.get("actual_versions") != DIRECT_DEPENDENCY_VERSIONS:
         raise ValueError("actual locked dependency versions are not bound to the manifest")
 
@@ -191,7 +247,7 @@ def require_source_contract(contract: dict) -> None:
         raise ValueError("official generation schedule/stop source contract mismatch")
 
 
-def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None) -> None:
+def validate(root: Path, expected_head: str | None = None, approval_sha256: str | None = None, dependency_scope: Path | None = None, dependency_approval_evidence: Path | None = None, dependency_approval_sha256: str | None = None, dependency_scope_sha256: str | None = None) -> None:
     import numpy as np
     require_canonical_existing_path(root)
     if not (root / "manifest.json").is_file() or (root / "manifest.json").is_symlink():
@@ -201,12 +257,24 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
         raise ValueError("evidence expected HEAD does not match caller")
     if approval_sha256 is not None and manifest.get("approval_sha256") != approval_sha256:
         raise ValueError("evidence approval SHA does not match caller")
+    if None in (expected_head, approval_sha256, dependency_scope, dependency_approval_evidence, dependency_approval_sha256, dependency_scope_sha256):
+        raise ValueError("exact external dependency approval binding is required")
     if manifest.get("format") != "vokra-dia-1-6b-official-reference-v1" or manifest.get("status") != "REFERENCE_COMPLETE":
         raise ValueError("manifest is not a completed official-reference packet")
     if manifest.get("native_status") != "BLOCKED_UNTIL_VAST_AND_APPLE_EVIDENCE" or manifest.get("publication") != "NO_UPLOAD":
         raise ValueError("native/public status drift")
     if manifest.get("comparison_status") != "NOT_RUN_OFFICIAL_ONLY":
         raise ValueError("reference-only packet must say native comparison was not run")
+    require_audio_dependency_seam(manifest.get("audio_dependency_seam"))
+    require_dependency_approval_binding(
+        manifest.get("dependency_approval"),
+        root,
+        dependency_scope,
+        dependency_approval_evidence,
+        dependency_approval_sha256,
+        dependency_scope_sha256,
+        expected_head,
+    )
     require_reference_project(manifest.get("reference_project"))
     require_source_contract(manifest.get("source_contract"))
     source = manifest.get("source")
@@ -267,8 +335,7 @@ def validate(root: Path, expected_head: str | None = None, approval_sha256: str 
             array = np.load(file, allow_pickle=False)
             if list(array.shape) != entry["shape"] or array.dtype.name != entry["dtype"].removeprefix("torch.") or not np.isfinite(array).all() or entry["finite"] is not True:
                 raise ValueError(f"artifact shape/dtype/finiteness mismatch: {role}")
-    if {p.name for p in root.iterdir() if p.is_file()} != paths | {"manifest.json"}:
-        raise ValueError("stale/orphan evidence file present")
+    require_exact_evidence_entries(root, paths)
     sampling = manifest.get("sampling")
     logits = artifacts["decoder_logits"]
     probability = artifacts["decoder_sampling_probability"]
@@ -301,9 +368,13 @@ def main() -> int:
     parser.add_argument("evidence", nargs="?", type=Path)
     parser.add_argument("--expected-head")
     parser.add_argument("--approval-sha256")
+    parser.add_argument("--dependency-scope", type=Path)
+    parser.add_argument("--dependency-approval-evidence", type=Path)
+    parser.add_argument("--dependency-approval-sha256")
+    parser.add_argument("--dependency-scope-sha256")
     args = parser.parse_args()
     if args.self_test:
-        if args.evidence is not None or args.expected_head is not None or args.approval_sha256 is not None:
+        if args.evidence is not None or args.expected_head is not None or args.approval_sha256 is not None or args.dependency_scope is not None or args.dependency_approval_evidence is not None or args.dependency_approval_sha256 is not None or args.dependency_scope_sha256 is not None:
             parser.error("--self-test accepts no other arguments")
         assert re.fullmatch(r"[0-9a-f]{40}", "0" * 40)
         assert not re.fullmatch(r"[0-9a-f]{40}", "X" * 40)
@@ -339,15 +410,47 @@ def main() -> int:
             raise AssertionError("incomplete source-only contract accepted")
         except ValueError:
             pass
+        valid_binding = {
+            "status": "VALIDATED", "approval_sha256": "1" * 64,
+            "scope_sha256": "2" * 64, "expected_head": "0" * 40,
+            "dependency_license_audit": "BLOCKED_UNREVIEWED_TRANSITIVE",
+            "publication": "NO_UPLOAD",
+        }
         try:
-            require_reference_project({"project": "dia_1_6b_reference", "python": "3.12", "uv_lock_sha256": REFERENCE_PROJECT_LOCK_SHA256, "pyproject_sha256": REFERENCE_PROJECT_PYPROJECT_SHA256, "lock_schema": "uv-lock-v1-python312", "use_torch_compile": False, "dependency_license_audit": "BLOCKED_UNREVIEWED_TRANSITIVE", "expected_versions": DIRECT_DEPENDENCY_VERSIONS, "actual_versions": DIRECT_DEPENDENCY_VERSIONS})
-            raise AssertionError("blocked dependency audit accepted")
+            require_dependency_approval_binding(valid_binding, Path("/private/tmp/dia-validator-evidence"), Path("/private/tmp/missing-scope.json"), Path("/private/tmp/missing-approval.json"), "1" * 64, "2" * 64, "0" * 40)
+            raise AssertionError("missing external dependency approval accepted")
+        except ValueError:
+            pass
+        tampered_binding = dict(valid_binding)
+        tampered_binding["publication"] = "UPLOAD"
+        try:
+            require_dependency_approval_binding(tampered_binding, Path("/private/tmp/dia-validator-evidence"), Path("/private/tmp/missing-scope.json"), Path("/private/tmp/missing-approval.json"), "1" * 64, "2" * 64, "0" * 40)
+            raise AssertionError("tampered dependency binding accepted")
         except ValueError:
             pass
         assert set(DIRECT_DEPENDENCY_VERSIONS) == {
             "einops", "gguf", "huggingface-hub", "numpy", "pydantic",
-            "soundfile", "torch", "torchaudio",
+            "torch",
         }
+        assert "soundfile" not in DIRECT_DEPENDENCY_VERSIONS
+        assert "torchaudio" not in DIRECT_DEPENDENCY_VERSIONS
+        assert "cffi" not in DEPENDENCY_LICENSE_CONCLUSIONS
+        assert "pycparser" not in DEPENDENCY_LICENSE_CONCLUSIONS
+        assert DEPENDENCY_LICENSE_CONCLUSIONS["numpy"] == "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED"
+        assert require_audio_dependency_seam(dict(TORCHAUDIO_SEAM)) is None
+        for field, value in (("marker", "tampered"), ("installed_distribution", True), ("audio_prompt", "audio.wav"), ("policy", "allow")):
+            tampered = dict(TORCHAUDIO_SEAM)
+            tampered[field] = value
+            try:
+                require_audio_dependency_seam(tampered)
+                raise AssertionError(f"modified audio seam accepted: {field}")
+            except ValueError:
+                pass
+        try:
+            require_audio_dependency_seam({"module": "torchaudio"})
+            raise AssertionError("missing audio seam accepted")
+        except ValueError:
+            pass
         assert not set(DIRECT_DEPENDENCY_VERSIONS) & {
             "descript-audio-codec", "gradio", "librosa", "soxr", "triton",
         }
@@ -364,17 +467,29 @@ def main() -> int:
             raise AssertionError("orphan file accepted")
         except ValueError:
             pass
+        with tempfile.TemporaryDirectory(prefix="dia-validator-entries-") as directory:
+            scratch = Path(directory)
+            (scratch / "manifest.json").write_text("{}", encoding="utf-8")
+            (scratch / "text_ids-0000.npy").write_bytes(b"x")
+            (scratch / "preparation").mkdir()
+            try:
+                require_exact_evidence_entries(scratch, {"text_ids-0000.npy"})
+                raise AssertionError("preparation directory accepted in final evidence")
+            except ValueError:
+                pass
         print("dia evidence validator self-test: OK")
         return 0
     if args.evidence is None:
         parser.error("evidence directory is required")
-    if args.expected_head is None or args.approval_sha256 is None:
-        parser.error("expected HEAD and approval SHA are required")
+    if args.expected_head is None or args.approval_sha256 is None or args.dependency_scope is None or args.dependency_approval_evidence is None or args.dependency_approval_sha256 is None or args.dependency_scope_sha256 is None:
+        parser.error("expected HEAD/model approval and external dependency approval binding are required")
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_head):
         parser.error("expected_head must be lowercase 40-hex")
     if not re.fullmatch(r"[0-9a-f]{64}", args.approval_sha256):
         parser.error("approval_sha256 must be lowercase 64-hex")
-    validate(args.evidence, args.expected_head, args.approval_sha256)
+    if not re.fullmatch(r"[0-9a-f]{64}", args.dependency_approval_sha256) or not re.fullmatch(r"[0-9a-f]{64}", args.dependency_scope_sha256):
+        parser.error("dependency approval/scope SHA must be lowercase 64-hex")
+    validate(args.evidence, args.expected_head, args.approval_sha256, args.dependency_scope, args.dependency_approval_evidence, args.dependency_approval_sha256, args.dependency_scope_sha256)
     print("Dia reference evidence validation: OK")
     return 0
 

@@ -3,8 +3,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
 SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
-LOCK_SHA256="ccdfaf4cfedd7780f8c1032a42341f28ac56bec7353f4563f9a1b44b764cf29c"
-PYPROJECT_SHA256="56430b6f50620df9ce3383f535dec1755843a4a9bab9758e34cf69e9913b6fc2"
+DEPENDENCY_AUDIT="$ROOT/tools/parity/dia_1_6b_reference/dependency_audit.py"
+DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
+DEPENDENCY_PREPARER="$ROOT/scripts/publish/vast-ai/prepare-dia-1-6b-reference.sh"
+DEPENDENCY_APPROVAL="$ROOT/tools/parity/dia_1_6b_reference/dependency_approval.py"
+LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
+PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
 die(){ echo "dia-validation: ERROR: $*" >&2; exit 2; }
 
 check_project_identity() {
@@ -20,12 +24,22 @@ self_test(){
   grep -Fq 'O_NOFOLLOW' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'reference artifact no-follow publication gate missing'
   grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || die 'source-only contract marker missing'
   grep -Fq 'uv.lock' "$ROOT/tools/parity/dia_1_6b_dump_reference.py" || die 'lock contract missing'
+  [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || die 'Dia dependency auditor is missing or symlinked'
+  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || die 'Dia dependency audit wrapper is missing or symlinked'
+  [[ -f "$DEPENDENCY_APPROVAL" && ! -L "$DEPENDENCY_APPROVAL" ]] || die 'Dia dependency approval validator is missing or symlinked'
+  [[ -x "$DEPENDENCY_PREPARER" && ! -L "$DEPENDENCY_PREPARER" ]] || die 'Dia dependency preparation helper is missing or symlinked'
+  grep -Fq -- 'preparation="${evidence_real}.preparation"' "$0" || die 'shared Dia dependency preparation scratch path missing'
+  grep -Fq -- '--no-sync' "$0" || die 'prepared Dia runtime must use uv --no-sync'
   check_project_identity
   grep -Fq 'dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"' "$PROJECT/pyproject.toml" || die 'dependency audit gate missing'
   grep -Fq 'duplicate --expected-head' "$0" || die 'duplicate expected-head rejection missing'
   grep -Fq 'duplicate --approval-evidence' "$0" || die 'duplicate approval rejection missing'
   grep -Fq 'duplicate --approval-sha256' "$0" || die 'duplicate approval SHA rejection missing'
   grep -Fq -- '--validate-approval' "$0" || die 'approval validation mode missing'
+  grep -Fq -- '--dependency-approval-sha256' "$0" || die 'dependency approval SHA binding missing'
+  grep -Fq -- '--dependency-scope-sha256' "$0" || die 'dependency scope SHA binding missing'
+  grep -Fq -- '--dependency-approval-status VALIDATED' "$0" || die 'validated dependency result is not passed to dumper'
+  grep -Fq 'dependency_approval' "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" || die 'validator dependency approval binding missing'
   grep -Fq 'canonical_existing_path' "$0" || die 'canonical input path gate missing'
   grep -Fq 'canonical_absent_path' "$0" || die 'canonical evidence path gate missing'
   grep -Fq 'adapter log claim failed' "$0" || die 'adapter log no-clobber gate missing'
@@ -34,20 +48,30 @@ self_test(){
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --self-test
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" --self-test
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$SOURCE_CONTRACT" --self-test
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_AUDIT" --self-test
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_APPROVAL" --self-test
+  bash "$DEPENDENCY_AUDIT_WRAPPER" --self-test
+  dependency_gate_line="$(grep -n '^UV_NO_CACHE=1 uv run.*DEPENDENCY_APPROVAL.*--scope' "$0" | head -n1 | cut -d: -f1)"
+  preparation_line="$(grep -n '^VOKRA_PUBLISH_ON_VAST=.*DEPENDENCY_PREPARER.*--output-dir' "$0" | head -n1 | cut -d: -f1)"
+  input_line="$(grep -n '^for input in \"\$source_dir\"' "$0" | head -n1 | cut -d: -f1)"
+  [[ -n "$dependency_gate_line" && -n "$preparation_line" && "$dependency_gate_line" -lt "$preparation_line" ]] || die 'dependency approval gate is not before reference preparation'
+  [[ -n "$input_line" && "$dependency_gate_line" -lt "$input_line" ]] || die 'dependency approval gate is not before model/input paths'
   echo 'run-dia-1-6b-validation.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
 check_project_identity
-grep -Fq 'dependency_license_audit = "AUDITED_ALLOW"' "$PROJECT/pyproject.toml" || die 'dependency license/provenance audit is not affirmatively allowed; refuse reference execution'
-usage(){ echo 'usage: run-dia-1-6b-validation.sh --expected-head HEAD --approval-evidence FILE --approval-sha256 SHA SOURCE_DIR MODEL_DIR PUBLIC_DIR DAC_SOURCE DAC_EVIDENCE DAC_CHECKPOINT EVIDENCE_DIR' >&2; }
-expected_head=''; approval_evidence=''; approval_sha256=''; seen_head=0; seen_approval=0; seen_sha=0; positional=()
+usage(){ echo 'usage: run-dia-1-6b-validation.sh --expected-head HEAD --approval-evidence MODEL_SOURCE_FILE --approval-sha256 SHA --dependency-scope SCOPE_FILE --dependency-approval-evidence DEPENDENCY_APPROVAL_FILE --dependency-approval-sha256 SHA SOURCE_DIR MODEL_DIR PUBLIC_DIR DAC_SOURCE DAC_EVIDENCE DAC_CHECKPOINT EVIDENCE_DIR' >&2; }
+expected_head=''; approval_evidence=''; approval_sha256=''; dependency_scope=''; dependency_approval_evidence=''; dependency_approval_sha256=''; seen_head=0; seen_approval=0; seen_sha=0; seen_dependency_scope=0; seen_dependency_approval=0; seen_dependency_approval_sha=0; positional=()
 while (($#)); do case "$1" in
  --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
  --approval-evidence) (( seen_approval == 0 )) || die 'duplicate --approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--approval-evidence requires a path'; approval_evidence="$2"; seen_approval=1; shift 2 ;;
  --approval-sha256) (( seen_sha == 0 )) || die 'duplicate --approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--approval-sha256 requires lowercase 64-hex'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
+ --dependency-scope) (( seen_dependency_scope == 0 )) || die 'duplicate --dependency-scope'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--dependency-scope requires a path'; dependency_scope="$2"; seen_dependency_scope=1; shift 2 ;;
+ --dependency-approval-evidence) (( seen_dependency_approval == 0 )) || die 'duplicate --dependency-approval-evidence'; [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || die '--dependency-approval-evidence requires a path'; dependency_approval_evidence="$2"; seen_dependency_approval=1; shift 2 ;;
+ --dependency-approval-sha256) (( seen_dependency_approval_sha == 0 )) || die 'duplicate --dependency-approval-sha256'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{64}$ ]] || die '--dependency-approval-sha256 requires lowercase 64-hex'; dependency_approval_sha256="$2"; seen_dependency_approval_sha=1; shift 2 ;;
  *) positional+=("$1"); shift ;;
  esac; done
-(( seen_head == 1 && seen_approval == 1 && seen_sha == 1 && ${#positional[@]} == 7 )) || { usage; die 'expected HEAD, approval, and seven input paths'; }
+(( seen_head == 1 && seen_approval == 1 && seen_sha == 1 && seen_dependency_scope == 1 && seen_dependency_approval == 1 && seen_dependency_approval_sha == 1 && ${#positional[@]} == 7 )) || { usage; die 'expected HEAD, model/source approval, dependency approval, and seven input paths'; }
 source_dir="${positional[0]}"; model_dir="${positional[1]}"; public_dir="${positional[2]}"; dac_source="${positional[3]}"; dac_evidence="${positional[4]}"; dac_checkpoint="${positional[5]}"; evidence="${positional[6]}"
 [[ -f "$approval_evidence" && ! -L "$approval_evidence" && -s "$approval_evidence" ]] || die 'approval evidence is missing or symlinked'
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
@@ -78,8 +102,29 @@ canonical_absent_path() {
   [[ -d "$target" && ! -L "$target" ]] || return 1
   printf '%s%s\n' "$(cd -P "$target" && pwd)" "$suffix"
 }
+paths_overlap(){ local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
 root_real="$(canonical_existing_path "$ROOT")" || die 'checkout path is not canonical/non-symlink'
 approval_real="$(canonical_existing_path "$approval_evidence")" || die 'approval path has invalid absolute/canonical/symlink ancestry'
+dependency_scope_real="$(canonical_existing_path "$dependency_scope")" || die 'dependency scope path has invalid absolute/canonical/symlink ancestry'
+dependency_approval_real="$(canonical_existing_path "$dependency_approval_evidence")" || die 'dependency approval path has invalid absolute/canonical/symlink ancestry'
+for external in "$approval_real" "$dependency_scope_real" "$dependency_approval_real"; do
+  paths_overlap "$external" "$ROOT" && die 'approval/scope evidence must be external to checkout'
+done
+paths_overlap "$dependency_scope_real" "$dependency_approval_real" && die 'dependency scope and approval must be separate files'
+paths_overlap "$approval_real" "$dependency_scope_real" && die 'model/source approval must be separate from dependency scope'
+paths_overlap "$approval_real" "$dependency_approval_real" && die 'model/source approval must be separate from dependency approval'
+UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$DEPENDENCY_APPROVAL" --scope "$dependency_scope" --approval "$dependency_approval_evidence" --approval-sha256 "$dependency_approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external dependency approval is invalid'
+dependency_scope_sha256="$(UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$PROJECT" "$dependency_scope" "$expected_head" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from dependency_approval import validate_scope
+
+_, scope_sha256 = validate_scope(Path(sys.argv[2]), sys.argv[3])
+print(scope_sha256)
+PY
+)" || die 'dependency scope digest could not be derived'
+[[ "$dependency_scope_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'dependency scope digest is invalid'
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/dia_1_6b_inspect.py" --validate-approval --approval-evidence "$approval_evidence" --approval-sha256 "$approval_sha256" --expected-head "$expected_head" >/dev/null || die 'external approval evidence is invalid'
 for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
   canonical_existing_path "$input" >/dev/null || die "input path has invalid absolute/canonical/symlink ancestry: $input"
@@ -88,15 +133,24 @@ done
 evidence_real="$(canonical_absent_path "$evidence")" || die 'evidence path must be an absent absolute path without dot/symlink ancestry'
 adapter_log="${evidence}.adapter.log"
 canonical_absent_path "$adapter_log" >/dev/null || die 'adapter log must be absent and canonical'
-paths_overlap(){ local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
-for protected in "$root_real" "$approval_real"; do paths_overlap "$evidence_real" "$protected" && die 'evidence overlaps checkout or approval'; done
+for protected in "$root_real" "$approval_real" "$dependency_scope_real" "$dependency_approval_real"; do paths_overlap "$evidence_real" "$protected" && die 'evidence overlaps checkout or approval'; done
 for input in "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
   input_real="$(canonical_existing_path "$input")" || die "input path cannot be canonicalized: $input"
   paths_overlap "$evidence_real" "$input_real" && die 'evidence overlaps an input path'
+  paths_overlap "$dependency_scope_real" "$input_real" && die 'dependency scope overlaps an input path'
+  paths_overlap "$dependency_approval_real" "$input_real" && die 'dependency approval overlaps an input path'
 done
 mkdir "$evidence"
 ( set -C; : > "$adapter_log" ) || die 'adapter log claim failed (existing path or race)'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256"
+preparation="${evidence_real}.preparation"
+canonical_absent_path "$preparation" >/dev/null || die 'preparation scratch path must be absent and canonical'
+for protected in "$root_real" "$approval_real" "$source_dir" "$model_dir" "$public_dir" "$dac_source" "$dac_evidence" "$dac_checkpoint"; do
+  protected_real="$(canonical_existing_path "$protected")" || die 'preparation scratch protection path is invalid'
+  paths_overlap "$(canonical_absent_path "$preparation")" "$protected_real" && die 'preparation scratch overlaps a protected path'
+done
+VOKRA_PUBLISH_ON_VAST=1 DIA_REFERENCE_UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" "$DEPENDENCY_PREPARER" --output-dir "$preparation" >>"$adapter_log" 2>&1 || die 'Dia dependency preparation failed; inspect adapter log'
+reference_environment="$preparation/venv"
+UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_dump_reference.py" --source "$source_dir" --model "$model_dir" --public "$public_dir" --dac-source "$dac_source" --dac-evidence "$dac_evidence" --dac-checkpoint "$dac_checkpoint" --output "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" --dependency-approval-sha256 "$dependency_approval_sha256" --dependency-scope-sha256 "$dependency_scope_sha256" --dependency-approval-status VALIDATED --dependency-publication NO_UPLOAD >>"$adapter_log" 2>&1 || die 'official reference adapter failed; inspect INSPECTION_ERROR'
+UV_PROJECT_ENVIRONMENT="$reference_environment" UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --no-sync --project "$PROJECT" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" --expected-head "$expected_head" --approval-sha256 "$approval_sha256" --dependency-scope "$dependency_scope" --dependency-approval-evidence "$dependency_approval_evidence" --dependency-approval-sha256 "$dependency_approval_sha256" --dependency-scope-sha256 "$dependency_scope_sha256"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout became dirty during validation'
 [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD changed during validation'

@@ -8,6 +8,8 @@
 //! `vokra-eval` / `vokra-models` (kept duplicated so `vokra-cli` stays a lean
 //! leaf crate).
 
+use std::io::Write;
+
 /// Decoded mono PCM plus its declared sample rate.
 #[derive(Debug, Clone)]
 pub(crate) struct Wav {
@@ -39,6 +41,36 @@ pub(crate) fn write_wav_channels(
     sample_rate: u32,
     channels: usize,
 ) -> Result<(), String> {
+    let out = serialize_wav_channels(samples, sample_rate, channels)?;
+    std::fs::write(path, &out).map_err(|e| e.to_string())
+}
+
+/// Writes a WAV only when the final path does not already exist.
+///
+/// `OpenOptions::create_new(true)` is the final no-overwrite guard for
+/// production routes that must not clobber an artifact. In particular, it
+/// fails atomically when another process creates the destination after a
+/// caller's preflight, and it does not follow a final-component symlink.
+pub(crate) fn write_wav_create_new(
+    path: impl AsRef<std::path::Path>,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(), String> {
+    let out = serialize_wav_channels(samples, sample_rate, 1)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("WAV create-new open: {error}"))?;
+    file.write_all(&out)
+        .map_err(|error| format!("WAV create-new write: {error}"))
+}
+
+fn serialize_wav_channels(
+    samples: &[f32],
+    sample_rate: u32,
+    channels: usize,
+) -> Result<Vec<u8>, String> {
     if channels == 0 || samples.len() % channels != 0 {
         return Err(format!(
             "WAV write shape mismatch: {} interleaved values for {channels} channels",
@@ -80,7 +112,7 @@ pub(crate) fn write_wav_channels(
     for s in samples {
         out.extend_from_slice(&s.to_le_bytes());
     }
-    std::fs::write(path, &out).map_err(|e| e.to_string())
+    Ok(out)
 }
 
 fn le_u16(b: &[u8], off: usize) -> Result<u16, String> {
@@ -200,5 +232,61 @@ mod tests {
         assert_eq!(le_u32(&bytes, 24).expect("sample rate"), 48_000);
         assert_eq!(le_u16(&bytes, 32).expect("block align"), 8);
         assert_eq!(le_u32(&bytes, 40).expect("data length"), 16);
+    }
+
+    #[test]
+    fn create_new_writer_rejects_existing_destination() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-wav-create-new-{}.wav",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        write_wav_create_new(&path, &[0.25, -0.5], 44_100).expect("first create-new write");
+        let original = std::fs::read(&path).expect("read first output");
+        let error = write_wav_create_new(&path, &[0.75], 44_100)
+            .expect_err("existing destination must not be overwritten");
+        assert!(
+            error.contains("create-new open"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read unchanged output"),
+            original
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_new_writer_rejects_final_component_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let mut target = std::env::temp_dir();
+        target.push(format!(
+            "vokra-cli-wav-create-new-target-{}.wav",
+            std::process::id()
+        ));
+        let mut link = std::env::temp_dir();
+        link.push(format!(
+            "vokra-cli-wav-create-new-link-{}.wav",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_file(&link);
+        write_wav(&target, &[0.0], 44_100).expect("write symlink target");
+        symlink(&target, &link).expect("create final-component symlink");
+        let error = write_wav_create_new(&link, &[0.5], 44_100)
+            .expect_err("final-component symlink must not be followed");
+        assert!(
+            error.contains("create-new open"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("read untouched target").len(),
+            48
+        );
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&target);
     }
 }

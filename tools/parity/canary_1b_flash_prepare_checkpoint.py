@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
+#!/usr/bin/env -S uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 python
 """Prepare the pinned NVIDIA Canary-1B-Flash `.nemo` release on VAST.
 
 This is a large-model sidecar, never a runtime dependency. It authenticates
@@ -10,7 +10,7 @@ its byte SHA-256 matches the released contract.
 Actual preparation is Linux/VAST-only and requires the marker installed by
 ``scripts/publish/vast-ai/provision.sh``::
 
-    VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity --python 3.12 python \
+    VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 python \
       tools/parity/canary_1b_flash_prepare_checkpoint.py \
       --input /workspace/canary-1b-flash.nemo --output-dir /workspace/canary
 

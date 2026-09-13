@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSPECTOR="$ROOT/tools/parity/zonos_inspect.py"
+DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
+DEPENDENCY_APPROVAL_VALIDATOR="$ROOT/tools/parity/zonos_v0_1_reference/dependency_approval.py"
+TRANSFORMERS_COMPATIBILITY_GATE="$ROOT/scripts/publish/vast-ai/check-zonos-transformers-compatibility.sh"
 HF_REPOSITORY="vokra/zonos-v0.1-transformer"
 HF_REVISION="b1bf5c56d470eb9097e9b04f9deca364576574ba"
 UPSTREAM_HF_REPOSITORY="Zyphra/Zonos-v0.1-transformer"
@@ -67,12 +70,13 @@ require_native_cpu_log() {
 }
 
 write_transfer_manifest() {
-  local output="$1" expected_head="$2" approval_sha="$3" public_manifest="$4" gguf="$5" dac="$6" packet="$7" codes="$8" pcm="$9" native_log="${10}"
+  local output="$1" expected_head="$2" approval_sha="$3" public_manifest="$4" gguf="$5" dac="$6" packet="$7" codes="$8" pcm="$9" native_log="${10}" dependency_approval_sha="${11}"
   [[ ! -e "$output" && ! -L "$output" && ! -e "$output.sha256" && ! -L "$output.sha256" ]] || die 'transfer manifest outputs must be absent'
   (set -C; {
     printf 'schema=zonos-apple-transfer-v1\n'
     printf 'expected_head=%s\n' "$expected_head"
     printf 'approval_evidence_sha256=%s\n' "$approval_sha"
+    printf 'dependency_approval_sha256=%s\n' "$dependency_approval_sha"
     printf 'source_license_path=%s\n' "$SOURCE_LICENSE_PATH"
     printf 'source_license_spdx=%s\n' "$SOURCE_LICENSE_SPDX"
     printf 'source_license_bytes=%s\n' "$SOURCE_LICENSE_BYTES"
@@ -105,7 +109,7 @@ write_transfer_manifest() {
 }
 
 self_test() {
-  local failed=0 token temporary valid_log
+  local failed=0 token temporary valid_log audit_line approval_line compatibility_line acquisition_line
   for token in \
     "$HF_REPOSITORY" "$HF_REVISION" "$UPSTREAM_HF_REPOSITORY" "$UPSTREAM_HF_REVISION" \
     "$SOURCE_REPOSITORY" "$SOURCE_REVISION" 'zonos_vast_stage.py' 'zonos_dump_reference.py' \
@@ -118,6 +122,8 @@ self_test() {
     'parity_zonos_real.rs' 'VOKRA_ZONOS_DAC_GGUF' 'cargo test --locked -p vokra-models' \
     'reference-codes.u32le' 'native-cpu.log' '--native-log' 'AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE' 'exit 2' \
     '--approval-evidence' '--approval-evidence-sha256' '--expected-head' 'preflight-only' 'write_transfer_manifest' \
+    'dependency_approval.py' 'check-zonos-transformers-compatibility.sh' 'BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE' 'ZONOS_DEPENDENCY_APPROVAL' 'ZONOS_DEPENDENCY_APPROVAL_SHA256' 'dependency_approval_sha256=' \
+    'APPROVED_FOR_PRE_ACQUISITION' 'DEPENDENCY_SCOPE_ONLY' 'ALLOW_SOURCE_CHECKPOINT_ACQUISITION' \
     'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD' \
     'LICENSE' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'apache-2.0' 'card_data_license' \
     'source_semantic_marker_status' 'expected_transformer_config' 'eos_token_id: int = 1024' 'masked_token_id: int = 1025' \
@@ -126,6 +132,15 @@ self_test() {
     'DacModel.from_pretrained("descript/dac_44khz")' 'descript/dac_44khz' 'dac_num_codebooks=9' 'dac_sample_rate=44100' 'dac_identity_status=SOURCE_REQUEST_ONLY' 'roll(k + 1)' 'attn_mlp_d_intermediate'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
   done
+  audit_line="$(awk '/VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash/{print NR; exit}' "$0")"
+  approval_line="$(awk '/--approval \"\$dependency_approval\"/{print NR; exit}' "$0")"
+  compatibility_line="$(awk '/^bash .*TRANSFORMERS_COMPATIBILITY_GATE"$/{print NR; exit}' "$0")"
+  acquisition_line="$(awk '/^for command in git uv awk cp sha256sum cargo;/{print NR; exit}' "$0")"
+  if [[ ! "$audit_line" =~ ^[0-9]+$ || ! "$approval_line" =~ ^[0-9]+$ || ! "$compatibility_line" =~ ^[0-9]+$ || ! "$acquisition_line" =~ ^[0-9]+$ ]] || \
+    (( audit_line >= approval_line || approval_line >= compatibility_line || compatibility_line >= acquisition_line )); then
+    echo 'dependency approval transition is not ordered after audit and before acquisition' >&2
+    failed=1
+  fi
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-cpu-log.XXXXXX")"
   valid_log="$temporary/valid.log"
   printf '%s\n' \
@@ -159,12 +174,28 @@ self_test() {
     echo 'upload/publish command found' >&2
     failed=1
   fi
+  for consumer in "$ROOT/tools/parity/zonos_dump_reference.py" "$ROOT/tools/parity/zonos_inspect.py" "$ROOT/tools/parity/zonos_vast_stage.py" "$0"; do
+    grep -Fq 'zonos_v0_1_reference' "$consumer" || { echo "dedicated project binding missing: $consumer" >&2; failed=1; }
+    generic_project="--project tools/"'parity --'
+    if grep -Fq -- "$generic_project" "$consumer"; then
+      echo "generic parity project fallback found: $consumer" >&2
+      failed=1
+    fi
+  done
+  bash "$DEPENDENCY_AUDIT_WRAPPER" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || failed=1
+    uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" --self-test || failed=1
+    uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/zonos_prepare_conditioning_packet.py" --self-test || failed=1
+    uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_prepare_conditioning_packet.py" --self-test || failed=1
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_v0_1_reference/dependency_audit.py" --self-test || failed=1
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --no-project --offline --python 3.12 python "$DEPENDENCY_APPROVAL_VALIDATOR" --self-test || failed=1
+  bash "$TRANSFORMERS_COMPATIBILITY_GATE" --self-test || failed=1
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_v0_1_reference/import_policy.py" || failed=1
   (( failed == 0 )) || return 1
   echo 'run-zonos-inspection.sh self-test: OK'
 }
@@ -183,8 +214,46 @@ require_approval_binding "$approval" "$approval_sha"
 [[ "${VOKRA_ZONOS_VAST_VALIDATION:-0}" == 1 ]] || die 'VOKRA_ZONOS_VAST_VALIDATION=1 is absent'
 [[ -n "${ZONOS_CONDITIONING_PACKET:-}" ]] || die 'ZONOS_CONDITIONING_PACKET must name a v1 packet from zonos_prepare_conditioning_packet.py (--phoneme-ids, --speaker, --emotion)'
 [[ -f "$ZONOS_CONDITIONING_PACKET" && ! -L "$ZONOS_CONDITIONING_PACKET" ]] || die 'ZONOS_CONDITIONING_PACKET must be a regular non-symlink file'
+
+# The installed/native/publisher closure is an independent exact-owner fact.
+# A project/lock hash approval alone cannot authorize source or checkpoint
+# acquisition.  The dedicated wrapper intentionally returns 2 while the
+# owner/legal decision remains WITHHOLD, so this worker must stop here.
+dependency_output="${ZONOS_DEPENDENCY_AUDIT_OUTPUT:-/dev/shm/vokra-zonos-dependency-audit-${expected_head}.json}"
+dependency_archive="${ZONOS_DEPENDENCY_AUDIT_ARCHIVE:-/dev/shm/vokra-zonos-publisher-license-${expected_head}}"
+set +e
+VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash "$DEPENDENCY_AUDIT_WRAPPER" \
+  --expected-head "$expected_head" --output "$dependency_output" \
+  --publisher-archive "$dependency_archive"
+dependency_status=$?
+set -e
+[[ "$dependency_status" == 2 ]] || die 'Zonos dependency audit did not fail closed before acquisition'
+
+# The factual audit stays BLOCKED_UNREVIEWED_TRANSITIVE.  Only a separately
+# supplied, external dependency approval bound to that exact report/scope may
+# cross this transition; source/model approval above is a different contract.
+dependency_approval="${ZONOS_DEPENDENCY_APPROVAL:-}"
+dependency_approval_sha="${ZONOS_DEPENDENCY_APPROVAL_SHA256:-}"
+[[ -n "$dependency_approval" ]] || die 'ZONOS_DEPENDENCY_APPROVAL must name an external dependency approval record'
+[[ -n "$dependency_approval_sha" ]] || die 'ZONOS_DEPENDENCY_APPROVAL_SHA256 must bind the external dependency approval record'
+set +e
+UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+  uv run --offline --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --python 3.12 python \
+  "$DEPENDENCY_APPROVAL_VALIDATOR" \
+  --approval "$dependency_approval" --approval-sha256 "$dependency_approval_sha" \
+  --audit "$dependency_output" --expected-head "$expected_head"
+dependency_approval_status=$?
+set -e
+[[ "$dependency_approval_status" == 0 ]] || die 'Zonos dependency approval did not authenticate the exact audit scope before acquisition'
+echo 'Zonos dependency approval PASS; factual audit remains BLOCKED_UNREVIEWED_TRANSITIVE; publication=NO_UPLOAD' >&2
+
+# A patched Transformers lock is not source/API compatibility evidence. Stop
+# before any source or checkpoint acquisition until an authorized VAST API
+# smoke test proves the exact upstream Zonos contract.
+bash "$TRANSFORMERS_COMPATIBILITY_GATE"
+
 for command in git uv awk cp sha256sum cargo; do command -v "$command" >/dev/null || die "missing tool: $command"; done
-UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \
+UV_NO_CACHE=1 uv run --no-cache --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \
   --preflight-only --approval-evidence "$approval" || die 'Zonos license/preflight gate blocked before acquisition'
 require_clean_expected_head "$expected_head"
 mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"
@@ -192,7 +261,7 @@ mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"
 
 cd "$ROOT"
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python \
   "$ROOT/tools/parity/zonos_vast_stage.py" --root "$WORK" \
   --approval-evidence "$approval" \
   --upstream-safetensors "$WORK/upstream/model.safetensors" \
@@ -206,7 +275,7 @@ require_source_license_identity "$WORK/source"
 
 set +e
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python \
   "$ROOT/tools/parity/zonos_dump_reference.py" \
   --source "$WORK/source" --upstream-snapshot "$WORK/upstream" \
   --conditioning-packet "$WORK/evidence/conditioning.packet" \
@@ -241,7 +310,7 @@ require_native_cpu_log "$WORK/evidence/native-cpu.log"
 
 set +e
 UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
-  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" \
+  uv run --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --python 3.12 python "$INSPECTOR" \
   --snapshot "$WORK/public" --server-tree "$WORK/public-server-tree.json" \
   --tensor-manifest "$WORK/evidence/public-tensor-manifest.json" \
   --upstream-snapshot "$WORK/upstream" --upstream-server-tree "$WORK/upstream-server-tree.json" \
@@ -260,4 +329,4 @@ grep -Fq '"reference_status": "MEASURED_NOT_GATED"' "$WORK/evidence/reference-co
 write_transfer_manifest "$WORK/evidence/apple-transfer-manifest.txt" "$expected_head" "$approval_sha" \
   "$WORK/public-server-tree.json" "$WORK/public/zonos-v0.1-transformer.gguf" "$ZONOS_DAC_GGUF" \
   "$WORK/evidence/conditioning.packet" "$WORK/evidence/reference-codes.u32le" "$WORK/evidence/reference-pcm.f32le" \
-  "$WORK/evidence/native-cpu.log"
+  "$WORK/evidence/native-cpu.log" "$dependency_approval_sha"

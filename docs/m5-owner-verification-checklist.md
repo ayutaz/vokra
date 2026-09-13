@@ -2,12 +2,12 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**2026-09-12 current-state / supersession note:** the observed `main` baseline
-for this campaign is `1de3887d`. The latest live, read-only public audit,
-evaluated with audit logic through `1be45e76`, reports 194 repositories, 193
-GGUF-bearing repositories and 198 GGUF files. CPU status is `full=135`,
-`partial=43`, `no-runtime-binder=15`, `not-artifact=1`; Metal status is
-`full=135`, `blocked-by-cpu=58`, `not-artifact=1`, leaving 59 unresolved
+**2026-09-13 current-state / supersession note:** the observed `main` baseline
+for this campaign is `08b206c4`. The latest live, read-only public audit,
+evaluated with audit logic through `87da78dc`, reports 194 repositories, 193
+GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
+`partial=42`, `no-runtime-binder=15`, `not-artifact=1`; Metal status is
+`full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved
 public rows. The authorized Scaleway Apple CPU/reference, Metal/reference and
 no-fallback batch passed only for its named scopes; four separately approved
 artifacts were subsequently published through the gated workflow. UTMOS
@@ -98,7 +98,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. Exact-revision CLI routing then promoted BiCodec and SGMSE. The live inventory is CPU `full=135`, `partial=43`, `no-runtime-binder=15`, `not-artifact=1`; Metal `full=135`, `blocked-by-cpu=58`, `not-artifact=1`, leaving 59 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
+| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. Exact-revision CLI routing then promoted BiCodec and SGMSE. The live inventory is CPU `full=136`, `partial=42`, `no-runtime-binder=15`, `not-artifact=1`; Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
 | SoTA / parity / publish | Converters and many structural proofs landed | The 31 current literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
@@ -606,6 +606,17 @@ allow-listed in `.github/workflows/ci-security.yml`. torch and Transformers
 appear nowhere outside `tools/parity/**`: the Rust runtime carries no
 dependencies (enforced by `scripts/check-zero-deps.sh`) and the published
 Python wheel declares `dependencies = []`, so no shipped artefact is exposed.
+
+The Canary follow-up is a separate, temporary database-false-positive
+exception. GitHub dependency-review currently applies `GHSA-qqmf-gpg7-g8gw` to
+`lightning==2.6.6`, while PyPA's primary `PYSEC-2026-3624` record (modified
+2026-09-10) marks 2.6.6 fixed and enumerates versions only through 2.6.5. The
+exception appears exactly once in the action configuration and is guarded by
+`scripts/check-canary-dependency-review-guard.sh`, which rejects any old or
+duplicate Lightning entry, a missing exact override, or a missing
+`BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE` contract. It is not permission
+to run or publish a vulnerable release and must be removed when GitHub's
+database stops misapplying the advisory.
 
 - [x] **VAST verification of the upgraded oracles** (2026-08-28, instance
       `48950897`, destroyed after log recovery, account verified at zero running

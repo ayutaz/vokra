@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
+#!/usr/bin/env -S uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 python
 """Prepare the pinned NVIDIA Canary-1B-v2 main checkpoint on VAST.
 
 The public `.nemo` carries both a timestamp auxiliary checkpoint and the

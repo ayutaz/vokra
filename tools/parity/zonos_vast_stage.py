@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+#!/usr/bin/env -S uv run --frozen --project tools/parity/zonos_v0_1_reference --python 3.12 python
 """VAST-only fixed revision staging for the Zonos inspection worker.
 
 This helper downloads only immutable snapshots and emits typed server-tree
@@ -17,6 +17,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from zonos_v0_1_reference import dependency_audit
+
 PUBLIC_REPOSITORY = "vokra/zonos-v0.1-transformer"
 PUBLIC_REVISION = "b1bf5c56d470eb9097e9b04f9deca364576574ba"
 SOURCE_REPOSITORY = "https://github.com/Zyphra/Zonos.git"
@@ -26,8 +28,8 @@ UPSTREAM_REVISION = "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e"
 MANIFEST_SHA256 = "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847"
 DTYPE_BYTES = {"F32": 4, "BF16": 2, "F16": 2, "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1}
 FLOAT_DTYPES = frozenset({"F32", "F16", "BF16"})
-PROJECT_PATH = Path(__file__).with_name("pyproject.toml")
-LOCK_PATH = Path(__file__).with_name("uv.lock")
+PROJECT_PATH = dependency_audit.PROJECT_PATH
+LOCK_PATH = dependency_audit.LOCK_PATH
 SOURCE_LICENSE_PATH = "LICENSE"
 SOURCE_LICENSE_SPDX = "Apache-2.0"
 SOURCE_LICENSE_BYTES = 11_357
@@ -329,6 +331,10 @@ def approval_scope(project_sha256: str, lock_sha256: str) -> dict[str, Any]:
 
 
 def preflight_gate(approval: Path) -> None:
+    # This is standard-library-only and must run before any HF/source access.
+    # It rejects a widened or forbidden closure while leaving the owner/legal
+    # decision in the external exact-hash approval record below.
+    dependency_audit.audit()
     validate_license_identity_contract()
     if not approval.is_file() or approval.is_symlink():
         raise RuntimeError("--approval-evidence must be a regular non-symlink file")
