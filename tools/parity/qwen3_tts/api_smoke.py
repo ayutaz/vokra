@@ -71,6 +71,25 @@ CHECKPOINTS = (
     "execution_host_verified",
     "vokra_checkout_verified",
     "approval_evidence_recorded",
+    "license_gate_verified",
+    "source_revision_verified",
+    "model_snapshot_verified",
+    "decoder_snapshot_verified",
+    "lock_verified",
+    "official_imports_verified",
+    "model_loaded_cpu",
+    "official_wrapper_called",
+    "official_decoder_completed",
+    "output_shape_verified",
+)
+# Keep an independent production-sequence oracle in the no-model self-test.
+# A checkpoint added to run_smoke must be added to both this sequence and the
+# allow-list above, otherwise the production-equivalent validation fails.
+EXPECTED_CHECKPOINT_SEQUENCE = (
+    "execution_host_verified",
+    "vokra_checkout_verified",
+    "approval_evidence_recorded",
+    "license_gate_verified",
     "source_revision_verified",
     "model_snapshot_verified",
     "decoder_snapshot_verified",
@@ -742,6 +761,19 @@ def self_test() -> None:
     global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
+    production_sequence = [
+        "execution_host_verified", "vokra_checkout_verified",
+        "approval_evidence_recorded", "license_gate_verified",
+        "source_revision_verified", "model_snapshot_verified",
+        "decoder_snapshot_verified", "lock_verified",
+        "official_imports_verified", "model_loaded_cpu",
+        "official_wrapper_called", "official_decoder_completed",
+        "output_shape_verified",
+    ]
+    if tuple(CHECKPOINTS) != EXPECTED_CHECKPOINT_SEQUENCE or production_sequence != list(EXPECTED_CHECKPOINT_SEQUENCE):
+        raise SmokeError("production checkpoint sequence drifted from its allow-list")
+    if len(set(production_sequence)) != len(production_sequence) or any(item not in CHECKPOINTS for item in production_sequence):
+        raise SmokeError("production checkpoint sequence contains an unknown or duplicate value")
     require_cpu_load_contract()
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
         try:
