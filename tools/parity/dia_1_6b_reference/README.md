@@ -17,3 +17,27 @@ checkpoint access.
 
 Self-tests exercise a synthetic approval success and tampered binding
 failures only.  They do not load model weights or run inference.
+
+## Frozen dependency closure review
+
+The VAST evidence report is bound by SHA-256
+`8ce645073916f8f1148ed572b476653fc602a2236fbeee90183b0b01b1c57cd8` and was
+collected at checkout `87da78dc7709075d9dc23b797fc978b9c678c777`. It covers
+the exact Linux x86_64 Python 3.12 closure: 26 packages, 159 native/bundled
+files, and 50 publisher license entries, with no collection failure. The
+external owner scope file is independently bound by SHA-256
+`0d51a44f9494313d01b6cb0314d35215c48c311c0c071d8516a10617a2f224e3`.
+
+The checked-in `license_gate_manifest.json` records each row's captured
+license label and native/bundled counts. The review is factual only:
+NumPy's zlib/NCSA notices, Torch's NOTICE and native third-party payloads,
+setuptools' vendored license set, and MPL components remain visible for
+owner/legal review. The setuptools vendor set visibly includes LGPL-3.0 and
+MPL/other notice material. Dia source and weight licensing were not assessed because
+source/model acquisition was explicitly `NONE`.
+
+Run the focused offline gate with `uv run --no-project --offline --python 3.12
+python license_gate.py --self-test`. It must pass its tamper checks. The
+normal gate intentionally exits 2 while the approval object remains blank;
+publication stays `NO_UPLOAD` until an external owner/legal decision is
+supplied.
