@@ -2,9 +2,10 @@
 
 **Current-state review:** 2026-09-13
 
-**Reviewed implementation baseline:** GitHub `main` at `50981d60` (2026-09-13);
-the residual source/API and dependency-license closures are merged through
-this head; the pre-documentation code
+**Reviewed implementation baseline:** GitHub `main` at `b29cb9d7` (2026-09-13);
+the residual source/API and dependency-license closures, VibeVoice/VoxCPM
+runtime-boundary hardening, and parity reconciliation are merged through this
+head; the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
 documentation/evidence checkpoint was
@@ -35,6 +36,10 @@ reference, and CPU parity remain pending. The exact-revision BiCodec
 and SGMSE CLI routes now promote those two published, Apple-verified rows to
 full; that promotion does not extend either route beyond its authenticated
 artifact contract. UTMOS numeric parity remains unclaimed.
+At clean head `b29cb9d7`, the Qwen3-TTS four-variant model-free API smoke also
+passed without a checkpoint load or upload. Its exact 55-package dependency
+closure was collected, but the license gate remains blocked by the recorded
+owner-review boundary, so this evidence does not change the 58-row denominator.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the

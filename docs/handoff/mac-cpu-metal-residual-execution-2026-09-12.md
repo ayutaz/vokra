@@ -614,3 +614,62 @@ the public audit remains 136 full and 58 unresolved rows. The next transition
 for BigVGAN, FireRed, Canary, Zonos and Dia is an exact scoped owner/legal
 decision, followed by real-weight VAST conversion and independent CPU parity;
 only green packets advance to Scaleway Apple CPU/Metal/no-fallback execution.
+
+## 2026-09-13 Qwen3-TTS exact-head model-free replay and resource closure
+
+The pending-storage statement for VAST instance `50849061` above is historical.
+After its already-recovered Zonos and dependency-closure evidence was retained,
+the instance and its 200-GB storage were destroyed. Its exact-ID readback
+returned `instances: null`, and the full instance and independent-volume
+inventories were empty before the Qwen3-TTS replay started.
+
+Disposable VAST instance `50883988`
+(`vokra-qwen3-tts-model-free-b29cb9`) checked out clean public `main` head
+`b29cb9d7ad16d4a9836e9561122e48196a4627e1`. The host exposed 40 logical CPU
+cores, `131811188` KiB of RAM and 150 GB of scratch storage. The Hugging Face
+credential variables used by this workflow (`HF_TOKEN`, `HF`,
+`HUGGING_FACE_HUB_TOKEN` and `HUGGINGFACE_HUB_TOKEN`) were explicitly unset.
+The worker ran no Cargo command, acquired no checkpoint or model weight and
+performed no upload.
+
+The exact four-variant model-free API smoke passed for 0.6B Base, 0.6B
+CustomVoice, 1.7B Base and 1.7B CustomVoice. It staged pinned upstream source
+and the five allow-listed metadata files per variant, constructed the reviewed
+configuration and processor surfaces, and recorded `checkpoint_load` as
+`NOT_PERFORMED` and publication as `NO_UPLOAD`. The validated 28,796-byte JSON
+has SHA-256
+`43be6a26444224f97f046446891e6a5c2a6201088421ee72edb3b9b8c3730e08`;
+its 325-byte summary has SHA-256
+`a7dae1c4bfc4c5bfc0f5c3c118884b37944f6f7ce827195da26230fea3392bad`.
+
+The dependency audit then reproduced the frozen closure exactly: 55 expected
+and 55 installed active distributions, four inactive rows, and no missing or
+unexpected package. It inventoried 253 bundled native files with zero unsafe
+native paths and retained 92 publisher files with zero unsafe publisher paths.
+The full report correctly returned `BLOCKED`, with license-gate status
+`BLOCKED_UNRESOLVED_REVIEW`: the five model/decoder repositories have no
+fixed-revision `LICENSE` file, although their exact-revision Hugging Face API
+metadata reports `apache-2.0`, and the
+component plus dependency rows still require owner review. The official source
+LICENSE bytes were acquired at the pinned revision. The remaining unresolved
+package-license classifications are `jinja2`, `markdown-it-py`, `mdurl`,
+`safetensors`, `scipy`, `tokenizers` and `torchaudio`; this record does not
+infer their disposition.
+
+The 287,983-byte full dependency report has SHA-256
+`c788f0aa638a3cce9fd9e474fb6658d9720c7f817bcec9392e564a62d5a06381`.
+The 66,013-byte compact report has SHA-256
+`4a9671cc9c828e93cdcbba84639480dd2dee090ea1a761b1e2158c0cb2964665`
+and binds that full-report hash. All four evidence-file hashes matched after
+recovery to local temporary storage.
+
+Instance `50883988` and its 150-GB storage were then destroyed. Its exact-ID
+readback returned `instances: null`; the complete instance and independent
+volume inventories both returned empty lists. No VAST compute or storage from
+this campaign remains allocated under the replacement API credential. This
+model-free evidence removes no owner/legal gate, does not authorize real-weight
+execution or publication, and does not change the live inventory: 136 rows are
+full and 58 public rows remain unresolved. Qwen3-TTS stays before `VAST_READY`
+until its exact dependency/component scope is approved or otherwise
+dispositioned; only an approved scope may proceed to real-weight VAST parity
+and a later Scaleway Apple CPU/Metal/no-fallback packet.
