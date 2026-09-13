@@ -82,9 +82,9 @@ CHECKPOINTS = (
     "official_decoder_completed",
     "output_shape_verified",
 )
-# Keep an independent production-sequence oracle in the no-model self-test.
-# A checkpoint added to run_smoke must be added to both this sequence and the
-# allow-list above, otherwise the production-equivalent validation fails.
+# Independent no-model oracle for the production sequence.  The production
+# path records every transition through CheckpointRecorder, so a newly added
+# or reordered append fails at runtime; this catches allow-list drift too.
 EXPECTED_CHECKPOINT_SEQUENCE = (
     "execution_host_verified",
     "vokra_checkout_verified",
@@ -110,6 +110,32 @@ CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 
 class SmokeError(RuntimeError):
     """A fail-closed precondition or API smoke failure."""
+
+
+class CheckpointRecorder:
+    """Record the production sequence against the evidence allow-list."""
+
+    def __init__(self) -> None:
+        self._values: list[str] = []
+
+    @property
+    def values(self) -> list[str]:
+        return list(self._values)
+
+    def append(self, value: str) -> None:
+        if value not in CHECKPOINTS:
+            raise SmokeError(f"API smoke checkpoint is not allow-listed: {value!r}")
+        if value in self._values:
+            raise SmokeError(f"API smoke checkpoint is duplicated: {value!r}")
+        self._values.append(value)
+
+    def extend(self, values: tuple[str, ...]) -> None:
+        for value in values:
+            self.append(value)
+
+    def finish(self) -> None:
+        if self._values != list(CHECKPOINTS):
+            raise SmokeError("API smoke checkpoint sequence is incomplete or out of order")
 
 
 def require_execution_host() -> None:
@@ -627,7 +653,7 @@ def run_smoke(args: argparse.Namespace) -> int:
          args.manifest, args.license_gate],
     )
     approval = run_license_gate(args, approval)
-    checkpoints: list[str] = []
+    checkpoint_recorder = CheckpointRecorder()
     source: dict[str, Any] = {}
     model: dict[str, Any] = {}
     decoder: dict[str, Any] = {}
@@ -644,18 +670,18 @@ def run_smoke(args: argparse.Namespace) -> int:
     }
     inputs: dict[str, Any] = {}
     error: str | None = None
-    checkpoints.extend(("execution_host_verified", "vokra_checkout_verified", "approval_evidence_recorded", "license_gate_verified"))
     try:
+        checkpoint_recorder.extend(("execution_host_verified", "vokra_checkout_verified", "approval_evidence_recorded", "license_gate_verified"))
         source = require_source(args.source_dir)
-        checkpoints.append("source_revision_verified")
+        checkpoint_recorder.append("source_revision_verified")
         model, _ = require_model(args.model_dir)
-        checkpoints.append("model_snapshot_verified")
+        checkpoint_recorder.append("model_snapshot_verified")
         decoder = require_decoder(args.model_dir, args.decoder_dir)
-        checkpoints.append("decoder_snapshot_verified")
+        checkpoint_recorder.append("decoder_snapshot_verified")
         lock = require_lock(args.lock)
         require_cpu_load_contract()
         package_versions = expected_package_versions(lock)
-        checkpoints.append("lock_verified")
+        checkpoint_recorder.append("lock_verified")
         inputs["reference_audio"] = artifact(args.reference_audio, "reference audio")
         if inputs["reference_audio"]["sha256"] != REFERENCE_AUDIO_SHA256:
             raise SmokeError("reference audio SHA-256 drifted")
@@ -677,7 +703,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         imported_root = Path(qwen_tts.__file__).resolve().parents[1]
         if imported_root != args.source_dir.resolve():
             raise SmokeError(f"qwen_tts imported from {imported_root}, not the authenticated source")
-        checkpoints.append("official_imports_verified")
+        checkpoint_recorder.append("official_imports_verified")
         torch.set_num_threads(1)
         if hasattr(torch, "set_num_interop_threads"):
             torch.set_num_interop_threads(1)
@@ -690,7 +716,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         if getattr(tts, "device", None) is None or tts.device.type != "cpu":
             raise SmokeError(f"official model selected {getattr(tts, 'device', None)!r}, expected CPU")
         api["model_device"] = str(tts.device)
-        checkpoints.append("model_loaded_cpu")
+        checkpoint_recorder.append("model_loaded_cpu")
 
         prompt = tts.create_voice_clone_prompt(ref_audio=str(args.reference_audio), x_vector_only_mode=True)[0]
         captured: list[Any] = []
@@ -716,7 +742,7 @@ def run_smoke(args: argparse.Namespace) -> int:
             )
         finally:
             decoder_model.decode = original_decode
-        checkpoints.append("official_wrapper_called")
+        checkpoint_recorder.append("official_wrapper_called")
         if len(captured) != 1:
             raise SmokeError(f"official decoder hook captured {len(captured)} packets, expected one")
         codes = captured[0]
@@ -725,12 +751,13 @@ def run_smoke(args: argparse.Namespace) -> int:
         pcm = numpy.asarray(wavs[0], dtype=numpy.float32)
         if int(sample_rate) != OUTPUT_SAMPLE_RATE or pcm.size == 0 or not numpy.isfinite(pcm).all():
             raise SmokeError("official wrapper returned an invalid sample rate or PCM")
-        checkpoints.append("official_decoder_completed")
+        checkpoint_recorder.append("official_decoder_completed")
         api.update({"sample_rate": int(sample_rate), "samples": int(pcm.size),
                     "code_packet_frames": int(codes.shape[0]),
                     "code_packet_codebooks": int(codes.shape[1])})
-        checkpoints.append("output_shape_verified")
+        checkpoint_recorder.append("output_shape_verified")
         package_versions = {**package_versions, "qwen_tts_source": SOURCE_PACKAGE_VERSION}
+        checkpoint_recorder.finish()
     except Exception as caught:  # evidence is retained even for a partial smoke
         error = f"{type(caught).__name__}: {caught}"
 
@@ -747,7 +774,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         "package_versions": package_versions,
         "environment": {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine(), "device": "cpu", "torch_threads": 1},
         "inputs": inputs,
-        "call_checkpoints": checkpoints,
+        "call_checkpoints": checkpoint_recorder.values,
         "api": api,
         "error": error,
     }
@@ -761,19 +788,26 @@ def self_test() -> None:
     global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
-    production_sequence = [
-        "execution_host_verified", "vokra_checkout_verified",
-        "approval_evidence_recorded", "license_gate_verified",
-        "source_revision_verified", "model_snapshot_verified",
-        "decoder_snapshot_verified", "lock_verified",
-        "official_imports_verified", "model_loaded_cpu",
-        "official_wrapper_called", "official_decoder_completed",
-        "output_shape_verified",
-    ]
-    if tuple(CHECKPOINTS) != EXPECTED_CHECKPOINT_SEQUENCE or production_sequence != list(EXPECTED_CHECKPOINT_SEQUENCE):
-        raise SmokeError("production checkpoint sequence drifted from its allow-list")
-    if len(set(production_sequence)) != len(production_sequence) or any(item not in CHECKPOINTS for item in production_sequence):
-        raise SmokeError("production checkpoint sequence contains an unknown or duplicate value")
+    if tuple(CHECKPOINTS) != EXPECTED_CHECKPOINT_SEQUENCE:
+        raise SmokeError("checkpoint allow-list drifted from the production sequence")
+    production_recorder = CheckpointRecorder()
+    production_recorder.extend(EXPECTED_CHECKPOINT_SEQUENCE)
+    production_recorder.finish()
+    if production_recorder.values != list(CHECKPOINTS):
+        raise SmokeError("production checkpoint recorder changed the allow-list sequence")
+    for values, message in (
+        (("not_allow_listed",), "unknown checkpoint was accepted"),
+        ((CHECKPOINTS[0], CHECKPOINTS[0]), "duplicate checkpoint was accepted"),
+        ((CHECKPOINTS[1], CHECKPOINTS[0]), "out-of-order checkpoint was accepted"),
+    ):
+        recorder = CheckpointRecorder()
+        try:
+            recorder.extend(values)
+            recorder.finish()
+        except SmokeError:
+            pass
+        else:
+            raise SmokeError(message)
     require_cpu_load_contract()
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
         try:
