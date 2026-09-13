@@ -32,7 +32,9 @@ pub struct VibeVoiceGenerationPacket {
     pub prompt_pcm: Option<Vec<f32>>,
     /// Sample rate for `prompt_pcm`; must be exactly 24,000 when present.
     pub prompt_sample_rate_hz: u32,
-    /// Caller-owned Gaussian draws, row-major `[prompt_frames, 64]`.
+    /// Caller-owned element-wise Gaussian draws, row-major
+    /// `[prompt_frames, 64]`.  The official per-batch scalar draw is passed
+    /// separately to [`VibeVoiceComposite::generate_with_prompt_std_draw`].
     pub prompt_latent_draws: Vec<f32>,
     /// One caller-owned 64-wide Gaussian draw per generated diffusion token.
     pub diffusion_initial_draws: Vec<Vec<f32>>,
@@ -103,12 +105,52 @@ impl VibeVoiceComposite {
         &self,
         packet: &VibeVoiceGenerationPacket,
     ) -> Result<VibeVoiceGenerationResult> {
+        self.generate_inner(packet, None)
+    }
+
+    /// Runs the composite path with the official prompt-sampling draw.
+    ///
+    /// VibeVoice's acoustic tokenizer uses a two-level Gaussian draw for an
+    /// audio prompt: one scalar draw per batch item is multiplied by
+    /// `fix_std / 0.8`, then one independent draw is consumed for every
+    /// latent element.  The legacy [`VibeVoiceGenerationPacket`] deliberately
+    /// keeps its element-draw buffer stable for the existing VAST packet
+    /// format, so the scalar draw is supplied explicitly here.  Omitting it
+    /// would silently change the prompt distribution and invalidate parity.
+    ///
+    /// The scalar is only valid when `packet.prompt_pcm` is present.  A text
+    /// only request should use [`Self::generate`], which consumes no prompt
+    /// randomness.
+    pub fn generate_with_prompt_std_draw(
+        &self,
+        packet: &VibeVoiceGenerationPacket,
+        prompt_std_draw: f32,
+    ) -> Result<VibeVoiceGenerationResult> {
+        if packet.prompt_pcm.is_none() {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice prompt scalar draw requires prompt PCM".to_owned(),
+            ));
+        }
+        if !prompt_std_draw.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice prompt scalar Gaussian draw must be finite".to_owned(),
+            ));
+        }
+        self.generate_inner(packet, Some(prompt_std_draw))
+    }
+
+    fn generate_inner(
+        &self,
+        packet: &VibeVoiceGenerationPacket,
+        prompt_std_draw: Option<f32>,
+    ) -> Result<VibeVoiceGenerationResult> {
         validate_packet(packet)?;
         let mut acoustic_stream = self.acoustic_encoder.stream();
         let mut semantic_stream = self.semantic_encoder.stream();
         let mut decoder_stream = self.acoustic_decoder.stream();
 
-        let prompt_replacements = self.prompt_replacements(packet, &mut acoustic_stream)?;
+        let prompt_replacements =
+            self.prompt_replacements(packet, &mut acoustic_stream, prompt_std_draw)?;
         let mut positive = self.qwen.fork_empty_cache();
         // The batch-1 unconditional branch is the official one-token
         // speech-start context, not a copy of the positive prompt. This is
@@ -207,6 +249,7 @@ impl VibeVoiceComposite {
         &self,
         packet: &VibeVoiceGenerationPacket,
         acoustic_stream: &mut VibeVoiceTokenizerStream,
+        prompt_std_draw: Option<f32>,
     ) -> Result<Option<Vec<(usize, Vec<f32>)>>> {
         let Some(pcm) = packet.prompt_pcm.as_deref() else {
             if packet.speech_replacement_positions.is_empty()
@@ -236,10 +279,18 @@ impl VibeVoiceComposite {
                 "vibevoice prompt row/draw/replacement count mismatch".to_owned(),
             ));
         }
-        // The fixed source uses the configured Gaussian scale directly; its
-        // only stochastic prompt input is randn_like(mean), captured in
-        // `prompt_latent_draws`. There is no independent scalar std draw.
-        let std = PROMPT_STD;
+        let prompt_std_draw = prompt_std_draw.ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "vibevoice prompt sampling requires one scalar Gaussian draw per batch item; \
+                 call generate_with_prompt_std_draw"
+                    .to_owned(),
+            )
+        })?;
+        // The official tokenizer first draws one batch scalar with
+        // `fix_std / 0.8`, then multiplies that scalar by the element-wise
+        // `randn_like(mean)` draw.  Keep both draws caller-owned so no hidden
+        // RNG can contaminate a reproducible parity packet.
+        let std = PROMPT_STD * prompt_std_draw;
         let mut replacements = Vec::with_capacity(frames);
         for frame in 0..frames {
             let mean = &acoustic_rows[frame * LATENT_WIDTH..(frame + 1) * LATENT_WIDTH];
@@ -466,7 +517,19 @@ mod tests {
     fn prompt_sampling_uses_exact_single_latent_draw_contract() {
         let mean = 2.0_f32;
         let latent_draw = -4.0_f32;
-        assert_eq!(mean + PROMPT_STD * latent_draw, -0.5);
+        assert_eq!(prompt_sample_value(mean, 1.0, latent_draw), -0.5);
+    }
+
+    #[test]
+    fn prompt_sampling_includes_the_official_batch_scalar_draw() {
+        let mean = 2.0_f32;
+        let scalar_draw = -3.0_f32;
+        let latent_draw = -4.0_f32;
+        let expected = mean + (PROMPT_STD * scalar_draw) * latent_draw;
+        assert_eq!(
+            prompt_sample_value(mean, scalar_draw, latent_draw),
+            expected
+        );
     }
 
     #[test]
@@ -562,4 +625,8 @@ mod tests {
         packet.prompt_latent_draws[0] = f32::NAN;
         assert!(validate_packet(&packet).is_err());
     }
+}
+
+fn prompt_sample_value(mean: f32, scalar_draw: f32, latent_draw: f32) -> f32 {
+    mean + (PROMPT_STD * scalar_draw) * latent_draw
 }
