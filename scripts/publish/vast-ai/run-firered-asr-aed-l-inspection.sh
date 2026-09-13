@@ -36,6 +36,7 @@ die() { log "ERROR: $*"; exit 2; }
 usage() {
   cat <<'EOF'
 usage: run-firered-asr-aed-l-inspection.sh --model-free --expected-head HEX40 [--work-dir DIR]
+       run-firered-asr-aed-l-inspection.sh --dependency-audit-only --expected-head HEX40 [--work-dir DIR]
        run-firered-asr-aed-l-inspection.sh --expected-head HEX40 --approval-sha256 SHA256 --owner-approval JSON [--work-dir DIR]
        run-firered-asr-aed-l-inspection.sh --self-test
 
@@ -43,6 +44,11 @@ usage: run-firered-asr-aed-l-inspection.sh --model-free --expected-head HEX40 [-
 config, model-card, and training-provenance scope. It never downloads or
 executes a model, accesses an upstream checkout, or uploads anything. The
 normal owner-approval route retains its existing gate-first behavior.
+--dependency-audit-only prepares the frozen Python closure and collects only
+the pinned FireRed source, kaldi-native-fbank source/LICENSE, and installed
+publisher/license/native-payload evidence. It never contacts the model repo,
+acquires a checkpoint, imports or executes a model, runs reference/parity, or
+uploads anything; it always exits blocked pending owner review.
 EOF
 }
 
@@ -216,6 +222,144 @@ PY
   return 2
 }
 
+require_no_hf_tokens() {
+  local token_name
+  for token_name in HF HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACE_HUB_TOKEN HF_ACCESS_TOKEN HUGGINGFACE_TOKEN HF_API_TOKEN HUGGINGFACE_API_TOKEN HUGGING_FACE_TOKEN; do
+    [[ -z "${!token_name:-}" ]] || die "${token_name} must be unset for dependency-audit-only"
+  done
+}
+
+require_dependency_audit_host() {
+  local work_dir="$1" mem_kib free_kib disk_root
+  [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
+  [[ "$(uname -s)" == Linux ]] || die 'Linux VAST required for dependency-audit-only'
+  [[ "$(uname -m)" == x86_64 ]] || die 'x86_64 VAST required for dependency-audit-only'
+  mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
+  [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'invalid memory value'
+  (( mem_kib >= MIN_MEM_KIB )) || die '128 GiB dependency-audit memory guard failed'
+  disk_root="$(model_free_disk_root "$work_dir")"
+  free_kib="$(df -Pk "$disk_root" | awk 'NR == 2 {print $4}')"
+  [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'invalid disk value'
+  (( free_kib >= MIN_DISK_KIB )) || die '32 GiB dependency-audit disk guard failed'
+}
+
+run_dependency_audit_only() {
+  local expected="$1" requested_work_dir="$2" work_dir audit_output audit_rc root_path
+  require_clean_expected_head "$expected"
+  [[ -f "$ROOT/Cargo.toml" && -d "$ROOT/.git" ]] || die 'not a Vokra checkout'
+  [[ -f "$FIRERED_PROJECT/pyproject.toml" && -f "$FIRERED_PROJECT/uv.lock" ]] || die 'dedicated FireRed uv project missing'
+  [[ -f "$AUDITOR" && ! -L "$AUDITOR" ]] || die 'dedicated FireRed dependency auditor missing'
+  command -v uv >/dev/null 2>&1 || die 'uv is required for the dependency audit'
+  command -v git >/dev/null 2>&1 || die 'git is required for the dependency audit'
+  require_no_hf_tokens
+  work_dir="${requested_work_dir:-$WORK/dependency-audit-only}"
+  [[ "$work_dir" == /* ]] || die '--work-dir must be absolute'
+  work_dir="$(canonical_absent_candidate "$work_dir")"
+  root_path="$(cd "$ROOT" && pwd -P)" || die 'cannot canonicalize checkout root'
+  paths_overlap "$work_dir" "$root_path" && die '--work-dir must not overlap the checkout'
+  require_dependency_audit_host "$work_dir"
+  mkdir -p "$(dirname "$work_dir")"
+  mkdir "$work_dir" || die 'dependency-audit-only work directory candidate was created concurrently'
+  mkdir "$work_dir/evidence"
+  audit_output="$work_dir/evidence/dependency-audit-only.json"
+  export UV_PROJECT_ENVIRONMENT="$work_dir/venv"
+  export CARGO_BUILD_JOBS=1
+  export UV_CACHE_DIR
+  {
+    echo "mode=DEPENDENCY_AUDIT_ONLY"
+    echo "expected_head=$expected"
+    echo 'payload_status=NOT_ACQUIRED'
+    echo 'execution_status=NOT_PERFORMED'
+    echo 'publication=NO_UPLOAD'
+    echo 'hf_token_environment=ABSENT_REQUIRED'
+    echo 'gate=pre-model-boundary'
+    cargo fmt --manifest-path "$ROOT/Cargo.toml" --all -- --check
+    cargo metadata --manifest-path "$ROOT/Cargo.toml" --locked --no-deps --format-version 1 >/dev/null
+    UV_CACHE_DIR="$UV_CACHE_DIR" uv lock --check --project "$FIRERED_PROJECT" --python 3.12
+  } > "$work_dir/evidence/validation.log" 2>&1 || die 'dependency-audit-only rooted/lock gate failed'
+  for tool in cargo git uv awk find df findmnt sha256sum cmake make cc c++ g++; do
+    command -v "$tool" >/dev/null 2>&1 || die "missing dependency-audit tool: $tool"
+  done
+  [[ "$(findmnt -T "$(dirname "$work_dir")" -no FSTYPE)" == tmpfs ]] || die 'parent work filesystem must be tmpfs'
+  mkdir -p "$work_dir/source"
+  {
+    GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$work_dir/source/repo"
+    GIT_LFS_SKIP_SMUDGE=1 git -C "$work_dir/source/repo" checkout --detach "$SOURCE_REVISION"
+    GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none --no-checkout "$KALDI_NATIVE_FBANK_URL" "$work_dir/source/kaldi-native-fbank"
+    GIT_LFS_SKIP_SMUDGE=1 git -C "$work_dir/source/kaldi-native-fbank" checkout --detach "$KALDI_NATIVE_FBANK_REVISION"
+  } >> "$work_dir/evidence/validation.log" 2>&1
+  [[ -f "$work_dir/source/kaldi-native-fbank/LICENSE" && ! -L "$work_dir/source/kaldi-native-fbank/LICENSE" ]] || die 'pinned kaldi-native-fbank LICENSE is missing'
+  [[ "$(sha256_file "$work_dir/source/kaldi-native-fbank/LICENSE")" == "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" ]] || die 'pinned kaldi-native-fbank LICENSE hash mismatch'
+  # Install only the dedicated frozen dependency closure into the absent work
+  # directory.  No model package/repository is an input to this operation.
+  UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --frozen --project "$FIRERED_PROJECT" --python 3.12 >> "$work_dir/evidence/validation.log" 2>&1 || die 'dedicated frozen dependency preparation failed'
+  set +e
+  UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv run --frozen --no-sync --project "$FIRERED_PROJECT" --python 3.12 python "$AUDITOR" \
+    --dependency-audit-only \
+    --lock "$FIRERED_PROJECT/uv.lock" \
+    --project "$work_dir/source/kaldi-native-fbank" \
+    --source "$work_dir/source/repo" \
+    --expected-head "$expected" \
+    --output "$audit_output" >> "$work_dir/evidence/validation.log" 2>&1
+  audit_rc=$?
+  set -e
+  [[ "$audit_rc" == 2 && -s "$audit_output" ]] || die "dependency-audit-only returned unexpected status: $audit_rc"
+  UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv run --frozen --no-sync --project "$FIRERED_PROJECT" --python 3.12 python - "$audit_output" "$expected" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1 || die 'dependency-audit-only manifest contract failed'
+import json
+import re
+import sys
+from pathlib import Path
+
+def reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
+expected = sys.argv[2]
+if manifest.get("format") != "vokra-firered-asr-aed-l-dependency-audit-only-v1":
+    raise SystemExit("dependency-audit-only format mismatch")
+if manifest.get("expected_head") != expected:
+    raise SystemExit("dependency-audit-only expected HEAD mismatch")
+if manifest.get("status") != "BLOCKED_UNREVIEWED_TRANSITIVE" or manifest.get("publication") != "NO_UPLOAD":
+    raise SystemExit("dependency-audit-only did not remain blocked/no-upload")
+for key in ("payload_status", "checkpoint_status", "model_repo_status"):
+    if manifest.get(key) != "NOT_ACQUIRED":
+        raise SystemExit(f"{key} crossed the acquisition boundary")
+for key in ("model_import_status", "execution_status", "reference_status", "conversion_status"):
+    if manifest.get(key) != "NOT_PERFORMED":
+        raise SystemExit(f"{key} crossed the execution boundary")
+if manifest.get("owner_approval_artifact_created") is not False:
+    raise SystemExit("dependency-audit-only created an owner approval artifact")
+acquisition = manifest.get("model_acquisition")
+if acquisition != {"hf_api": "NOT_CONTACTED", "snapshot_download": "NOT_CALLED", "checkpoint": "NOT_ACQUIRED"}:
+    raise SystemExit("dependency-audit-only touched the model repository boundary")
+token_environment = manifest.get("token_environment")
+if token_environment.get("status") != "ABSENT" or token_environment.get("present_names") != [] or token_environment.get("values_recorded") is not False:
+    raise SystemExit("HF token environment was not absent and unrecorded")
+source = manifest.get("fire_red_source")
+if source.get("status") != "AUTHENTICATED_PINNED_SOURCE" or source.get("observed_revision") != "834635e4cf277ed8ca92049fc375b17c3dc20748" or not source.get("revision_verified") or not source.get("origin_verified") or not source.get("clean_verified"):
+    raise SystemExit("pinned FireRed source identity is incomplete")
+aggregate = source.get("tracked_files", {}).get("sha256")
+if not isinstance(aggregate, str) or not re.fullmatch(r"[0-9a-f]{64}", aggregate):
+    raise SystemExit("pinned FireRed source hash aggregate is malformed")
+if not isinstance(manifest.get("active_closure", {}).get("rows"), list) or len(manifest["active_closure"]["rows"]) != 27:
+    raise SystemExit("active closure does not cover exactly 27 rows")
+if manifest.get("collection_status") != "COMPLETE" or manifest.get("collection_failures"):
+    raise SystemExit("dependency evidence collection failed; packet is explicitly blocked")
+scope = manifest.get("dependency_audit_digest_gate", {})
+if not isinstance(scope.get("scope_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", scope["scope_sha256"]):
+    raise SystemExit("dependency audit digest scope is malformed")
+print("FireRed dependency-audit-only manifest: BLOCKED_UNREVIEWED_TRANSITIVE/NO_UPLOAD; collection complete")
+PY
+  log "dependency-audit-only evidence: $audit_output"
+  log 'dependency-audit-only remains BLOCKED_UNREVIEWED_TRANSITIVE pending owner review; no model boundary was entered'
+  return 2
+}
+
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token path_test candidate tmp_parent
   tmp_parent="$(cd -P "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || { log 'self-test FAIL: temp parent is not canonical'; return 1; }
@@ -259,6 +403,7 @@ self_test() {
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' 'unlock_requirements' 'vast_first_pass' 'expected_artifacts' \
     '--model-free' 'MODEL_FREE_FORMAT' 'build_model_free_manifest' 'MODEL_FREE_MIN_MEM_KIB' 'MODEL_FREE_MIN_DISK_KIB' 'model_free_disk_root' 'run_model_free' 'NOT_ACQUIRED' 'NOT_PERFORMED' 'PENDING_OWNER_REVIEW' 'model_card_architecture' 'model_card_search' 'training_provenance_status' 'expected_head' \
+    '--dependency-audit-only' 'DEPENDENCY_AUDIT_ONLY_FORMAT' 'build_dependency_audit_only_manifest' 'fire_red_source_evidence' 'HF' 'HF_TOKEN' 'HF_HUB_TOKEN' 'HUGGING_FACE_HUB_TOKEN' 'HUGGINGFACE_HUB_TOKEN' 'HF_ACCESS_TOKEN' 'HUGGINGFACE_TOKEN' 'HF_API_TOKEN' 'HUGGINGFACE_API_TOKEN' 'HUGGING_FACE_TOKEN' 'require_no_hf_tokens' 'require_dependency_audit_host' 'run_dependency_audit_only' 'UV_PROJECT_ENVIRONMENT' 'uv sync --frozen' 'GIT_LFS_SKIP_SMUDGE=1' 'dependency-audit-only.json' 'DEPENDENCY_AUDIT_ONLY' 'BLOCKED_COLLECTION_FAILURE' 'AUTHENTICATED_PINNED_SOURCE' 'model_repo_status' 'checkpoint_status' 'reference_status' 'conversion_status' \
     'pinned-source frontend' 'SentencePiece/TokenDict' 'transformer_decoder.py' 'batch_beam_search' 'softmax_smoothing' 'length_penalty' 'eos_penalty' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
     'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' 'official_hypotheses' 'normalized_log_score' 'upstream_cost' 'firered-asr-aed-l-official-beam-trace-v1' 'token_topk' 'beam_prune_topk' 'torch.topk' 'torch_git_version' 'environment' \
@@ -361,6 +506,31 @@ PY
 import sys
 from pathlib import Path
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
+audit_only = source.index("run_dependency_audit_only()")
+audit_only_end = source.index("\nself_test()", audit_only)
+snapshot = source.index("\nfrom huggingface_hub import snapshot_download")
+if not audit_only < audit_only_end < snapshot:
+    raise SystemExit("dependency-audit-only route range is not before model API import")
+audit_only_source = source[audit_only:audit_only_end]
+for forbidden in ("\nfrom huggingface_hub import", "\nimport huggingface_hub", "HfApi(", "snapshot_download("):
+    if forbidden in audit_only_source:
+        raise SystemExit(f"dependency-audit-only route reaches model API: {forbidden}")
+if source.index("uv sync --frozen", audit_only, audit_only_end) >= audit_only_end:
+    raise SystemExit("dependency-audit-only does not prepare the dedicated frozen environment")
+if source.index('GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none --no-checkout "$SOURCE_URL"', audit_only, audit_only_end) >= audit_only_end:
+    raise SystemExit("dependency-audit-only does not collect pinned FireRed source")
+if source.index("require_no_hf_tokens", audit_only, audit_only_end) >= audit_only_end:
+    raise SystemExit("dependency-audit-only token guard is after model boundary")
+print("FireRed dependency-audit-only ordering self-test: PASS")
+PY
+  then
+    log 'self-test FAIL: dependency-audit-only/model snapshot ordering regression'
+    fail=1
+  fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
 final = source.index('\nfinal_manifest="$work_dir/evidence/manifest-with-reference.json"')
 link = source.index('os.link(temporary, ' + 'final_path)')
 if link <= final or "open(manifest_path, " + '"w"' in source:
@@ -412,6 +582,25 @@ PY
   if "$path" --model-free --expected-head "$test_head" --approval-sha256 "$(printf '0%.0s' {1..64})" >/dev/null 2>&1; then
     log 'self-test FAIL: model-free approval argument mix accepted'; fail=1
   fi
+  if "$path" --dependency-audit-only >/dev/null 2>&1; then
+    log 'self-test FAIL: dependency-audit-only route accepted without expected HEAD'; fail=1
+  fi
+  if "$path" --dependency-audit-only --expected-head "$test_head" --dependency-audit-only >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate dependency-audit-only flag accepted'; fail=1
+  fi
+  if "$path" --dependency-audit-only --expected-head "$test_head" --model-free >/dev/null 2>&1; then
+    log 'self-test FAIL: dependency-audit-only/model-free mix accepted'; fail=1
+  fi
+  if "$path" --self-test --dependency-audit-only >/dev/null 2>&1; then
+    log 'self-test FAIL: self-test/dependency-audit-only mix accepted'; fail=1
+  fi
+  if "$path" --dependency-audit-only --expected-head "$test_head" --owner-approval /tmp/approval.json >/dev/null 2>&1; then
+    log 'self-test FAIL: dependency-audit-only owner approval accepted'; fail=1
+  fi
+  if UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --no-sync --project "$ROOT/tools/parity/firered_asr_aed_l" --python 3.12 python "$AUDITOR" \
+    --lock "$path" --output "$path" --source "$path" >/dev/null 2>&1; then
+    log 'self-test FAIL: normal dependency audit accepted --source'; fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
@@ -432,16 +621,19 @@ approval_sha256=""
 expected_head=""
 self=0
 model_free=0
+dependency_audit_only=0
 seen_self=0
 seen_approval=0
 seen_sha=0
 seen_head=0
 seen_model_free=0
+seen_dependency_audit_only=0
 seen_work=0
 while (($#)); do
   case "$1" in
     --self-test) (( seen_self == 0 )) || die 'duplicate --self-test'; seen_self=1; self=1; shift ;;
     --model-free) (( seen_model_free == 0 )) || die 'duplicate --model-free'; seen_model_free=1; model_free=1; shift ;;
+    --dependency-audit-only) (( seen_dependency_audit_only == 0 )) || die 'duplicate --dependency-audit-only'; seen_dependency_audit_only=1; dependency_audit_only=1; shift ;;
     --work-dir) (($# >= 2)) || die '--work-dir requires DIR'; work_dir="$2"; seen_work=1; shift 2 ;;
     --owner-approval) (( seen_approval == 0 && $# >= 2 )) || die 'duplicate or missing --owner-approval'; owner_approval_path="$2"; seen_approval=1; shift 2 ;;
     --approval-sha256) (( seen_sha == 0 && $# >= 2 )) || die 'duplicate or missing --approval-sha256'; approval_sha256="$2"; seen_sha=1; shift 2 ;;
@@ -450,11 +642,17 @@ while (($#)); do
     *) die "unknown argument: $1" ;;
   esac
 done
-if (( self )); then [[ "$work_dir" == "$WORK" && "$model_free" == 0 && -z "$owner_approval_path" && -z "$approval_sha256" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
+if (( self )); then [[ "$work_dir" == "$WORK" && "$model_free" == 0 && "$dependency_audit_only" == 0 && -z "$owner_approval_path" && -z "$approval_sha256" && -z "$expected_head" ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
 if (( model_free )); then
   [[ "$seen_head" == 1 && "$seen_approval" == 0 && "$seen_sha" == 0 ]] || die '--model-free requires --expected-head and accepts no approval arguments'
   [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die 'expected HEAD must be exactly 40 lowercase hexadecimal characters'
   if (( seen_work )); then run_model_free "$expected_head" "$work_dir"; else run_model_free "$expected_head" ''; fi
+  exit $?
+fi
+if (( dependency_audit_only )); then
+  [[ "$seen_head" == 1 && "$seen_approval" == 0 && "$seen_sha" == 0 && "$model_free" == 0 ]] || die '--dependency-audit-only requires --expected-head and accepts no model-free or approval arguments'
+  [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] || die 'expected HEAD must be exactly 40 lowercase hexadecimal characters'
+  if (( seen_work )); then run_dependency_audit_only "$expected_head" "$work_dir"; else run_dependency_audit_only "$expected_head" ''; fi
   exit $?
 fi
 [[ $seen_approval == 1 && $seen_sha == 1 && $seen_head == 1 ]] || die '--owner-approval, --approval-sha256, and --expected-head are required'

@@ -19,13 +19,14 @@ import re
 import subprocess
 import tempfile
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPOSITORY = "FireRedTeam/FireRedASR-AED-L"
 MODEL_REVISION = "e57f5960d03cff1071ff7acbb409314d1e70ed3d"
 AUDIT_FORMAT = "vokra-firered-asr-aed-l-dependency-audit-v1"
 MODEL_FREE_FORMAT = "vokra-firered-asr-aed-l-model-free-audit-v1"
+DEPENDENCY_AUDIT_ONLY_FORMAT = "vokra-firered-asr-aed-l-dependency-audit-only-v1"
 OWNER_APPROVAL_FORMAT = "vokra-firered-asr-aed-l-owner-approval-v1"
 OWNER_APPROVAL_DECISION = "APPROVE"
 OWNER_HANDLE = "yousan"
@@ -35,6 +36,20 @@ NATIVE_SOURCE_URL = "https://github.com/csukuangfj/kaldi-native-fbank.git"
 NATIVE_SOURCE_REVISION = "f68c6b43f739697d7ab02ff6debacee130e1d541"
 NATIVE_SOURCE_LICENSE_PATH = "LICENSE"
 NATIVE_SOURCE_LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+FIRERED_SOURCE_URL = "https://github.com/FireRedTeam/FireRedASR.git"
+FIRERED_SOURCE_REVISION = "834635e4cf277ed8ca92049fc375b17c3dc20748"
+TOKEN_ENVIRONMENT_NAMES = (
+    "HF",
+    "HF_TOKEN",
+    "HF_HUB_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HF_ACCESS_TOKEN",
+    "HUGGINGFACE_TOKEN",
+    "HF_API_TOKEN",
+    "HUGGINGFACE_API_TOKEN",
+    "HUGGING_FACE_TOKEN",
+)
 
 
 class DuplicateJsonKey(ValueError):
@@ -652,6 +667,196 @@ def build_model_free_manifest(lock_path: Path, expected_head: str) -> dict[str, 
     }
 
 
+def _git_capture(source_path: Path, *arguments: str) -> tuple[str | None, str | None]:
+    """Return a bounded git fact and an explicit error without masking failure."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(source_path), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        return None, str(error)
+    return completed.stdout, None
+
+
+def fire_red_source_evidence(source_path: Path) -> tuple[dict[str, Any], list[str]]:
+    """Hash only the pinned upstream source tree; never import or execute it."""
+    failures: list[str] = []
+    evidence: dict[str, Any] = {
+        "repository": FIRERED_SOURCE_URL,
+        "expected_revision": FIRERED_SOURCE_REVISION,
+        "observed_revision": None,
+        "observed_origin": None,
+        "revision_verified": False,
+        "origin_verified": False,
+        "clean_verified": False,
+        "tracked_files": {"count": 0, "rows": [], "sha256": None},
+        "license_files": [],
+        "review_files": [],
+        "status": "NOT_VERIFIED",
+    }
+    if source_path.is_symlink() or not source_path.is_dir():
+        failures.append("pinned FireRed source checkout is missing or symlinked")
+        evidence["status"] = "FAILED"
+        return evidence, failures
+
+    revision, error = _git_capture(source_path, "rev-parse", "HEAD")
+    if error is not None:
+        failures.append(f"cannot observe FireRed source revision: {error}")
+    else:
+        evidence["observed_revision"] = revision.strip()
+    origin, error = _git_capture(source_path, "remote", "get-url", "origin")
+    if error is not None:
+        failures.append(f"cannot observe FireRed source origin: {error}")
+    else:
+        evidence["observed_origin"] = origin.strip()
+    dirty, error = _git_capture(source_path, "status", "--porcelain", "--untracked-files=all")
+    if error is not None:
+        failures.append(f"cannot observe FireRed source cleanliness: {error}")
+    else:
+        evidence["clean_verified"] = not dirty
+        if dirty:
+            failures.append("pinned FireRed source checkout is dirty")
+
+    evidence["revision_verified"] = evidence["observed_revision"] == FIRERED_SOURCE_REVISION
+    evidence["origin_verified"] = evidence["observed_origin"].removesuffix("/").removesuffix(".git") == FIRERED_SOURCE_URL.removesuffix(".git") if isinstance(evidence["observed_origin"], str) else False
+    if not evidence["revision_verified"]:
+        failures.append("pinned FireRed source revision mismatch")
+    if not evidence["origin_verified"]:
+        failures.append("pinned FireRed source origin mismatch")
+
+    tracked, error = _git_capture(source_path, "ls-files", "-z")
+    rows: list[dict[str, Any]] = []
+    if error is not None:
+        failures.append(f"cannot enumerate pinned FireRed source files: {error}")
+    else:
+        for raw_name in tracked.split("\0"):
+            if not raw_name:
+                continue
+            relative = PurePosixPath(raw_name)
+            if relative.is_absolute() or not raw_name or any(part in {"", ".", ".."} for part in relative.parts):
+                failures.append(f"unsafe pinned FireRed source path: {raw_name!r}")
+                continue
+            path = source_path / Path(*relative.parts)
+            if path.is_symlink() or not path.is_file():
+                failures.append(f"pinned FireRed source file is missing or non-regular: {raw_name}")
+                continue
+            record = {"path": raw_name, "bytes": path.stat().st_size, "sha256": sha256_regular_file(path)}
+            rows.append(record)
+            if Path(raw_name).name.upper().startswith(("LICENSE", "COPYING")):
+                evidence["license_files"].append(record)
+            elif Path(raw_name).name.upper() in {"NOTICE", "README", "README.MD", "PYPROJECT.TOML"}:
+                evidence["review_files"].append(record)
+    rows.sort(key=lambda item: item["path"])
+    evidence["tracked_files"] = {"count": len(rows), "rows": rows, "sha256": canonical_sha256(rows)}
+    evidence["license_files"].sort(key=lambda item: item["path"])
+    evidence["review_files"].sort(key=lambda item: item["path"])
+    if not evidence["license_files"]:
+        failures.append("pinned FireRed source LICENSE/COPYING evidence is missing")
+    evidence["status"] = "AUTHENTICATED_PINNED_SOURCE" if not failures else "FAILED"
+    return evidence, failures
+
+
+def _token_environment_evidence() -> dict[str, Any]:
+    """Expose only presence booleans; token values must never enter evidence."""
+    present = [name for name in TOKEN_ENVIRONMENT_NAMES if os.environ.get(name)]
+    return {
+        "checked_names": list(TOKEN_ENVIRONMENT_NAMES),
+        "present_names": present,
+        "status": "ABSENT" if not present else "PRESENT_REJECTED",
+        "values_recorded": False,
+    }
+
+
+def build_dependency_audit_only_manifest(
+    lock_path: Path,
+    native_source_path: Path | None,
+    fire_red_source_path: Path,
+    expected_head: str,
+) -> dict[str, Any]:
+    """Build a blocked, model-free dependency/source packet for owner review."""
+    if not HEX40.fullmatch(expected_head):
+        raise ValueError("expected HEAD must be lowercase 40-hex")
+    manifest = build_manifest(lock_path, native_source_path)
+    source, source_failures = fire_red_source_evidence(fire_red_source_path)
+    token_environment = _token_environment_evidence()
+    token_failures = [
+        f"credential environment variable must be absent: {name}"
+        for name in token_environment["present_names"]
+    ]
+    collection_failures = [*manifest["collection_failures"], *source_failures, *token_failures]
+    source_scope = {
+        "repository": source["repository"],
+        "expected_revision": source["expected_revision"],
+        "observed_revision": source["observed_revision"],
+        "observed_origin": source["observed_origin"],
+        "tracked_files_sha256": source["tracked_files"]["sha256"],
+    }
+    digest_scope = {
+        "expected_head": expected_head,
+        "lock_sha256": manifest["lock"]["sha256"],
+        "active_closure_sha256": manifest["active_closure"]["row_digest"],
+        "distribution_evidence_sha256": manifest["distribution_evidence_sha256"],
+        "license_candidate_aggregate_sha256": manifest["license_candidate_aggregate"]["sha256"],
+        "native_payload_aggregate_sha256": manifest["native_payload_aggregate"]["sha256"],
+        "publisher_url_aggregate_sha256": manifest["publisher_url_aggregate"]["sha256"],
+        "review_ledger_sha256": manifest["review_ledger"]["sha256"],
+        "fire_red_source_identity_sha256": canonical_sha256(source_scope),
+        "fire_red_source_file_aggregate_sha256": source["tracked_files"]["sha256"],
+    }
+    manifest.update(
+        {
+            "format": DEPENDENCY_AUDIT_ONLY_FORMAT,
+            "evidence_stage": "DEPENDENCY_AUDIT_ONLY",
+            "expected_head": expected_head,
+            "status": "BLOCKED_UNREVIEWED_TRANSITIVE",
+            "publication": "NO_UPLOAD",
+            "payload_status": "NOT_ACQUIRED",
+            "checkpoint_status": "NOT_ACQUIRED",
+            "model_repo_status": "NOT_ACQUIRED",
+            "model_import_status": "NOT_PERFORMED",
+            "execution_status": "NOT_PERFORMED",
+            "reference_status": "NOT_PERFORMED",
+            "conversion_status": "NOT_PERFORMED",
+            "model": {"repository": REPOSITORY, "revision": MODEL_REVISION, "status": "NOT_ACQUIRED"},
+            "model_acquisition": {
+                "hf_api": "NOT_CONTACTED",
+                "snapshot_download": "NOT_CALLED",
+                "checkpoint": "NOT_ACQUIRED",
+            },
+            "fire_red_source": source,
+            "token_environment": token_environment,
+            "collection_failures": collection_failures,
+            "collection_status": "FAILED" if collection_failures else "COMPLETE",
+            "owner_approval_artifact_created": False,
+            "dependency_audit_digest_gate": {
+                "algorithm": "sha256",
+                "scope": digest_scope,
+                "scope_sha256": canonical_sha256(digest_scope),
+            },
+            "collection_protocol": {
+                "status": "BLOCKED_COLLECTION_FAILURE" if collection_failures else "BLOCKED_NO_OWNER_APPROVAL",
+                "reason": (
+                    "dependency/source evidence collection failed; packet is not a success"
+                    if collection_failures
+                    else "dependency/source evidence collected without owner approval"
+                ),
+                "model_boundary": "NOT_ENTERED",
+                "expected_artifacts": ["dependency-audit-only.json", "validation.log"],
+            },
+            "blockers": [
+                "active closure publisher/license/native payload rows require explicit owner review",
+                "model repository snapshot and checkpoint remain not acquired",
+                "model import, execution, reference, parity, conversion, and upload were not performed",
+                *(["collection failures are blocking and must be resolved"] if collection_failures else []),
+            ],
+        }
+    )
+    return manifest
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="firered-audit-") as directory:
         lock = Path(directory) / "uv.lock"
@@ -728,6 +933,31 @@ source = {{ registry = "https://pypi.org/simple" }}
             "server_tree.json",
         ]
         model_free = build_model_free_manifest(lock, "0" * 40)
+        assert TOKEN_ENVIRONMENT_NAMES == (
+            "HF",
+            "HF_TOKEN",
+            "HF_HUB_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "HUGGINGFACE_HUB_TOKEN",
+            "HF_ACCESS_TOKEN",
+            "HUGGINGFACE_TOKEN",
+            "HF_API_TOKEN",
+            "HUGGINGFACE_API_TOKEN",
+            "HUGGING_FACE_TOKEN",
+        )
+        token_name = TOKEN_ENVIRONMENT_NAMES[0]
+        previous_token = os.environ.get(token_name)
+        os.environ[token_name] = "synthetic-token-must-not-be-recorded"
+        try:
+            token_evidence = _token_environment_evidence()
+            assert token_evidence["status"] == "PRESENT_REJECTED"
+            assert token_evidence["present_names"] == [token_name]
+            assert token_evidence["values_recorded"] is False
+        finally:
+            if previous_token is None:
+                os.environ.pop(token_name, None)
+            else:
+                os.environ[token_name] = previous_token
         assert model_free["format"] == MODEL_FREE_FORMAT
         assert model_free["status"] == "BLOCKED_OWNER_REVIEW"
         assert model_free["publication"] == "NO_UPLOAD"
@@ -741,6 +971,53 @@ source = {{ registry = "https://pypi.org/simple" }}
         assert scope["training_provenance_status"] == "BLOCKED_OWNER_REVIEW_REQUIRED"
         assert scope["model_card_architecture"] == "ConformerEncoder + TransformerDecoder + batch_beam_search"
         assert scope["model_card_search"]["beam_size"] == 3
+        source_fixture = Path(directory) / "firered-source"
+        source_fixture.mkdir()
+        (source_fixture / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
+        (source_fixture / "firered.py").write_text("pinned source\n", encoding="utf-8")
+        (source_fixture / "README.md").write_text("review only\n", encoding="utf-8")
+        original_git_capture = globals()["_git_capture"]
+
+        def fake_git_capture(path: Path, *arguments: str) -> tuple[str | None, str | None]:
+            del path
+            if arguments == ("rev-parse", "HEAD"):
+                return FIRERED_SOURCE_REVISION + "\n", None
+            if arguments == ("remote", "get-url", "origin"):
+                return FIRERED_SOURCE_URL + "\n", None
+            if arguments == ("status", "--porcelain", "--untracked-files=all"):
+                return "", None
+            if arguments == ("ls-files", "-z"):
+                return "LICENSE\0firered.py\0README.md\0", None
+            return None, "unexpected synthetic git command"
+
+        globals()["_git_capture"] = fake_git_capture
+        try:
+            source_evidence, source_failures = fire_red_source_evidence(source_fixture)
+            assert not source_failures
+            assert source_evidence["status"] == "AUTHENTICATED_PINNED_SOURCE"
+            assert source_evidence["revision_verified"] is True
+            assert source_evidence["origin_verified"] is True
+            assert source_evidence["tracked_files"]["count"] == 3
+            assert [item["path"] for item in source_evidence["license_files"]] == ["LICENSE"]
+            assert [item["path"] for item in source_evidence["review_files"]] == ["README.md"]
+            (source_fixture / "LICENSE").unlink()
+            missing_license, missing_failures = fire_red_source_evidence(source_fixture)
+            assert missing_license["status"] == "FAILED"
+            assert "pinned FireRed source LICENSE/COPYING evidence is missing" in missing_failures
+            (source_fixture / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
+            dependency_only = build_dependency_audit_only_manifest(lock, None, source_fixture, "0" * 40)
+            assert dependency_only["format"] == DEPENDENCY_AUDIT_ONLY_FORMAT
+            assert dependency_only["status"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
+            assert dependency_only["publication"] == "NO_UPLOAD"
+            assert dependency_only["payload_status"] == "NOT_ACQUIRED"
+            assert dependency_only["checkpoint_status"] == "NOT_ACQUIRED"
+            assert dependency_only["model_import_status"] == "NOT_PERFORMED"
+            assert dependency_only["execution_status"] == "NOT_PERFORMED"
+            assert dependency_only["owner_approval_artifact_created"] is False
+            assert dependency_only["dependency_audit_digest_gate"]["scope"]["expected_head"] == "0" * 40
+            assert dependency_only["collection_status"] == "FAILED"
+        finally:
+            globals()["_git_capture"] = original_git_capture
         for invalid_head in ("", "0" * 39, "0" * 40 + "0", "g" * 40):
             try:
                 build_model_free_manifest(lock, invalid_head)
@@ -893,11 +1170,13 @@ def main() -> int:
     parser.add_argument("--project", type=Path)
     parser.add_argument("--owner-approval", type=Path)
     parser.add_argument("--model-free", action="store_true")
+    parser.add_argument("--dependency-audit-only", action="store_true")
+    parser.add_argument("--source", type=Path)
     parser.add_argument("--expected-head")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if args.model_free or args.lock or args.output or args.project or args.owner_approval or args.expected_head:
+        if args.model_free or args.dependency_audit_only or args.lock or args.output or args.project or args.source or args.owner_approval or args.expected_head:
             parser.error("--self-test accepts no other arguments")
         self_test()
         print("firered dependency audit self-test PASS")
@@ -905,13 +1184,24 @@ def main() -> int:
     if not args.lock or not args.output:
         parser.error("--lock and --output are required")
     if args.model_free:
-        if args.project or args.owner_approval:
-            parser.error("--model-free does not accept --project or --owner-approval")
+        if args.dependency_audit_only or args.source or args.project or args.owner_approval:
+            parser.error("--model-free does not accept --source, --project, or --owner-approval")
         if not args.expected_head or not HEX40.fullmatch(args.expected_head):
             parser.error("--model-free requires --expected-head with 40 lowercase hex characters")
         manifest = build_model_free_manifest(args.lock, args.expected_head)
         publish_json_no_clobber(args.output, manifest)
         print(f"firered model-free audit: {manifest['status']}")
+        return 2
+    if args.source and not args.dependency_audit_only:
+        parser.error("--source is only valid with --dependency-audit-only")
+    if args.dependency_audit_only:
+        if args.owner_approval or not args.project or not args.source or not args.expected_head or not HEX40.fullmatch(args.expected_head):
+            parser.error("--dependency-audit-only requires --project, --source, and --expected-head with 40 lowercase hex characters and rejects owner approval")
+        if platform.system() != "Linux" or platform.machine() != "x86_64":
+            raise SystemExit("Linux/x86_64 audit is required")
+        manifest = build_dependency_audit_only_manifest(args.lock, args.project, args.source, args.expected_head)
+        publish_json_no_clobber(args.output, manifest)
+        print(f"firered dependency audit-only: {manifest['status']} ({manifest['collection_status']})")
         return 2
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise SystemExit("Linux/x86_64 audit is required")
