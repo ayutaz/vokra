@@ -28,7 +28,7 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows",
     "package_review_rows_sha256", "identities", "required_package_rows", "forbidden_dependencies",
-    "license_rows", "license_rows_sha256", "audit_evidence", "approval_scope_sha256", "publication", "approval",
+    "license_rows", "license_rows_sha256", "virtual_project_evidence", "audit_evidence", "approval_scope_sha256", "publication", "approval",
 }
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
@@ -43,6 +43,12 @@ DEPENDENCY_SCHEMAS = {
 }
 METADATA_REQUIREMENT_SCHEMAS = {frozenset({"name", "specifier", "index"})}
 LICENSE_ROW_KEYS = {"id", "status", "component", "source", "license", "payload_sha256", "required_evidence_fields", "approval_schema", "approval_signer", "approval_digest", "review"}
+VIRTUAL_PROJECT_EVIDENCE_KEYS = {
+    "row_id", "project_path", "project_bytes", "project_sha256", "license_path", "license_bytes",
+    "license_sha256", "license_spdx", "package", "installed", "registry_evidence", "wheel_evidence",
+    "native_payloads", "review",
+}
+VIRTUAL_PROJECT_ROW_ID = "vokra-bigvgan-parity@0.1.0"
 REVIEW_PLACEHOLDERS = {"", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo", "null", "none"}
 DARWIN_MARKER = "platform_machine == 'arm64' and sys_platform == 'darwin'"
 DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
@@ -287,6 +293,39 @@ def validate_project_schema(project: dict[str, Any]) -> None:
         fail("pyproject.toml reference policy schema drifted")
 
 
+def validate_virtual_project_evidence(
+    value: Any,
+    project_path: Path,
+    license_path: Path,
+    *,
+    expected_project_path: str,
+    expected_license_path: str,
+    expected_row_id: str,
+    expected_project_sha256: str,
+) -> None:
+    """Bind the package=false project to local files without artifact claims."""
+    if not isinstance(value, dict) or set(value) != VIRTUAL_PROJECT_EVIDENCE_KEYS:
+        fail("virtual project evidence schema is malformed")
+    if value.get("row_id") != expected_row_id or value.get("project_path") != expected_project_path or value.get("license_path") != expected_license_path:
+        fail("virtual project evidence paths or identity drifted")
+    if not regular_file(project_path) or not regular_file(license_path):
+        fail("virtual project primary evidence file is missing")
+    project_bytes = project_path.read_bytes()
+    license_bytes = license_path.read_bytes()
+    if value.get("project_bytes") != len(project_bytes) or value.get("project_sha256") != digest_bytes(project_bytes) or value.get("project_sha256") != expected_project_sha256:
+        fail("virtual project pyproject bytes/hash are not bound to the reviewed file")
+    if value.get("license_bytes") != len(license_bytes) or value.get("license_sha256") != digest_bytes(license_bytes):
+        fail("virtual project root LICENSE bytes/hash are not bound to the reviewed file")
+    if value.get("license_spdx") != "Apache-2.0":
+        fail("virtual project root LICENSE SPDX is not the reviewed Apache-2.0 license")
+    if value.get("package") is not False or value.get("installed") is not False:
+        fail("virtual project package/install disposition is not fail-closed")
+    if value.get("registry_evidence") != "NOT_APPLICABLE_VIRTUAL_PROJECT" or value.get("wheel_evidence") != "NOT_APPLICABLE_PACKAGE_FALSE":
+        fail("virtual project registry/wheel evidence must remain not applicable")
+    if value.get("native_payloads") != [] or not reviewed(value.get("review")):
+        fail("virtual project native payload/review disposition is unresolved")
+
+
 def approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     return canonical_digest({
         "schema": "bigvgan-approval-scope-v1",
@@ -296,6 +335,7 @@ def approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         "package_rows_sha256": manifest.get("package_rows_sha256"),
         "package_review_rows": manifest.get("package_review_rows"),
         "package_review_rows_sha256": manifest.get("package_review_rows_sha256"),
+        "virtual_project_evidence": manifest.get("virtual_project_evidence"),
         "identities": manifest.get("identities"),
         "license_rows": manifest.get("license_rows"),
         "license_rows_sha256": manifest.get("license_rows_sha256"),
@@ -355,6 +395,17 @@ def run(
     virtual = [row for row in rows if row.get("source") == {"virtual": "."}]
     if not isinstance(project_identity, dict) or not isinstance(project_identity.get("name"), str) or not isinstance(project_identity.get("version"), str) or len(virtual) != 1 or (virtual[0]["name"], virtual[0]["version"]) != (project_identity["name"], project_identity["version"]):
         fail("uv.lock virtual project is not bound to pyproject.toml")
+    if f"{project_identity['name']}@{project_identity['version']}" != VIRTUAL_PROJECT_ROW_ID:
+        fail("uv.lock/pyproject virtual project identity is not the fixed BigVGAN parity project")
+    validate_virtual_project_evidence(
+        manifest.get("virtual_project_evidence"),
+        project_path,
+        manifest_path.parents[3] / "LICENSE",
+        expected_project_path="tools/parity/bigvgan/pyproject.toml",
+        expected_license_path="LICENSE",
+        expected_row_id=VIRTUAL_PROJECT_ROW_ID,
+        expected_project_sha256=manifest.get("project_sha256"),
+    )
     if canonical_digest(rows) != manifest.get("package_rows_sha256"):
         fail("package version/source/marker/dependency rows drifted")
     required_rows = manifest.get("required_package_rows")
@@ -516,12 +567,16 @@ def self_test() -> None:
     """Prove missing/tampered review evidence blocks without a project."""
     with tempfile.TemporaryDirectory(prefix="bigvgan-license-gate-") as directory:
         root = Path(directory)
-        lock = root / "uv.lock"
-        lock.write_text("version = 1\nrevision = 3\nrequires-python = '==3.12.*'\nresolution-markers = []\nsupported-markers = []\n\n[[package]]\nname = 'bigvgan-self-test'\nversion = '0.0.0'\nsource = { virtual = '.' }\ndependencies = []\nmetadata = { requires-dist = [] }\n", encoding="utf-8")
-        project = root / "pyproject.toml"
+        repository = root / "repo"
+        project_dir = repository / "tools" / "parity" / "bigvgan"
+        project_dir.mkdir(parents=True)
+        (repository / "LICENSE").write_text("Apache License\nVersion 2.0\n", encoding="utf-8")
+        lock = project_dir / "uv.lock"
+        lock.write_text("version = 1\nrevision = 3\nrequires-python = '==3.12.*'\nresolution-markers = []\nsupported-markers = []\n\n[[package]]\nname = 'vokra-bigvgan-parity'\nversion = '0.1.0'\nsource = { virtual = '.' }\ndependencies = []\nmetadata = { requires-dist = [] }\n", encoding="utf-8")
+        project = project_dir / "pyproject.toml"
         project.write_text('''[project]
-name = "bigvgan-self-test"
-version = "0.0.0"
+name = "vokra-bigvgan-parity"
+version = "0.1.0"
 description = "self-test"
 requires-python = "==3.12.*"
 dependencies = []
@@ -547,6 +602,78 @@ forbidden_dependencies = []
 publication = "NO_UPLOAD"
 ''', encoding="utf-8")
         rows = package_rows(tomllib.loads(lock.read_text(encoding="utf-8")))
+        virtual_evidence = {
+            "row_id": VIRTUAL_PROJECT_ROW_ID,
+            "project_path": "tools/parity/bigvgan/pyproject.toml",
+            "project_bytes": project.stat().st_size,
+            "project_sha256": digest_bytes(project.read_bytes()),
+            "license_path": "LICENSE",
+            "license_bytes": (repository / "LICENSE").stat().st_size,
+            "license_sha256": digest_bytes((repository / "LICENSE").read_bytes()),
+            "license_spdx": "Apache-2.0",
+            "package": False,
+            "installed": False,
+            "registry_evidence": "NOT_APPLICABLE_VIRTUAL_PROJECT",
+            "wheel_evidence": "NOT_APPLICABLE_PACKAGE_FALSE",
+            "native_payloads": [],
+            "review": "Primary local project and root LICENSE evidence; no registry, wheel, install, or native payload is claimed.",
+        }
+        validate_virtual_project_evidence(
+            virtual_evidence,
+            project,
+            repository / "LICENSE",
+            expected_project_path="tools/parity/bigvgan/pyproject.toml",
+            expected_license_path="LICENSE",
+            expected_row_id=VIRTUAL_PROJECT_ROW_ID,
+            expected_project_sha256=virtual_evidence["project_sha256"],
+        )
+        for label, mutate in {
+            "virtual-project-hash-tamper": lambda value: value.update(project_sha256="0" * 64),
+            "virtual-license-path-tamper": lambda value: value.update(license_path="LICENSE.txt"),
+            "virtual-wheel-claim": lambda value: value.update(wheel_evidence="CAPTURED"),
+            "virtual-native-claim": lambda value: value.update(native_payloads=["native.so"]),
+        }.items():
+            candidate = dict(virtual_evidence)
+            mutate(candidate)
+            try:
+                validate_virtual_project_evidence(
+                    candidate,
+                    project,
+                    repository / "LICENSE",
+                    expected_project_path="tools/parity/bigvgan/pyproject.toml",
+                    expected_license_path="LICENSE",
+                    expected_row_id=VIRTUAL_PROJECT_ROW_ID,
+                    expected_project_sha256=virtual_evidence["project_sha256"],
+                )
+            except SystemExit as exc:
+                if exc.code != 2:
+                    raise
+            else:
+                raise SystemExit(f"bigvgan license gate self-test accepted {label}")
+        for label, path, evidence_key in (
+            ("virtual-project-file-tamper", project, "project_sha256"),
+            ("virtual-license-file-tamper", repository / "LICENSE", "license_sha256"),
+        ):
+            original = path.read_bytes()
+            path.write_bytes(original + b"tamper")
+            try:
+                try:
+                    validate_virtual_project_evidence(
+                        virtual_evidence,
+                        project,
+                        repository / "LICENSE",
+                        expected_project_path="tools/parity/bigvgan/pyproject.toml",
+                        expected_license_path="LICENSE",
+                        expected_row_id=VIRTUAL_PROJECT_ROW_ID,
+                        expected_project_sha256=virtual_evidence["project_sha256"],
+                    )
+                except SystemExit as exc:
+                    if exc.code != 2:
+                        raise
+                else:
+                    raise SystemExit(f"bigvgan license gate self-test accepted {label} ({evidence_key})")
+            finally:
+                path.write_bytes(original)
         valid_artifact = {"url": "https://files.pythonhosted.org/packages/demo.whl", "hash": "sha256:" + "0" * 64, "size": 1, "upload-time": "2024-01-01T00:00:00Z"}
         for label, mutate in {"missing-size": lambda value: value.pop("size"), "missing-upload-time": lambda value: value.pop("upload-time"), "extra-key": lambda value: value.update(extra="x"), "bool-size": lambda value: value.update(size=True), "wrong-host": lambda value: value.update(url="https://example.invalid/demo.whl")}.items():
             candidate = dict(valid_artifact)
@@ -671,18 +798,19 @@ source = { registry = 'https://pypi.org/simple' }
             "lock_sha256": digest_bytes(lock.read_bytes()),
             "project_sha256": digest_bytes(project.read_bytes()),
             "package_rows_sha256": canonical_digest(rows),
-            "required_package_rows": [{"name": "bigvgan-self-test", "version": "0.0.0"}],
-            "package_review_rows": [{"id": "bigvgan-self-test@0.0.0", "status": "REVIEWED", "license": "MIT", "native_bundled_review": "self-test closure review"}],
-            "package_review_rows_sha256": canonical_digest([{"id": "bigvgan-self-test@0.0.0", "status": "REVIEWED", "license": "MIT", "native_bundled_review": "self-test closure review"}]),
+            "required_package_rows": [{"name": "vokra-bigvgan-parity", "version": "0.1.0"}],
+            "package_review_rows": [{"id": VIRTUAL_PROJECT_ROW_ID, "status": "REVIEWED", "license": "MIT", "native_bundled_review": "self-test closure review"}],
+            "package_review_rows_sha256": canonical_digest([{"id": VIRTUAL_PROJECT_ROW_ID, "status": "REVIEWED", "license": "MIT", "native_bundled_review": "self-test closure review"}]),
             "forbidden_dependencies": [],
             "license_rows": license_rows,
             "license_rows_sha256": canonical_digest(license_rows),
+            "virtual_project_evidence": virtual_evidence,
             "audit_evidence": dict(EXPECTED_AUDIT_EVIDENCE),
             "approval_scope_sha256": "",
             "publication": "NO_UPLOAD",
             "approval": {"status": "OWNER_SIGNOFF_APPROVED", "signer": "self-test-signer", "digest": ""},
         }
-        manifest_path = root / "manifest.json"
+        manifest_path = project_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         expected_source = "a" * 40
         expected_lock = manifest["lock_sha256"]
@@ -766,7 +894,7 @@ source = { registry = 'https://pypi.org/simple' }
         def expect_manifest_blocked(label: str, mutate: Any) -> None:
             candidate = json.loads(json.dumps(manifest))
             mutate(candidate)
-            candidate_path = root / f"{label}.manifest.json"
+            candidate_path = project_dir / f"{label}.manifest.json"
             candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
             try:
                 run(lock, project, candidate_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64)
@@ -809,7 +937,7 @@ source = { registry = 'https://pypi.org/simple' }
             "c" * 64,
             "d" * 64,
         )
-        duplicate_manifest = root / "duplicate-manifest.json"
+        duplicate_manifest = project_dir / "duplicate-manifest.json"
         duplicate_manifest.write_text('{"approval": 1, "approval": 2}', encoding="utf-8")
         try:
             run(lock, project, duplicate_manifest, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64)
@@ -820,7 +948,7 @@ source = { registry = 'https://pypi.org/simple' }
             raise SystemExit(f"bigvgan license gate self-test: duplicate manifest raised unexpectedly: {exc}") from exc
         else:
             raise SystemExit("bigvgan license gate self-test: duplicate manifest was accepted")
-        duplicate_evidence = root / "duplicate-evidence.json"
+        duplicate_evidence = project_dir / "duplicate-evidence.json"
         duplicate_evidence.write_text('{"signer": 1, "signer": 2}', encoding="utf-8")
         try:
             run(lock, project, manifest_path, duplicate_evidence, expected_source, "b" * 40, "c" * 64, "d" * 64)
