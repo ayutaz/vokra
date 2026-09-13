@@ -303,3 +303,62 @@ target or source-model payload. Instance `50795698` and its 150-GB storage were
 then destroyed. The post-destroy inventory contains no Vokra-labelled
 instance, and the independent volume inventory is empty. The unrelated
 `50798096` (`ralomi-m4r-4u-matched-v1`) instance was not touched.
+
+## 2026-09-13 Zonos Transformers security-closure replay
+
+GitHub dependency review identified the pinned Zonos reference dependency
+`transformers==4.48.1` as vulnerable. The dedicated project now pins
+`transformers==5.10.4` and its compatible `huggingface-hub==1.5.0` closure.
+This dependency update is not source/API compatibility evidence: the new
+pre-acquisition gate stops with
+`BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE` before any Zonos source,
+checkpoint or model access until the exact dependency scope is approved and a
+separate VAST source/API smoke is authorized.
+
+The first exact-head replay exposed two model-free worker defects before an
+audit report could be created. The dependency-approval self-test used the
+macOS-only `/private/tmp` path, and the no-BLAS NumPy preparer still bound the
+pre-update project and lock hashes. Commits `9e8be2f8` and `5a30084d` replace
+the fixed temporary path with a platform-native root, add Linux-relevant
+self-test coverage, restamp the project/lock identities and make ordinary
+preparer self-tests reject future identity drift.
+
+Disposable VAST instance `50829786`
+(`vokra-zonos-transformers-31ea5cec`) replayed final clean head
+`5a30084dcea18b9e72d7befb776f98a61a2a4286`. The frozen lock resolved 38
+packages and installed 34 active distributions. Model-free imports reported
+Torch/Torchaudio `2.6.0+cpu`, Transformers `5.10.4`, Hugging Face Hub `1.5.0`,
+NumPy `2.2.2` and safetensors `0.5.3`. The compatibility gate self-test,
+dependency-audit self-test and complete Zonos inspection-worker self-test
+passed; the ordinary compatibility gate preserved its intentional exit 2 and
+blocked marker.
+
+The exact-head dependency audit then built the locked NumPy wheel with BLAS
+and LAPACK disabled and returned the intended
+`BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD` result with zero collector
+failures. It recorded 34 active lock packages, 34 installed distributions, 50
+native files and 59 retained publisher licence/notice files. The candidate
+scope SHA-256 is
+`59d9b214d811efad3c4c6a85dc8f82bff9b220026d71fc7b723f9d0ce088c30e`;
+the audit JSON SHA-256 is
+`1432d2ddb45a2f7b2d0f8490b83e2151c4a61e226899224963bd9f3d17ec7a9e`.
+The locally built 10,105,723-byte no-BLAS NumPy wheel had SHA-256
+`4018ba8c1e41e876983706adfa96f97e2314d3a01d627c92b13a58c2b18ee2c1`
+and remained on the disposable worker.
+
+Only the 208-KiB model-free evidence archive was recovered. Its remote and
+local SHA-256 both equal
+`99e1f87758d4661da26a29f374e34a28d2ddeaa165ef0006a942699b420cc0c6`,
+and all 71 internal checksum entries passed locally. It contains no GGUF,
+checkpoint, safetensors, PyTorch payload, wheel, sdist or virtual environment.
+The report records `source_access=false`, `model_access=false` and
+`checkpoint_access=false`; no real-weight conversion, independent reference,
+CPU parity, Apple/Scaleway execution or upload occurred.
+
+Instance `50829786` and its 200-GB storage were destroyed after evidence
+recovery; its individual API returned `instances: null`. The remaining VAST
+inventory contains only unrelated instance `50798096`
+(`ralomi-m4r-4u-matched-v1`), which was not modified. This security closure
+does not decrement the live inventory: 58 public rows remain unresolved, and
+Zonos stays blocked before source/API and real-weight work pending the exact
+dependency approval.

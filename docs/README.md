@@ -3,7 +3,7 @@
 **Current-state review:** 2026-09-13
 
 **Reviewed implementation baseline:** GitHub `main` at `08b206c4` (2026-09-13);
-the current residual source/API implementation head is `87da78dc`;
+the current residual source/API and dependency-security head is `5a30084d`;
 the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
