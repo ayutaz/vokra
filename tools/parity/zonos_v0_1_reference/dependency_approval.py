@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -388,6 +390,11 @@ def _signed_record(report: dict[str, Any], report_path: Path, handle: str = "you
     return record
 
 
+def self_test_temp_root() -> str:
+    """Resolve a platform-native temporary root without a macOS-only path."""
+    return str(Path(os.environ.get("TMPDIR") or tempfile.gettempdir()).resolve())
+
+
 def _self_test_report(root: Path) -> tuple[dict[str, Any], Path]:
     """Create a tiny synthetic report with all protected scope boundaries."""
     head = "a" * 40
@@ -477,10 +484,29 @@ def _self_test_report(root: Path) -> tuple[dict[str, Any], Path]:
 
 
 def self_test() -> int:
-    import tempfile
-
+    saved_tmpdir = os.environ.pop("TMPDIR", None)
+    try:
+        default_temp_root = self_test_temp_root()
+        if default_temp_root != str(Path(tempfile.gettempdir()).resolve()):
+            raise AssertionError("default temporary root resolution drifted")
+    finally:
+        if saved_tmpdir is not None:
+            os.environ["TMPDIR"] = saved_tmpdir
+    with tempfile.TemporaryDirectory(prefix="vokra-zonos-temp-root-") as configured_root:
+        saved_tmpdir = os.environ.get("TMPDIR")
+        os.environ["TMPDIR"] = configured_root
+        try:
+            configured_temp_root = self_test_temp_root()
+            if configured_temp_root != str(Path(configured_root).resolve()):
+                raise AssertionError("TMPDIR temporary root resolution drifted")
+        finally:
+            if saved_tmpdir is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = saved_tmpdir
+    temporary_root = self_test_temp_root()
     with tempfile.TemporaryDirectory(
-        prefix="vokra-zonos-dependency-approval-", dir="/private/tmp"
+        prefix="vokra-zonos-dependency-approval-", dir=temporary_root
     ) as directory:
         root = Path(directory)
         report, report_path = _self_test_report(root)
