@@ -270,6 +270,8 @@ download_source_tree() {
   [[ "$(git -C "$output" rev-parse HEAD)" == "$OFFICIAL_SOURCE_REVISION" ]] || die 'official source checkout revision drifted'
   [[ -f "$output/pyproject.toml" && -f "$output/qwen_tts/__init__.py" ]] || die 'official source tree is incomplete'
   [[ -z "$(git -C "$output" status --porcelain --untracked-files=all)" ]] || die 'official source checkout is dirty'
+  # dump_reference.py applies qwen_source_compat.patch_source_checkout to this
+  # newly cloned clean tree before importing the official wrapper.
 }
 
 require_single_file_snapshot() {

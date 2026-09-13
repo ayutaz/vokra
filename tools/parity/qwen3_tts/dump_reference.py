@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from qwen_source_compat import CompatibilityPatchError, loaded_forbidden_imports, patch_source_checkout
+
 SOURCE_REPO = "QwenLM/Qwen3-TTS"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 PACKAGE_VERSION = "0.1.1"
@@ -257,7 +259,7 @@ def require_decoder_snapshot(model_dir: Path, decoder_dir: Path) -> tuple[str, s
     return DECODER_CHECKPOINT_SHA256, nested_sha
 
 
-def require_source_tree(source_dir: Path) -> None:
+def require_source_tree(source_dir: Path) -> dict[str, Any]:
     if not source_dir.is_dir() or not (source_dir / ".git").is_dir():
         die(f"authenticated official source tree is missing: {source_dir}")
     try:
@@ -273,6 +275,11 @@ def require_source_tree(source_dir: Path) -> None:
         die("official source package version drifted")
     if not (source_dir / "qwen_tts" / "__init__.py").is_file():
         die("official qwen_tts package is missing from the authenticated source tree")
+    try:
+        patch = patch_source_checkout(source_dir)
+    except CompatibilityPatchError as error:
+        die(f"official source compatibility patch failed closed: {error}")
+    return patch
 
 
 def environment() -> dict[str, object]:
@@ -347,7 +354,7 @@ def run_self_test() -> int:
     if DECODER_REPO != "Qwen/Qwen3-TTS-Tokenizer-12Hz" or len(DECODER_REVISION) != 40:
         die("decoder identity drifted")
     source = Path(__file__).read_text(encoding="utf-8")
-    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source:
+    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source or "patch_source_checkout" not in source:
         die("reference is not using the official local-only wrapper")
     if "pickle." + "loads" in source or "weights_only=" + "False" in source:
         die("unsafe pickle loading appeared in the reference dumper")
@@ -390,7 +397,7 @@ def main() -> int:
     if variant.kind == "base" and (reference_audio is None or not reference_audio.is_file()):
         die("Base variants require --reference-audio")
     source_dir = validate_raw_path(args.source_dir, "official source directory").resolve()
-    require_source_tree(source_dir)
+    source_patch = require_source_tree(source_dir)
     sys.path.insert(0, str(source_dir))
     output = prepare_output(output)
     config = require_snapshot(model_dir, variant)
@@ -407,6 +414,9 @@ def main() -> int:
     imported_root = Path(qwen_tts.__file__).resolve().parents[1]
     if imported_root != source_dir:
         die(f"imported qwen_tts from {imported_root}, expected authenticated source {source_dir}")
+    forbidden_imports = loaded_forbidden_imports()
+    if forbidden_imports:
+        die(f"forbidden optional modules were imported: {forbidden_imports}")
     torch.set_num_threads(1)
     if hasattr(torch, "set_num_interop_threads"):
         torch.set_num_interop_threads(1)
@@ -458,6 +468,7 @@ def main() -> int:
         "upstream_repo": variant.repo, "upstream_revision": variant.revision,
         "official_source_repo": SOURCE_REPO, "official_source_revision": SOURCE_REVISION,
         "qwen_tts_version": PACKAGE_VERSION, "text": TEXT, "language": LANGUAGE,
+        "compatibility_patch": source_patch, "forbidden_imports": forbidden_imports,
         "speaker": SPEAKER if variant.kind != "base" else "official_x_vector_only",
         "max_new_tokens": MAX_NEW_TOKENS, "min_new_tokens": MIN_NEW_TOKENS, "sampling": "greedy",
         "sample_rate": OUTPUT_SAMPLE_RATE, "frames": int(codes.shape[0]), "codebooks": CODEBOOKS,

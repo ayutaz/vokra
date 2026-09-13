@@ -43,17 +43,24 @@ affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
 completed. This dependency remediation does not claim API parity.
 
 The pinned upstream source contains one `@check_model_inputs()` decorator,
-while Transformers 5.10.4 exposes `check_model_inputs(func)`. Both API smoke
-phases therefore import the single shared bounded compatibility adapter from
-`qwen_source_compat.py` and apply it only inside the disposable clean VAST
-source checkout: target
+while Transformers 5.10.4 exposes `check_model_inputs(func)`. It also eagerly
+imports unused 25Hz tokenizer code from both package initializers. Both API
+smoke phases therefore import the single shared bounded compatibility adapter
+from `qwen_source_compat.py` and apply exactly three patches only inside the
+disposable clean VAST source checkout: target
 `qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, original
 bytes `40519`, original SHA-256
 `844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628`, exactly
 one replacement of `@check_model_inputs()` with `@check_model_inputs`, yielding
 patched bytes `40517` and patched SHA-256
 `a9da44f2f6b7ff0beb4dd43e8c4c48138e51423e9bcc515a253ea088381d3b9c`. The
-evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
+package initializer removes the exact 25Hz import, changing 839 bytes
+(`ea52de59d070fde366467a6902d0edcfc1b0575b8c570a0c71020c41d6a593ed`) to
+778 bytes (`82aa6d0f83b36bc1447f067b37e9a85578fc32a27abc98b6a747ad3741c126c4`).
+The core initializer removes its two exact 25Hz imports, changing 990 bytes
+(`1b380d9de843b6d585d938c339d066136567ca7125412674234204af4386679e`) to
+814 bytes (`c3d2f2f28cae7a0ec4d8dd8251470c8871acd2bf143d2fc239fcfbe8f2938497`).
+The evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
 compatibility, and any source/hash/count/path drift blocks before import.
 
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
@@ -72,7 +79,7 @@ real-weight load remains unverified until an authorized VAST run. After those
 gates pass it calls the official
 `Qwen3TTSModel.from_pretrained` wrapper and emits `api-smoke.json` under the
 disposable work directory. The evidence is a
-strict `vokra-qwen3-tts-api-smoke-v1` JSON document containing the exact source,
+strict `vokra-qwen3-tts-api-smoke-v2` JSON document containing the exact source,
 model, decoder, lock, approval-evidence SHA-256 plus the existing license gate
 manifest digest/approval scope/owner sign-offs, Vokra checkout HEAD/clean
 status, package-version, input-hash, and call-checkpoint records; its
@@ -99,13 +106,10 @@ constructs only config/processor objects, and records `PASS_MODEL_FREE` with
 source/model/operator approval fields still pending. It rejects any checkpoint
 file, never calls `Qwen3TTSModel.from_pretrained`, and is not a parity or
 publication result. Because the reviewed runtime intentionally excludes the
-forbidden `sox` and `onnxruntime` packages, the inspection installs strict
-import-only sentinels for both modules while importing the official source.
-Only inert `__file__` and valid `__spec__` metadata are allowed; functional
-attributes such as `sox.Transformer` and `onnxruntime.InferenceSession` fail
-closed. Successful
-evidence records each module independently under `optional_sentinels`, with
-`accesses=0`, and the original `sys.modules` state is restored.
+forbidden `sox`, `onnxruntime`, and `qwen_tts.core.tokenizer_25hz*` modules,
+the inspection records the actual post-import `sys.modules` set and requires
+`forbidden_imports=[]`. Fake sentinel modules are not used as a success
+condition.
 An import/API incompatibility is emitted as atomic `BLOCKED_INCOMPATIBLE_API`
 evidence with `checkpoint_load=NOT_PERFORMED`, never as an unstructured
 traceback.
