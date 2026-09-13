@@ -34,18 +34,25 @@ The VAST-only wrapper
 `scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh` checks the
 official Zonos source at `bc40d98e1e1ab54fc65c483be127a90e3c7c0645` under the
 frozen `transformers==5.10.4` environment. It imports `transformers` in the
-same process as the official modules, then checks the fixed
-constructor/method signatures without constructing a Zonos or DAC object. The
+same process as the official modules, and proves that the official
+`zonos.autoencoder.DacModel` is the imported
+`transformers.models.dac.DacModel`. The evidence binds the caller-facing DAC
+contract (`from_pretrained`, positional `encode`, keyword `decode` with
+`audio_codes`), its `audio_codes`/`audio_values` result flow, and the
+`codebook_size`/`n_codebooks`/`sampling_rate` configuration fields, without
+constructing a Zonos or DAC object. The
 source `LICENSE`, repository origin, Vokra HEAD, dedicated
 `pyproject.toml`/`uv.lock`, package versions, Linux x86_64 environment, and
 the no-model/no-checkpoint/no-token conditions are written to a small,
 hash-bound JSON evidence file.
 
 The wrapper requires `VOKRA_ZONOS_VAST_VALIDATION=1`, an absent tmpfs work
-directory, and absent standard Hugging Face token variables (`HF_TOKEN`,
-`HF_HUB_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HUGGINGFACE_HUB_TOKEN`, and related
-access-token names). It never fetches Hugging Face metadata or weights, runs
-Cargo, publishes, or uploads. Run only on disposable
+directory, and absent all standard Hugging Face token variables (`HF`,
+`HF_TOKEN`, `HF_HUB_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HUGGINGFACE_HUB_TOKEN`,
+and related access-token names). The source checkout uses
+`GIT_LFS_SKIP_SMUDGE=1`, so Git LFS cannot automatically materialize model
+payloads. It never fetches Hugging Face metadata or weights, runs Cargo,
+publishes, or uploads. Run only on disposable
 VAST Linux x86_64 infrastructure:
 
 ```bash

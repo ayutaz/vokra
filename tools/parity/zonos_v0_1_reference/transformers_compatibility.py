@@ -10,6 +10,7 @@ import argparse
 import builtins
 from contextlib import contextmanager
 import hashlib
+import io
 import importlib
 import importlib.metadata
 import inspect
@@ -60,6 +61,7 @@ EXPECTED_API_PARAMETERS = {
     "zonos.autoencoder.DACAutoencoder.__init__": [("self", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>")],
     "zonos.sampling.sample_from_logits": [("logits", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("temperature", "POSITIONAL_OR_KEYWORD", "1.0"), ("top_p", "POSITIONAL_OR_KEYWORD", "0.0"), ("top_k", "POSITIONAL_OR_KEYWORD", "0"), ("min_p", "POSITIONAL_OR_KEYWORD", "0.0"), ("linear", "POSITIONAL_OR_KEYWORD", "0.0"), ("conf", "POSITIONAL_OR_KEYWORD", "0.0"), ("quad", "POSITIONAL_OR_KEYWORD", "0.0"), ("generated_tokens", "POSITIONAL_OR_KEYWORD", "None"), ("repetition_penalty", "POSITIONAL_OR_KEYWORD", "3.0"), ("repetition_penalty_window", "POSITIONAL_OR_KEYWORD", "2")],
 }
+TRANSFORMERS_IMPORT = {"status": "IMPORTED", "file": "transformers/__init__.py", "distribution": "transformers==5.10.4"}
 
 class ProbeError(ValueError):
     """A fail-closed probe or evidence error."""
@@ -177,15 +179,30 @@ class AccessRefusal:
 def refuse_model_access() -> Iterator[AccessRefusal]:
     refusal = AccessRefusal()
     old_open = builtins.open
+    old_path_open = Path.open
+    old_io_open = io.open
     old_hf: list[tuple[Any, str, Any]] = []
     old_load: Any = None
+    old_jit_load: Any = None
     old_safe_open: Any = None
+    old_safe_tensor_loaders: list[tuple[Any, str, Any]] = []
     def guarded_open(file: Any, *args: Any, **kwargs: Any) -> Any:
         name = os.fspath(file) if isinstance(file, (str, bytes, os.PathLike)) else repr(file)
         if any(str(name).casefold().endswith(suffix) for suffix in MODEL_SUFFIXES):
             refusal.fail(f"open:{name}")
         return old_open(file, *args, **kwargs)
     builtins.open = guarded_open
+    def guarded_path_open(path_object: Path, *args: Any, **kwargs: Any) -> Any:
+        if any(str(path_object).casefold().endswith(suffix) for suffix in MODEL_SUFFIXES):
+            refusal.fail(f"pathlib.Path.open:{path_object}")
+        return old_path_open(path_object, *args, **kwargs)
+    def guarded_io_open(file: Any, *args: Any, **kwargs: Any) -> Any:
+        name = os.fspath(file) if isinstance(file, (str, bytes, os.PathLike)) else repr(file)
+        if any(str(name).casefold().endswith(suffix) for suffix in MODEL_SUFFIXES):
+            refusal.fail(f"io.open:{name}")
+        return old_io_open(file, *args, **kwargs)
+    Path.open = guarded_path_open
+    io.open = guarded_io_open
     try:
         try:
             hub = importlib.import_module("huggingface_hub")
@@ -199,6 +216,9 @@ def refuse_model_access() -> Iterator[AccessRefusal]:
             torch = importlib.import_module("torch")
             old_load = torch.load
             torch.load = lambda *args, **kwargs: refusal.fail("torch.load")
+            old_jit_load = getattr(getattr(torch, "jit", None), "load", None)
+            if old_jit_load is not None:
+                torch.jit.load = lambda *args, **kwargs: refusal.fail("torch.jit.load")
         except ImportError:
             pass
         try:
@@ -206,17 +226,31 @@ def refuse_model_access() -> Iterator[AccessRefusal]:
             old_safe_open = getattr(safetensors, "safe_open", None)
             if old_safe_open is not None:
                 safetensors.safe_open = lambda *args, **kwargs: refusal.fail("safetensors.safe_open")
+            try:
+                safe_torch = importlib.import_module("safetensors.torch")
+                for name in ("load_file", "load_model"):
+                    if hasattr(safe_torch, name):
+                        old_safe_tensor_loaders.append((safe_torch, name, getattr(safe_torch, name)))
+                        setattr(safe_torch, name, lambda *args, _name=name, **kwargs: refusal.fail(f"safetensors.torch.{_name}"))
+            except ImportError:
+                pass
         except ImportError:
             pass
         yield refusal
     finally:
         builtins.open = old_open
+        Path.open = old_path_open
+        io.open = old_io_open
         for module, name, value in old_hf:
             setattr(module, name, value)
         if old_load is not None:
             importlib.import_module("torch").load = old_load
+        if old_jit_load is not None:
+            importlib.import_module("torch").jit.load = old_jit_load
         if old_safe_open is not None:
             importlib.import_module("safetensors").safe_open = old_safe_open
+        for module, name, value in old_safe_tensor_loaders:
+            setattr(module, name, value)
 
 def signature_contract(callable_object: Any, required: list[str]) -> dict[str, Any]:
     try:
@@ -227,7 +261,27 @@ def signature_contract(callable_object: Any, required: list[str]) -> dict[str, A
     names = [parameter.name for parameter in parameters]
     if names != required:
         raise ProbeError(f"API parameter contract drifted: {names} != {required}")
-    return {"parameters": [{"name": p.name, "kind": p.kind.name, "default": repr(p.default)} for p in parameters], "return_annotation": repr(signature.return_annotation)}
+    return {"parameters": [{"name": p.name, "kind": p.kind.name, "default": repr(p.default)} for p in parameters]}
+
+def dac_signature_surface(callable_object: Any, *, positional_input: bool = False, keyword_input: str | None = None) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(callable_object)
+    except (TypeError, ValueError) as error:
+        raise ProbeError(f"cannot inspect DAC API signature: {callable_object}") from error
+    parameters = list(signature.parameters.values())
+    records = [{"name": p.name, "kind": p.kind.name, "default": repr(p.default)} for p in parameters]
+    result: dict[str, Any] = {"callable": callable(callable_object), "parameters": records}
+    if positional_input:
+        candidates = [p for p in parameters if p.name not in {"self", "cls"} and p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        if not candidates:
+            raise ProbeError("DAC encode does not accept a positional input")
+        result["positional_input"] = {"name": candidates[0].name, "kind": candidates[0].kind.name}
+    if keyword_input is not None:
+        parameter = next((p for p in parameters if p.name == keyword_input), None)
+        if parameter is None or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+            raise ProbeError(f"DAC API does not accept keyword {keyword_input}")
+        result["keyword_input"] = {"name": keyword_input, "kind": parameter.kind.name}
+    return result
 
 def api_contract(root: Path, source: Path) -> dict[str, Any]:
     sys.path.insert(0, str(root / PROJECT_RELATIVE))
@@ -236,6 +290,7 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
     policy.install()
     with refuse_model_access() as refusal:
         transformers = importlib.import_module("transformers")
+        transformers_dac = importlib.import_module("transformers.models.dac")
         model = importlib.import_module("zonos.model")
         conditioning = importlib.import_module("zonos.conditioning")
         autoencoder = importlib.import_module("zonos.autoencoder")
@@ -252,7 +307,10 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
             raise ProbeError(f"official source module resolved outside fixed checkout: {module_name}")
         imports[module_name] = {"status": "IMPORTED", "file": relative_file}
     transformer_file = Path(transformers.__file__).resolve()
-    imports["transformers"] = {"status": "IMPORTED", "file": str(transformer_file)}
+    distribution_file = Path(importlib.metadata.distribution("transformers").locate_file("transformers/__init__.py")).resolve()
+    if transformer_file != distribution_file or transformer_file.name != "__init__.py" or transformer_file.parent.name != "transformers":
+        raise ProbeError("Transformers import did not resolve to the fixed installed distribution")
+    imports["transformers"] = dict(TRANSFORMERS_IMPORT)
     contracts = {
         "zonos.model.Zonos.from_local": signature_contract(model.Zonos.__dict__["from_local"].__func__, ["cls", "config_path", "model_path", "device", "backbone"]),
         "zonos.model.Zonos.from_pretrained": signature_contract(model.Zonos.__dict__["from_pretrained"].__func__, ["cls", "repo_id", "revision", "device", "kwargs"]),
@@ -262,11 +320,27 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
         "zonos.autoencoder.DACAutoencoder.__init__": signature_contract(autoencoder.DACAutoencoder.__init__, ["self"]),
         "zonos.sampling.sample_from_logits": signature_contract(sampling.sample_from_logits, ["logits", "temperature", "top_p", "top_k", "min_p", "linear", "conf", "quad", "generated_tokens", "repetition_penalty", "repetition_penalty_window"]),
     }
+    dac_class = transformers_dac.DacModel
+    if getattr(autoencoder, "DacModel", None) is not dac_class:
+        raise ProbeError("official autoencoder.DacModel is not the imported Transformers DacModel")
+    dac_contract = {
+        "class_identity": "transformers.models.dac.DacModel",
+        "same_class_object": True,
+        "from_pretrained": dac_signature_surface(dac_class.from_pretrained),
+        "encode": dac_signature_surface(dac_class.encode, positional_input=True),
+        "decode": dac_signature_surface(dac_class.decode, keyword_input="audio_codes"),
+        "caller_flow": {
+            "encode_result": "audio_codes",
+            "decode_keyword": "audio_codes",
+            "decode_result": "audio_values",
+            "config_codebook_size": "config.codebook_size",
+            "quantizer_codebooks": "quantizer.n_codebooks",
+            "config_sampling_rate": "config.sampling_rate",
+        },
+    }
     if refusal.events:
         raise ProbeError(f"model access events recorded: {refusal.events}")
-    if not str(transformer_file).endswith("/transformers/__init__.py"):
-        raise ProbeError("Transformers import resolved to an unexpected module file")
-    return {"modules": imports, "callables": contracts, "constructor_calls": 0, "model_access_events": []}
+    return {"modules": imports, "callables": contracts, "dac_api_contract": dac_contract, "constructor_calls": 0, "model_access_events": []}
 
 def package_versions() -> dict[str, str]:
     names = ("huggingface-hub", "numpy", "safetensors", "torch", "torchaudio", "tqdm", "transformers")
@@ -319,6 +393,39 @@ def verify_safety(evidence: dict[str, Any]) -> None:
     if evidence["constructor_calls"] != 0 or evidence["model_access_events"] != [] or evidence["publication"] != NO_UPLOAD:
         raise ProbeError("compatibility evidence access/publication contract is not fail-closed")
 
+def validate_dac_contract(dac: Any) -> None:
+    if not isinstance(dac, dict) or set(dac) != {"class_identity", "same_class_object", "from_pretrained", "encode", "decode", "caller_flow"} or dac["class_identity"] != "transformers.models.dac.DacModel" or dac["same_class_object"] is not True:
+        raise ProbeError("DAC class identity contract is incomplete")
+    valid_kinds = {kind.name for kind in inspect._ParameterKind}
+    for key in ("from_pretrained", "encode", "decode"):
+        record = dac[key]
+        expected_keys = {"callable", "parameters"}
+        if key == "encode":
+            expected_keys.add("positional_input")
+        if key == "decode":
+            expected_keys.add("keyword_input")
+        if not isinstance(record, dict) or set(record) != expected_keys or record["callable"] is not True or not isinstance(record["parameters"], list):
+            raise ProbeError(f"DAC {key} signature record is malformed")
+        for item in record["parameters"]:
+            if not isinstance(item, dict) or set(item) != {"name", "kind", "default"} or not isinstance(item["name"], str) or item["kind"] not in valid_kinds or not isinstance(item["default"], str):
+                raise ProbeError(f"DAC {key} parameter record is malformed")
+        if key == "encode":
+            positional = record["positional_input"]
+            if not isinstance(positional, dict) or set(positional) != {"name", "kind"} or positional["kind"] not in {"POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD"} or not any(item["name"] == positional["name"] and item["kind"] == positional["kind"] for item in record["parameters"]):
+                raise ProbeError("DAC encode positional caller contract is invalid")
+        if key == "decode":
+            keyword = record["keyword_input"]
+            if not isinstance(keyword, dict) or set(keyword) != {"name", "kind"} or keyword.get("name") != "audio_codes" or keyword["kind"] not in {"POSITIONAL_OR_KEYWORD", "KEYWORD_ONLY"} or not any(item["name"] == "audio_codes" and item["kind"] == keyword["kind"] for item in record["parameters"]):
+                raise ProbeError("DAC decode audio_codes contract is invalid")
+    flow = dac["caller_flow"]
+    if flow != {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"}:
+        raise ProbeError("DAC caller flow contract is invalid")
+
+def validate_environment(environment: Any) -> None:
+    expected_versions = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
+    if not isinstance(environment, dict) or set(environment) != {"system", "release", "machine", "python", "sys_platform", "python_dont_write_bytecode", "package_versions"} or environment.get("system") != "Linux" or not isinstance(environment.get("release"), str) or not environment["release"] or environment.get("machine") != "x86_64" or not isinstance(environment.get("python"), str) or not re.fullmatch(r"3\.12\.[0-9]+", environment["python"]) or environment.get("sys_platform") != "linux" or environment.get("python_dont_write_bytecode") is not True or environment.get("package_versions") != expected_versions:
+        raise ProbeError("compatibility evidence environment is not exact Linux x86_64")
+
 def run_probe(args: argparse.Namespace) -> None:
     root, source, output = Path(args.vokra_root).resolve(), Path(args.source_dir), Path(args.output)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -335,7 +442,7 @@ def run_probe(args: argparse.Namespace) -> None:
         raise ProbeError("Zonos source checkout changed during import")
     evidence = {"schema": FORMAT, "status": PASS, "expected_head": head, "caller": caller, "source": source_facts, "project": project,
         "environment": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": platform.python_version(), "sys_platform": sys.platform, "python_dont_write_bytecode": True, "package_versions": versions},
-                "imports": contracts["modules"], "api_contract": contracts["callables"], "source_clean_after_import": True,
+                "imports": contracts["modules"], "api_contract": contracts["callables"], "dac_api_contract": contracts["dac_api_contract"], "source_clean_after_import": True,
                 "python_dont_write_bytecode": True, "model_access": False, "checkpoint_access": False,
                 "hf_token_present": False, "constructor_calls": 0, "model_access_events": [], "publication": NO_UPLOAD}
     write_evidence(output, evidence)
@@ -350,7 +457,7 @@ def validate_evidence(args: argparse.Namespace) -> None:
     regular(path, "compatibility evidence")
     verify_bound_hash(path, args.evidence_sha256)
     evidence, _ = strict_json(path)
-    required = {"schema", "status", "expected_head", "caller", "source", "project", "environment", "imports", "api_contract", "source_clean_after_import", "python_dont_write_bytecode", "model_access", "checkpoint_access", "hf_token_present", "constructor_calls", "model_access_events", "publication"}
+    required = {"schema", "status", "expected_head", "caller", "source", "project", "environment", "imports", "api_contract", "dac_api_contract", "source_clean_after_import", "python_dont_write_bytecode", "model_access", "checkpoint_access", "hf_token_present", "constructor_calls", "model_access_events", "publication"}
     if set(evidence) != required or evidence["schema"] != FORMAT or evidence["status"] != PASS or evidence["expected_head"] != args.expected_head:
         raise ProbeError("compatibility evidence schema/status/HEAD is not exact")
     clean_head(root, args.expected_head)
@@ -369,22 +476,20 @@ def validate_evidence(args: argparse.Namespace) -> None:
         raise ProbeError("compatibility caller hashes differ")
     verify_safety(evidence)
     environment = evidence["environment"]
-    expected_versions = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
-    if not isinstance(environment, dict) or environment.get("system") != "Linux" or environment.get("machine") != "x86_64" or environment.get("python_dont_write_bytecode") is not True or environment.get("package_versions") != expected_versions:
-        raise ProbeError("compatibility evidence environment is not exact Linux x86_64")
+    validate_environment(environment)
     expected_imports = {"zonos.model", "zonos.config", "zonos.conditioning", "zonos.autoencoder", "zonos.sampling", "zonos.backbone", "transformers"}
     expected_files = {name: relative for name, relative in SOURCE_MODULE_FILES.items()}
     if not isinstance(evidence["imports"], dict) or set(evidence["imports"]) != expected_imports or any(not isinstance(row, dict) or set(row) != {"status", "file"} or row.get("status") != "IMPORTED" or row.get("file") != expected_files.get(name, row.get("file")) for name, row in evidence["imports"].items() if name in SOURCE_MODULE_FILES):
         raise ProbeError("compatibility evidence imports are incomplete")
     transformer_import = evidence["imports"].get("transformers", {})
-    if not isinstance(transformer_import, dict) or not isinstance(transformer_import.get("file"), str) or not transformer_import["file"].endswith("/transformers/__init__.py"):
+    if transformer_import != TRANSFORMERS_IMPORT:
         raise ProbeError("Transformers import evidence is incomplete")
     expected_contracts = set(EXPECTED_API_PARAMETERS)
     contracts = evidence["api_contract"]
     if not isinstance(contracts, dict) or set(contracts) != expected_contracts:
         raise ProbeError("compatibility evidence API contract is incomplete")
     for name, record in contracts.items():
-        if not isinstance(record, dict) or set(record) != {"parameters", "return_annotation"} or not isinstance(record["parameters"], list):
+        if not isinstance(record, dict) or set(record) != {"parameters"} or not isinstance(record["parameters"], list):
             raise ProbeError("compatibility API contract record is malformed")
         actual_parameters = []
         for item in record["parameters"]:
@@ -393,6 +498,7 @@ def validate_evidence(args: argparse.Namespace) -> None:
             actual_parameters.append((item["name"], item["kind"], item["default"]))
         if actual_parameters != EXPECTED_API_PARAMETERS[name]:
             raise ProbeError(f"compatibility API parameter contract drifted: {name}")
+    validate_dac_contract(evidence["dac_api_contract"])
     print("zonos Transformers compatibility evidence: PASS")
 
 def self_test() -> None:
@@ -433,6 +539,45 @@ def self_test() -> None:
             tampered = dict(safe)
             tampered[key] = value
             expect_error(lambda tampered=tampered: verify_safety(tampered), f"tampered {key}")
+        dac_safe = {
+            "class_identity": "transformers.models.dac.DacModel", "same_class_object": True,
+            "from_pretrained": {"callable": True, "parameters": [{"name": "model", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}]},
+            "encode": {"callable": True, "parameters": [{"name": "wav", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "wav", "kind": "POSITIONAL_OR_KEYWORD"}},
+            "decode": {"callable": True, "parameters": [{"name": "audio_codes", "kind": "KEYWORD_ONLY", "default": "<class 'inspect._empty'>"}], "keyword_input": {"name": "audio_codes", "kind": "KEYWORD_ONLY"}},
+            "caller_flow": {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"},
+        }
+        validate_dac_contract(dac_safe)
+        for field in ("class_identity", "same_class_object", "caller_flow"):
+            tampered = dict(dac_safe)
+            tampered[field] = "tampered" if field != "same_class_object" else False
+            expect_error(lambda tampered=tampered: validate_dac_contract(tampered), f"tampered DAC {field}")
+        original_path_open, original_io_open = Path.open, io.open
+        with refuse_model_access():
+            expect_error(lambda: Path(root / "synthetic.safetensors").open("rb"), "pathlib model loader")
+            expect_error(lambda: io.open(root / "synthetic.safetensors", "rb"), "io model loader")
+            try:
+                torch_available = importlib.util.find_spec("torch") is not None
+            except ModuleNotFoundError:
+                torch_available = False
+            if torch_available:
+                torch = importlib.import_module("torch")
+                expect_error(lambda: torch.jit.load(root / "synthetic.pt"), "torch.jit model loader")
+            try:
+                safetensors_available = importlib.util.find_spec("safetensors.torch") is not None
+            except ModuleNotFoundError:
+                safetensors_available = False
+            if safetensors_available:
+                safe_torch = importlib.import_module("safetensors.torch")
+                for loader in ("load_file", "load_model"):
+                    if hasattr(safe_torch, loader):
+                        expect_error(lambda loader=loader: getattr(safe_torch, loader)(root / "synthetic.safetensors"), f"safetensors.torch.{loader} model loader")
+        assert Path.open is original_path_open and io.open is original_io_open, "model access guards were not restored"
+        environment_safe = {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}}
+        validate_environment(environment_safe)
+        for field, value in (("python", "3.11.9"), ("sys_platform", "darwin"), ("release", "")):
+            tampered = dict(environment_safe)
+            tampered[field] = value
+            expect_error(lambda tampered=tampered: validate_environment(tampered), f"tampered environment {field}")
     assert overlaps(repository_root(), repository_root() / "inside.json"), "checkout overlap was not detected"
     current = subprocess.run(["git", "-C", str(repository_root()), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     assert HEX40.fullmatch(current)
