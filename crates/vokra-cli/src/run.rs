@@ -1667,6 +1667,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Separation
         | ModelTask::Tts
         | ModelTask::TtsVibeVoice
+        | ModelTask::TtsVibeVoiceRealtime
         | ModelTask::TtsSpeechT5
         | ModelTask::TtsQwen3
         | ModelTask::TtsZonos
@@ -2304,6 +2305,16 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::TtsVibeVoice => {
             return Err(
                 "run (VibeVoice-1.5B): INSPECTION_ONLY — the strict partial GGUF binder does not imply a runnable composite; authenticated Qwen tokenizer companion, prompt/prefill state, streaming tokenizer, official DPMSolverMultistepScheduler, and 24-kHz decoder are required. No CPU fallback or synthetic waveform is permitted"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsVibeVoiceRealtime => {
+            vokra_models::vibevoice_streaming::VibeVoiceStreamingCheckpoint::from_gguf(
+                session.gguf(),
+            )
+            .map_err(|error| error.to_string())?;
+            return Err(
+                "run (VibeVoice-Realtime-0.5B): INSPECTION_ONLY — strict streaming topology and metadata bind, but authenticated real-weight manifest, streaming prefill/state, CFG diffusion, acoustic decoder, tokenizer policy, and independent CPU parity remain VAST follow-up gates. No CPU fallback or synthetic waveform is permitted"
                     .to_owned(),
             );
         }

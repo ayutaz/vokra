@@ -119,6 +119,10 @@ pub(crate) enum ModelTask {
     /// Qwen companion, prefill contract, streaming tokenizer, and official
     /// DPMSolverMultistepScheduler path are available.
     TtsVibeVoice,
+    /// VibeVoice-Realtime-0.5B streaming composite. The strict descriptor
+    /// binder is discoverable, while synthesis remains an explicit
+    /// inspection-only boundary until the real-weight VAST packet is closed.
+    TtsVibeVoiceRealtime,
     /// Microsoft SpeechT5 text-to-speech with an explicit 512-value x-vector
     /// and the strict 16 kHz SpeechT5 HiFi-GAN companion.
     ///
@@ -575,6 +579,8 @@ const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 /// Microsoft VibeVoice-1.5B composite TTS (strict partial binder).
 const ARCH_VIBEVOICE: &str = "vibevoice";
+/// Microsoft VibeVoice-Realtime-0.5B streaming composite.
+const ARCH_VIBEVOICE_STREAMING: &str = "vibevoice_streaming";
 const ARCH_CSM: &str = "csm";
 const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
@@ -1286,6 +1292,17 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // composite remains explicitly blocked without its authenticated
             // tokenizer/prefill/scheduler companions.
             Ok((session, ModelTask::TtsVibeVoice))
+        }
+        ARCH_VIBEVOICE_STREAMING => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VIBEVOICE_STREAMING}`"
+                ));
+            }
+            // Bare session: the Realtime-specific strict structural binder is
+            // opened by the run arm exactly once. It intentionally does not
+            // claim a runnable forward path before the VAST real-weight gate.
+            Ok((session, ModelTask::TtsVibeVoiceRealtime))
         }
         ARCH_KOKORO => {
             if hint.is_some() {
@@ -2399,6 +2416,15 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "VibeVoiceCheckpoint::from_gguf → VibeVoiceCheckpoint::synthesize",
         probe: Some(|g: &GgufFile| {
             vokra_models::vibevoice::VibeVoiceCheckpoint::from_gguf(g).map(|_| ())
+        }),
+    },
+    BoundArch {
+        arch: "vibevoice_streaming",
+        module: "vokra_models::vibevoice_streaming",
+        entry: "VibeVoiceStreamingCheckpoint::from_gguf → VibeVoiceStreamingCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::vibevoice_streaming::VibeVoiceStreamingCheckpoint::from_gguf(g)
+                .map(|_| ())
         }),
     },
     BoundArch {
