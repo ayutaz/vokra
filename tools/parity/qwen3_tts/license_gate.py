@@ -4,8 +4,9 @@
 The VAST worker runs this with ``uv run --no-project --offline`` before the
 reference project is synchronized or any snapshot is acquired.  Every locked
 package is represented by an exact version/source/marker/dependency row.  The
-review rows intentionally remain unapproved until an owner records the native
-and bundled closure and an exact sign-off identity/digest.
+reviewed rows carry an exact owner sign-off, but the stale VAST audit still
+blocks evidence supersession and any weight acquisition until a fresh audit
+is recorded at the clean checkout.
 """
 
 from __future__ import annotations
@@ -883,7 +884,7 @@ def self_test() -> None:
         "sha256": "563d70ce7977f83ea56717e10ccb3d2a7f9d444ee2cbd4481ea302aad101a78b",
         "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
         "status": "STALE_REQUIRES_VAST_AUDIT",
-        "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before owner approval.",
+        "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before evidence supersession or any weight acquisition.",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
     assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)

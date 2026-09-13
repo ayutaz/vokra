@@ -1,7 +1,7 @@
 {
-  "review_rows_sha256": "4e8a8b378e9aed2a8a74d4bf870440b3eaab85bfb78bf936600f34ac582efb52",
-  "component_rows_sha256": "c5a5136b85ab40f99cdcfe0583807a091430e5fbb46ff843a7956289a8ca9cda",
-  "approval_scope_sha256": "3f93708d192bc4474549d6f4ad8ad903b2ecea8754cfef8d05a0deb084f8141b",
+  "review_rows_sha256": "9261b49112dcbb4485c7d8ccfa68c993c5e6816d90ab10beb1cda9b27661da7f",
+  "component_rows_sha256": "2c4bf437b7e9a19729a7153ff86cd6a6157ed48b776915ec1f485f9205b3cea4",
+  "approval_scope_sha256": "80ac9c528f9c624f66c8b1944cdc16f62fd556e2c609839c025326de579f2949",
   "rows": [
     {
       "name": "annotated-doc",
@@ -1467,8 +1467,8 @@
       },
       "status": "REVIEWED",
       "license": "BSD-2-Clause",
-      "native_bundled": "installed distribution contains 10 bundled native file(s); exact inventory/hash is in compact VAST evidence",
-      "payload_sha256": "8e80a02809f6b2c69ad567f28104fc960e43349854a5d0427d587214a91240ac",
+      "native_bundled": "installed distribution contains 10 bundled native file(s); ELF NEEDED includes libsox.so and FFmpeg libavcodec/libavdevice/libavfilter/libavformat/libavutil SONAME groups (4/5/6); exact inventory/hash is in compact VAST evidence; dynamic NEEDED entries are runtime linkage facts, not bundled license conclusions",
+      "payload_sha256": "0a1d3f2a567622ed40903edaf935661cde9a7822d13dd3ee6a2977496e901720",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
@@ -1482,8 +1482,8 @@
             "registry": "https://download.pytorch.org/whl/cpu"
           },
           "license": "BSD-2-Clause",
-          "native_bundled": "installed distribution contains 10 bundled native file(s); exact inventory/hash is in compact VAST evidence",
-          "payload_sha256": "8e80a02809f6b2c69ad567f28104fc960e43349854a5d0427d587214a91240ac"
+          "native_bundled": "installed distribution contains 10 bundled native file(s); ELF NEEDED includes libsox.so and FFmpeg libavcodec/libavdevice/libavfilter/libavformat/libavutil SONAME groups (4/5/6); exact inventory/hash is in compact VAST evidence; dynamic NEEDED entries are runtime linkage facts, not bundled license conclusions",
+          "payload_sha256": "0a1d3f2a567622ed40903edaf935661cde9a7822d13dd3ee6a2977496e901720"
         }
       }
     },
@@ -1661,8 +1661,8 @@
       "component": "0.6b-base",
       "status": "REVIEWED",
       "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-      "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-      "payload_sha256": "63b60de8bed989bd427a140696462bc0c9ff958d69c21763c10bde7e717b9a99",
+      "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+      "payload_sha256": "a8dc2e2f227574fb35c484f749c661d4affcaae63e3af68937d224ffc3283052",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
@@ -1680,8 +1680,8 @@
             "config_sha256": "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011"
           },
           "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-          "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-          "payload_sha256": "63b60de8bed989bd427a140696462bc0c9ff958d69c21763c10bde7e717b9a99"
+          "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+          "payload_sha256": "a8dc2e2f227574fb35c484f749c661d4affcaae63e3af68937d224ffc3283052"
         }
       }
     },
@@ -1689,8 +1689,8 @@
       "component": "0.6b-customvoice",
       "status": "REVIEWED",
       "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-      "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-      "payload_sha256": "fb101a9f0dbd742a31340c134f5aad2f7edd9fc31a5a46709fe01e5ba1653e29",
+      "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+      "payload_sha256": "022aaa5d9442e740f0a4e0ad227d8706c3ee200786a9c6800aa5e79772498a1a",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
@@ -1708,8 +1708,8 @@
             "config_sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455"
           },
           "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-          "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-          "payload_sha256": "fb101a9f0dbd742a31340c134f5aad2f7edd9fc31a5a46709fe01e5ba1653e29"
+          "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+          "payload_sha256": "022aaa5d9442e740f0a4e0ad227d8706c3ee200786a9c6800aa5e79772498a1a"
         }
       }
     },
@@ -1717,8 +1717,8 @@
       "component": "1.7b-base",
       "status": "REVIEWED",
       "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-      "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-      "payload_sha256": "e95875b383a2208de12f5ed0d9f4f1582696a0d084940e2f3adcacc70ccdeb5a",
+      "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+      "payload_sha256": "4a5662d85791830cdc1b5e4afcdc27967e6b7ed13709aeb6e80954a95e91af5b",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
@@ -1736,8 +1736,8 @@
             "config_sha256": "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9"
           },
           "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-          "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-          "payload_sha256": "e95875b383a2208de12f5ed0d9f4f1582696a0d084940e2f3adcacc70ccdeb5a"
+          "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+          "payload_sha256": "4a5662d85791830cdc1b5e4afcdc27967e6b7ed13709aeb6e80954a95e91af5b"
         }
       }
     },
@@ -1745,8 +1745,8 @@
       "component": "1.7b-customvoice",
       "status": "REVIEWED",
       "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-      "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-      "payload_sha256": "951b43772152b6c9a490ba5fe799a297610b4cd0c49a252f81731772a3e32e6d",
+      "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+      "payload_sha256": "bfb9f496a9d30be18493e3d05fb9e40341b44f31641e2b6fc9df60d846e189be",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
@@ -1764,8 +1764,8 @@
             "config_sha256": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
           },
           "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-          "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-          "payload_sha256": "951b43772152b6c9a490ba5fe799a297610b4cd0c49a252f81731772a3e32e6d"
+          "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+          "payload_sha256": "bfb9f496a9d30be18493e3d05fb9e40341b44f31641e2b6fc9df60d846e189be"
         }
       }
     },
@@ -1773,8 +1773,8 @@
       "component": "decoder_tokenizer",
       "status": "REVIEWED",
       "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-      "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-      "payload_sha256": "8e12be5d4544916cd4f644ef55bd950e9f9ae9dec37c6d09ec21a17a5454fe71",
+      "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+      "payload_sha256": "327e55e8f027a498831e1ce4aa5d26668fd1dc4ba294ab8063623de6f2ea8d80",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
@@ -1791,8 +1791,8 @@
             "checkpoint_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
           },
           "license": "Apache-2.0 (authenticated HF API cardData.license at exact revision)",
-          "native_bundled": "no native or binary payload in the model tree; safetensors/config/text only",
-          "payload_sha256": "8e12be5d4544916cd4f644ef55bd950e9f9ae9dec37c6d09ec21a17a5454fe71"
+          "native_bundled": "no native executable or shared-library payload in the model tree; model weights are safetensors with config/text metadata",
+          "payload_sha256": "327e55e8f027a498831e1ce4aa5d26668fd1dc4ba294ab8063623de6f2ea8d80"
         }
       }
     },
