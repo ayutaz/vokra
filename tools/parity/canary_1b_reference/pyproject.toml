@@ -21,6 +21,11 @@ environments = [
 override-dependencies = [
     "cuda-bindings ; python_version < '0'",
     "hydra-core==1.3.6",
+    # NeMo 3.0.0 caps its Lightning requirement at 2.4.0, but that release
+    # contains GHSA-qqmf-gpg7-g8gw (CVE-2026-58659).  Keep the official NeMo
+    # oracle while replacing only this transitive runtime package with the
+    # first released security fix; the lock records the resulting override.
+    "lightning==2.6.6",
     "text-unidecode ; python_version < '0'",
 ]
 

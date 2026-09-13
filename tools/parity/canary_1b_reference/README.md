@@ -97,6 +97,15 @@ records the same resolution in
 `tool.uv.override-dependencies`. This is a dependency decision for the
 owner's review, not an advisory allowlist.
 
+The same override mechanism handles the reviewed Lightning security advisory
+`GHSA-qqmf-gpg7-g8gw` (CVE-2026-58659). NeMo 3.0.0 declares
+`lightning<=2.4.0`, but that upstream cap would select a vulnerable release;
+the lock therefore replaces only that transitive package with `lightning`
+2.6.6, the first released version containing the upstream `_instantiator`
+allowlist fix. The official NeMo oracle and its source contract remain
+unchanged. This resolver override must still be covered by the authorized
+VAST import probe before a real checkpoint is inspected.
+
 ## Dependency approval transition
 
 `dependency_audit.py` always emits factual
