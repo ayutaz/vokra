@@ -28,6 +28,39 @@ stops with `BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE` before any source or
 checkpoint acquisition, and no compatibility result is inferred from the
 lock alone.
 
+## Transformers compatibility smoke
+
+The VAST-only wrapper
+`scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh` checks the
+official Zonos source at `bc40d98e1e1ab54fc65c483be127a90e3c7c0645` under the
+frozen `transformers==5.10.4` environment. It imports the official modules and
+checks the fixed constructor/method signatures without constructing a Zonos or
+DAC object. The source `LICENSE`, repository origin, Vokra HEAD, dedicated
+`pyproject.toml`/`uv.lock`, package versions, Linux x86_64 environment, and
+the no-model/no-checkpoint/no-token conditions are written to a small,
+hash-bound JSON evidence file.
+
+The wrapper requires `VOKRA_ZONOS_VAST_VALIDATION=1`, an absent tmpfs work
+directory, and absent `HF_TOKEN`/`HF` variables. It never fetches Hugging Face
+metadata or weights, runs Cargo, publishes, or uploads. Run only on disposable
+VAST Linux x86_64 infrastructure:
+
+```bash
+VOKRA_ZONOS_VAST_VALIDATION=1 \
+  bash scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh \
+  --expected-head <clean-vokra-head> \
+  --output /dev/shm/vokra-zonos-transformers-compatibility-evidence.json
+```
+
+The downstream `check-zonos-transformers-compatibility.sh` gate accepts only
+an external evidence path and its caller-supplied SHA-256. It rechecks the
+exact current HEAD, wrapper/probe hashes, source/license identity, project
+hashes, package versions, import records, API-contract records, and
+`NO_UPLOAD`; missing, stale, duplicated, symlinked, in-checkout, or
+model-access evidence fails closed. A passing compatibility gate authorizes
+only the next Zonos pre-acquisition stage; it does not authorize weights,
+conversion, parity, or publication.
+
 ## Dependency approval transition
 
 The model-free audit emits `BLOCKED_UNREVIEWED_TRANSITIVE` because dependency
