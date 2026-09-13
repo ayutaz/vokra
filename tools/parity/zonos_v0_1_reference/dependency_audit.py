@@ -40,8 +40,8 @@ REPOSITORY_ROOT = PROJECT_DIR.parents[2]
 AUDITOR_PATH = Path(__file__).resolve()
 WRAPPER_PATH = REPOSITORY_ROOT / "scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
 PREPARER_PATH = PROJECT_DIR / "prepare_numpy_no_blas.sh"
-EXPECTED_PROJECT_SHA256 = "75228b40004f3fab253c5a1ad49c1a3316a97118458b9f5af80ec71d83c4944f"
-EXPECTED_LOCK_SHA256 = "230af5f7a368c831ae86fd2a2e697b20efa30b468647e13c5002380d619e4e5d"
+EXPECTED_PROJECT_SHA256 = "832895452fa9cb3db5d28293cd052421a91eefdbd7e0502184368a0016c5c968"
+EXPECTED_LOCK_SHA256 = "a056d13d68926d8cc173d94853272d31b23ad6595fcc5cd1ce2bd2a6924675eb"
 EXPECTED_CONSTRAINTS_SHA256 = "812ab3e215d7756738ab9a9aca7b8c94b53a3b10e8f1e43228e1b74965be020a"
 NUMPY_SDIST_URL = "https://files.pythonhosted.org/packages/ec/d0/c12ddfd3a02274be06ffc71f3efc6d0e457b0409c4481596881e748cb264/numpy-2.2.2.tar.gz"
 NUMPY_SDIST_SHA256 = "ed6906f61834d687738d25988ae117683705636936cc605be0bb208b23df4d8f"
@@ -52,6 +52,7 @@ DIRECT_DEPENDENCIES = {
     "huggingface-hub": "1.5.0",
     "numpy": "2.2.2",
     "safetensors": "0.5.3",
+    "setuptools": "84.0.0",
     "torch": "2.11.0+cpu",
     "torchaudio": "2.11.0+cpu",
     "tqdm": "4.67.1",

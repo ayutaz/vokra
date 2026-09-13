@@ -38,8 +38,8 @@ SOURCE_LICENSE_BYTES = 11357
 SOURCE_LICENSE_SHA256 = "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
 SOURCE_LICENSE_GIT_BLOB_SHA1 = "7a4a3ea2424c09fbe48d455aed1eaa94d9124835"
 PROJECT_RELATIVE = "tools/parity/zonos_v0_1_reference"
-PROJECT_SHA256 = "75228b40004f3fab253c5a1ad49c1a3316a97118458b9f5af80ec71d83c4944f"
-LOCK_SHA256 = "230af5f7a368c831ae86fd2a2e697b20efa30b468647e13c5002380d619e4e5d"
+PROJECT_SHA256 = "832895452fa9cb3db5d28293cd052421a91eefdbd7e0502184368a0016c5c968"
+LOCK_SHA256 = "a056d13d68926d8cc173d94853272d31b23ad6595fcc5cd1ce2bd2a6924675eb"
 PROBE_RELATIVE = f"{PROJECT_RELATIVE}/transformers_compatibility.py"
 FORMAT = "vokra-zonos-transformers-compatibility-v1"
 PASS = "PASS_COMPATIBLE"
@@ -144,7 +144,7 @@ def project_identity(root: Path) -> dict[str, Any]:
         raise ProbeError("dedicated Zonos project or lock identity drifted")
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     dependencies = sorted(data.get("project", {}).get("dependencies", []))
-    expected = sorted(["huggingface-hub==1.5.0", "numpy==2.2.2", "safetensors==0.5.3", "torch==2.11.0", "torchaudio==2.11.0", "tqdm==4.67.1", "transformers==5.10.4"])
+    expected = sorted(["huggingface-hub==1.5.0", "numpy==2.2.2", "safetensors==0.5.3", "setuptools==84.0.0", "torch==2.11.0", "torchaudio==2.11.0", "tqdm==4.67.1", "transformers==5.10.4"])
     if dependencies != expected:
         raise ProbeError("dedicated Zonos dependency contract drifted")
     return {"path": PROJECT_RELATIVE, "pyproject_sha256": project_sha, "uv_lock_sha256": lock_sha, "dependencies": dependencies}
@@ -592,7 +592,7 @@ def validate_dac_contract(dac: Any) -> None:
         raise ProbeError("DAC caller flow contract is invalid")
 
 def validate_environment(environment: Any) -> None:
-    expected_versions = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
+    expected_versions = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "setuptools": "84.0.0", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
     if not isinstance(environment, dict) or set(environment) != {"system", "release", "machine", "python", "sys_platform", "python_dont_write_bytecode", "package_versions"} or environment.get("system") != "Linux" or not isinstance(environment.get("release"), str) or not environment["release"] or environment.get("machine") != "x86_64" or not isinstance(environment.get("python"), str) or not re.fullmatch(r"3\.12\.[0-9]+", environment["python"]) or environment.get("sys_platform") != "linux" or environment.get("python_dont_write_bytecode") is not True or environment.get("package_versions") != expected_versions:
         raise ProbeError("compatibility evidence environment is not exact Linux x86_64")
 
@@ -752,7 +752,7 @@ def self_test() -> None:
             "caller": caller_identity(project_root, project_root / "scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh"),
             "source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "license": {"path": SOURCE_LICENSE_PATH, "spdx": SOURCE_LICENSE_SPDX, "bytes": SOURCE_LICENSE_BYTES, "sha256": SOURCE_LICENSE_SHA256, "git_blob_sha1": SOURCE_LICENSE_GIT_BLOB_SHA1}},
             "project": project_identity(project_root),
-            "environment": {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}},
+            "environment": {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "setuptools": "84.0.0", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}},
             "imports": generated_imports,
             "api_contract": generated_api,
             "dac_api_contract": dac_safe,
@@ -805,7 +805,7 @@ def self_test() -> None:
                     if hasattr(safe_torch, loader):
                         expect_error(lambda loader=loader: getattr(safe_torch, loader)(root / "synthetic.safetensors"), f"safetensors.torch.{loader} model loader")
         assert Path.open is original_path_open and io.open is original_io_open, "model access guards were not restored"
-        environment_safe = {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}}
+        environment_safe = {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "setuptools": "84.0.0", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}}
         validate_environment(environment_safe)
         for field, value in (("python", "3.11.9"), ("sys_platform", "darwin"), ("release", "")):
             tampered = dict(environment_safe)
