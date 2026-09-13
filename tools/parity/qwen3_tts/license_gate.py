@@ -876,6 +876,22 @@ def self_test() -> None:
     assert production_manifest["package_rows_sha256"] == canonical_digest(production_rows)
     assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
+    for review in production_reviews:
+        subject = fixed_approval_subject("package", {
+            "name": review["name"], "version": review["version"], "source": review["source"],
+            "license": review["license"], "native_bundled": review["native_bundled"],
+            "payload_sha256": review["payload_sha256"],
+        })
+        assert review["approval_signer"] == OWNER_SIGNER
+        assert review["approval_digest"] == fixed_approval_digest(subject)
+    for component in production_components:
+        subject = fixed_approval_subject("component", {
+            "component": component["component"], "identity": component["identity"],
+            "license": component["license"], "native_bundled": component["native_bundled"],
+            "payload_sha256": component["payload_sha256"],
+        })
+        assert component["approval_signer"] == OWNER_SIGNER
+        assert component["approval_digest"] == fixed_approval_digest(subject)
     stable_scope = approval_scope(production_manifest)
     assert production_manifest["approval_scope_sha256"] == canonical_digest(stable_scope)
     assert production_manifest["dependency_audit_evidence"] == {
