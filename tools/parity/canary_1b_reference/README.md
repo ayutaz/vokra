@@ -97,6 +97,37 @@ independent semantics under test.  The status consequently remains
 fail-closed until owner/legal review resolves the observed
 GPL/LGPL/unknown/native rows.
 
+### License closure gate
+
+`license_closure_manifest.json` is the review ledger for all 134 active lock
+rows (133 installed distributions) and all 200 captured publisher
+license/notice files. Each row binds the audit fact hash, publisher metadata
+byte count/hash, every archived license byte/hash, and every native/ELF fact.
+The virtual first-party project is bound separately to the committed
+`pyproject.toml` and repository `LICENSE` bytes. GPL/LGPL/AGPL signals,
+bundled copyleft notices, missing license bytes, and native payloads remain
+explicit blockers; no row is treated as an approval.
+
+The gate is intentionally fail-closed and model-free:
+
+```bash
+uv run --no-project --offline --python 3.12 python \
+  tools/parity/canary_1b_reference/license_closure_gate.py --self-test
+uv run --no-project --offline --python 3.12 python \
+  tools/parity/canary_1b_reference/license_closure_gate.py \
+  --manifest tools/parity/canary_1b_reference/license_closure_manifest.json \
+  --audit-report <captured-evidence>/canary/dependency-audit.json \
+  --license-dir <captured-evidence>/canary/dependency-licenses
+```
+
+The normal invocation returns exit 2 until owner/legal disposition is
+supplied. The source evidence archive omitted four bound source snapshots,
+but their exact Git object SHA/byte values were independently verified at the
+witnessed audit commit and are recorded as
+`GIT_OBJECTS_VERIFIED_ARCHIVE_COPY_OMITTED`. The omission is retained as
+provenance, not as an unresolved blocker; the actual license/native and
+owner/legal blockers remain fail-closed.
+
 The direct `hydra-core==1.3.6` requirement is intentional. NeMo 3.0.0's
 published extra metadata leaves `hydra-core` unconstrained; the old lock had
 selected 1.3.2. The dedicated uv project now directly pins a current patched

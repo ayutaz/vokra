@@ -1,0 +1,385 @@
+{
+  "gate_version": 1,
+  "lock_sha256": "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc",
+  "project_sha256": "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b",
+  "package_rows_sha256": "fe967f78eab4210df3586cd0166b7ad0a0705385aae22216cb381f23c50563e5",
+  "package_review_rows": [
+    {
+      "id": "annotated-types@0.8.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "3d20afd6f216c3bb0c6668660434b5d0728f26d8ee092e442c0c3c4b38ee3f75",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "certifi@2026.7.22",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MPL-2.0",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "32021a862de99411d36f71f52a8243e771770d599f30e151ca7bf57f5420ed92",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "charset-normalizer@3.5.1",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=2; bundled_libraries=2; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "9fde0575b4dc71668bdc2f65b1f331d0935f69625da895822b7bca3cf9a85a29",
+        "publisher_file_count": 1,
+        "native_file_count": 2,
+        "bundled_library_count": 2
+      }
+    },
+    {
+      "id": "einops@0.8.2",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "49f45647cde9493df8f9ebff79fbe6ce968a1e714b9df18183ea1addd85b8721",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "filelock@3.32.4",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "269d8e61cae91df75de2a83c184a8b16b82a9d95f0500eff46740a22e8edb5d4",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "fsspec@2026.7.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "61dc2c720bd3867aa26e370e08e41f6402d27353211d84ac48091ffae7b39314",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "gguf@0.19.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "22bd6d57ca7f45f64d500a593bd6a16a033f856b8778a1964a083dd42a917a1e",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "huggingface-hub@0.30.2",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "Apache-2.0",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "54eefb61b082b08ddfe7f9c46290e8c437b8e748b37629a7817a6fa7bff5c618",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "idna@3.19",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "8c5f340dc7f0db84b44e26604fb8fcf67b7d54a359fedec98bc037cdbcba7271",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "jinja2@3.1.6",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "70fef3bad0ce6e0f2296ec751d80201f4d13594265f0d4125e6364b6ba3ab21e",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "markupsafe@3.0.3",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause",
+      "native_bundled_review": "publisher_license_files=1; native_files=1; bundled_libraries=1; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "563d6789527c6b18ed49e3f449926776c8f94b54095185ce1b3541efae6b2f0f",
+        "publisher_file_count": 1,
+        "native_file_count": 1,
+        "bundled_library_count": 1
+      }
+    },
+    {
+      "id": "mpmath@1.3.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "fca2c48bd768039e407ba6d68d944974cd8358ed83832dbbf714ac53a4963693",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "networkx@3.6.1",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "b6edce1d1e81f508b56b8c768be10f64c0c79c3c4e515b7d14af02345fa4bf34",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "numpy@2.2.5",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause plus zlib/NCSA bundled notices",
+      "native_bundled_review": "publisher_license_files=4; native_files=21; bundled_libraries=21; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "9c0a86a7efac5d1368ed6b11e1f380f2228a836d5b6cbf615bab35d4a10aa110",
+        "publisher_file_count": 4,
+        "native_file_count": 21,
+        "bundled_library_count": 21
+      }
+    },
+    {
+      "id": "packaging@26.3",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "native_bundled_review": "publisher_license_files=3; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "e98dac4a0316d88b6515185cef22106ef780a8411d34387dd9d90279e01a06fa",
+        "publisher_file_count": 3,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "pydantic-core@2.33.1",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=1; bundled_libraries=1; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "dae7e23ba2bcb03f67dd043d06c7dab3d8e4647d323f53821574eefa3d54cc13",
+        "publisher_file_count": 1,
+        "native_file_count": 1,
+        "bundled_library_count": 1
+      }
+    },
+    {
+      "id": "pydantic@2.11.3",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "80c96f9c72c85f82d6e8e63d6558b922df7ad22a536af06c5c47f4b2eafeed0b",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "pyyaml@6.0.3",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=1; bundled_libraries=1; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "7c7a366ae846d0745061f7e77e26d81769ee92ab3eaf7dc88e237326c575a7a6",
+        "publisher_file_count": 1,
+        "native_file_count": 1,
+        "bundled_library_count": 1
+      }
+    },
+    {
+      "id": "requests@2.34.2",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "Apache-2.0",
+      "native_bundled_review": "publisher_license_files=2; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "ba82d533310f21aaa3e20446dad7430e5950f74804ce372194e9ffe936190425",
+        "publisher_file_count": 2,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "setuptools@84.0.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT; vendored LGPL-3.0 and MPL/other notice material requires separate review",
+      "native_bundled_review": "publisher_license_files=17; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "54434b779d0466451697468abfd200b9d3f1b2222066aade7efe9a42f72047cd",
+        "publisher_file_count": 17,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "sympy@1.13.1",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD plus MIT latex2sympy notice",
+      "native_bundled_review": "publisher_license_files=2; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "e58ecea2c81e1f46599f728ef30a1e2b9267a343049193d2d764cd84e02b2a95",
+        "publisher_file_count": 2,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "torch@2.6.0+cpu",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "BSD-3-Clause; NOTICE/native third-party closure requires review",
+      "native_bundled_review": "publisher_license_files=2; native_files=133; bundled_libraries=133; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "6c062b2635f617752b883898b36a58dc89ad34bc3928560e6b4ccb6e7e9f1019",
+        "publisher_file_count": 2,
+        "native_file_count": 133,
+        "bundled_library_count": 133
+      }
+    },
+    {
+      "id": "tqdm@4.70.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MPL-2.0 AND MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "14e20af6bc89cb4f23458fd9da8ace69ce3f8ed4361a6fc78aa94f46b7226d66",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "typing-extensions@4.16.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "PSF-2.0",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "4d387755e825794d9871d853bfd0ad05f83b79a3c82ee44f9fd49a0fdd4bab04",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "typing-inspection@0.4.4",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "e76c43195e229aaa7d63abd1e70a133c3a3ba242a47ffa9a0e52b5300f16b277",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    },
+    {
+      "id": "urllib3@2.7.0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED",
+      "license": "MIT",
+      "native_bundled_review": "publisher_license_files=1; native_files=0; bundled_libraries=0; captured bytes require owner/legal review",
+      "evidence": {
+        "facts_sha256": "fab60fb2b94b24ee24534d193afb2bbeca7f4b42bc1df04655336993d3faee68",
+        "publisher_file_count": 1,
+        "native_file_count": 0,
+        "bundled_library_count": 0
+      }
+    }
+  ],
+  "package_review_rows_sha256": "311d35d241ba9e8ae3a4f4577be7105d079fadf03951231c53b66f775e9cb2df",
+  "license_rows": [
+    {
+      "id": "python-dependency-closure",
+      "status": "FACTS_CAPTURED_OWNER_REVIEW_REQUIRED",
+      "license": "Captured metadata includes MIT, BSD, Apache-2.0, PSF-2.0, MPL-2.0, and bundled notices; classification is not performed.",
+      "source": "uv.lock and VAST dependency-audit.json",
+      "payload_sha256": "8ce645073916f8f1148ed572b476653fc602a2236fbeee90183b0b01b1c57cd8"
+    },
+    {
+      "id": "native-bundled-payloads",
+      "status": "FACTS_CAPTURED_OWNER_REVIEW_REQUIRED",
+      "license": "159 native/bundled files are captured; NumPy/Torch and native package attribution remains owner/legal review.",
+      "source": "VAST native_inventory",
+      "payload_sha256": "df48dac02d5f1f2803b8789b1759067ec3e1b6af67418b1d5ea82fcd4541643f"
+    },
+    {
+      "id": "dia-source-license",
+      "status": "NOT_ACQUIRED_OWNER_REVIEW_REQUIRED",
+      "license": "NOT_ASSESSED; source acquisition was NONE",
+      "source": "VAST policy.model_source_facts",
+      "payload_sha256": "8ce645073916f8f1148ed572b476653fc602a2236fbeee90183b0b01b1c57cd8"
+    },
+    {
+      "id": "dia-model-weight",
+      "status": "NOT_ACQUIRED_OWNER_REVIEW_REQUIRED",
+      "license": "NOT_ASSESSED; model acquisition was NONE",
+      "source": "VAST policy.model_source_facts",
+      "payload_sha256": "8ce645073916f8f1148ed572b476653fc602a2236fbeee90183b0b01b1c57cd8"
+    }
+  ],
+  "license_rows_sha256": "b14fd6214d9f888b52d618ae43e1888aee3891fb37ec4b58b34f49c8d51be6e7",
+  "identities": {
+    "source_acquisition": "NONE",
+    "model_acquisition": "NONE",
+    "model_import": "NOT_PERFORMED",
+    "execution": "NOT_PERFORMED",
+    "torch_imported": false,
+    "vokra_imported": false,
+    "license_classification": "NOT_PERFORMED",
+    "training_provenance": "OWNER_REVIEW_REQUIRED"
+  },
+  "audit_evidence": {
+    "schema": "vokra-dia-dependency-audit-v1",
+    "report_sha256": "8ce645073916f8f1148ed572b476653fc602a2236fbeee90183b0b01b1c57cd8",
+    "owner_scope_file_sha256": "0d51a44f9494313d01b6cb0314d35215c48c311c0c071d8516a10617a2f224e3",
+    "owner_scope_sha256": "a5c90a401c7edeb39cb8036fab789ad82a117798d41101b3c60f23f6f3b97668",
+    "expected_head": "87da78dc7709075d9dc23b797fc978b9c678c777",
+    "package_count": 26,
+    "native_file_count": 159,
+    "publisher_evidence_entries": 50,
+    "status": "FACTS_COLLECTED_GATE_BLOCKED",
+    "dependency_license_audit": "BLOCKED_UNREVIEWED_TRANSITIVE",
+    "publication": "NO_UPLOAD",
+    "all_lock_rows_sha256": "f5f4e5320901463d6393bb8cc1c2561538b3dd41089d9f09207379496278c13b",
+    "native_inventory_sha256": "df48dac02d5f1f2803b8789b1759067ec3e1b6af67418b1d5ea82fcd4541643f",
+    "preparation_sha256": "1d45fb286a44a4903fc3508c43ad37fd2fac54d5a2d81b94b21086e283e6e019"
+  },
+  "approval_scope_sha256": "1f8c9465007f01acd17b256e54f410733ce1e0778256d1a588190dcef6ee9866",
+  "approval": {
+    "status": "PENDING_OWNER_REVIEW",
+    "signer": null,
+    "digest": null
+  },
+  "publication": "NO_UPLOAD"
+}
