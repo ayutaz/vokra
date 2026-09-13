@@ -62,7 +62,7 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 現行の workspace release line は `0.3.0` である。
 
-**2026-09-13 current snapshot:** 観測済み `main` baseline は `08b206c4` である。監査実装
+**2026-09-13 current snapshot:** 観測済み `main` baseline は `50981d60` である。監査実装
 `87da78dc` までを使った最新の読み取り専用 live public audit は repository 194、GGUF
 repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=42`、
 `no-runtime-binder=15`、`not-artifact=1`、Metal status は `full=136`、

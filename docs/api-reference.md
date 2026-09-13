@@ -65,7 +65,7 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 The current release line is workspace version `0.3.0`.
 
-**2026-09-13 current snapshot:** the observed `main` baseline is `08b206c4`.
+**2026-09-13 current snapshot:** the observed `main` baseline is `50981d60`.
 The latest live, read-only public audit, evaluated with audit logic through
 `87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
 GGUF files. CPU status is `full=136`, `partial=42`,
