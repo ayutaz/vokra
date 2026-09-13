@@ -640,8 +640,92 @@ impl AudioVaeEncoder {
         Self::from_source(stem, stages, terminal)
     }
 
+    /// Validate every learned buffer before entering an encoder kernel.
+    ///
+    /// The source topology validator intentionally accepts metadata-only
+    /// fixtures with empty buffers.  Execution must apply the stronger
+    /// learned-buffer check so a malformed bound cannot reach convolution
+    /// indexing or silently produce a partial latent stream.
+    fn validate_bound_weights(&self) -> Result<()> {
+        let validate_conv = |label: &str, conv: &CausalConv1d| -> Result<()> {
+            let grouped_inputs = conv.in_channels / conv.groups;
+            let expected = conv
+                .out_channels
+                .checked_mul(grouped_inputs)
+                .and_then(|value| value.checked_mul(conv.kernel))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "voxcpm AudioVAE {label} weight shape overflows"
+                    ))
+                })?;
+            if conv.weight_v.len() != expected
+                || conv.weight_g.len() != conv.out_channels
+                || conv.bias.len() != conv.out_channels
+                || conv
+                    .weight_v
+                    .iter()
+                    .chain(&conv.weight_g)
+                    .chain(&conv.bias)
+                    .any(|value| !value.is_finite())
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid bound weights"
+                )));
+            }
+            Ok(())
+        };
+        let validate_snake = |label: &str, snake: &Snake, channels: usize| -> Result<()> {
+            if snake.alpha.len() != channels || snake.alpha.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid Snake weights"
+                )));
+            }
+            Ok(())
+        };
+
+        validate_conv("encoder stem", &self.stem)?;
+        let mut channels = AUDIO_VAE_ENCODER_DIM;
+        for (index, stage) in self.stages.iter().enumerate() {
+            for (residual_index, residual) in stage.residuals.iter().enumerate() {
+                validate_conv(
+                    &format!("encoder stage {index} residual {residual_index} filter"),
+                    &residual.filter,
+                )?;
+                validate_snake(
+                    &format!("encoder stage {index} residual {residual_index} activation"),
+                    &residual.activation,
+                    channels,
+                )?;
+                validate_snake(
+                    &format!(
+                        "encoder stage {index} residual {residual_index} pointwise activation"
+                    ),
+                    &residual.pointwise_activation,
+                    channels,
+                )?;
+                validate_conv(
+                    &format!("encoder stage {index} residual {residual_index} pointwise"),
+                    &residual.pointwise,
+                )?;
+            }
+            validate_snake(
+                &format!("encoder stage {index} activation"),
+                &stage.activation,
+                channels,
+            )?;
+            validate_conv(
+                &format!("encoder stage {index} downsample"),
+                &stage.downsample,
+            )?;
+            channels *= 2;
+        }
+        validate_conv("encoder terminal", &self.terminal)
+    }
+
     /// Encode mono channel-major 16-kHz PCM with the scalar reference path.
     pub fn encode(&self, pcm: &[f32], samples: usize) -> Result<Vec<f32>> {
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
         let mut values = self.stem.forward(&padded_pcm, padded_samples)?;
         let mut time = values.len() / self.stem.out_channels;
@@ -660,6 +744,8 @@ impl AudioVaeEncoder {
         samples: usize,
         compute: &Compute,
     ) -> Result<Vec<f32>> {
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
         let mut values = self
             .stem
@@ -1343,6 +1429,56 @@ mod tests {
         }
     }
 
+    fn metadata_encoder_stage(channels: usize, rate: usize) -> EncoderStage {
+        let residuals = std::array::from_fn(|index| {
+            let dilation = 3usize.pow(index as u32);
+            ResidualUnit {
+                filter: metadata_conv(channels, channels, 7, dilation, 1, 3 * dilation, channels),
+                activation: Snake {
+                    alpha: vec![0.0; channels],
+                },
+                pointwise_activation: Snake {
+                    alpha: vec![0.0; channels],
+                },
+                pointwise: metadata_conv(channels, channels, 1, 1, 1, 0, 1),
+            }
+        });
+        EncoderStage {
+            residuals,
+            activation: Snake {
+                alpha: vec![0.0; channels],
+            },
+            downsample: metadata_conv(
+                channels,
+                channels * 2,
+                rate * 2,
+                1,
+                rate,
+                rate.div_ceil(2),
+                1,
+            ),
+        }
+    }
+
+    fn metadata_source_encoder() -> AudioVaeEncoder {
+        let stem = metadata_conv(1, AUDIO_VAE_ENCODER_DIM, 7, 1, 1, 3, 1);
+        let mut channels = AUDIO_VAE_ENCODER_DIM;
+        let stages = AUDIO_VAE_ENCODER_RATES
+            .into_iter()
+            .map(|rate| {
+                let stage = metadata_encoder_stage(channels, rate);
+                channels *= 2;
+                stage
+            })
+            .collect();
+        let terminal = metadata_conv(channels, AUDIO_VAE_LATENT_DIM, 3, 1, 1, 1, 1);
+        AudioVaeEncoder {
+            stem,
+            stages,
+            terminal,
+        }
+    }
+
     fn metadata_source_decoder() -> AudioVaeDecoder {
         let stem = metadata_conv(AUDIO_VAE_LATENT_DIM, 1536, 7, 1, 1, 3, 1);
         let mut channels = 1536;
@@ -1464,6 +1600,24 @@ mod tests {
         let error = decoder
             .decode_with_compute(&[0.0; AUDIO_VAE_LATENT_DIM], 1, &Compute::cpu())
             .expect_err("mutated decoder must be rejected before a kernel");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(error.to_string().contains("bound weights"));
+    }
+
+    #[test]
+    fn encoder_execution_rejects_unbound_buffers_before_indexing() {
+        let encoder = metadata_source_encoder();
+        let error = encoder
+            .encode(&[0.0], 1)
+            .expect_err("metadata-only encoder must not execute");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(error.to_string().contains("bound weights"));
+
+        let mut encoder = metadata_source_encoder();
+        encoder.stem.weight_v.push(0.0);
+        let error = encoder
+            .encode_with_compute(&[0.0], 1, &Compute::cpu())
+            .expect_err("mutated encoder must be rejected before a kernel");
         assert!(matches!(error, VokraError::ModelLoad(_)));
         assert!(error.to_string().contains("bound weights"));
     }
