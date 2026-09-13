@@ -164,7 +164,7 @@ require_reference() {
     "\"model_name\": \"qwen3-tts-12hz-$slug\"" \
     '"official_source_repo": "QwenLM/Qwen3-TTS"' \
     '"official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e"' \
-    '"operation": "apply_exactly_three_source_patches"' '"patch_count": 3' '"forbidden_imports": []' \
+    '"operation": "apply_exactly_four_source_patches"' '"patch_count": 4' '"forbidden_imports": []' \
     '"decoder_repo": "Qwen/Qwen3-TTS-Tokenizer-12Hz"' \
     '"decoder_revision": "a87c50897bb00837eb857d0538b29d117541d7f6"' \
     '"decoder_checkpoint_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"' \

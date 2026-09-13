@@ -42,6 +42,12 @@ from qwen_source_compat import (
     PATCH_CORE_25HZ_ORIGINAL_SHA256 as COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256,
     PATCH_CORE_25HZ_PATCHED_BYTES as COMPATIBILITY_CORE_25HZ_PATCHED_BYTES,
     PATCH_CORE_25HZ_PATCHED_SHA256 as COMPATIBILITY_CORE_25HZ_PATCHED_SHA256,
+    PATCH_CONFIG_TARGET as COMPATIBILITY_CONFIG_TARGET,
+    PATCH_CONFIG_ORIGINAL_BYTES as COMPATIBILITY_CONFIG_ORIGINAL_BYTES,
+    PATCH_CONFIG_ORIGINAL_SHA256 as COMPATIBILITY_CONFIG_ORIGINAL_SHA256,
+    PATCH_CONFIG_PATCHED_BYTES as COMPATIBILITY_CONFIG_PATCHED_BYTES,
+    PATCH_CONFIG_PATCHED_SHA256 as COMPATIBILITY_CONFIG_PATCHED_SHA256,
+    PATCH_CONFIG_OPERATION as COMPATIBILITY_CONFIG_OPERATION,
     loaded_forbidden_imports,
     patch_source_checkout,
     self_test_filesystem,
@@ -289,12 +295,13 @@ def validate_source_record(source: dict[str, Any]) -> None:
     for relative, record in files.items():
         if relative not in SOURCE_FILE_SET or not isinstance(record, dict):
             raise ProbeError(f"official source file record is malformed: {relative}")
-        if relative in {COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET}:
+        if relative in {COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET, COMPATIBILITY_CONFIG_TARGET}:
             require_exact_keys(record, {"original_bytes", "original_sha256", "bytes", "sha256"}, f"source file {relative}")
             expected = {
                 COMPATIBILITY_PATCH_TARGET: (40519, "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628", COMPATIBILITY_PATCHED_BYTES, COMPATIBILITY_PATCHED_SHA256),
                 COMPATIBILITY_25HZ_TARGET: (COMPATIBILITY_25HZ_ORIGINAL_BYTES, COMPATIBILITY_25HZ_ORIGINAL_SHA256, COMPATIBILITY_25HZ_PATCHED_BYTES, COMPATIBILITY_25HZ_PATCHED_SHA256),
                 COMPATIBILITY_CORE_25HZ_TARGET: (COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, COMPATIBILITY_CORE_25HZ_PATCHED_SHA256),
+                COMPATIBILITY_CONFIG_TARGET: (COMPATIBILITY_CONFIG_ORIGINAL_BYTES, COMPATIBILITY_CONFIG_ORIGINAL_SHA256, COMPATIBILITY_CONFIG_PATCHED_BYTES, COMPATIBILITY_CONFIG_PATCHED_SHA256),
             }[relative]
             if record["original_bytes"] != expected[0] or record["original_sha256"] != expected[1] or record["bytes"] != expected[2] or record["sha256"] != expected[3]:
                 raise ProbeError(f"official source patched identity drifted: {relative}")
@@ -308,8 +315,9 @@ def validate_source_record(source: dict[str, Any]) -> None:
         {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_PATCH_TARGET, "operation": "replace_exactly_one_decorator", "original_bytes": 40519, "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628", "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": "check_model_inputs(func)"},
         {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
         {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
+        {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_CONFIG_TARGET, "operation": COMPATIBILITY_CONFIG_OPERATION, "original_bytes": COMPATIBILITY_CONFIG_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CONFIG_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CONFIG_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CONFIG_PATCHED_SHA256, "replacement_count": 1},
     ]
-    if patch != {"status": "COMPATIBILITY_PATCH_APPLIED", "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": expected_patch_rows}:
+    if patch != {"status": "COMPATIBILITY_PATCH_APPLIED", "operation": "apply_exactly_four_source_patches", "patch_count": 4, "patches": expected_patch_rows}:
         raise ProbeError("compatibility patch identity drifted")
     for row in expected_patch_rows:
         patch_file = files[row["target"]]
@@ -806,16 +814,18 @@ def self_test() -> int:
             source_files[COMPATIBILITY_PATCH_TARGET] = {"original_bytes": 40519, "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628", "bytes": COMPATIBILITY_PATCHED_BYTES, "sha256": COMPATIBILITY_PATCHED_SHA256}
             source_files[COMPATIBILITY_25HZ_TARGET] = {"original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "sha256": COMPATIBILITY_25HZ_PATCHED_SHA256}
             source_files[COMPATIBILITY_CORE_25HZ_TARGET] = {"original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256}
+            source_files[COMPATIBILITY_CONFIG_TARGET] = {"original_bytes": COMPATIBILITY_CONFIG_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CONFIG_ORIGINAL_SHA256, "bytes": COMPATIBILITY_CONFIG_PATCHED_BYTES, "sha256": COMPATIBILITY_CONFIG_PATCHED_SHA256}
             source_record = {
                 "repository": SOURCE_REPOSITORY,
                 "url": SOURCE_URL,
                 "revision": SOURCE_REVISION,
                 "package_version": SOURCE_PACKAGE_VERSION,
                 "files": source_files,
-                "compatibility_patch": {"status": "COMPATIBILITY_PATCH_APPLIED", "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": [
+                "compatibility_patch": {"status": "COMPATIBILITY_PATCH_APPLIED", "operation": "apply_exactly_four_source_patches", "patch_count": 4, "patches": [
                     {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_PATCH_TARGET, "operation": "replace_exactly_one_decorator", "original_bytes": 40519, "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628", "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": "check_model_inputs(func)"},
                     {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
                     {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
+                    {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_CONFIG_TARGET, "operation": COMPATIBILITY_CONFIG_OPERATION, "original_bytes": COMPATIBILITY_CONFIG_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CONFIG_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CONFIG_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CONFIG_PATCHED_SHA256, "replacement_count": 1},
                 ]},
             }
             source_facts = {

@@ -47,7 +47,7 @@ while Transformers 5.10.4 exposes `check_model_inputs(func)`. It also eagerly
 imports unused 25Hz tokenizer code from the core initializer and tokenizer
 registration module. Both API
 smoke phases therefore import the single shared bounded compatibility adapter
-from `qwen_source_compat.py` and apply exactly three patches only inside the
+from `qwen_source_compat.py` and apply exactly four patches only inside the
 disposable clean VAST source checkout: target
 `qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, original
 bytes `40519`, original SHA-256
@@ -64,7 +64,14 @@ registration block, changing 15699 bytes
 The core initializer removes its two exact 25Hz imports, changing 990 bytes
 (`1b380d9de843b6d585d938c339d066136567ca7125412674234204af4386679e`) to
 814 bytes (`c3d2f2f28cae7a0ec4d8dd8251470c8871acd2bf143d2fc239fcfbe8f2938497`).
-The evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
+Finally, the Talker configuration restores the `pad_token_id=None` special-token
+default that Transformers v4.57.3 supplied implicitly. The exact Talker block
+changes `qwen_tts/core/models/configuration_qwen3_tts.py` from 26428 bytes
+(`f52867f14fde06a416dd14864d503ce6d13d0a08d5f5da30191e1c80c13f5d18`) to
+26459 bytes (`a5534eeefbc01dec2bc9c594b34d4b5431e6dfde7d30eea57dc603435e7e6131`).
+Primary inspection of all four fixed model configs found the Talker key absent;
+only the nested code-predictor config carries an explicit null, so no other
+configuration or code-predictor field is changed. The evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
 compatibility, and any source/hash/count/path drift blocks before import.
 
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.

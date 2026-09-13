@@ -42,6 +42,12 @@ from qwen_source_compat import (
     PATCH_CORE_25HZ_ORIGINAL_SHA256 as COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256,
     PATCH_CORE_25HZ_PATCHED_BYTES as COMPATIBILITY_CORE_25HZ_PATCHED_BYTES,
     PATCH_CORE_25HZ_PATCHED_SHA256 as COMPATIBILITY_CORE_25HZ_PATCHED_SHA256,
+    PATCH_CONFIG_TARGET as COMPATIBILITY_CONFIG_TARGET,
+    PATCH_CONFIG_ORIGINAL_BYTES as COMPATIBILITY_CONFIG_ORIGINAL_BYTES,
+    PATCH_CONFIG_ORIGINAL_SHA256 as COMPATIBILITY_CONFIG_ORIGINAL_SHA256,
+    PATCH_CONFIG_PATCHED_BYTES as COMPATIBILITY_CONFIG_PATCHED_BYTES,
+    PATCH_CONFIG_PATCHED_SHA256 as COMPATIBILITY_CONFIG_PATCHED_SHA256,
+    PATCH_CONFIG_OPERATION as COMPATIBILITY_CONFIG_OPERATION,
     loaded_forbidden_imports,
     TRANSFORMERS_API as COMPATIBILITY_TRANSFORMERS_API,
     patch_source_checkout,
@@ -566,15 +572,16 @@ def validate_evidence_data(data: Any) -> None:
         if data["source"]["repository"] != SOURCE_REPOSITORY or data["source"]["revision"] != SOURCE_REVISION or data["source"]["resolved_revision"] != SOURCE_REVISION or data["source"]["package_version"] != SOURCE_PACKAGE_VERSION:
             raise SmokeError("source identity in evidence drifted")
         files = data["source"]["files"]
-        if not isinstance(files, dict) or set(files) != {COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET}:
+        if not isinstance(files, dict) or set(files) != {COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET, COMPATIBILITY_CONFIG_TARGET}:
             raise SmokeError("authenticated source file inventory drifted")
         patch = data["source"]["compatibility_patch"]
         expected_patches = {
             COMPATIBILITY_PATCH_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_PATCH_TARGET, "operation": COMPATIBILITY_PATCH_OPERATION, "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": COMPATIBILITY_TRANSFORMERS_API},
             COMPATIBILITY_25HZ_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
             COMPATIBILITY_CORE_25HZ_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
+            COMPATIBILITY_CONFIG_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_CONFIG_TARGET, "operation": COMPATIBILITY_CONFIG_OPERATION, "original_bytes": COMPATIBILITY_CONFIG_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CONFIG_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CONFIG_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CONFIG_PATCHED_SHA256, "replacement_count": 1},
         }
-        if not isinstance(patch, dict) or set(patch) != {"status", "operation", "patch_count", "patches"} or patch["status"] != COMPATIBILITY_PATCH_STATUS or patch["operation"] != "apply_exactly_three_source_patches" or patch["patch_count"] != 3 or not isinstance(patch["patches"], list) or len(patch["patches"]) != 3:
+        if not isinstance(patch, dict) or set(patch) != {"status", "operation", "patch_count", "patches"} or patch["status"] != COMPATIBILITY_PATCH_STATUS or patch["operation"] != "apply_exactly_four_source_patches" or patch["patch_count"] != 4 or not isinstance(patch["patches"], list) or len(patch["patches"]) != 4:
             raise SmokeError("compatibility patch evidence is malformed")
         if patch["patches"] != list(expected_patches.values()):
             raise SmokeError("compatibility patch target inventory drifted")
@@ -940,6 +947,7 @@ def self_test() -> None:
             COMPATIBILITY_PATCH_TARGET: {"original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256, "bytes": COMPATIBILITY_PATCHED_BYTES, "sha256": COMPATIBILITY_PATCHED_SHA256},
             COMPATIBILITY_25HZ_TARGET: {"original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "sha256": COMPATIBILITY_25HZ_PATCHED_SHA256},
             COMPATIBILITY_CORE_25HZ_TARGET: {"original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256},
+            COMPATIBILITY_CONFIG_TARGET: {"original_bytes": COMPATIBILITY_CONFIG_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CONFIG_ORIGINAL_SHA256, "bytes": COMPATIBILITY_CONFIG_PATCHED_BYTES, "sha256": COMPATIBILITY_CONFIG_PATCHED_SHA256},
         }
         source_evidence = {
             "repository": SOURCE_REPOSITORY,
@@ -948,17 +956,18 @@ def self_test() -> None:
             "package_version": SOURCE_PACKAGE_VERSION,
             "files": source_rows,
             "compatibility_patch": {
-                "status": COMPATIBILITY_PATCH_STATUS, "operation": "apply_exactly_three_source_patches", "patch_count": 3,
+                "status": COMPATIBILITY_PATCH_STATUS, "operation": "apply_exactly_four_source_patches", "patch_count": 4,
                 "patches": [
                     {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_PATCH_TARGET, "operation": COMPATIBILITY_PATCH_OPERATION, "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": COMPATIBILITY_TRANSFORMERS_API},
                     {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
                     {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
+                    {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_CONFIG_TARGET, "operation": COMPATIBILITY_CONFIG_OPERATION, "original_bytes": COMPATIBILITY_CONFIG_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CONFIG_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CONFIG_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CONFIG_PATCHED_SHA256, "replacement_count": 1},
                 ],
             },
         }
         failure["source"] = source_evidence
         validate_evidence_data(failure)
-        for index, target in enumerate((COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET)):
+        for index, target in enumerate((COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET, COMPATIBILITY_CONFIG_TARGET)):
             for field, value in (("patched_bytes", 1), ("patched_sha256", "0" * 64), ("replacement_count", 99), ("target", "tampered")):
                 candidate = json.loads(json.dumps(failure))
                 candidate["source"]["compatibility_patch"]["patches"][index][field] = value

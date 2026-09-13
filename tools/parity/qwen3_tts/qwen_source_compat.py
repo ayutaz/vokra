@@ -48,7 +48,34 @@ PATCH_CORE_25HZ_FROM = (
 PATCH_CORE_25HZ_TO = b""
 PATCH_CORE_25HZ_OPERATION = "remove_exactly_two_core_25hz_imports"
 
-COMPATIBILITY_PATCH_TARGETS = (PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET)
+
+PATCH_CONFIG_TARGET = "qwen_tts/core/models/configuration_qwen3_tts.py"
+PATCH_CONFIG_ORIGINAL_BYTES = 26428
+PATCH_CONFIG_ORIGINAL_SHA256 = "f52867f14fde06a416dd14864d503ce6d13d0a08d5f5da30191e1c80c13f5d18"
+PATCH_CONFIG_PATCHED_BYTES = 26459
+PATCH_CONFIG_PATCHED_SHA256 = "a5534eeefbc01dec2bc9c594b34d4b5431e6dfde7d30eea57dc603435e7e6131"
+PATCH_CONFIG_FROM = (
+    b"        codec_language_id=None,\n"
+    b"        **kwargs,\n"
+    b"    ):\n"
+    b"        super().__init__(\n"
+    b"            tie_word_embeddings=tie_word_embeddings,\n"
+    b"            **kwargs,\n"
+    b"        )\n"
+)
+PATCH_CONFIG_TO = (
+    b"        codec_language_id=None,\n"
+    b"        **kwargs,\n"
+    b"    ):\n"
+    b"        super().__init__(\n"
+    b"            tie_word_embeddings=tie_word_embeddings,\n"
+    b"            pad_token_id=None,\n"
+    b"            **kwargs,\n"
+    b"        )\n"
+)
+PATCH_CONFIG_OPERATION = "restore_transformers_special_token_default_pad_token_none"
+
+COMPATIBILITY_PATCH_TARGETS = (PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, PATCH_CONFIG_TARGET)
 FORBIDDEN_IMPORT_MODULES = ("onnxruntime", "sox")
 FORBIDDEN_IMPORT_PREFIXES = ("qwen_tts.core.tokenizer_25hz",)
 
@@ -122,6 +149,20 @@ def patch_core_25hz_source_bytes(original: bytes) -> bytes:
     return patched
 
 
+def patch_config_source_bytes(original: bytes) -> bytes:
+    if len(original) != PATCH_CONFIG_ORIGINAL_BYTES or sha256_bytes(original) != PATCH_CONFIG_ORIGINAL_SHA256:
+        raise CompatibilityPatchError("Talker configuration compatibility patch original source identity drifted")
+    count = original.count(PATCH_CONFIG_FROM)
+    if count != 1:
+        raise CompatibilityPatchError(f"Talker configuration compatibility patch expected exactly one block, found {count}")
+    patched = original.replace(PATCH_CONFIG_FROM, PATCH_CONFIG_TO)
+    if len(patched) != PATCH_CONFIG_PATCHED_BYTES or sha256_bytes(patched) != PATCH_CONFIG_PATCHED_SHA256:
+        raise CompatibilityPatchError("Talker configuration compatibility patch output identity drifted")
+    if patched.count(PATCH_CONFIG_FROM) != 0 or patched.count(PATCH_CONFIG_TO) != 1:
+        raise CompatibilityPatchError("Talker configuration compatibility patch result is not exact")
+    return patched
+
+
 def _patch_records(originals: dict[str, bytes], patched: dict[str, bytes]) -> list[dict[str, Any]]:
     return [
         {
@@ -142,6 +183,12 @@ def _patch_records(originals: dict[str, bytes], patched: dict[str, bytes]) -> li
             "patched_bytes": len(patched[PATCH_CORE_25HZ_TARGET]), "patched_sha256": sha256_bytes(patched[PATCH_CORE_25HZ_TARGET]),
             "replacement_count": 2,
         },
+        {
+            "status": PATCH_STATUS, "target": PATCH_CONFIG_TARGET, "operation": PATCH_CONFIG_OPERATION,
+            "original_bytes": len(originals[PATCH_CONFIG_TARGET]), "original_sha256": sha256_bytes(originals[PATCH_CONFIG_TARGET]),
+            "patched_bytes": len(patched[PATCH_CONFIG_TARGET]), "patched_sha256": sha256_bytes(patched[PATCH_CONFIG_TARGET]),
+            "replacement_count": 1,
+        },
     ]
 
 
@@ -150,17 +197,18 @@ def _expected_patch_records() -> list[dict[str, Any]]:
         {"status": PATCH_STATUS, "target": PATCH_TARGET, "operation": PATCH_OPERATION, "original_bytes": PATCH_ORIGINAL_BYTES, "original_sha256": PATCH_ORIGINAL_SHA256, "patched_bytes": PATCHED_BYTES, "patched_sha256": PATCHED_SHA256, "replacement_count": 1, "transformers_api": TRANSFORMERS_API},
         {"status": PATCH_STATUS, "target": PATCH_25HZ_TARGET, "operation": PATCH_25HZ_OPERATION, "original_bytes": PATCH_25HZ_ORIGINAL_BYTES, "original_sha256": PATCH_25HZ_ORIGINAL_SHA256, "patched_bytes": PATCH_25HZ_PATCHED_BYTES, "patched_sha256": PATCH_25HZ_PATCHED_SHA256, "replacement_count": 2},
         {"status": PATCH_STATUS, "target": PATCH_CORE_25HZ_TARGET, "operation": PATCH_CORE_25HZ_OPERATION, "original_bytes": PATCH_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": PATCH_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": PATCH_CORE_25HZ_PATCHED_BYTES, "patched_sha256": PATCH_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
+        {"status": PATCH_STATUS, "target": PATCH_CONFIG_TARGET, "operation": PATCH_CONFIG_OPERATION, "original_bytes": PATCH_CONFIG_ORIGINAL_BYTES, "original_sha256": PATCH_CONFIG_ORIGINAL_SHA256, "patched_bytes": PATCH_CONFIG_PATCHED_BYTES, "patched_sha256": PATCH_CONFIG_PATCHED_SHA256, "replacement_count": 1},
     ]
 
 
 def compatibility_patch_record() -> dict[str, Any]:
-    """Return the canonical record for the fixed three-patch contract."""
-    return {"status": PATCH_STATUS, "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": _expected_patch_records()}
+    """Return the canonical record for the fixed four-patch contract."""
+    return {"status": PATCH_STATUS, "operation": "apply_exactly_four_source_patches", "patch_count": 4, "patches": _expected_patch_records()}
 
 
 def validate_patch_record(record: Any) -> None:
     if record != compatibility_patch_record():
-        raise CompatibilityPatchError("compatibility patch evidence is not the fixed three-patch contract")
+        raise CompatibilityPatchError("compatibility patch evidence is not the fixed four-patch contract")
 
 
 def verify_patched_source_checkout(source: Path, record: Any = None) -> dict[str, Any]:
@@ -189,6 +237,8 @@ def verify_patched_source_checkout(source: Path, record: Any = None) -> dict[str
             raise CompatibilityPatchError("inference 25Hz import/registration compatibility patch was reverted")
         if row["target"] == PATCH_CORE_25HZ_TARGET and PATCH_CORE_25HZ_FROM in content:
             raise CompatibilityPatchError("core 25Hz import compatibility patch was reverted")
+        if row["target"] == PATCH_CONFIG_TARGET and PATCH_CONFIG_FROM in content:
+            raise CompatibilityPatchError("Talker configuration special-token compatibility patch was reverted")
     canonical = compatibility_patch_record()
     if record is not None:
         validate_patch_record(record)
@@ -196,7 +246,7 @@ def verify_patched_source_checkout(source: Path, record: Any = None) -> dict[str
 
 
 def patch_source_checkout(source: Path) -> dict[str, Any]:
-    """Apply all three patches, or leave the clean checkout completely untouched."""
+    """Apply all four patches, or leave the clean checkout completely untouched."""
     if source.is_symlink():
         raise CompatibilityPatchError("official source checkout path must not be a symlink")
     source = source.resolve(strict=False)
@@ -220,6 +270,7 @@ def patch_source_checkout(source: Path) -> dict[str, Any]:
         PATCH_TARGET: patch_source_bytes(originals[PATCH_TARGET]),
         PATCH_25HZ_TARGET: patch_25hz_source_bytes(originals[PATCH_25HZ_TARGET]),
         PATCH_CORE_25HZ_TARGET: patch_core_25hz_source_bytes(originals[PATCH_CORE_25HZ_TARGET]),
+        PATCH_CONFIG_TARGET: patch_config_source_bytes(originals[PATCH_CONFIG_TARGET]),
     }
     temporary: dict[str, Path] = {}
     replaced: list[str] = []
@@ -296,16 +347,19 @@ def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _clean_repo(root: Path, decorator: bytes, init: bytes, core: bytes) -> None:
+def _clean_repo(root: Path, decorator: bytes, init: bytes, core: bytes, config: bytes | None = None) -> None:
+    if config is None:
+        config = b"prefix\n" + PATCH_CONFIG_FROM + b"suffix\n"
     for relative in COMPATIBILITY_PATCH_TARGETS:
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
     (root / PATCH_TARGET).write_bytes(decorator)
     (root / PATCH_25HZ_TARGET).write_bytes(init)
     (root / PATCH_CORE_25HZ_TARGET).write_bytes(core)
+    (root / PATCH_CONFIG_TARGET).write_bytes(config)
     _git("init", "--quiet", cwd=root)
     _git("config", "user.email", "self-test@example.invalid", cwd=root)
     _git("config", "user.name", "Qwen self-test", cwd=root)
-    _git("add", PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, cwd=root)
+    _git("add", PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, PATCH_CONFIG_TARGET, cwd=root)
     _git("commit", "--quiet", "-m", "fixture", cwd=root)
 
 
@@ -314,27 +368,33 @@ def self_test_filesystem() -> None:
     global PATCH_TARGET, COMPATIBILITY_PATCH_TARGETS, PATCH_ORIGINAL_BYTES, PATCH_ORIGINAL_SHA256, PATCHED_BYTES, PATCHED_SHA256
     global PATCH_25HZ_ORIGINAL_BYTES, PATCH_25HZ_ORIGINAL_SHA256, PATCH_25HZ_PATCHED_BYTES, PATCH_25HZ_PATCHED_SHA256
     global PATCH_CORE_25HZ_ORIGINAL_BYTES, PATCH_CORE_25HZ_ORIGINAL_SHA256, PATCH_CORE_25HZ_PATCHED_BYTES, PATCH_CORE_25HZ_PATCHED_SHA256
-    contract = (PATCH_ORIGINAL_BYTES, PATCH_ORIGINAL_SHA256, PATCHED_BYTES, PATCHED_SHA256, PATCH_25HZ_ORIGINAL_BYTES, PATCH_25HZ_ORIGINAL_SHA256, PATCH_25HZ_PATCHED_BYTES, PATCH_25HZ_PATCHED_SHA256, PATCH_CORE_25HZ_ORIGINAL_BYTES, PATCH_CORE_25HZ_ORIGINAL_SHA256, PATCH_CORE_25HZ_PATCHED_BYTES, PATCH_CORE_25HZ_PATCHED_SHA256)
+    global PATCH_CONFIG_ORIGINAL_BYTES, PATCH_CONFIG_ORIGINAL_SHA256, PATCH_CONFIG_PATCHED_BYTES, PATCH_CONFIG_PATCHED_SHA256
+    contract = (PATCH_ORIGINAL_BYTES, PATCH_ORIGINAL_SHA256, PATCHED_BYTES, PATCHED_SHA256, PATCH_25HZ_ORIGINAL_BYTES, PATCH_25HZ_ORIGINAL_SHA256, PATCH_25HZ_PATCHED_BYTES, PATCH_25HZ_PATCHED_SHA256, PATCH_CORE_25HZ_ORIGINAL_BYTES, PATCH_CORE_25HZ_ORIGINAL_SHA256, PATCH_CORE_25HZ_PATCHED_BYTES, PATCH_CORE_25HZ_PATCHED_SHA256, PATCH_CONFIG_ORIGINAL_BYTES, PATCH_CONFIG_ORIGINAL_SHA256, PATCH_CONFIG_PATCHED_BYTES, PATCH_CONFIG_PATCHED_SHA256)
     decorator = b"prefix\n@check_model_inputs()\nsuffix\n"
     decorator_patched = b"prefix\n@check_model_inputs\nsuffix\n"
     init = b"head\n    Qwen3TTSTokenizerV1Config,\n    Qwen3TTSTokenizerV1Model,\nbody\n        AutoConfig.register(\"qwen3_tts_tokenizer_25hz\", Qwen3TTSTokenizerV1Config)\n        AutoModel.register(Qwen3TTSTokenizerV1Config, Qwen3TTSTokenizerV1Model)\n\nend\n"
     init_patched = b"head\nbody\nend\n"
     core = b"from .tokenizer_25hz.configuration_qwen3_tts_tokenizer_v1 import Qwen3TTSTokenizerV1Config\nfrom .tokenizer_25hz.modeling_qwen3_tts_tokenizer_v1 import Qwen3TTSTokenizerV1Model\nfrom .tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Config\nfrom .tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Model"
     core_patched = b"from .tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Config\nfrom .tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Model"
+    config = b"prefix\n" + PATCH_CONFIG_FROM + b"suffix\n"
+    config_patched = b"prefix\n" + PATCH_CONFIG_TO + b"suffix\n"
     PATCH_ORIGINAL_BYTES, PATCH_ORIGINAL_SHA256 = len(decorator), sha256_bytes(decorator)
     PATCHED_BYTES, PATCHED_SHA256 = len(decorator_patched), sha256_bytes(decorator_patched)
     PATCH_25HZ_ORIGINAL_BYTES, PATCH_25HZ_ORIGINAL_SHA256 = len(init), sha256_bytes(init)
     PATCH_25HZ_PATCHED_BYTES, PATCH_25HZ_PATCHED_SHA256 = len(init_patched), sha256_bytes(init_patched)
     PATCH_CORE_25HZ_ORIGINAL_BYTES, PATCH_CORE_25HZ_ORIGINAL_SHA256 = len(core), sha256_bytes(core)
     PATCH_CORE_25HZ_PATCHED_BYTES, PATCH_CORE_25HZ_PATCHED_SHA256 = len(core_patched), sha256_bytes(core_patched)
+    PATCH_CONFIG_ORIGINAL_BYTES, PATCH_CONFIG_ORIGINAL_SHA256 = len(config), sha256_bytes(config)
+    PATCH_CONFIG_PATCHED_BYTES, PATCH_CONFIG_PATCHED_SHA256 = len(config_patched), sha256_bytes(config_patched)
     try:
         with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-git-") as directory:
             root = Path(directory); _clean_repo(root, decorator, init, core)
             record = patch_source_checkout(root)
-            assert record["patch_count"] == 3
+            assert record["patch_count"] == 4
             assert (root / PATCH_TARGET).read_bytes() == decorator_patched
             assert (root / PATCH_25HZ_TARGET).read_bytes() == init_patched
             assert (root / PATCH_CORE_25HZ_TARGET).read_bytes() == core_patched
+            assert (root / PATCH_CONFIG_TARGET).read_bytes() == config_patched
             assert verify_patched_source_checkout(root, record) == record
             reordered = {**record, "patches": list(reversed(record["patches"]))}
             try: verify_patched_source_checkout(root, reordered)
@@ -345,7 +405,7 @@ def self_test_filesystem() -> None:
             try: verify_patched_source_checkout(root, tampered)
             except CompatibilityPatchError: pass
             else: raise AssertionError("tampered patch evidence was accepted")
-            _git("add", PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, cwd=root); _git("commit", "--quiet", "-m", "patched", cwd=root)
+            _git("add", PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, PATCH_CONFIG_TARGET, cwd=root); _git("commit", "--quiet", "-m", "patched", cwd=root)
             try: patch_source_checkout(root)
             except CompatibilityPatchError: pass
             else: raise AssertionError("already patched source was accepted")
@@ -411,11 +471,11 @@ def self_test_filesystem() -> None:
             except CompatibilityPatchError: pass
             else: raise AssertionError("symlink target was accepted")
         with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-escape-") as directory:
-            root = Path(directory); _clean_repo(root, decorator, init, core); original_target = PATCH_TARGET; original_targets = COMPATIBILITY_PATCH_TARGETS; PATCH_TARGET = "../outside.py"; COMPATIBILITY_PATCH_TARGETS = (PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET)
+            root = Path(directory); _clean_repo(root, decorator, init, core); original_target = PATCH_TARGET; original_targets = COMPATIBILITY_PATCH_TARGETS; PATCH_TARGET = "../outside.py"; COMPATIBILITY_PATCH_TARGETS = (PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, PATCH_CONFIG_TARGET)
             try:
                 try: patch_source_checkout(root)
                 except CompatibilityPatchError: pass
                 else: raise AssertionError("path escape was accepted")
             finally: PATCH_TARGET = original_target; COMPATIBILITY_PATCH_TARGETS = original_targets
     finally:
-        (PATCH_ORIGINAL_BYTES, PATCH_ORIGINAL_SHA256, PATCHED_BYTES, PATCHED_SHA256, PATCH_25HZ_ORIGINAL_BYTES, PATCH_25HZ_ORIGINAL_SHA256, PATCH_25HZ_PATCHED_BYTES, PATCH_25HZ_PATCHED_SHA256, PATCH_CORE_25HZ_ORIGINAL_BYTES, PATCH_CORE_25HZ_ORIGINAL_SHA256, PATCH_CORE_25HZ_PATCHED_BYTES, PATCH_CORE_25HZ_PATCHED_SHA256) = contract
+        (PATCH_ORIGINAL_BYTES, PATCH_ORIGINAL_SHA256, PATCHED_BYTES, PATCHED_SHA256, PATCH_25HZ_ORIGINAL_BYTES, PATCH_25HZ_ORIGINAL_SHA256, PATCH_25HZ_PATCHED_BYTES, PATCH_25HZ_PATCHED_SHA256, PATCH_CORE_25HZ_ORIGINAL_BYTES, PATCH_CORE_25HZ_ORIGINAL_SHA256, PATCH_CORE_25HZ_PATCHED_BYTES, PATCH_CORE_25HZ_PATCHED_SHA256, PATCH_CONFIG_ORIGINAL_BYTES, PATCH_CONFIG_ORIGINAL_SHA256, PATCH_CONFIG_PATCHED_BYTES, PATCH_CONFIG_PATCHED_SHA256) = contract
