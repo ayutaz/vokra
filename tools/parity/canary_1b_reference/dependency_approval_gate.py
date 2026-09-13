@@ -339,8 +339,8 @@ def verify_signature(approval: dict[str, Any], key_path: Path) -> None:
         raise ApprovalError("dependency approval signature is not valid base64") from error
     payload = canonical({key: value for key, value in approval.items() if key != "signature_base64"}).encode("utf-8")
     try:
-        with tempfile.TemporaryDirectory(prefix="vokra-canary-signature-", dir="/private/tmp") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory(prefix="vokra-canary-signature-") as directory:
+            root = Path(directory).resolve()
             payload_path = root / "payload"
             signature_path = root / "signature"
             allowed_signers_path = root / "allowed-signers"
@@ -433,8 +433,8 @@ def sign_for_self_test(approval: dict[str, Any], private_key: Path, payload_path
 
 def self_test() -> int:
     head = "a" * 40
-    with tempfile.TemporaryDirectory(prefix="vokra-canary-dependency-approval-", dir="/private/tmp") as directory:
-        root = Path(directory)
+    with tempfile.TemporaryDirectory(prefix="vokra-canary-dependency-approval-") as directory:
+        root = Path(directory).resolve()
         repository, evidence, external = root / "repo", root / "audit", root / "owner"
         repository.mkdir(); evidence.mkdir(); external.mkdir()
         report_path, approval_path = evidence / "report.json", external / "approval.json"
