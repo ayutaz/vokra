@@ -122,7 +122,7 @@ self_test() {
     'parity_zonos_real.rs' 'VOKRA_ZONOS_DAC_GGUF' 'cargo test --locked -p vokra-models' \
     'reference-codes.u32le' 'native-cpu.log' '--native-log' 'AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE' 'exit 2' \
     '--approval-evidence' '--approval-evidence-sha256' '--expected-head' 'preflight-only' 'write_transfer_manifest' \
-    'dependency_approval.py' 'check-zonos-transformers-compatibility.sh' 'BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE' 'ZONOS_DEPENDENCY_APPROVAL' 'ZONOS_DEPENDENCY_APPROVAL_SHA256' 'dependency_approval_sha256=' \
+    'dependency_approval.py' 'check-zonos-transformers-compatibility.sh' 'BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE' 'ZONOS_DEPENDENCY_APPROVAL' 'ZONOS_DEPENDENCY_APPROVAL_SHA256' 'ZONOS_TRANSFORMERS_COMPATIBILITY_EVIDENCE' 'ZONOS_TRANSFORMERS_COMPATIBILITY_EVIDENCE_SHA256' 'dependency_approval_sha256=' \
     'APPROVED_FOR_PRE_ACQUISITION' 'DEPENDENCY_SCOPE_ONLY' 'ALLOW_SOURCE_CHECKPOINT_ACQUISITION' \
     'CARGO_BUILD_JOBS=1' '--offline --locked' 'require_native_cpu_log' 'cpu_sentinel_summary=' 'metal_status=NOT_RUN' 'NO_UPLOAD' \
     'LICENSE' '11357' '7a4a3ea2424c09fbe48d455aed1eaa94d9124835' '58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd' 'apache-2.0' 'card_data_license' \
@@ -134,7 +134,7 @@ self_test() {
   done
   audit_line="$(awk '/VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash/{print NR; exit}' "$0")"
   approval_line="$(awk '/--approval \"\$dependency_approval\"/{print NR; exit}' "$0")"
-  compatibility_line="$(awk '/^bash .*TRANSFORMERS_COMPATIBILITY_GATE"$/{print NR; exit}' "$0")"
+  compatibility_line="$(awk '/^bash .*TRANSFORMERS_COMPATIBILITY_GATE.*--evidence/{print NR; exit}' "$0")"
   acquisition_line="$(awk '/^for command in git uv awk cp sha256sum cargo;/{print NR; exit}' "$0")"
   if [[ ! "$audit_line" =~ ^[0-9]+$ || ! "$approval_line" =~ ^[0-9]+$ || ! "$compatibility_line" =~ ^[0-9]+$ || ! "$acquisition_line" =~ ^[0-9]+$ ]] || \
     (( audit_line >= approval_line || approval_line >= compatibility_line || compatibility_line >= acquisition_line )); then
@@ -250,7 +250,12 @@ echo 'Zonos dependency approval PASS; factual audit remains BLOCKED_UNREVIEWED_T
 # A patched Transformers lock is not source/API compatibility evidence. Stop
 # before any source or checkpoint acquisition until an authorized VAST API
 # smoke test proves the exact upstream Zonos contract.
-bash "$TRANSFORMERS_COMPATIBILITY_GATE"
+compatibility_evidence="${ZONOS_TRANSFORMERS_COMPATIBILITY_EVIDENCE:-}"
+compatibility_evidence_sha="${ZONOS_TRANSFORMERS_COMPATIBILITY_EVIDENCE_SHA256:-}"
+[[ -n "$compatibility_evidence" ]] || die 'ZONOS_TRANSFORMERS_COMPATIBILITY_EVIDENCE must name external VAST compatibility evidence'
+[[ -n "$compatibility_evidence_sha" ]] || die 'ZONOS_TRANSFORMERS_COMPATIBILITY_EVIDENCE_SHA256 must bind external VAST compatibility evidence'
+bash "$TRANSFORMERS_COMPATIBILITY_GATE" --evidence "$compatibility_evidence" \
+  --evidence-sha256 "$compatibility_evidence_sha" --expected-head "$expected_head"
 
 for command in git uv awk cp sha256sum cargo; do command -v "$command" >/dev/null || die "missing tool: $command"; done
 UV_NO_CACHE=1 uv run --no-cache --frozen --project "$ROOT/tools/parity/zonos_v0_1_reference" --no-sync --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" \

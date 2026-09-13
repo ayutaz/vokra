@@ -5,8 +5,10 @@
 
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../tools/parity/zonos_v0_1_reference" && pwd)"
 LOCK="$PROJECT_DIR/uv.lock"
+PROBE="$PROJECT_DIR/transformers_compatibility.py"
 BLOCKED="BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE"
 
 lock_transformers_version() {
@@ -53,6 +55,8 @@ run_self_test() {
     echo "compatibility gate self-test: blocked marker contract is missing" >&2
     return 1
   }
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --no-cache --no-project --offline --python 3.12 python "$PROBE" --self-test || return 1
   echo "zonos Transformers compatibility gate self-test: PASS"
 }
 
@@ -61,12 +65,33 @@ if [[ "${1:-}" == --self-test ]]; then
   run_self_test
   exit 0
 fi
-[[ $# == 0 ]] || { echo "usage: check-zonos-transformers-compatibility.sh [--self-test]" >&2; exit 1; }
+if [[ $# == 0 ]]; then
+  echo "$BLOCKED: external VAST API evidence is required" >&2
+  exit 2
+fi
+[[ $# == 6 && "$1" == --evidence && "$3" == --evidence-sha256 && "$5" == --expected-head ]] || {
+  echo "usage: check-zonos-transformers-compatibility.sh --evidence FILE --evidence-sha256 SHA --expected-head HEX40" >&2
+  exit 1
+}
+evidence="$2"
+evidence_sha="$4"
+expected_head="$6"
 [[ -f "$LOCK" && ! -L "$LOCK" ]] || { echo "$BLOCKED: lock is missing or symlinked" >&2; exit 2; }
 summary="$(lock_transformers_version "$LOCK")"
 if [[ "$summary" != "entries=1 exact=1" ]]; then
   echo "$BLOCKED: tracked Transformers lock contract failed ($summary)" >&2
   exit 2
 fi
-echo "$BLOCKED: transformers==5.10.4 is security-fixed but upstream Zonos API compatibility is unverified" >&2
-exit 2
+[[ -f "$PROBE" && ! -L "$PROBE" ]] || { echo "$BLOCKED: compatibility probe is missing or symlinked" >&2; exit 2; }
+set +e
+UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+  uv run --no-cache --no-project --offline --python 3.12 python "$PROBE" \
+    --validate-evidence --vokra-root "$ROOT" --expected-head "$expected_head" \
+    --evidence "$evidence" --evidence-sha256 "$evidence_sha"
+status=$?
+set -e
+if [[ "$status" != 0 ]]; then
+  echo "$BLOCKED: external VAST API evidence failed strict validation" >&2
+  exit 2
+fi
+echo "Zonos Transformers compatibility gate: PASS_COMPATIBLE (external evidence authenticated)" >&2
