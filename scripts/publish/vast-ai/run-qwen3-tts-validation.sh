@@ -17,6 +17,7 @@ API_SMOKE_VALIDATOR="$PARITY_PROJECT/model_free_api_smoke.py"
 REFERENCE_AUDIO="$VOKRA_ROOT/tests/parity/utmos/ref-clip.wav"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+export PYTHONDONTWRITEBYTECODE=1
 
 DECODER_REPO="Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION="a87c50897bb00837eb857d0538b29d117541d7f6"
@@ -344,7 +345,7 @@ run_self_test() {
     'b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9' \
     '17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9' \
     'Qwen/Qwen3-TTS-Tokenizer-12Hz' 'a87c50897bb00837eb857d0538b29d117541d7f6' \
-    'https://github.com/QwenLM/Qwen3-TTS.git' 'download_source_tree' 'apply_source_compatibility' 'patch_source_checkout' 'source-compatibility.json' 'git init' 'remote add origin' 'fetch --depth 1 origin' 'FETCH_HEAD' '--source-dir' \
+    'https://github.com/QwenLM/Qwen3-TTS.git' 'download_source_tree' 'apply_source_compatibility' 'patch_source_checkout' 'source-compatibility.json' 'PYTHONDONTWRITEBYTECODE=1' 'git init' 'remote add origin' 'fetch --depth 1 origin' 'FETCH_HEAD' '--source-dir' \
     '022e286b98fbec7e1e916cb940cdf532cd9f488e' "$DECODER_CHECKPOINT_SHA256" \
     'nested_decoder_sha256' 'min_new_tokens' \
     'qwen3-tts-tokenizer-12hz' 'MIN_NEW_TOKENS=2' 'qwen3_tts_real_cpu_matches_official_reference' \

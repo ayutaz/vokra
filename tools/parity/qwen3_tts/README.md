@@ -44,7 +44,8 @@ completed. This dependency remediation does not claim API parity.
 
 The pinned upstream source contains one `@check_model_inputs()` decorator,
 while Transformers 5.10.4 exposes `check_model_inputs(func)`. It also eagerly
-imports unused 25Hz tokenizer code from both package initializers. Both API
+imports unused 25Hz tokenizer code from the core initializer and tokenizer
+registration module. Both API
 smoke phases therefore import the single shared bounded compatibility adapter
 from `qwen_source_compat.py` and apply exactly three patches only inside the
 disposable clean VAST source checkout: target
@@ -54,9 +55,12 @@ bytes `40519`, original SHA-256
 one replacement of `@check_model_inputs()` with `@check_model_inputs`, yielding
 patched bytes `40517` and patched SHA-256
 `a9da44f2f6b7ff0beb4dd43e8c4c48138e51423e9bcc515a253ea088381d3b9c`. The
-package initializer removes the exact 25Hz import, changing 839 bytes
-(`ea52de59d070fde366467a6902d0edcfc1b0575b8c570a0c71020c41d6a593ed`) to
-778 bytes (`82aa6d0f83b36bc1447f067b37e9a85578fc32a27abc98b6a747ad3741c126c4`).
+public package initializer remains unchanged at 839 bytes
+(`ea52de59d070fde366467a6902d0edcfc1b0575b8c570a0c71020c41d6a593ed`). The
+tokenizer registration module removes its exact V1 imports and 25Hz
+registration block, changing 15699 bytes
+(`ac2d855022a1bd21d33ab7b267ec952eef71f81d3f8d969a306139ff1a929515`) to
+15474 bytes (`dd66d8c6affed9b64f1509634944a7a5e9de79e7a70d9f542e3ac2caa985e169`).
 The core initializer removes its two exact 25Hz imports, changing 990 bytes
 (`1b380d9de843b6d585d938c339d066136567ca7125412674234204af4386679e`) to
 814 bytes (`c3d2f2f28cae7a0ec4d8dd8251470c8871acd2bf143d2fc239fcfbe8f2938497`).

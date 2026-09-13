@@ -571,7 +571,7 @@ def validate_evidence_data(data: Any) -> None:
         patch = data["source"]["compatibility_patch"]
         expected_patches = {
             COMPATIBILITY_PATCH_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_PATCH_TARGET, "operation": COMPATIBILITY_PATCH_OPERATION, "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": COMPATIBILITY_TRANSFORMERS_API},
-            COMPATIBILITY_25HZ_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_one_25hz_tokenizer_import", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 1},
+            COMPATIBILITY_25HZ_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
             COMPATIBILITY_CORE_25HZ_TARGET: {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
         }
         if not isinstance(patch, dict) or set(patch) != {"status", "operation", "patch_count", "patches"} or patch["status"] != COMPATIBILITY_PATCH_STATUS or patch["operation"] != "apply_exactly_three_source_patches" or patch["patch_count"] != 3 or not isinstance(patch["patches"], list) or len(patch["patches"]) != 3:
@@ -858,7 +858,7 @@ def self_test() -> None:
         raise SmokeError("decoder revision is not immutable")
     if not HEX64.fullmatch(LOCK_SHA256) or not HEX64.fullmatch(DECODER_CHECKPOINT_SHA256):
         raise SmokeError("fixed SHA-256 identity is malformed")
-    if COMPATIBILITY_PATCHED_BYTES != 40517 or not HEX64.fullmatch(COMPATIBILITY_PATCHED_SHA256) or COMPATIBILITY_25HZ_PATCHED_BYTES != 778 or COMPATIBILITY_CORE_25HZ_PATCHED_BYTES != 814:
+    if COMPATIBILITY_PATCHED_BYTES != 40517 or not HEX64.fullmatch(COMPATIBILITY_PATCHED_SHA256) or COMPATIBILITY_25HZ_PATCHED_BYTES != 15474 or COMPATIBILITY_CORE_25HZ_PATCHED_BYTES != 814:
         raise SmokeError("compatibility patch output identity is malformed")
     self_test_filesystem()
     safe_rows = [
@@ -951,7 +951,7 @@ def self_test() -> None:
                 "status": COMPATIBILITY_PATCH_STATUS, "operation": "apply_exactly_three_source_patches", "patch_count": 3,
                 "patches": [
                     {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_PATCH_TARGET, "operation": COMPATIBILITY_PATCH_OPERATION, "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": COMPATIBILITY_TRANSFORMERS_API},
-                    {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_one_25hz_tokenizer_import", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 1},
+                    {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
                     {"status": COMPATIBILITY_PATCH_STATUS, "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
                 ],
             },

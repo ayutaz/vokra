@@ -60,6 +60,7 @@ SOURCE_FILES = (
     "qwen_tts/inference/qwen3_tts_model.py",
     "qwen_tts/core/__init__.py",
     "qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py",
+    "qwen_tts/inference/qwen3_tts_tokenizer.py",
 )
 VARIANTS: dict[str, dict[str, Any]] = {
     "0.6b-base": {
@@ -305,7 +306,7 @@ def validate_source_record(source: dict[str, Any]) -> None:
     require_exact_keys(patch, {"status", "operation", "patch_count", "patches"}, "compatibility patch")
     expected_patch_rows = [
         {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_PATCH_TARGET, "operation": "replace_exactly_one_decorator", "original_bytes": 40519, "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628", "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": "check_model_inputs(func)"},
-        {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_one_25hz_tokenizer_import", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 1},
+        {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
         {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
     ]
     if patch != {"status": "COMPATIBILITY_PATCH_APPLIED", "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": expected_patch_rows}:
@@ -813,7 +814,7 @@ def self_test() -> int:
                 "files": source_files,
                 "compatibility_patch": {"status": "COMPATIBILITY_PATCH_APPLIED", "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": [
                     {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_PATCH_TARGET, "operation": "replace_exactly_one_decorator", "original_bytes": 40519, "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628", "patched_bytes": COMPATIBILITY_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_PATCHED_SHA256, "replacement_count": 1, "transformers_api": "check_model_inputs(func)"},
-                    {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_one_25hz_tokenizer_import", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 1},
+                    {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_25HZ_TARGET, "operation": "remove_exactly_two_25hz_imports_and_registration", "original_bytes": COMPATIBILITY_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_25HZ_PATCHED_SHA256, "replacement_count": 2},
                     {"status": "COMPATIBILITY_PATCH_APPLIED", "target": COMPATIBILITY_CORE_25HZ_TARGET, "operation": "remove_exactly_two_core_25hz_imports", "original_bytes": COMPATIBILITY_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": COMPATIBILITY_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": COMPATIBILITY_CORE_25HZ_PATCHED_BYTES, "patched_sha256": COMPATIBILITY_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
                 ]},
             }
