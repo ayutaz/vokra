@@ -16,7 +16,7 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
 > **Development status (2026-09-13):** the workspace is `0.3.0` development;
-> the observed `main` baseline for this campaign is `08b206c4`. The latest
+> the observed `main` baseline for this campaign is `50981d60`. The latest
 > live, read-only public inventory, evaluated with audit logic through
 > `87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
 > GGUF files: 136 Mac-CPU-complete, 42 partial, 15 without a runtime binder and

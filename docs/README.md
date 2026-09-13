@@ -2,9 +2,9 @@
 
 **Current-state review:** 2026-09-13
 
-**Reviewed implementation baseline:** GitHub `main` at `08b206c4` (2026-09-13);
-the current residual source/API and dependency-security head is `5a30084d`;
-the pre-documentation code
+**Reviewed implementation baseline:** GitHub `main` at `50981d60` (2026-09-13);
+the residual source/API and dependency-license closures are merged through
+this head; the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
 documentation/evidence checkpoint was

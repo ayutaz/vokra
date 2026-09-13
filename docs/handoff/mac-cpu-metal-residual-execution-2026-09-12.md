@@ -362,3 +362,255 @@ inventory contains only unrelated instance `50798096`
 does not decrement the live inventory: 58 public rows remain unresolved, and
 Zonos stays blocked before source/API and real-weight work pending the exact
 dependency approval.
+
+## 2026-09-13 BigVGAN exact-head dependency-closure replay
+
+The model-free BigVGAN Linux and Darwin dependency closures were replayed on
+disposable VAST instance `50849061` from clean public `main` head
+`64394791db5e8a2f2f437e0b4c405e78312bf2f0`. The workers downloaded and
+inspected only the exact CPython 3.12 wheels selected by the committed lock;
+they did not install or import packages, acquire a source/model checkpoint,
+execute a model, create an owner signature, or upload an artifact.
+
+The Linux candidate reproduced SHA-256
+`fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086`
+with ten active packages and 142 native/bundled payloads. The arm64-Darwin
+candidate reproduced SHA-256
+`148e44365efa92c2cd95feeef156e327975be465aad21c6b20c979433f6d25fa`
+with ten active packages and 21 native/bundled payloads. These are the exact
+candidate identities already bound into approval scope
+`73f8b60a0f71be420dfbaf1fc7213743701816a301303ff98ba46bbf2d09bce4`.
+
+Only the candidates plus their LICENSE, NOTICE, METADATA and native-payload
+inventories were recovered. The 274,515-byte local review archive has
+SHA-256
+`56572d0ad60586dfb1f405c082b1495f82d462b3dddf6ee60108afc737cd008b`;
+all 82 extracted payload hashes matched the candidate records. The evidence
+again includes Setuptools' vendored LGPL-3.0 and MPL-2.0 material and the
+PyTorch native/bundled closure. It therefore confirms rather than removes the
+manual legal-review boundary: the recorded `WITHHOLD_EXECUTION`,
+`BLOCKED_UNREVIEWED_TRANSITIVE` and `NO_UPLOAD` posture remains in force.
+
+## 2026-09-13 FireRedASR-AED-L source-state reconciliation
+
+A read-only reconciliation against clean public `main` head
+`64394791db5e8a2f2f437e0b4c405e78312bf2f0` corrects the older planning
+shorthand that described the released-weight AED decoder and beam search as
+unimplemented. The current source already contains the strict 940-tensor
+runtime binder (551 encoder plus 389 decoder descriptors), native
+CPU/Metal-dispatched encoder and incremental decoder primitives, the pinned
+upstream `batch_beam_search` policy and native beam execution, authenticated
+`cmvn.txt` and `dict.txt` sidecars, token rendering, and an explicit
+PCM/fbank/CMVN-to-greedy-token composition seam.
+
+The public row remains honestly `partial`: no current exact-head run proves
+the 4,678,597,714-byte released checkpoint against an independent FireRed
+reference, and the ordinary `transcribe_tokens` / `AsrEngine::transcribe`
+surface deliberately returns `UnsupportedOp` until that VAST parity gate is
+green. Therefore the next operation is not another speculative decoder or
+beam implementation. It is an approved, no-upload VAST conversion plus
+independent CPU encoder/beam/output parity; only after that evidence may a
+small reviewed implementation change open the ordinary transcription route,
+followed by the final Scaleway Apple CPU/Metal/no-fallback worker. No model,
+source checkpoint or external payload was acquired or executed during this
+reconciliation.
+
+The exact-head VAST model-free worker then completed on instance `50849061`
+with its intended exit 2 contract. It reported `BLOCKED_OWNER_REVIEW` /
+`NO_UPLOAD`, `payload_status=NOT_ACQUIRED` and
+`execution_status=NOT_PERFORMED`. The frozen Linux closure contains 27 rows
+with digest
+`b79e93fabc422b5b9a1c4347402829ad46d2e82afc342e7cf5125f50286e768c`;
+the pending owner-review scope SHA-256 is
+`02269d72f53a573458f10c919fc23270f38b967814cd15854a0bf0d853c46b6c`.
+The recovered 24-KiB evidence archive is
+`/private/tmp/firered-model-free-64394791-evidence.tar.gz`, and its remote and
+local SHA-256 both equal
+`f43f4d852787d845b5e1055d39653dcbdd8221b1953fe98552801a8655edce3c`.
+It contains only the audit JSON and log. The JSON and log SHA-256 values are
+respectively
+`b7895bead57ffc179ab3c194cdd61fa8deca67db895df78b2ed25c2be02a3a04`
+and
+`4a8db751d8e35b625ba8fdff3686dd27bbbfed61535bdcb162a5766b158eb5e4`.
+The remaining pre-acquisition decisions are the exact per-row publisher and
+native-payload review, including the pinned `kaldi-native-fbank` closure, plus
+training provenance. This evidence does not authorize checkpoint acquisition
+or execution.
+
+Commits `5d9d209b` and `77984f04` then add and harden a distinct
+`--dependency-audit-only` worker stage. It prepares the frozen Linux CPU
+closure, clones only the pinned FireRed and `kaldi-native-fbank` source trees
+with Git LFS smudging disabled, and collects installed publisher, licence and
+native-payload evidence without contacting the model repository. The first
+exact-head VAST attempt correctly failed closed because two tracked FireRed
+source aliases are Git mode `120000` relative symlinks rather than regular
+files. The follow-up records their Git blob identities and relative targets
+without following them outside the source tree; it never initializes a
+submodule or fetches a model payload.
+
+Those two commits were isolated in
+[PR #98](https://github.com/ayutaz/vokra/pull/98) and merged to `main` as
+`21acdbf9925ca6dd6c2c77144951cf8948754832`. Its review boundary was the
+fail-closed dependency-audit packet only. The merge does not widen the
+owner/legal scope or authorize model access.
+
+The final exact-head worker at `77984f048069bd9130f8f414a4dd915595a3aee8`
+completed evidence collection and retained its intended exit 2 posture:
+`BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD`. It records 27 active closure
+rows, 27 installed distribution-evidence rows, 27 owner-review rows, no
+collection failure, and 42 authenticated tracked FireRed source entries. The
+source `LICENSE` is 11,357 bytes with SHA-256
+`c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
+All ten recognized Hugging Face token environment variables were absent. The
+report records the model API as not contacted, `snapshot_download` as not
+called, and checkpoint/payload access, model import, execution, reference and
+conversion as not performed. The pending dependency audit scope SHA-256 is
+`7c0498f231ffef3fc16c212ce8cefa3b4a0ae686cba4db1aab48312cfb151324`.
+
+Only the JSON and validation log were recovered in
+`/private/tmp/firered-dependency-audit-77984f04-evidence.tar.gz`; its remote
+and local SHA-256 both equal
+`6d82c4ef9abd391124be0a819778d76a1dd69edf0a4c0a5a8ebe52c4d5f98002`.
+The JSON and log SHA-256 values are respectively
+`430acd2ec0ccd4c4122fc9638ce3251017b4c57c99a9f3586668207a22a87d8b`
+and
+`cbc6b25bd03ff377af402fa3c9e1515bb32d71ae1c78393d1f9b72109b3cc943`.
+The owner/legal review remains mandatory before any FireRed model acquisition
+or real-weight execution. This packet makes that review concrete; it does not
+self-approve it.
+
+## 2026-09-13 Zonos Transformers source/API compatibility closure
+
+The preceding security-closure record remains the evidence for its exact head,
+but its final source/API blocker was superseded by a later, separately bounded
+replay. Branch `feat/zonos-transformers-compat-smoke-20260913` was rebased
+without patch changes from base `446ea9e706aac8fc3ca779512df86dda933bce2a`
+onto clean `main` base `e7944b2dc7a5cf4c7d7919b8c49bbf326df1dbc6`.
+`git range-diff` reported all ten commits unchanged. A subsequent security
+closure pinned `setuptools==84.0.0`, a safe release after the first patched
+`83.0.0` for GHSA-h35f-9h28-mq5c, and made the compatibility generator record
+that distribution version. The final exact implementation head was
+`c82ed76e308a13f5ca5324ae3d00f9935f40123b`.
+
+Disposable VAST instance `50849061` (`vokra-zonos-setuptools-20260913`)
+checked out that exact head and cloned only the fixed official Zonos source
+revision `Zyphra/Zonos@bc40d98e1e1ab54fc65c483be127a90e3c7c0645`.
+The first final-head probe exposed that the generator omitted Setuptools from
+its package-version evidence; no model access occurred, and that diagnostic
+run was not accepted as final evidence. After the generator repair, the
+strict, model-free Transformers `5.10.4` source/API probe passed its fresh
+hash-bound validator. Its JSON and log SHA-256 values are respectively
+`a6890330da22270d8831b30d89d6852b087cc5eed84b98a95e1a6cb8de7daf74`
+and `e3f133833b5ed18af0ab776b7b5785776f39d1e3be483821801d6a09746c29f2`.
+The accepted report records `model_access=false`, `checkpoint_access=false`,
+`hf_token_present=false`, `constructor_calls=0` and a clean source checkout
+after import.
+
+The frozen dependency audit was regenerated at the same head after building
+the locked NumPy `2.2.2` wheel with BLAS and LAPACK disabled. It retained the
+intentional exit 2 posture `BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD` with
+38 lock packages, 34 active packages, 34 installed distributions, 41 native
+files, 59 retained publisher licence/notice files and no collector failure.
+The audit JSON and log SHA-256 values are respectively
+`d56994ebb79d1680f964984ec0e03fbc96d3ec6d05278031d7d8eec39c36361c`
+and `46b87c3af3625d246572b314996a414dd4ed7d3fcd269e8b74c7977517859a4d`.
+The candidate-scope SHA-256 is
+`a71392aea86a7470c25fc7fb59c799205da0194c1247cba0c3b19165f5c4feba`,
+and the publisher manifest SHA-256 is
+`7358b563f1cc6a96c91eef602c432a06fd02f25c84986c368c04f809f8cd4378`.
+The 10,105,816-byte no-BLAS wheel, SHA-256
+`0e7a1f3be4d0ac45109c3bcfb9afacc22987aeaae92fac4c030ada528d56f2ca`,
+remained on the disposable worker. Passing source/API compatibility therefore
+removes only the narrower `BLOCKED_UNVERIFIED_TRANSFORMERS_API_SMOKE`
+condition. It does not approve the transitive dependency closure, real-weight
+acquisition or publication.
+
+The same VAST checkout passed the locked workspace/all-target test suite with
+`groups=306 passed=8028 failed=0 ignored=101`, workspace/all-target/all-feature
+Clippy with `-D warnings`, `cargo deny`, `cargo audit`, and the complete static
+gate group. Their log SHA-256 values are respectively
+`584c3b0935062fe353968f0faaf0ed0d238be5bcd71e6feb4973eddd211a9810`,
+`04e86037dda801d80eb80030edcd91815c07a124d038fddf9ca83acffcd87bdd`,
+`3cf80bdc410003f3945b935691d26b6bf07dcdf648ce80b242447c564ff1991d`,
+`d090e5b875632f40e1b302dfc89b0a50776cee61f7ecb60e79284d779b80e4b7`
+and `f673d40c8e8793aae6497d91914b9611c4fc51d565cf2f4c568c86acfb9e5830`.
+The static group included all 55 Apple-worker syntax/self-tests and reported
+`syntax_failures=0`, `self_test_failures=0` and
+`unsupported_or_blocked=0`.
+
+Only the 317,680-byte evidence archive was recovered. Its remote and local
+SHA-256 both equal
+`bd5c4183e5a8b7372869f830efc2843acccf640ae10cb76e8f2d9194ffae2c09`.
+All 72 internal checksum entries passed locally, yielding 73 files including
+the checksum file, and all 59 publisher file hashes and byte counts were
+independently revalidated against the retained manifest. The archive excludes
+GGUFs, checkpoints, model payloads, wheels, sdists, prepared environments and
+Cargo target data. Instance `50849061` was stopped after this recovery.
+Exact-ID destroy authorization remains pending, so its storage continues to
+bill at `$0.037037037/hour`; this record intentionally reports the stopped
+state rather than claiming destruction. The unrelated protected instance
+`50798096` (`ralomi-m4r-4u-matched-v1`) was not modified.
+
+No real-weight conversion, independent numerical CPU parity, Apple/Scaleway
+execution or upload occurred in this closure. The live inventory therefore
+remains 136 full and 58 unresolved public rows. Zonos may advance beyond its
+source/API compatibility gate only after the exact transitive dependency scope
+is reviewed; publication remains separately prohibited until all five publish
+gates and artifact-specific authorization pass.
+
+## 2026-09-13 residual dependency-license closure wave
+
+The captured BigVGAN dependency rows were reviewed and merged through
+[PR #100](https://github.com/ayutaz/vokra/pull/100) as
+`7a9c888128d82adbcb327a9b2aa17bf8ff1d94d9`. The FireRedASR-AED-L closure
+was then merged through [PR #101](https://github.com/ayutaz/vokra/pull/101)
+as `5e4199551d4a2948121f49c47ae7977f5b14e346`. Both changes preserve empty
+owner signatures and `NO_UPLOAD`; they review captured dependency facts but
+do not authorize source/model acquisition or publication.
+
+Canary, Zonos and Dia were combined only for an exact-head validation wave.
+The clean base was `5e4199551d4a2948121f49c47ae7977f5b14e346` and the
+exact candidate head was
+`74c4d1627cdcc3626555eaa9fe1d1c1bbf64cf67`. Its git bundle SHA-256 was
+`5b73c04cac29d7269c19d66ac520bef28b8e5c7f4f7feac8050cdbe38307bde4`.
+The corresponding [PR #102](https://github.com/ayutaz/vokra/pull/102) was
+squash-merged on 2026-09-13 at `2026-09-13T09:17:28Z` as
+`50981d60fe0d6d0542514545db2ddf254e7343d9`. Its required checks were green;
+the still-running optional Unity package job did not block the merge.
+
+The committed closure gates bind the following exact factual evidence while
+retaining owner/legal review:
+
+- Canary: 134 lock rows, 133 package facts and 200 publisher files; candidate
+  owner scope
+  `f271515af4a6a5c97ef84bd93b21f18e36da8d63c8885693004fcf2bd7369d1e`;
+- Zonos: 34 active packages, 59 publisher files and 41 native files at captured
+  head `c82ed76e308a13f5ca5324ae3d00f9935f40123b`; candidate scope
+  `a71392aea86a7470c25fc7fb59c799205da0194c1247cba0c3b19165f5c4feba`;
+- Dia: 26 active packages, 159 native/bundled files and 50 publisher entries;
+  closure approval scope
+  `1f8c9465007f01acd17b256e54f410733ce1e0778256d1a588190dcef6ee9866`;
+- FireRedASR-AED-L: 27 distribution rows, 186 required paths and 135 unique
+  payloads; closure approval scope
+  `ee84a6d15aaa9e8e594fc2b2fffe59f0e3a70360f0fcae1629641ec3f1375d9e`.
+
+Disposable VAST instance `50849061` checked the exact candidate head without
+model/checkpoint acquisition or an HF token. The locked workspace/all-target
+tests, workspace/all-target/all-feature Clippy with `-D warnings`, `cargo
+deny`, `cargo audit`, the four license-gate self-tests, the Zonos external
+publisher/native evidence gate, Dia and FireRed ordinary fail-closed gates,
+and the forbidden-symbol, zero-dependency and Canary-review guards all passed.
+The expected ordinary gates validated their evidence and then returned exit 2
+because owner/legal approval remains absent. The recovered 136,282-byte log
+archive has SHA-256
+`27ccd7d7e9311f1e33f34526e4f19d42a8f852a8dc69305c57fd599780b30485`;
+all recorded per-file hashes matched after recovery.
+
+The worker was stopped after the archive and exact HEAD were verified.
+Instance `50849061` now incurs storage only at `$0.037037037/hour` until an
+exact-ID destroy authorization is supplied. Protected instance `50798096` was
+not modified. This closure wave does not change the live support denominator:
+the public audit remains 136 full and 58 unresolved rows. The next transition
+for BigVGAN, FireRed, Canary, Zonos and Dia is an exact scoped owner/legal
+decision, followed by real-weight VAST conversion and independent CPU parity;
+only green packets advance to Scaleway Apple CPU/Metal/no-fallback execution.
