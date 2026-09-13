@@ -49,9 +49,13 @@ contract (`from_pretrained`, positional `encode`, keyword `decode` with
 `codebook_size`/`n_codebooks`/`sampling_rate` configuration fields, without
 constructing a Zonos or DAC object. The
 return annotations are resolved to the installed DAC output dataclasses and
-their fields, while `DacConfig` and the residual quantizer are inspected for
-the corresponding configuration/API symbols; a string-only claim is not
-accepted.
+their fields, while `DacConfig` and the exact
+`transformers.models.dac.modeling_dac.DacResidualVectorQuantizer` class are
+inspected from the installed distribution. The probe parses that class's
+source to prove the `config.n_codebooks` → `n_codebooks` →
+`self.n_codebooks` assignment, `self.quantizers` `ModuleList(range(...))`
+construction, and `forward` use; a lazy-module symbol lookup or a
+string-only claim is not accepted.
 source `LICENSE`, repository origin, Vokra HEAD, dedicated
 `pyproject.toml`/`uv.lock`, package versions, Linux x86_64 environment, and
 the no-model/no-checkpoint/no-token conditions are written to a small,

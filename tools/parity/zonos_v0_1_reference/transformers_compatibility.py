@@ -7,6 +7,7 @@ stdlib-only and authenticates evidence produced by a disposable VAST worker.
 """
 from __future__ import annotations
 import argparse
+import ast
 import builtins
 import copy
 from contextlib import contextmanager
@@ -323,17 +324,97 @@ def dac_config_surface(config_class: Any) -> dict[str, Any]:
         fields.append({"name": name, "kind": parameter.kind.name, "default": repr(parameter.default)})
     return {"identity": f"{config_class.__module__}.{config_class.__qualname__}", "fields": fields}
 
-def dac_quantizer_surface(module: Any) -> dict[str, Any]:
-    for candidate in vars(module).values():
-        if not inspect.isclass(candidate) or "quant" not in candidate.__name__.casefold():
+def _attribute_path(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _attribute_path(node.value)
+        return f"{parent}.{node.attr}" if parent is not None else None
+    return None
+
+
+def _assignment(tree: ast.AST, target_path: str, value_path: str) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
             continue
-        try:
-            source = inspect.getsource(candidate)
-        except (OSError, TypeError):
+        if value is not None and _attribute_path(value) == value_path and any(_attribute_path(target) == target_path for target in targets):
+            return True
+    return False
+
+
+def _module_list_range(tree: ast.AST, target_path: str, range_path: str) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
             continue
-        if "n_codebooks" in source and "self.n_codebooks" in source:
-            return {"identity": f"{candidate.__module__}.{candidate.__qualname__}", "attribute": "n_codebooks", "source_assignment": True}
-    raise ProbeError("Transformers DAC quantizer n_codebooks API was not found")
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(_attribute_path(target) == target_path for target in targets):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Call) or _attribute_path(value.func) != "nn.ModuleList" or not value.args:
+            continue
+        for child in ast.walk(value):
+            if not isinstance(child, ast.Call) or _attribute_path(child.func) != "range" or not child.args:
+                continue
+            if _attribute_path(child.args[0]) == range_path:
+                return True
+    return False
+
+
+def _method_attribute_uses(class_tree: ast.ClassDef, attribute_path: str) -> list[str]:
+    methods: list[str] = []
+    for node in class_tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name == "__init__":
+            continue
+        if any(isinstance(child, ast.Attribute) and _attribute_path(child) == attribute_path for child in ast.walk(node)):
+            methods.append(node.name)
+    return sorted(set(methods))
+
+
+def dac_quantizer_surface(modeling_module: Any, distribution: importlib.metadata.Distribution) -> dict[str, Any]:
+    expected_identity = "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer"
+    try:
+        candidate = getattr(modeling_module, "DacResidualVectorQuantizer")
+    except AttributeError as error:
+        raise ProbeError("Transformers DAC quantizer class is not exported by modeling_dac") from error
+    if (not inspect.isclass(candidate) or candidate.__module__ != "transformers.models.dac.modeling_dac" or candidate.__qualname__ != "DacResidualVectorQuantizer"):
+        raise ProbeError("Transformers DAC quantizer class identity drifted")
+    source_path_raw = Path(inspect.getsourcefile(candidate) or "")
+    expected_source = Path(distribution.locate_file("transformers/models/dac/modeling_dac.py"))
+    if (not source_path_raw.is_file() or source_path_raw.is_symlink() or ancestor_symlink(source_path_raw)
+            or source_path_raw.resolve() != expected_source.resolve()):
+        raise ProbeError("Transformers DAC quantizer source is not the installed modeling_dac module")
+    try:
+        source = inspect.getsource(candidate)
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError) as error:
+        raise ProbeError("Transformers DAC quantizer source is not introspectable") from error
+    class_tree = next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DacResidualVectorQuantizer"), None)
+    if class_tree is None:
+        raise ProbeError("Transformers DAC quantizer class source is incomplete")
+    if not _assignment(class_tree, "n_codebooks", "config.n_codebooks") or not _assignment(class_tree, "self.n_codebooks", "n_codebooks"):
+        raise ProbeError("Transformers DAC quantizer config.n_codebooks assignment is missing")
+    if not _module_list_range(class_tree, "self.quantizers", "config.n_codebooks"):
+        raise ProbeError("Transformers DAC quantizer ModuleList range contract is missing")
+    methods = _method_attribute_uses(class_tree, "self.n_codebooks")
+    if "forward" not in methods:
+        raise ProbeError("Transformers DAC quantizer forward n_codebooks use is missing")
+    return {
+        "identity": expected_identity,
+        "source_file": "transformers/models/dac/modeling_dac.py",
+        "attribute": "n_codebooks",
+        "config_source": "config.n_codebooks",
+        "local_assignment": "n_codebooks",
+        "self_assignment": "self.n_codebooks",
+        "quantizers_module_list": "self.quantizers",
+        "quantizers_range_source": "config.n_codebooks",
+        "self_attribute_use_methods": methods,
+    }
 
 def api_contract(root: Path, source: Path) -> dict[str, Any]:
     sys.path.insert(0, str(root / PROJECT_RELATIVE))
@@ -343,6 +424,7 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
     with refuse_model_access() as refusal:
         transformers = importlib.import_module("transformers")
         transformers_dac = importlib.import_module("transformers.models.dac")
+        transformers_dac_modeling = importlib.import_module("transformers.models.dac.modeling_dac")
         model = importlib.import_module("zonos.model")
         conditioning = importlib.import_module("zonos.conditioning")
         autoencoder = importlib.import_module("zonos.autoencoder")
@@ -359,7 +441,8 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
             raise ProbeError(f"official source module resolved outside fixed checkout: {module_name}")
         imports[module_name] = {"status": "IMPORTED", "file": relative_file}
     transformer_file = Path(transformers.__file__).resolve()
-    distribution_file = Path(importlib.metadata.distribution("transformers").locate_file("transformers/__init__.py")).resolve()
+    transformers_distribution = importlib.metadata.distribution("transformers")
+    distribution_file = Path(transformers_distribution.locate_file("transformers/__init__.py")).resolve()
     if transformer_file != distribution_file or transformer_file.name != "__init__.py" or transformer_file.parent.name != "transformers":
         raise ProbeError("Transformers import did not resolve to the fixed installed distribution")
     imports["transformers"] = dict(TRANSFORMERS_IMPORT)
@@ -373,6 +456,9 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
         "zonos.sampling.sample_from_logits": signature_contract(sampling.sample_from_logits, ["logits", "temperature", "top_p", "top_k", "min_p", "linear", "conf", "quad", "generated_tokens", "repetition_penalty", "repetition_penalty_window"]),
     }
     dac_class = transformers_dac.DacModel
+    quantizer_class = transformers_dac_modeling.DacResidualVectorQuantizer
+    if quantizer_class.__module__ != "transformers.models.dac.modeling_dac" or quantizer_class.__qualname__ != "DacResidualVectorQuantizer":
+        raise ProbeError("Transformers DAC quantizer did not resolve from modeling_dac")
     if getattr(autoencoder, "DacModel", None) is not dac_class:
         raise ProbeError("official autoencoder.DacModel is not the imported Transformers DacModel")
     dac_contract = {
@@ -382,7 +468,7 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
         "encode": dac_signature_surface(dac_class.encode, positional_input=True) | {"output": dac_output_surface(dac_class.encode, "audio_codes", "DacEncoderOutput")},
         "decode": dac_signature_surface(dac_class.decode, keyword_input="audio_codes") | {"output": dac_output_surface(dac_class.decode, "audio_values", "DacDecoderOutput")},
         "config": dac_config_surface(transformers_dac.DacConfig),
-        "quantizer": dac_quantizer_surface(transformers_dac),
+        "quantizer": dac_quantizer_surface(transformers_dac_modeling, transformers_distribution),
         "caller_flow": {
             "encode_result": "audio_codes",
             "decode_keyword": "audio_codes",
@@ -488,8 +574,19 @@ def validate_dac_contract(dac: Any) -> None:
     if not isinstance(config, dict) or set(config) != {"identity", "fields"} or config["identity"] != "transformers.models.dac.configuration_dac.DacConfig" or config["fields"] != [{"name": "codebook_size", "kind": "POSITIONAL_OR_KEYWORD", "default": "1024"}, {"name": "sampling_rate", "kind": "POSITIONAL_OR_KEYWORD", "default": "16000"}]:
         raise ProbeError("DacConfig field contract is invalid")
     quantizer = dac["quantizer"]
-    if not isinstance(quantizer, dict) or quantizer != {"identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer", "attribute": "n_codebooks", "source_assignment": True}:
-        raise ProbeError("DAC quantizer n_codebooks contract is invalid")
+    expected_quantizer = {
+        "identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer",
+        "source_file": "transformers/models/dac/modeling_dac.py",
+        "attribute": "n_codebooks",
+        "config_source": "config.n_codebooks",
+        "local_assignment": "n_codebooks",
+        "self_assignment": "self.n_codebooks",
+        "quantizers_module_list": "self.quantizers",
+        "quantizers_range_source": "config.n_codebooks",
+        "self_attribute_use_methods": ["forward"],
+    }
+    if quantizer != expected_quantizer:
+        raise ProbeError("DAC quantizer n_codebooks implementation contract is invalid")
     flow = dac["caller_flow"]
     if flow != {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"}:
         raise ProbeError("DAC caller flow contract is invalid")
@@ -622,7 +719,17 @@ def self_test() -> None:
             "encode": {"callable": True, "parameters": [{"name": "wav", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "wav", "kind": "POSITIONAL_OR_KEYWORD"}, "output": {"required_field": "audio_codes", "types": [{"identity": "transformers.models.dac.modeling_dac.DacEncoderOutput", "fields": ["audio_codes"]}]}},
             "decode": {"callable": True, "parameters": [{"name": "audio_codes", "kind": "KEYWORD_ONLY", "default": "<class 'inspect._empty'>"}], "keyword_input": {"name": "audio_codes", "kind": "KEYWORD_ONLY"}, "output": {"required_field": "audio_values", "types": [{"identity": "transformers.models.dac.modeling_dac.DacDecoderOutput", "fields": ["audio_values"]}]}},
             "config": {"identity": "transformers.models.dac.configuration_dac.DacConfig", "fields": [{"name": "codebook_size", "kind": "POSITIONAL_OR_KEYWORD", "default": "1024"}, {"name": "sampling_rate", "kind": "POSITIONAL_OR_KEYWORD", "default": "16000"}]},
-            "quantizer": {"identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer", "attribute": "n_codebooks", "source_assignment": True},
+            "quantizer": {
+                "identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer",
+                "source_file": "transformers/models/dac/modeling_dac.py",
+                "attribute": "n_codebooks",
+                "config_source": "config.n_codebooks",
+                "local_assignment": "n_codebooks",
+                "self_assignment": "self.n_codebooks",
+                "quantizers_module_list": "self.quantizers",
+                "quantizers_range_source": "config.n_codebooks",
+                "self_attribute_use_methods": ["forward"],
+            },
             "caller_flow": {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"},
         }
         validate_dac_contract(dac_safe)
@@ -630,7 +737,7 @@ def self_test() -> None:
             tampered = dict(dac_safe)
             tampered[field] = "tampered" if field != "same_class_object" else False
             expect_error(lambda tampered=tampered: validate_dac_contract(tampered), f"tampered DAC {field}")
-        for path in (("from_pretrained", "positional_input"), ("encode", "output"), ("decode", "output"), ("config", "fields"), ("quantizer", "attribute")):
+        for path in (("from_pretrained", "positional_input"), ("encode", "output"), ("decode", "output"), ("config", "fields"), ("quantizer", "config_source"), ("quantizer", "self_attribute_use_methods")):
             tampered = copy.deepcopy(dac_safe)
             if path == ("from_pretrained", "positional_input"):
                 tampered[path[0]][path[1]]["kind"] = "KEYWORD_ONLY"
@@ -638,6 +745,8 @@ def self_test() -> None:
                 tampered[path[0]][path[1]]["required_field"] = "tampered"
             elif path == ("config", "fields"):
                 tampered[path[0]][path[1]][0]["default"] = "0"
+            elif path == ("quantizer", "self_attribute_use_methods"):
+                tampered[path[0]][path[1]] = ["tampered"]
             else:
                 tampered[path[0]][path[1]] = "tampered"
             expect_error(lambda tampered=tampered: validate_dac_contract(tampered), f"tampered DAC {path[0]}.{path[1]}")
