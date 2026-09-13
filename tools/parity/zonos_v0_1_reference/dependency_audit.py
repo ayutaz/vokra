@@ -40,8 +40,8 @@ REPOSITORY_ROOT = PROJECT_DIR.parents[2]
 AUDITOR_PATH = Path(__file__).resolve()
 WRAPPER_PATH = REPOSITORY_ROOT / "scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
 PREPARER_PATH = PROJECT_DIR / "prepare_numpy_no_blas.sh"
-EXPECTED_PROJECT_SHA256 = "d1147745ce62515adfa4aaa28a896a1f8765592f77404ed3e9b8ba4a4c0d7f97"
-EXPECTED_LOCK_SHA256 = "d533b5917f820cca4bb0776b282ffa3749d89152acf94fca755dc78fdfcb82a1"
+EXPECTED_PROJECT_SHA256 = "75228b40004f3fab253c5a1ad49c1a3316a97118458b9f5af80ec71d83c4944f"
+EXPECTED_LOCK_SHA256 = "230af5f7a368c831ae86fd2a2e697b20efa30b468647e13c5002380d619e4e5d"
 EXPECTED_CONSTRAINTS_SHA256 = "812ab3e215d7756738ab9a9aca7b8c94b53a3b10e8f1e43228e1b74965be020a"
 NUMPY_SDIST_URL = "https://files.pythonhosted.org/packages/ec/d0/c12ddfd3a02274be06ffc71f3efc6d0e457b0409c4481596881e748cb264/numpy-2.2.2.tar.gz"
 NUMPY_SDIST_SHA256 = "ed6906f61834d687738d25988ae117683705636936cc605be0bb208b23df4d8f"
@@ -52,8 +52,8 @@ DIRECT_DEPENDENCIES = {
     "huggingface-hub": "1.5.0",
     "numpy": "2.2.2",
     "safetensors": "0.5.3",
-    "torch": "2.6.0+cpu",
-    "torchaudio": "2.6.0+cpu",
+    "torch": "2.11.0+cpu",
+    "torchaudio": "2.11.0+cpu",
     "tqdm": "4.67.1",
     "transformers": "5.10.4",
 }
@@ -265,9 +265,9 @@ def _lock_rows() -> list[dict[str, Any]]:
         raise RuntimeError("a direct Zonos dependency is absent from uv.lock")
     torch_rows = [row for row in rows if pep503_name(row["name"]) == "torch"]
     audio_rows = [row for row in rows if pep503_name(row["name"]) == "torchaudio"]
-    if not any(row["version"] == "2.6.0+cpu" and row["source"].get("registry") == "https://download.pytorch.org/whl/cpu" for row in torch_rows):
+    if not any(row["version"] == "2.11.0+cpu" and row["source"].get("registry") == "https://download.pytorch.org/whl/cpu" for row in torch_rows):
         raise RuntimeError("Linux x86_64 CPU torch resolution is not pinned")
-    if not any(row["version"] == "2.6.0+cpu" and row["source"].get("registry") == "https://download.pytorch.org/whl/cpu" for row in audio_rows):
+    if not any(row["version"] == "2.11.0+cpu" and row["source"].get("registry") == "https://download.pytorch.org/whl/cpu" for row in audio_rows):
         raise RuntimeError("Linux x86_64 CPU torchaudio resolution is not pinned")
     rows.sort(key=lambda row: (row["name"], row["version"], json.dumps(row["source"], sort_keys=True)))
     return rows
@@ -332,7 +332,7 @@ def _active_lock_rows(
             if isinstance(child, dict):
                 pending.append(child)
     active = [selected[name] for name in sorted(selected)]
-    expected_torch_version = "2.6.0+cpu" if environment["sys_platform"] == "linux" else "2.6.0"
+    expected_torch_version = "2.11.0+cpu" if environment["sys_platform"] == "linux" else "2.11.0"
     for name in ("torch", "torchaudio"):
         candidates = [row for row in active if pep503_name(row["name"]) == name]
         if len(candidates) != 1 or candidates[0]["version"] != expected_torch_version:
@@ -747,8 +747,8 @@ def installed_audit(
     numpy_distribution: importlib.metadata.Distribution | None = None
     for name, distribution in sorted(distributions.items()):
         version = distribution.version
-        if name in {"torch", "torchaudio"} and version == "2.6.0":
-            version = "2.6.0+cpu"
+        if name in {"torch", "torchaudio"} and version == "2.11.0":
+            version = "2.11.0+cpu"
         expected = expected_versions.get(name)
         if expected is not None and version != expected:
             failures.append(f"installed version mismatch: {name}={version!r}, expected {expected!r}")
@@ -1659,7 +1659,7 @@ def self_test() -> None:
     active = _active_lock_rows(report["lock"]["rows"])
     assert len(active) == 34
     assert all(row["source"].get("virtual") is None for row in active)
-    assert {row["version"] for row in active if row["name"] in {"torch", "torchaudio"}} == {"2.6.0+cpu"}
+    assert {row["version"] for row in active if row["name"] in {"torch", "torchaudio"}} == {"2.11.0+cpu"}
     darwin = _active_lock_rows(
         report["lock"]["rows"],
         {
@@ -1672,8 +1672,8 @@ def self_test() -> None:
     )
     darwin_names = {row["name"] for row in darwin}
     assert "colorama" not in darwin_names
-    assert {row["version"] for row in darwin if row["name"] == "torch"} == {"2.6.0"}
-    assert {row["version"] for row in darwin if row["name"] == "torchaudio"} == {"2.6.0"}
+    assert {row["version"] for row in darwin if row["name"] == "torch"} == {"2.11.0"}
+    assert {row["version"] for row in darwin if row["name"] == "torchaudio"} == {"2.11.0"}
     ambiguous = list(report["lock"]["rows"])
     ambiguous.append(dict(next(row for row in ambiguous if row["name"] == "numpy"), version="2.2.3"))
     try:
