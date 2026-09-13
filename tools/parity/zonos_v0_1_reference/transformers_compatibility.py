@@ -483,14 +483,14 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
     return {"modules": imports, "callables": contracts, "dac_api_contract": dac_contract, "constructor_calls": 0, "model_access_events": []}
 
 def package_versions() -> dict[str, str]:
-    names = ("huggingface-hub", "numpy", "safetensors", "torch", "torchaudio", "tqdm", "transformers")
+    names = ("huggingface-hub", "numpy", "safetensors", "setuptools", "torch", "torchaudio", "tqdm", "transformers")
     result = {}
     for name in names:
         try:
             result[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError as error:
             raise ProbeError(f"required distribution is missing: {name}") from error
-    expected = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
+    expected = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "setuptools": "84.0.0", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
     if result != expected:
         raise ProbeError(f"installed versions drifted: {result}")
     return result
@@ -733,6 +733,17 @@ def self_test() -> None:
             "caller_flow": {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"},
         }
         validate_dac_contract(dac_safe)
+        # Exercise the exact metadata collection path used by --run. A
+        # synthetic metadata provider makes this model-free while ensuring a
+        # newly required distribution (notably setuptools) cannot be omitted
+        # from the generated evidence.
+        expected_package_versions = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "setuptools": "84.0.0", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
+        original_metadata_version = importlib.metadata.version
+        importlib.metadata.version = lambda name: expected_package_versions[name]  # type: ignore[assignment]
+        try:
+            assert package_versions() == expected_package_versions, "package version evidence omitted a required distribution"
+        finally:
+            importlib.metadata.version = original_metadata_version
         # Exercise the same hash-bound evidence validator used by the gate,
         # including the generated DacConfig KEYWORD_ONLY records. This stays
         # model/source-free; all identities come from the checked-in contract
