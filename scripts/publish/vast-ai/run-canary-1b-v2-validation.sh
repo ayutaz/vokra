@@ -36,7 +36,6 @@ CANARY_REFERENCE_PROJECT="$REPO_ROOT/tools/parity/canary_1b_reference"
 PREFLIGHT_GATE="$REPO_ROOT/tools/parity/canary_1b/preflight_gate.py"
 PREFLIGHT_MANIFEST="$REPO_ROOT/tools/parity/canary_1b/license_gate_manifest.json"
 DEPENDENCY_GATE="$REPO_ROOT/tools/parity/canary_1b_reference/dependency_approval_gate.py"
-COMPATIBILITY_GATE="$REPO_ROOT/tools/parity/canary_1b_reference/compatibility_gate.py"
 
 canonical_absent_path() {
   local target="$1" lexical current="/" component suffix="" real

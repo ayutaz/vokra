@@ -493,11 +493,22 @@ def self_test() -> int:
             print("dependency approval accepted symlink", file=sys.stderr); return 1
         if validate(**{**kwargs, "approval_path": report_path, "approval_sha256": sha256_file(report_path)})[0]:
             print("dependency approval accepted overlapping paths", file=sys.stderr); return 1
+    parser = build_parser()
+    invalid_args = parser.parse_args(["--self-test", "--lock", "unused.lock"])
+    try:
+        validate_mode_args(parser, invalid_args)
+    except SystemExit as error:
+        if error.code != 2:
+            print("dependency approval CLI accepted an unexpected parser exit", file=sys.stderr)
+            return 1
+    else:
+        print("dependency approval CLI accepted --self-test with --lock", file=sys.stderr)
+        return 1
     print("canary_1b dependency approval gate self-test: PASS")
     return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--compatibility-check", action="store_true")
@@ -509,16 +520,38 @@ def main() -> int:
     parser.add_argument("--expected-head")
     parser.add_argument("--variant", choices=sorted(VARIANTS))
     parser.add_argument("--approval-sha256")
-    args = parser.parse_args()
+    return parser
+
+
+def validate_mode_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.compatibility_check:
-        normal_values = (args.audit_report, args.approval, args.trusted_signer_key, args.repo_root, args.expected_head, args.variant, args.approval_sha256)
+        normal_values = (
+            args.audit_report,
+            args.approval,
+            args.trusted_signer_key,
+            args.repo_root,
+            args.expected_head,
+            args.variant,
+            args.approval_sha256,
+        )
         if args.self_test or args.lock is None or any(value is not None for value in normal_values):
             parser.error("--compatibility-check requires only --lock")
+    elif args.lock is not None:
+        parser.error("--lock requires --compatibility-check")
+    values = (args.audit_report, args.approval, args.trusted_signer_key, args.repo_root, args.expected_head, args.variant, args.approval_sha256)
+    if args.self_test:
+        if args.lock is not None or any(value is not None for value in values):
+            parser.error("--self-test accepts no other arguments")
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    validate_mode_args(parser, args)
+    if args.compatibility_check:
         return compatibility_check(args.lock)
     values = (args.audit_report, args.approval, args.trusted_signer_key, args.repo_root, args.expected_head, args.variant, args.approval_sha256)
     if args.self_test:
-        if any(value is not None for value in values):
-            parser.error("--self-test accepts no other arguments")
         return self_test()
     if any(value is None for value in values):
         parser.error("normal runs require audit-report, approval, trusted-signer-key, repo-root, expected-head, variant, and approval-sha256")
