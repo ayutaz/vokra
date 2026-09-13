@@ -319,7 +319,7 @@ def dac_config_surface(config_class: Any) -> dict[str, Any]:
     fields = []
     for name, expected_default in (("codebook_size", "1024"), ("sampling_rate", "16000")):
         parameter = signature.parameters.get(name)
-        if parameter is None or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY) or repr(parameter.default) != expected_default:
+        if parameter is None or parameter.kind is not inspect.Parameter.KEYWORD_ONLY or repr(parameter.default) != expected_default:
             raise ProbeError(f"DacConfig field contract drifted: {name}")
         fields.append({"name": name, "kind": parameter.kind.name, "default": repr(parameter.default)})
     return {"identity": f"{config_class.__module__}.{config_class.__qualname__}", "fields": fields}
@@ -571,7 +571,7 @@ def validate_dac_contract(dac: Any) -> None:
             if not isinstance(output_type, dict) or set(output_type) != {"identity", "fields"} or output_type["identity"] != f"transformers.models.dac.modeling_dac.{expected_type}" or not isinstance(output_type["fields"], list) or any(not isinstance(field, str) for field in output_type["fields"]) or expected_field not in output_type["fields"]:
                 raise ProbeError(f"DAC {key} output field contract is invalid")
     config = dac["config"]
-    if not isinstance(config, dict) or set(config) != {"identity", "fields"} or config["identity"] != "transformers.models.dac.configuration_dac.DacConfig" or config["fields"] != [{"name": "codebook_size", "kind": "POSITIONAL_OR_KEYWORD", "default": "1024"}, {"name": "sampling_rate", "kind": "POSITIONAL_OR_KEYWORD", "default": "16000"}]:
+    if not isinstance(config, dict) or set(config) != {"identity", "fields"} or config["identity"] != "transformers.models.dac.configuration_dac.DacConfig" or config["fields"] != [{"name": "codebook_size", "kind": "KEYWORD_ONLY", "default": "1024"}, {"name": "sampling_rate", "kind": "KEYWORD_ONLY", "default": "16000"}]:
         raise ProbeError("DacConfig field contract is invalid")
     quantizer = dac["quantizer"]
     expected_quantizer = {
@@ -718,7 +718,7 @@ def self_test() -> None:
             "from_pretrained": {"callable": True, "parameters": [{"name": "model", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "model", "kind": "POSITIONAL_OR_KEYWORD"}},
             "encode": {"callable": True, "parameters": [{"name": "wav", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "wav", "kind": "POSITIONAL_OR_KEYWORD"}, "output": {"required_field": "audio_codes", "types": [{"identity": "transformers.models.dac.modeling_dac.DacEncoderOutput", "fields": ["audio_codes"]}]}},
             "decode": {"callable": True, "parameters": [{"name": "audio_codes", "kind": "KEYWORD_ONLY", "default": "<class 'inspect._empty'>"}], "keyword_input": {"name": "audio_codes", "kind": "KEYWORD_ONLY"}, "output": {"required_field": "audio_values", "types": [{"identity": "transformers.models.dac.modeling_dac.DacDecoderOutput", "fields": ["audio_values"]}]}},
-            "config": {"identity": "transformers.models.dac.configuration_dac.DacConfig", "fields": [{"name": "codebook_size", "kind": "POSITIONAL_OR_KEYWORD", "default": "1024"}, {"name": "sampling_rate", "kind": "POSITIONAL_OR_KEYWORD", "default": "16000"}]},
+            "config": {"identity": "transformers.models.dac.configuration_dac.DacConfig", "fields": [{"name": "codebook_size", "kind": "KEYWORD_ONLY", "default": "1024"}, {"name": "sampling_rate", "kind": "KEYWORD_ONLY", "default": "16000"}]},
             "quantizer": {
                 "identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer",
                 "source_file": "transformers/models/dac/modeling_dac.py",
@@ -733,6 +733,40 @@ def self_test() -> None:
             "caller_flow": {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"},
         }
         validate_dac_contract(dac_safe)
+        # Exercise the same hash-bound evidence validator used by the gate,
+        # including the generated DacConfig KEYWORD_ONLY records. This stays
+        # model/source-free; all identities come from the checked-in contract
+        # and the current clean Vokra checkout.
+        validation_root = root / "validator-evidence"
+        validation_root.mkdir()
+        validation_path = validation_root / "synthetic-evidence.json"
+        project_root = repository_root()
+        expected_head = subprocess.run(["git", "-C", str(project_root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        generated_imports = {name: {"status": "IMPORTED", "file": relative} for name, relative in SOURCE_MODULE_FILES.items()}
+        generated_imports["transformers"] = dict(TRANSFORMERS_IMPORT)
+        generated_api = {name: {"parameters": [{"name": parameter_name, "kind": kind, "default": default} for parameter_name, kind, default in parameters]} for name, parameters in EXPECTED_API_PARAMETERS.items()}
+        synthetic_evidence = {
+            "schema": FORMAT,
+            "status": PASS,
+            "expected_head": expected_head,
+            "caller": caller_identity(project_root, project_root / "scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh"),
+            "source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "license": {"path": SOURCE_LICENSE_PATH, "spdx": SOURCE_LICENSE_SPDX, "bytes": SOURCE_LICENSE_BYTES, "sha256": SOURCE_LICENSE_SHA256, "git_blob_sha1": SOURCE_LICENSE_GIT_BLOB_SHA1}},
+            "project": project_identity(project_root),
+            "environment": {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}},
+            "imports": generated_imports,
+            "api_contract": generated_api,
+            "dac_api_contract": dac_safe,
+            "source_clean_after_import": True,
+            "python_dont_write_bytecode": True,
+            "model_access": False,
+            "checkpoint_access": False,
+            "hf_token_present": False,
+            "constructor_calls": 0,
+            "model_access_events": [],
+            "publication": NO_UPLOAD,
+        }
+        write_evidence(validation_path, synthetic_evidence)
+        validate_evidence(argparse.Namespace(vokra_root=str(project_root), expected_head=expected_head, evidence=str(validation_path), evidence_sha256=sha256_file(validation_path)))
         for field in ("class_identity", "same_class_object", "caller_flow"):
             tampered = dict(dac_safe)
             tampered[field] = "tampered" if field != "same_class_object" else False

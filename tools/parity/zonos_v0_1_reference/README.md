@@ -55,7 +55,9 @@ inspected from the installed distribution. The probe parses that class's
 source to prove the `config.n_codebooks` → `n_codebooks` →
 `self.n_codebooks` assignment, `self.quantizers` `ModuleList(range(...))`
 construction, and `forward` use; a lazy-module symbol lookup or a
-string-only claim is not accepted.
+string-only claim is not accepted. The pinned `DacConfig` contract records
+`codebook_size=1024` and `sampling_rate=16000` as `KEYWORD_ONLY` parameters;
+the generator and evidence validator require that exact calling convention.
 source `LICENSE`, repository origin, Vokra HEAD, dedicated
 `pyproject.toml`/`uv.lock`, package versions, Linux x86_64 environment, and
 the no-model/no-checkpoint/no-token conditions are written to a small,
