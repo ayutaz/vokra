@@ -14,7 +14,7 @@ usage() {
   cat <<'EOF'
 Usage:
   audit-canary-1b-dependencies.sh --repo-root <checkout> \
-    --expected-head <40-hex> --evidence-dir <existing-empty-dir>
+    --expected-head <40-hex> --evidence-dir <absent/new-evidence-dir>
   audit-canary-1b-dependencies.sh --self-test
 
 The normal path performs only a frozen uv sync and the standard-library
@@ -46,6 +46,7 @@ run_self_test() {
   local script_path="${BASH_SOURCE[0]}" required
   for required in \
     'tools/parity/canary_1b_reference' \
+    '--evidence-dir <absent/new-evidence-dir>' \
     'uv sync --frozen' \
     'dependency_audit.py' \
     '--archive-dir' '--project-sha256' '--lock-sha256' '--audit-sha256' '--wrapper-sha256' '--defer-sums' \

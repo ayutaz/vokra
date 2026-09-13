@@ -51,9 +51,10 @@ always `BLOCKED_UNREVIEWED_TRANSITIVE` / `NO_UPLOAD`; native payloads, ELF
 the no-clobber license archive remain owner-review rows.  `SHA256SUMS` binds
 the project, lock, collector, executed wrapper, report, completed audit log,
 and every archived publisher file.  The wrapper requires the requested
-evidence directory to be absent and creates it exactly once below a regular,
-non-symlink parent; it snapshots the bound source files before finalizing the
-no-clobber checksum file.  The auditor never imports NeMo, accesses Hugging
+evidence directory to be an absent/new path (an existing empty directory is
+rejected) and creates it exactly once below a regular, non-symlink parent; it
+snapshots the bound source files before finalizing the no-clobber checksum
+file.  The auditor never imports NeMo, accesses Hugging
 Face, reads a checkpoint, invokes Cargo, or uploads anything.
 
 ## Closure review (lock/import evidence)
