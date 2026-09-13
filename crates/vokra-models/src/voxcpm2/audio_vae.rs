@@ -589,6 +589,20 @@ impl AudioVaeEncoder {
         stages: Vec<EncoderStage>,
         terminal: CausalConv1d,
     ) -> Result<Self> {
+        let encoder = Self {
+            stem,
+            stages,
+            terminal,
+        };
+        encoder.validate_source_topology()?;
+        Ok(encoder)
+    }
+
+    /// Revalidate the fixed source 0.5B encoder topology immediately before
+    /// execution.  The staged constructor uses the same method so binding
+    /// and execution cannot drift to different channel/rate contracts.
+    fn validate_source_topology(&self) -> Result<()> {
+        let stem = &self.stem;
         if stem.in_channels != 1
             || stem.out_channels != AUDIO_VAE_ENCODER_DIM
             || stem.kernel != 7
@@ -596,33 +610,29 @@ impl AudioVaeEncoder {
             || stem.stride != 1
             || stem.padding != 3
             || stem.groups != 1
-            || stages.len() != AUDIO_VAE_ENCODER_RATES.len()
+            || self.stages.len() != AUDIO_VAE_ENCODER_RATES.len()
         {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE encoder stem/rate contract mismatch".to_owned(),
             ));
         }
         let mut channels = AUDIO_VAE_ENCODER_DIM;
-        for (stage, &rate) in stages.iter().zip(AUDIO_VAE_ENCODER_RATES.iter()) {
+        for (stage, &rate) in self.stages.iter().zip(AUDIO_VAE_ENCODER_RATES.iter()) {
             channels = stage.validate(channels, rate)?;
         }
-        if terminal.in_channels != channels
-            || terminal.out_channels != AUDIO_VAE_LATENT_DIM
-            || terminal.kernel != 3
-            || terminal.dilation != 1
-            || terminal.stride != 1
-            || terminal.padding != 1
-            || terminal.groups != 1
+        if self.terminal.in_channels != channels
+            || self.terminal.out_channels != AUDIO_VAE_LATENT_DIM
+            || self.terminal.kernel != 3
+            || self.terminal.dilation != 1
+            || self.terminal.stride != 1
+            || self.terminal.padding != 1
+            || self.terminal.groups != 1
         {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE encoder terminal contract mismatch".to_owned(),
             ));
         }
-        Ok(Self {
-            stem,
-            stages,
-            terminal,
-        })
+        Ok(())
     }
 
     /// Attach a VAST-staged encoder bundle after the converter has resolved
@@ -1659,6 +1669,26 @@ mod tests {
             .expect_err("mutated encoder must be rejected before a kernel");
         assert!(matches!(error, VokraError::ModelLoad(_)));
         assert!(error.to_string().contains("bound weights"));
+    }
+
+    #[test]
+    fn encoder_execution_rejects_topology_drift_before_weight_scan() {
+        let mut encoder = metadata_source_encoder();
+        encoder.stages[0].downsample.stride = 7;
+        let error = encoder
+            .encode(&[0.0], 1)
+            .expect_err("drifted encoder topology must not execute");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("downsample contract"));
+
+        // Keep the buffer malformed as well: topology rejection must remain
+        // the first error and must not force a full parameter scan.
+        encoder.stem.weight_v.push(0.0);
+        let error = encoder
+            .encode_with_compute(&[0.0], 1, &Compute::cpu())
+            .expect_err("topology must precede bound-weight validation");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("downsample contract"));
     }
 
     #[test]
