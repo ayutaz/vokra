@@ -403,7 +403,7 @@ self_test() {
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' 'unlock_requirements' 'vast_first_pass' 'expected_artifacts' \
     '--model-free' 'MODEL_FREE_FORMAT' 'build_model_free_manifest' 'MODEL_FREE_MIN_MEM_KIB' 'MODEL_FREE_MIN_DISK_KIB' 'model_free_disk_root' 'run_model_free' 'NOT_ACQUIRED' 'NOT_PERFORMED' 'PENDING_OWNER_REVIEW' 'model_card_architecture' 'model_card_search' 'training_provenance_status' 'expected_head' \
-    '--dependency-audit-only' 'DEPENDENCY_AUDIT_ONLY_FORMAT' 'build_dependency_audit_only_manifest' 'fire_red_source_evidence' 'HF' 'HF_TOKEN' 'HF_HUB_TOKEN' 'HUGGING_FACE_HUB_TOKEN' 'HUGGINGFACE_HUB_TOKEN' 'HF_ACCESS_TOKEN' 'HUGGINGFACE_TOKEN' 'HF_API_TOKEN' 'HUGGINGFACE_API_TOKEN' 'HUGGING_FACE_TOKEN' 'require_no_hf_tokens' 'require_dependency_audit_host' 'run_dependency_audit_only' 'UV_PROJECT_ENVIRONMENT' 'uv sync --frozen' 'GIT_LFS_SKIP_SMUDGE=1' 'dependency-audit-only.json' 'DEPENDENCY_AUDIT_ONLY' 'BLOCKED_COLLECTION_FAILURE' 'AUTHENTICATED_PINNED_SOURCE' 'model_repo_status' 'checkpoint_status' 'reference_status' 'conversion_status' \
+    '--dependency-audit-only' 'DEPENDENCY_AUDIT_ONLY_FORMAT' 'build_dependency_audit_only_manifest' 'fire_red_source_evidence' 'HF' 'HF_TOKEN' 'HF_HUB_TOKEN' 'HUGGING_FACE_HUB_TOKEN' 'HUGGINGFACE_HUB_TOKEN' 'HF_ACCESS_TOKEN' 'HUGGINGFACE_TOKEN' 'HF_API_TOKEN' 'HUGGINGFACE_API_TOKEN' 'HUGGING_FACE_TOKEN' 'require_no_hf_tokens' 'require_dependency_audit_host' 'run_dependency_audit_only' 'UV_PROJECT_ENVIRONMENT' 'uv sync --frozen' 'GIT_LFS_SKIP_SMUDGE=1' '120000' 'readlink' 'symlink' 'git submodule' 'submodule update' 'dependency-audit-only.json' 'DEPENDENCY_AUDIT_ONLY' 'BLOCKED_COLLECTION_FAILURE' 'AUTHENTICATED_PINNED_SOURCE' 'model_repo_status' 'checkpoint_status' 'reference_status' 'conversion_status' \
     'pinned-source frontend' 'SentencePiece/TokenDict' 'transformer_decoder.py' 'batch_beam_search' 'softmax_smoothing' 'length_penalty' 'eos_penalty' 'PREPARED' 'archive_members' \
     'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
     'firered_asr_aed_l_reference.py' 'tensor_mapping' 'REFERENCE_CAPTURED' 'decoder_logits' 'tgt_word_prj' 'source_records' 'firered-asr-aed-l-reference-trace-v1' 'encoder_each_layer' 'decoder_each_layer' 'frontend_fbank_cmvn' 'official_hypotheses' 'normalized_log_score' 'upstream_cost' 'firered-asr-aed-l-official-beam-trace-v1' 'token_topk' 'beam_prune_topk' 'torch.topk' 'torch_git_version' 'environment' \
@@ -515,6 +515,9 @@ audit_only_source = source[audit_only:audit_only_end]
 for forbidden in ("\nfrom huggingface_hub import", "\nimport huggingface_hub", "HfApi(", "snapshot_download("):
     if forbidden in audit_only_source:
         raise SystemExit(f"dependency-audit-only route reaches model API: {forbidden}")
+for forbidden in ("git submodule", "submodule update", "submodule init", "submodule fetch"):
+    if forbidden in audit_only_source:
+        raise SystemExit(f"dependency-audit-only route initializes/fetches a submodule: {forbidden}")
 if source.index("uv sync --frozen", audit_only, audit_only_end) >= audit_only_end:
     raise SystemExit("dependency-audit-only does not prepare the dedicated frozen environment")
 if source.index('GIT_LFS_SKIP_SMUDGE=1 git clone --filter=blob:none --no-checkout "$SOURCE_URL"', audit_only, audit_only_end) >= audit_only_end:

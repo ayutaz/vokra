@@ -92,6 +92,24 @@ def sha256_regular_file(path: Path) -> str:
     return sha256_file(path)
 
 
+def git_blob_sha1(path: Path) -> str:
+    """Return Git's blob object id for a checked-out regular file."""
+    digest = hashlib.sha1()
+    digest.update(f"blob {path.stat().st_size}\0".encode())
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def git_blob_sha1_bytes(value: bytes) -> str:
+    """Return Git's blob object id for bytes (used for symlink targets)."""
+    digest = hashlib.sha1()
+    digest.update(f"blob {len(value)}\0".encode())
+    digest.update(value)
+    return digest.hexdigest()
+
+
 def canonical_sha256(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -695,6 +713,7 @@ def fire_red_source_evidence(source_path: Path) -> tuple[dict[str, Any], list[st
         "tracked_files": {"count": 0, "rows": [], "sha256": None},
         "license_files": [],
         "review_files": [],
+        "symlink_targets": [],
         "status": "NOT_VERIFIED",
     }
     if source_path.is_symlink() or not source_path.is_dir():
@@ -727,23 +746,98 @@ def fire_red_source_evidence(source_path: Path) -> tuple[dict[str, Any], list[st
     if not evidence["origin_verified"]:
         failures.append("pinned FireRed source origin mismatch")
 
-    tracked, error = _git_capture(source_path, "ls-files", "-z")
+    tracked, error = _git_capture(source_path, "ls-files", "--stage", "-z")
     rows: list[dict[str, Any]] = []
+    tracked_paths: set[str] = set()
     if error is not None:
         failures.append(f"cannot enumerate pinned FireRed source files: {error}")
     else:
-        for raw_name in tracked.split("\0"):
-            if not raw_name:
+        raw_entries = [entry for entry in tracked.split("\0") if entry]
+        # Gather every indexed path before validating symlink targets; Git's
+        # lexical order places examples/ before the target fireredasr/ tree.
+        for raw_entry in raw_entries:
+            _, separator, raw_name = raw_entry.partition("\t")
+            if separator and raw_name:
+                tracked_paths.add(raw_name)
+        for raw_entry in raw_entries:
+            if not raw_entry:
                 continue
+            metadata, separator, raw_name = raw_entry.partition("\t")
+            fields = metadata.split(" ")
+            if not separator or len(fields) != 3:
+                failures.append(f"malformed staged FireRed source entry: {raw_entry!r}")
+                continue
+            mode, oid, stage = fields
             relative = PurePosixPath(raw_name)
-            if relative.is_absolute() or not raw_name or any(part in {"", ".", ".."} for part in relative.parts):
+            if relative.is_absolute() or not raw_name or "\\" in raw_name or any(part in {"", ".", ".."} for part in relative.parts):
                 failures.append(f"unsafe pinned FireRed source path: {raw_name!r}")
+                continue
+            tracked_paths.add(raw_name)
+            if stage != "0":
+                failures.append(f"unsupported non-zero staged FireRed source entry: {raw_name}")
+                continue
+            if not re.fullmatch(r"[0-9a-f]{40}", oid):
+                failures.append(f"malformed staged FireRed source object id: {raw_name}")
+                continue
+            if mode == "160000":
+                # An uninitialized submodule has no working tree to inspect;
+                # retain only its exact commit OID and do not fetch/init it.
+                rows.append({"kind": "gitlink", "path": raw_name, "mode": mode, "git_commit_oid": oid})
+                continue
+            if mode == "120000":
+                path = source_path / Path(*relative.parts)
+                if not path.is_symlink():
+                    failures.append(f"tracked FireRed symlink is missing or not a symlink: {raw_name}")
+                    continue
+                try:
+                    target = os.readlink(path)
+                except OSError as error:
+                    failures.append(f"cannot read tracked FireRed symlink target: {raw_name}: {error}")
+                    continue
+                target_bytes = os.fsencode(target)
+                if not target or b"\x00" in target_bytes or os.path.isabs(target):
+                    failures.append(f"unsafe tracked FireRed symlink target: {raw_name}")
+                    continue
+                resolved_root = source_path.resolve()
+                resolved_target = (path.parent / target).resolve(strict=False)
+                try:
+                    resolved_relative = resolved_target.relative_to(resolved_root).as_posix()
+                except ValueError:
+                    failures.append(f"tracked FireRed symlink escapes source root: {raw_name}")
+                    continue
+                if not any(item == resolved_relative or item.startswith(resolved_relative + "/") for item in tracked_paths):
+                    failures.append(f"tracked FireRed symlink target is not a tracked subtree: {raw_name}")
+                    continue
+                observed_oid = git_blob_sha1_bytes(target_bytes)
+                if observed_oid != oid:
+                    failures.append(f"tracked FireRed symlink Git blob mismatch: {raw_name}")
+                    continue
+                record = {
+                    "kind": "symlink",
+                    "path": raw_name,
+                    "mode": mode,
+                    "git_blob_oid": oid,
+                    "target": target,
+                    "target_bytes": len(target_bytes),
+                    "target_sha256": hashlib.sha256(target_bytes).hexdigest(),
+                    "resolved_target": resolved_relative,
+                    "target_tracked_subtree": True,
+                }
+                rows.append(record)
+                evidence["symlink_targets"].append(record)
+                continue
+            if mode not in {"100644", "100755"}:
+                failures.append(f"unsupported staged FireRed source mode {mode}: {raw_name}")
                 continue
             path = source_path / Path(*relative.parts)
             if path.is_symlink() or not path.is_file():
                 failures.append(f"pinned FireRed source file is missing or non-regular: {raw_name}")
                 continue
-            record = {"path": raw_name, "bytes": path.stat().st_size, "sha256": sha256_regular_file(path)}
+            observed_oid = git_blob_sha1(path)
+            if observed_oid != oid:
+                failures.append(f"pinned FireRed source Git blob mismatch: {raw_name}")
+                continue
+            record = {"kind": "regular_file", "path": raw_name, "mode": mode, "git_blob_oid": oid, "bytes": path.stat().st_size, "sha256": sha256_regular_file(path)}
             rows.append(record)
             if Path(raw_name).name.upper().startswith(("LICENSE", "COPYING")):
                 evidence["license_files"].append(record)
@@ -753,6 +847,7 @@ def fire_red_source_evidence(source_path: Path) -> tuple[dict[str, Any], list[st
     evidence["tracked_files"] = {"count": len(rows), "rows": rows, "sha256": canonical_sha256(rows)}
     evidence["license_files"].sort(key=lambda item: item["path"])
     evidence["review_files"].sort(key=lambda item: item["path"])
+    evidence["symlink_targets"].sort(key=lambda item: item["path"])
     if not evidence["license_files"]:
         failures.append("pinned FireRed source LICENSE/COPYING evidence is missing")
     evidence["status"] = "AUTHENTICATED_PINNED_SOURCE" if not failures else "FAILED"
@@ -972,22 +1067,39 @@ source = {{ registry = "https://pypi.org/simple" }}
         assert scope["model_card_architecture"] == "ConformerEncoder + TransformerDecoder + batch_beam_search"
         assert scope["model_card_search"]["beam_size"] == 3
         source_fixture = Path(directory) / "firered-source"
-        source_fixture.mkdir()
+        (source_fixture / "examples").mkdir(parents=True)
+        (source_fixture / "fireredasr").mkdir()
+        (source_fixture / "pretrained_models").mkdir()
         (source_fixture / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
         (source_fixture / "firered.py").write_text("pinned source\n", encoding="utf-8")
         (source_fixture / "README.md").write_text("review only\n", encoding="utf-8")
+        (source_fixture / "fireredasr" / "module.py").write_text("module\n", encoding="utf-8")
+        (source_fixture / "pretrained_models" / "model.py").write_text("model helper\n", encoding="utf-8")
+        os.symlink("../fireredasr", source_fixture / "examples" / "fireredasr")
+        os.symlink("../pretrained_models", source_fixture / "examples" / "pretrained_models")
         original_git_capture = globals()["_git_capture"]
 
         def fake_git_capture(path: Path, *arguments: str) -> tuple[str | None, str | None]:
-            del path
             if arguments == ("rev-parse", "HEAD"):
                 return FIRERED_SOURCE_REVISION + "\n", None
             if arguments == ("remote", "get-url", "origin"):
                 return FIRERED_SOURCE_URL + "\n", None
             if arguments == ("status", "--porcelain", "--untracked-files=all"):
                 return "", None
-            if arguments == ("ls-files", "-z"):
-                return "LICENSE\0firered.py\0README.md\0", None
+            if arguments == ("ls-files", "--stage", "-z"):
+                def blob(path: Path) -> str:
+                    return git_blob_sha1(path) if path.exists() else "0" * 40
+
+                entries = (
+                    f"100644 {blob(path / 'LICENSE')} 0\tLICENSE",
+                    f"100644 {blob(path / 'firered.py')} 0\tfirered.py",
+                    f"100644 {blob(path / 'README.md')} 0\tREADME.md",
+                    f"100644 {blob(path / 'fireredasr' / 'module.py')} 0\tfireredasr/module.py",
+                    f"100644 {blob(path / 'pretrained_models' / 'model.py')} 0\tpretrained_models/model.py",
+                    f"120000 {git_blob_sha1_bytes(b'../fireredasr')} 0\texamples/fireredasr",
+                    f"120000 {git_blob_sha1_bytes(b'../pretrained_models')} 0\texamples/pretrained_models",
+                )
+                return "\0".join(entries) + "\0", None
             return None, "unexpected synthetic git command"
 
         globals()["_git_capture"] = fake_git_capture
@@ -997,9 +1109,11 @@ source = {{ registry = "https://pypi.org/simple" }}
             assert source_evidence["status"] == "AUTHENTICATED_PINNED_SOURCE"
             assert source_evidence["revision_verified"] is True
             assert source_evidence["origin_verified"] is True
-            assert source_evidence["tracked_files"]["count"] == 3
+            assert source_evidence["tracked_files"]["count"] == 7
             assert [item["path"] for item in source_evidence["license_files"]] == ["LICENSE"]
             assert [item["path"] for item in source_evidence["review_files"]] == ["README.md"]
+            assert [item["path"] for item in source_evidence["symlink_targets"]] == ["examples/fireredasr", "examples/pretrained_models"]
+            assert all(item["target_tracked_subtree"] is True for item in source_evidence["symlink_targets"])
             (source_fixture / "LICENSE").unlink()
             missing_license, missing_failures = fire_red_source_evidence(source_fixture)
             assert missing_license["status"] == "FAILED"
