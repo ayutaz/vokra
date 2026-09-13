@@ -14,15 +14,17 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **開発状況（2026-09-12）:** workspace は `0.3.0` development で、この snapshot の
-> このcampaignで観測した `main` baseline は `1de3887d` です。監査実装
-> `1be45e76` までを使った最新の読み取り専用公開 inventory は repository 194、GGUF
-> を持つ repository 193、GGUF file 198 です。内訳は Mac CPU complete 135、partial
-> 43、runtime binder なし 15、non-artifact 1、Apple Metal full 135、CPU 起因の
-> block 58、non-artifact 1 で、未解決の public row は 59 です。
+> **開発状況（2026-09-13）:** workspace は `0.3.0` development で、この campaign で
+> 観測した `main` baseline は `b29cb9d7` です。監査実装 `a4af7800` までを使った
+> 最新の読み取り専用公開 inventory は repository 194、GGUF を持つ repository 193、
+> GGUF file 198 です。内訳は Mac CPU complete 136、partial 43、runtime binder なし
+> 14、non-artifact 1、Apple Metal full 136、CPU 起因の block 57、non-artifact 1
+> です。VibeVoice Realtime-0.5B には strict structural `vibevoice_streaming` binder
+> と CLI inspection route が追加されましたが、synthesis、完全な weight manifest、
+> independent reference、CPU parity は未完了なので partial のままです。
 > [Apple 検証結果](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)に記録した
 > Apple Silicon batch は named scope のみ合格し、その後、明示的に承認された4件の
-> artifact が公開されました。公開 row はなお59件未解決で、Git tag と公開済み release
+> artifact が公開されました。公開 row はなお58件未解決で、Git tag と公開済み release
 > はなく、Vokra は pre-1.0 のままです。Rust API、C ABI、GGUF metadata、モデル対応範囲は
 > 変更される可能性があります。他プロジェクトで評価するときは正確な commit を固定し、
 > release 公開後は正確な tag または release を固定してください。

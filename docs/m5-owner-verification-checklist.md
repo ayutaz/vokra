@@ -3,7 +3,7 @@
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
 **2026-09-13 current-state / supersession note:** the observed `main` baseline
-for this campaign is `08b206c4`. The latest live, read-only public audit,
+for this campaign is `b29cb9d7`. The latest live, read-only public audit,
 evaluated with audit logic through `a4af7800`, reports 194 repositories, 193
 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal status is
@@ -11,8 +11,11 @@ GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 public rows. VibeVoice Realtime-0.5B now has a strict structural
 `vibevoice_streaming` binder and CLI inspection route, so it is partial;
 synthesis, the complete weight manifest, independent reference, and CPU parity
-remain pending. The authorized Scaleway Apple CPU/reference, Metal/reference and
-no-fallback batch passed only for its named scopes; four separately approved
+remain pending. At the same clean head, the Qwen3-TTS four-variant model-free
+API smoke passed without checkpoint loading or upload, while its exact
+55-package dependency closure correctly remained blocked pending owner review.
+The authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback
+batch passed only for its named scopes; four separately approved
 artifacts were subsequently published through the gated workflow. UTMOS
 numeric parity remains unclaimed, and there are 0 release tags and 0 GitHub
 Releases. This checklist is not a GA or ABI-freeze declaration.
