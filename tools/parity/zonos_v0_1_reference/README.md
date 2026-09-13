@@ -33,16 +33,19 @@ lock alone.
 The VAST-only wrapper
 `scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh` checks the
 official Zonos source at `bc40d98e1e1ab54fc65c483be127a90e3c7c0645` under the
-frozen `transformers==5.10.4` environment. It imports the official modules and
-checks the fixed constructor/method signatures without constructing a Zonos or
-DAC object. The source `LICENSE`, repository origin, Vokra HEAD, dedicated
+frozen `transformers==5.10.4` environment. It imports `transformers` in the
+same process as the official modules, then checks the fixed
+constructor/method signatures without constructing a Zonos or DAC object. The
+source `LICENSE`, repository origin, Vokra HEAD, dedicated
 `pyproject.toml`/`uv.lock`, package versions, Linux x86_64 environment, and
 the no-model/no-checkpoint/no-token conditions are written to a small,
 hash-bound JSON evidence file.
 
 The wrapper requires `VOKRA_ZONOS_VAST_VALIDATION=1`, an absent tmpfs work
-directory, and absent `HF_TOKEN`/`HF` variables. It never fetches Hugging Face
-metadata or weights, runs Cargo, publishes, or uploads. Run only on disposable
+directory, and absent standard Hugging Face token variables (`HF_TOKEN`,
+`HF_HUB_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `HUGGINGFACE_HUB_TOKEN`, and related
+access-token names). It never fetches Hugging Face metadata or weights, runs
+Cargo, publishes, or uploads. Run only on disposable
 VAST Linux x86_64 infrastructure:
 
 ```bash

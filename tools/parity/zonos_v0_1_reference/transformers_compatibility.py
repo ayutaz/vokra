@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,9 +42,30 @@ NO_UPLOAD = "NO_UPLOAD"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MODEL_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf", ".onnx")
+TOKEN_ENV_NAMES = ("HF", "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_ACCESS_TOKEN", "HUGGINGFACE_TOKEN", "HF_API_TOKEN", "HUGGINGFACE_API_TOKEN", "HUGGING_FACE_TOKEN")
+SOURCE_MODULE_FILES = {
+    "zonos.model": "zonos/model.py",
+    "zonos.config": "zonos/config.py",
+    "zonos.conditioning": "zonos/conditioning.py",
+    "zonos.autoencoder": "zonos/autoencoder.py",
+    "zonos.sampling": "zonos/sampling.py",
+    "zonos.backbone": "zonos/backbone/__init__.py",
+}
+EXPECTED_API_PARAMETERS = {
+    "zonos.model.Zonos.from_local": [("cls", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("config_path", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("model_path", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("device", "POSITIONAL_OR_KEYWORD", "device(type='cpu')"), ("backbone", "POSITIONAL_OR_KEYWORD", "None")],
+    "zonos.model.Zonos.from_pretrained": [("cls", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("repo_id", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("revision", "POSITIONAL_OR_KEYWORD", "None"), ("device", "POSITIONAL_OR_KEYWORD", "device(type='cpu')"), ("kwargs", "VAR_KEYWORD", "<class 'inspect._empty'>")],
+    "zonos.model.Zonos.prepare_conditioning": [("self", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("cond_dict", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("uncond_dict", "POSITIONAL_OR_KEYWORD", "None")],
+    "zonos.model.Zonos.generate": [("self", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("prefix_conditioning", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("audio_prefix_codes", "POSITIONAL_OR_KEYWORD", "None"), ("max_new_tokens", "POSITIONAL_OR_KEYWORD", "2580"), ("cfg_scale", "POSITIONAL_OR_KEYWORD", "2.0"), ("batch_size", "POSITIONAL_OR_KEYWORD", "1"), ("sampling_params", "POSITIONAL_OR_KEYWORD", "{'min_p': 0.1}"), ("progress_bar", "POSITIONAL_OR_KEYWORD", "True"), ("disable_torch_compile", "POSITIONAL_OR_KEYWORD", "False"), ("callback", "POSITIONAL_OR_KEYWORD", "None")],
+    "zonos.conditioning.PrefixConditioner.forward": [("self", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("cond_dict", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>")],
+    "zonos.autoencoder.DACAutoencoder.__init__": [("self", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>")],
+    "zonos.sampling.sample_from_logits": [("logits", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("temperature", "POSITIONAL_OR_KEYWORD", "1.0"), ("top_p", "POSITIONAL_OR_KEYWORD", "0.0"), ("top_k", "POSITIONAL_OR_KEYWORD", "0"), ("min_p", "POSITIONAL_OR_KEYWORD", "0.0"), ("linear", "POSITIONAL_OR_KEYWORD", "0.0"), ("conf", "POSITIONAL_OR_KEYWORD", "0.0"), ("quad", "POSITIONAL_OR_KEYWORD", "0.0"), ("generated_tokens", "POSITIONAL_OR_KEYWORD", "None"), ("repetition_penalty", "POSITIONAL_OR_KEYWORD", "3.0"), ("repetition_penalty_window", "POSITIONAL_OR_KEYWORD", "2")],
+}
 
 class ProbeError(ValueError):
     """A fail-closed probe or evidence error."""
+
+def repository_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 def canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
@@ -122,7 +144,7 @@ def project_identity(root: Path) -> dict[str, Any]:
     return {"path": PROJECT_RELATIVE, "pyproject_sha256": project_sha, "uv_lock_sha256": lock_sha, "dependencies": dependencies}
 
 def source_identity(source: Path) -> dict[str, Any]:
-    if source.is_symlink() or not source.is_dir():
+    if source.is_symlink() or ancestor_symlink(source) or not source.is_dir():
         raise ProbeError("Zonos source checkout is missing or symlinked")
     actual = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     if actual != SOURCE_REVISION:
@@ -207,11 +229,13 @@ def signature_contract(callable_object: Any, required: list[str]) -> dict[str, A
         raise ProbeError(f"API parameter contract drifted: {names} != {required}")
     return {"parameters": [{"name": p.name, "kind": p.kind.name, "default": repr(p.default)} for p in parameters], "return_annotation": repr(signature.return_annotation)}
 
-def api_contract(root: Path) -> dict[str, Any]:
+def api_contract(root: Path, source: Path) -> dict[str, Any]:
     sys.path.insert(0, str(root / PROJECT_RELATIVE))
+    sys.path.insert(0, str(source))
     policy = importlib.import_module("import_policy")
     policy.install()
     with refuse_model_access() as refusal:
+        transformers = importlib.import_module("transformers")
         model = importlib.import_module("zonos.model")
         conditioning = importlib.import_module("zonos.conditioning")
         autoencoder = importlib.import_module("zonos.autoencoder")
@@ -219,9 +243,16 @@ def api_contract(root: Path) -> dict[str, Any]:
         importlib.import_module("zonos.config")
         importlib.import_module("zonos.backbone")
     imports = {}
-    for module_name in ("zonos.model", "zonos.config", "zonos.conditioning", "zonos.autoencoder", "zonos.sampling", "zonos.backbone"):
+    for module_name, relative_file in SOURCE_MODULE_FILES.items():
         module = importlib.import_module(module_name)
-        imports[module_name] = {"status": "IMPORTED", "file": str(module.__file__)}
+        module_file_raw = Path(module.__file__)
+        module_file = module_file_raw.resolve()
+        expected_file = source / relative_file
+        if module_file != expected_file.resolve() or module_file_raw.is_symlink() or ancestor_symlink(module_file_raw) or not module_file.is_file():
+            raise ProbeError(f"official source module resolved outside fixed checkout: {module_name}")
+        imports[module_name] = {"status": "IMPORTED", "file": relative_file}
+    transformer_file = Path(transformers.__file__).resolve()
+    imports["transformers"] = {"status": "IMPORTED", "file": str(transformer_file)}
     contracts = {
         "zonos.model.Zonos.from_local": signature_contract(model.Zonos.__dict__["from_local"].__func__, ["cls", "config_path", "model_path", "device", "backbone"]),
         "zonos.model.Zonos.from_pretrained": signature_contract(model.Zonos.__dict__["from_pretrained"].__func__, ["cls", "repo_id", "revision", "device", "kwargs"]),
@@ -233,6 +264,8 @@ def api_contract(root: Path) -> dict[str, Any]:
     }
     if refusal.events:
         raise ProbeError(f"model access events recorded: {refusal.events}")
+    if not str(transformer_file).endswith("/transformers/__init__.py"):
+        raise ProbeError("Transformers import resolved to an unexpected module file")
     return {"modules": imports, "callables": contracts, "constructor_calls": 0, "model_access_events": []}
 
 def package_versions() -> dict[str, str]:
@@ -265,24 +298,45 @@ def write_evidence(path: Path, evidence: dict[str, Any]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(evidence, handle, sort_keys=True, separators=(",", ":"))
             handle.write("\n")
-        os.replace(temporary, path)
+        # Hard-link publication is atomic and never replaces a concurrently
+        # created destination. Both paths are in the same evidence directory.
+        os.link(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    else:
+        temporary.unlink(missing_ok=True)
+
+def verify_bound_hash(path: Path, supplied: str) -> None:
+    if not HEX64.fullmatch(supplied) or sha256_file(path) != supplied:
+        raise ProbeError("evidence SHA-256 differs from caller binding")
+
+def verify_safety(evidence: dict[str, Any]) -> None:
+    if evidence["source_clean_after_import"] is not True or evidence["python_dont_write_bytecode"] is not True:
+        raise ProbeError("compatibility evidence source/import safety is not exact")
+    if evidence["model_access"] is not False or evidence["checkpoint_access"] is not False or evidence["hf_token_present"] is not False:
+        raise ProbeError("compatibility evidence records forbidden access")
+    if evidence["constructor_calls"] != 0 or evidence["model_access_events"] != [] or evidence["publication"] != NO_UPLOAD:
+        raise ProbeError("compatibility evidence access/publication contract is not fail-closed")
 
 def run_probe(args: argparse.Namespace) -> None:
-    root, source, output = Path(args.vokra_root).resolve(), Path(args.source_dir).resolve(), Path(args.output)
-    if os.environ.get("HF_TOKEN") or os.environ.get("HF"):
-        raise ProbeError("HF token environment variables must be absent")
+    root, source, output = Path(args.vokra_root).resolve(), Path(args.source_dir), Path(args.output)
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    if any(os.environ.get(name) for name in TOKEN_ENV_NAMES):
+        raise ProbeError("Hugging Face token environment variables must be absent")
     head = clean_head(root, args.expected_head)
     project = project_identity(root)
     source_facts = source_identity(source)
     caller = caller_identity(root, Path(args.caller_script))
     versions = package_versions()
-    contracts = api_contract(root)
+    contracts = api_contract(root, source)
+    source_after = source_identity(source)
+    if source_after != source_facts:
+        raise ProbeError("Zonos source checkout changed during import")
     evidence = {"schema": FORMAT, "status": PASS, "expected_head": head, "caller": caller, "source": source_facts, "project": project,
-                "environment": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": platform.python_version(), "sys_platform": sys.platform, "package_versions": versions},
-                "imports": contracts["modules"], "api_contract": contracts["callables"], "model_access": False, "checkpoint_access": False,
+        "environment": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": platform.python_version(), "sys_platform": sys.platform, "python_dont_write_bytecode": True, "package_versions": versions},
+                "imports": contracts["modules"], "api_contract": contracts["callables"], "source_clean_after_import": True,
+                "python_dont_write_bytecode": True, "model_access": False, "checkpoint_access": False,
                 "hf_token_present": False, "constructor_calls": 0, "model_access_events": [], "publication": NO_UPLOAD}
     write_evidence(output, evidence)
     print(f"{PASS}: evidence={output} sha256={sha256_file(output)}")
@@ -294,10 +348,9 @@ def validate_evidence(args: argparse.Namespace) -> None:
     if overlaps(root, path):
         raise ProbeError("compatibility evidence must be outside the Vokra checkout")
     regular(path, "compatibility evidence")
-    if not HEX64.fullmatch(args.evidence_sha256) or sha256_file(path) != args.evidence_sha256:
-        raise ProbeError("evidence SHA-256 differs from caller binding")
+    verify_bound_hash(path, args.evidence_sha256)
     evidence, _ = strict_json(path)
-    required = {"schema", "status", "expected_head", "caller", "source", "project", "environment", "imports", "api_contract", "model_access", "checkpoint_access", "hf_token_present", "constructor_calls", "model_access_events", "publication"}
+    required = {"schema", "status", "expected_head", "caller", "source", "project", "environment", "imports", "api_contract", "source_clean_after_import", "python_dont_write_bytecode", "model_access", "checkpoint_access", "hf_token_present", "constructor_calls", "model_access_events", "publication"}
     if set(evidence) != required or evidence["schema"] != FORMAT or evidence["status"] != PASS or evidence["expected_head"] != args.expected_head:
         raise ProbeError("compatibility evidence schema/status/HEAD is not exact")
     clean_head(root, args.expected_head)
@@ -314,31 +367,76 @@ def validate_evidence(args: argparse.Namespace) -> None:
         raise ProbeError("compatibility caller paths differ")
     if caller["script_sha256"] != sha256_file(caller_path) or caller["probe_sha256"] != sha256_file(probe_path):
         raise ProbeError("compatibility caller hashes differ")
-    if evidence["model_access"] is not False or evidence["checkpoint_access"] is not False or evidence["hf_token_present"] is not False:
-        raise ProbeError("compatibility evidence records forbidden access")
-    if evidence["constructor_calls"] != 0 or evidence["model_access_events"] != [] or evidence["publication"] != NO_UPLOAD:
-        raise ProbeError("compatibility evidence access/publication contract is not fail-closed")
+    verify_safety(evidence)
     environment = evidence["environment"]
     expected_versions = {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}
-    if not isinstance(environment, dict) or environment.get("system") != "Linux" or environment.get("machine") != "x86_64" or environment.get("package_versions") != expected_versions:
+    if not isinstance(environment, dict) or environment.get("system") != "Linux" or environment.get("machine") != "x86_64" or environment.get("python_dont_write_bytecode") is not True or environment.get("package_versions") != expected_versions:
         raise ProbeError("compatibility evidence environment is not exact Linux x86_64")
-    expected_imports = {"zonos.model", "zonos.config", "zonos.conditioning", "zonos.autoencoder", "zonos.sampling", "zonos.backbone"}
-    if not isinstance(evidence["imports"], dict) or set(evidence["imports"]) != expected_imports or any(not isinstance(row, dict) or set(row) != {"status", "file"} or row.get("status") != "IMPORTED" or not isinstance(row.get("file"), str) or "/zonos/" not in row["file"] for row in evidence["imports"].values()):
+    expected_imports = {"zonos.model", "zonos.config", "zonos.conditioning", "zonos.autoencoder", "zonos.sampling", "zonos.backbone", "transformers"}
+    expected_files = {name: relative for name, relative in SOURCE_MODULE_FILES.items()}
+    if not isinstance(evidence["imports"], dict) or set(evidence["imports"]) != expected_imports or any(not isinstance(row, dict) or set(row) != {"status", "file"} or row.get("status") != "IMPORTED" or row.get("file") != expected_files.get(name, row.get("file")) for name, row in evidence["imports"].items() if name in SOURCE_MODULE_FILES):
         raise ProbeError("compatibility evidence imports are incomplete")
-    expected_contracts = {"zonos.model.Zonos.from_local", "zonos.model.Zonos.from_pretrained", "zonos.model.Zonos.prepare_conditioning", "zonos.model.Zonos.generate", "zonos.conditioning.PrefixConditioner.forward", "zonos.autoencoder.DACAutoencoder.__init__", "zonos.sampling.sample_from_logits"}
-    if not isinstance(evidence["api_contract"], dict) or set(evidence["api_contract"]) != expected_contracts:
+    transformer_import = evidence["imports"].get("transformers", {})
+    if not isinstance(transformer_import, dict) or not isinstance(transformer_import.get("file"), str) or not transformer_import["file"].endswith("/transformers/__init__.py"):
+        raise ProbeError("Transformers import evidence is incomplete")
+    expected_contracts = set(EXPECTED_API_PARAMETERS)
+    contracts = evidence["api_contract"]
+    if not isinstance(contracts, dict) or set(contracts) != expected_contracts:
         raise ProbeError("compatibility evidence API contract is incomplete")
+    for name, record in contracts.items():
+        if not isinstance(record, dict) or set(record) != {"parameters", "return_annotation"} or not isinstance(record["parameters"], list):
+            raise ProbeError("compatibility API contract record is malformed")
+        actual_parameters = []
+        for item in record["parameters"]:
+            if not isinstance(item, dict) or set(item) != {"name", "kind", "default"}:
+                raise ProbeError("compatibility API parameter record is malformed")
+            actual_parameters.append((item["name"], item["kind"], item["default"]))
+        if actual_parameters != EXPECTED_API_PARAMETERS[name]:
+            raise ProbeError(f"compatibility API parameter contract drifted: {name}")
     print("zonos Transformers compatibility evidence: PASS")
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="vokra-zonos-compat-self-test-") as temporary:
-        output = Path(temporary) / "evidence.json"
+    def expect_error(action: Any, label: str) -> None:
         try:
-            external_output(output)
-        except ProbeError:
-            pass
-        else:
-            raise AssertionError("self-test output precondition failed")
+            action()
+        except (ProbeError, OSError, subprocess.CalledProcessError):
+            return
+        raise AssertionError(f"{label} was accepted")
+
+    with tempfile.TemporaryDirectory(prefix="vokra-zonos-compat-self-test-") as temporary:
+        root = Path(temporary)
+        output = root / "evidence.json"
+        external_output(output)
+        write_evidence(output, {"synthetic": True})
+        assert output.is_file(), "published evidence disappeared before work cleanup"
+        original = output.read_bytes()
+        expect_error(lambda: external_output(output), "preexisting output")
+        expect_error(lambda: write_evidence(output, {"synthetic": False}), "no-replace evidence publication")
+        assert output.read_bytes() == original, "preexisting output was overwritten"
+        symlink_target = root / "real"
+        symlink_target.mkdir()
+        symlink_dir = root / "link"
+        symlink_dir.symlink_to(symlink_target, target_is_directory=True)
+        expect_error(lambda: external_output(symlink_dir / "new.json"), "symlink ancestry")
+        duplicate = root / "duplicate.json"
+        duplicate.write_text('{"a":1,"a":2}\n', encoding="utf-8")
+        expect_error(lambda: strict_json(duplicate), "duplicate JSON key")
+        expect_error(lambda: verify_bound_hash(output, "0" * 64), "hash mismatch")
+        work = root / "work"
+        work.mkdir()
+        write_evidence(root / "survives.json", {"synthetic": True})
+        shutil.rmtree(work)
+        assert (root / "survives.json").is_file(), "evidence was removed with work directory"
+        safe = {"source_clean_after_import": True, "python_dont_write_bytecode": True, "model_access": False, "checkpoint_access": False, "hf_token_present": False, "constructor_calls": 0, "model_access_events": [], "publication": NO_UPLOAD}
+        verify_safety(safe)
+        for key, value in (("model_access", True), ("checkpoint_access", True), ("hf_token_present", True), ("publication", "UPLOAD")):
+            tampered = dict(safe)
+            tampered[key] = value
+            expect_error(lambda tampered=tampered: verify_safety(tampered), f"tampered {key}")
+    assert overlaps(repository_root(), repository_root() / "inside.json"), "checkout overlap was not detected"
+    current = subprocess.run(["git", "-C", str(repository_root()), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    assert HEX40.fullmatch(current)
+    expect_error(lambda: clean_head(repository_root(), "0" * 40), "stale HEAD")
     assert FORMAT == "vokra-zonos-transformers-compatibility-v1"
     assert SOURCE_REVISION == "bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
     print("zonos Transformers compatibility probe self-test: PASS")
