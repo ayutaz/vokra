@@ -117,3 +117,11 @@ placeholder-signer, wrong-head/hash, `NO_UPLOAD`-inconsistent, symlinked, or
 overlapping records remain fail-closed. Successful validation authorizes only
 the next pre-acquisition stage; the factual audit status and publication
 disposition do not change.
+
+The wrapper's model-free self-tests intentionally use
+`uv run --no-project --offline --python 3.12`; they exercise only the
+stdlib-backed audit, policy, and contract checks and therefore must not resolve
+or install the reference project. The audit and pre-acquisition paths retain
+the frozen dedicated project invocation (`--project ... --no-sync`), and the
+Transformers 5.10.4 compatibility gate remains a separate required evidence
+boundary before source or checkpoint acquisition.
