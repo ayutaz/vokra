@@ -724,9 +724,9 @@ impl AudioVaeEncoder {
 
     /// Encode mono channel-major 16-kHz PCM with the scalar reference path.
     pub fn encode(&self, pcm: &[f32], samples: usize) -> Result<Vec<f32>> {
+        let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
         self.validate_source_topology()?;
         self.validate_bound_weights()?;
-        let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
         let mut values = self.stem.forward(&padded_pcm, padded_samples)?;
         let mut time = values.len() / self.stem.out_channels;
         for stage in &self.stages {
@@ -744,9 +744,9 @@ impl AudioVaeEncoder {
         samples: usize,
         compute: &Compute,
     ) -> Result<Vec<f32>> {
+        let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
         self.validate_source_topology()?;
         self.validate_bound_weights()?;
-        let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
         let mut values = self
             .stem
             .forward_with_compute(&padded_pcm, padded_samples, compute)?;
@@ -1286,13 +1286,26 @@ impl AudioVaeDecoder {
 
     /// Decode `[latent_dim,time]` into mono PCM. All weights are required.
     pub fn decode(&self, latents: &[f32], time: usize) -> Result<Vec<f32>> {
-        self.validate_source_topology()?;
-        self.validate_bound_weights()?;
         if latents.is_empty() || time == 0 {
             return Err(VokraError::InvalidArgument(
                 "voxcpm audio VAE decoder input is empty".to_owned(),
             ));
         }
+        let expected = self.stem.in_channels.checked_mul(time).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "voxcpm audio VAE causal convolution input shape overflows".to_owned(),
+            )
+        })?;
+        if latents.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm audio VAE causal convolution input {} != {}*{}",
+                latents.len(),
+                self.stem.in_channels,
+                time
+            )));
+        }
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let mut values = self.stem.forward(latents, time)?;
         let mut current_time = time;
         for stage in &self.stages {
@@ -1316,13 +1329,23 @@ impl AudioVaeDecoder {
         time: usize,
         compute: &Compute,
     ) -> Result<Vec<f32>> {
-        self.validate_source_topology()?;
-        self.validate_bound_weights()?;
-        if latents.is_empty() || time == 0 || latents.len() != self.stem.in_channels * time {
+        if latents.is_empty() || time == 0 {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE backend decoder input shape mismatch".to_owned(),
             ));
         }
+        let expected = self.stem.in_channels.checked_mul(time).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "voxcpm AudioVAE backend decoder input shape mismatch".to_owned(),
+            )
+        })?;
+        if latents.len() != expected {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm AudioVAE backend decoder input shape mismatch".to_owned(),
+            ));
+        }
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let mut values = self.stem.forward_with_compute(latents, time, compute)?;
         let stem_effective = (self.stem.kernel - 1) * self.stem.dilation + 1;
         let mut current_time =
@@ -1605,6 +1628,22 @@ mod tests {
     }
 
     #[test]
+    fn decoder_input_errors_precede_bound_weight_validation() {
+        let decoder = metadata_source_decoder();
+        let error = decoder
+            .decode(&[], 0)
+            .expect_err("empty decoder input must fail before scanning weights");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("decoder input is empty"));
+
+        let error = decoder
+            .decode(&[0.0], 2)
+            .expect_err("decoder shape mismatch must fail before scanning weights");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("causal convolution input"));
+    }
+
+    #[test]
     fn encoder_execution_rejects_unbound_buffers_before_indexing() {
         let encoder = metadata_source_encoder();
         let error = encoder
@@ -1620,6 +1659,16 @@ mod tests {
             .expect_err("mutated encoder must be rejected before a kernel");
         assert!(matches!(error, VokraError::ModelLoad(_)));
         assert!(error.to_string().contains("bound weights"));
+    }
+
+    #[test]
+    fn encoder_input_errors_precede_bound_weight_validation() {
+        let encoder = metadata_source_encoder();
+        let error = encoder
+            .encode(&[], 0)
+            .expect_err("empty encoder input must fail before scanning weights");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("requires finite mono PCM"));
     }
 
     #[test]
