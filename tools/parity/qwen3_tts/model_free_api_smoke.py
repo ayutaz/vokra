@@ -114,17 +114,17 @@ EXPECTED_PACKAGE_VERSIONS = {
     "transformers": "5.10.4",
 }
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
+FORBIDDEN_OPTIONAL_MODULES = {
+    "sox": "/__vokra_import_only_sox_sentinel__.py",
+    "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
+}
+ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 EXPECTED_TORCH_FAMILY = "2.7.1"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
 CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-FORBIDDEN_OPTIONAL_MODULES = {
-    "sox": "/__vokra_import_only_sox_sentinel__.py",
-    "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
-}
-ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
 SOURCE_FILE_SET = set(SOURCE_FILES)
 SOURCE_FILE_CLASS_PATHS = {
     "config": "qwen_tts/core/models/configuration_qwen3_tts.py",
@@ -142,7 +142,6 @@ API_RECORD_KEYS = {
     "forbidden_imports", "source_facts",
 }
 API_SOURCE_FACT_KEYS = {"path", "bytes", "sha256"}
-SENTINEL_RECORD_KEYS = {"installed", "allowed_metadata", "sentinel_file", "metadata_reads", "metadata_keys", "accesses"}
 APPROVAL_KEYS = {"source_license", "model_license", "operator", "signer", "scope_sha256"}
 ENVIRONMENT_KEYS = {"python", "platform", "machine"}
 
@@ -151,16 +150,16 @@ class ProbeError(RuntimeError):
     """A fail-closed model-free probe failure."""
 
 
-class ForbiddenOptionalModuleAccessError(ProbeError):
-    """A forbidden optional module was accessed during import."""
-
-
 class ApiProbeFailure(ProbeError):
     """An official API import/introspection failure with import evidence."""
 
     def __init__(self, message: str, *, forbidden_imports: list[str]) -> None:
         super().__init__(message)
         self.forbidden_imports = forbidden_imports
+
+
+class ForbiddenOptionalModuleAccessError(ProbeError):
+    """A self-test sentinel was accessed; never used by production probes."""
 
 
 class _ForbiddenOptionalModuleSentinel(types.ModuleType):
@@ -174,71 +173,57 @@ class _ForbiddenOptionalModuleSentinel(types.ModuleType):
 
     def __getattribute__(self, name: str) -> Any:
         if name == "__file__":
-            reads = object.__getattribute__(self, "_metadata_reads")
-            object.__setattr__(self, "_metadata_reads", reads + 1)
+            object.__setattr__(self, "_metadata_reads", object.__getattribute__(self, "_metadata_reads") + 1)
             object.__getattribute__(self, "_metadata_keys").append(name)
             return object.__getattribute__(self, "_sentinel_file")
         if name == "__spec__":
-            reads = object.__getattribute__(self, "_metadata_reads")
-            object.__setattr__(self, "_metadata_reads", reads + 1)
+            object.__setattr__(self, "_metadata_reads", object.__getattribute__(self, "_metadata_reads") + 1)
             object.__getattribute__(self, "_metadata_keys").append(name)
             return super().__getattribute__(name)
         if name.startswith("__") and name.endswith("__"):
             return super().__getattribute__(name)
-        accesses = object.__getattribute__(self, "_accesses") + 1
-        object.__setattr__(self, "_accesses", accesses)
-        module_name = object.__getattribute__(self, "__name__")
-        raise ForbiddenOptionalModuleAccessError(f"forbidden {module_name} access: {name}")
+        object.__setattr__(self, "_accesses", object.__getattribute__(self, "_accesses") + 1)
+        raise ForbiddenOptionalModuleAccessError(f"forbidden {object.__getattribute__(self, '__name__')} access: {name}")
 
     def __getattr__(self, name: str) -> Any:
-        accesses = object.__getattribute__(self, "_accesses") + 1
-        object.__setattr__(self, "_accesses", accesses)
-        module_name = object.__getattribute__(self, "__name__")
-        raise ForbiddenOptionalModuleAccessError(f"forbidden {module_name} access: {name}")
+        object.__setattr__(self, "_accesses", object.__getattribute__(self, "_accesses") + 1)
+        raise ForbiddenOptionalModuleAccessError(f"forbidden {object.__getattribute__(self, '__name__')} access: {name}")
 
 
 def optional_sentinel_records(sentinels: dict[str, _ForbiddenOptionalModuleSentinel]) -> dict[str, dict[str, Any]]:
-    records: dict[str, dict[str, Any]] = {}
-    for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items():
-        sentinel = sentinels.get(module_name)
-        records[module_name] = {
-            "installed": sentinel is not None,
+    return {
+        module_name: {
+            "installed": (sentinel := sentinels.get(module_name)) is not None,
             "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
             "sentinel_file": sentinel_file,
             "metadata_reads": object.__getattribute__(sentinel, "_metadata_reads") if sentinel is not None else 0,
             "metadata_keys": list(object.__getattribute__(sentinel, "_metadata_keys")) if sentinel is not None else [],
             "accesses": object.__getattribute__(sentinel, "_accesses") if sentinel is not None else 0,
         }
-    return records
+        for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
+    }
 
 
 @contextmanager
 def install_forbidden_optional_sentinels() -> Any:
-    """Provide inert import-only modules and restore ``sys.modules`` exactly."""
-
+    """Self-test-only guard; production uses loaded_forbidden_imports()."""
     for module_name in FORBIDDEN_OPTIONAL_MODULES:
-        if module_name in sys.modules:
+        if module_name in sys.modules or importlib.util.find_spec(module_name) is not None:
             raise ProbeError(f"real or pre-existing {module_name} module is installed")
-        if importlib.util.find_spec(module_name) is not None:
-            raise ProbeError(f"real {module_name} package is installed")
-    sentinels = {
-        module_name: _ForbiddenOptionalModuleSentinel(module_name, sentinel_file)
-        for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
-    }
-    for module_name, sentinel in sentinels.items():
-        sys.modules[module_name] = sentinel
+    sentinels = {name: _ForbiddenOptionalModuleSentinel(name, path) for name, path in FORBIDDEN_OPTIONAL_MODULES.items()}
+    sys.modules.update(sentinels)
     try:
         yield sentinels
     finally:
         overwritten: list[str] = []
-        for module_name, sentinel in sentinels.items():
-            if module_name not in sys.modules:
+        for name, sentinel in sentinels.items():
+            if name not in sys.modules:
                 continue
-            if sys.modules[module_name] is not sentinel:
-                overwritten.append(module_name)
-            del sys.modules[module_name]
+            if sys.modules[name] is not sentinel:
+                overwritten.append(name)
+            del sys.modules[name]
         if overwritten:
-            raise ProbeError(f"optional module sentinels were overwritten during API probe: {overwritten}")
+            raise ProbeError(f"optional module sentinels were overwritten: {overwritten}")
 
 
 def pending_approval() -> dict[str, Any]:
@@ -368,17 +353,6 @@ def validate_variant_record(variant: str, record: dict[str, Any]) -> None:
         require_exact_keys(file_record, METADATA_RECORD_KEYS, f"{variant} metadata {name}")
         if file_record["bytes"] != expected_files[name][0] or file_record["sha256"] != expected_files[name][1]:
             raise ProbeError(f"variant metadata identity drifted: {variant}/{name}")
-
-
-def validate_sentinel_records(records: dict[str, Any], label: str) -> None:
-    if not isinstance(records, dict) or set(records) != set(FORBIDDEN_OPTIONAL_MODULES):
-        raise ProbeError(f"{label} optional sentinel set drifted")
-    for module_name, record in records.items():
-        require_exact_keys(record, SENTINEL_RECORD_KEYS, f"{label} sentinel {module_name}")
-        if record["installed"] is not True or record["allowed_metadata"] != ALLOWED_OPTIONAL_METADATA or record["sentinel_file"] != FORBIDDEN_OPTIONAL_MODULES[module_name] or record["accesses"] != 0:
-            raise ProbeError(f"{label} optional sentinel contract drifted: {module_name}")
-        if not isinstance(record["metadata_reads"], int) or record["metadata_reads"] < 0 or not isinstance(record["metadata_keys"], list) or len(record["metadata_keys"]) != record["metadata_reads"] or any(key not in ALLOWED_OPTIONAL_METADATA for key in record["metadata_keys"]):
-            raise ProbeError(f"{label} optional sentinel metadata reads malformed: {module_name}")
 
 
 def validate_api_record(variant: str, api: dict[str, Any], source_files: dict[str, Any]) -> None:
@@ -619,13 +593,13 @@ def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
         import qwen_tts
         from qwen_tts import Qwen3TTSModel
         from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSProcessor
-        forbidden_imports = loaded_forbidden_imports()
-        if forbidden_imports:
-            raise ProbeError(f"forbidden optional modules were imported: {forbidden_imports}")
         config = Qwen3TTSConfig.from_pretrained(str(snapshot), local_files_only=True)
         processor = Qwen3TTSProcessor.from_pretrained(str(snapshot), local_files_only=True)
         if processor is None or config.model_type != "qwen3_tts":
             raise ProbeError("official processor/config construction returned an invalid object")
+        forbidden_imports = loaded_forbidden_imports()
+        if forbidden_imports:
+            raise ProbeError(f"forbidden optional modules were imported after config/processor construction: {forbidden_imports}")
         package_root = Path(qwen_tts.__file__).resolve().parents[1]
         if package_root != source.resolve():
             raise ProbeError(f"qwen_tts imported from unexpected path: {package_root}")

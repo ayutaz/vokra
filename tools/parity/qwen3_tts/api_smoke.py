@@ -93,6 +93,7 @@ CHECKPOINTS = (
     "official_wrapper_called",
     "official_decoder_completed",
     "output_shape_verified",
+    "forbidden_imports_final_verified",
 )
 # Independent no-model oracle for the production sequence.  The production
 # path records every transition through CheckpointRecorder, so a newly added
@@ -112,6 +113,7 @@ EXPECTED_CHECKPOINT_SEQUENCE = (
     "official_wrapper_called",
     "official_decoder_completed",
     "output_shape_verified",
+    "forbidden_imports_final_verified",
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -769,9 +771,14 @@ def run_smoke(args: argparse.Namespace) -> int:
                     "code_packet_frames": int(codes.shape[0]),
                     "code_packet_codebooks": int(codes.shape[1])})
         checkpoint_recorder.append("output_shape_verified")
+        api["forbidden_imports"] = loaded_forbidden_imports()
+        if api["forbidden_imports"]:
+            raise SmokeError(f"forbidden optional modules remained loaded: {api['forbidden_imports']}")
+        checkpoint_recorder.append("forbidden_imports_final_verified")
         package_versions = {**package_versions, "qwen_tts_source": SOURCE_PACKAGE_VERSION}
         checkpoint_recorder.finish()
     except Exception as caught:  # evidence is retained even for a partial smoke
+        api["forbidden_imports"] = loaded_forbidden_imports()
         error = f"{type(caught).__name__}: {caught}"
 
     data: dict[str, Any] = {
@@ -951,15 +958,16 @@ def self_test() -> None:
         }
         failure["source"] = source_evidence
         validate_evidence_data(failure)
-        for tampered in ("patched_bytes", "patched_sha256"):
-            candidate = json.loads(json.dumps(failure))
-            candidate["source"]["compatibility_patch"][tampered] = 1 if tampered == "patched_bytes" else "0" * 64
-            try:
-                validate_evidence_data(candidate)
-            except SmokeError:
-                pass
-            else:
-                raise SmokeError(f"tampered compatibility patch {tampered} evidence was accepted")
+        for index, target in enumerate((COMPATIBILITY_PATCH_TARGET, COMPATIBILITY_25HZ_TARGET, COMPATIBILITY_CORE_25HZ_TARGET)):
+            for field, value in (("patched_bytes", 1), ("patched_sha256", "0" * 64), ("replacement_count", 99), ("target", "tampered")):
+                candidate = json.loads(json.dumps(failure))
+                candidate["source"]["compatibility_patch"]["patches"][index][field] = value
+                try:
+                    validate_evidence_data(candidate)
+                except SmokeError:
+                    pass
+                else:
+                    raise SmokeError(f"tampered compatibility patch {target}/{field} evidence was accepted")
         candidate = json.loads(json.dumps(failure))
         candidate["source"]["compatibility_patch"]["patches"].reverse()
         try:

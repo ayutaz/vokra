@@ -270,8 +270,13 @@ download_source_tree() {
   [[ "$(git -C "$output" rev-parse HEAD)" == "$OFFICIAL_SOURCE_REVISION" ]] || die 'official source checkout revision drifted'
   [[ -f "$output/pyproject.toml" && -f "$output/qwen_tts/__init__.py" ]] || die 'official source tree is incomplete'
   [[ -z "$(git -C "$output" status --porcelain --untracked-files=all)" ]] || die 'official source checkout is dirty'
-  # dump_reference.py applies qwen_source_compat.patch_source_checkout to this
-  # newly cloned clean tree before importing the official wrapper.
+}
+
+apply_source_compatibility() {
+  local source="$1" evidence="$2"
+  PYTHONPATH="$PARITY_PROJECT${PYTHONPATH:+:$PYTHONPATH}" uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
+    'import json,sys; from pathlib import Path; from qwen_source_compat import patch_source_checkout; print(json.dumps(patch_source_checkout(Path(sys.argv[1])), sort_keys=True))' \
+    "$source" > "$evidence"
 }
 
 require_single_file_snapshot() {
@@ -339,7 +344,7 @@ run_self_test() {
     'b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9' \
     '17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9' \
     'Qwen/Qwen3-TTS-Tokenizer-12Hz' 'a87c50897bb00837eb857d0538b29d117541d7f6' \
-    'https://github.com/QwenLM/Qwen3-TTS.git' 'download_source_tree' 'git init' 'remote add origin' 'fetch --depth 1 origin' 'FETCH_HEAD' '--source-dir' \
+    'https://github.com/QwenLM/Qwen3-TTS.git' 'download_source_tree' 'apply_source_compatibility' 'patch_source_checkout' 'source-compatibility.json' 'git init' 'remote add origin' 'fetch --depth 1 origin' 'FETCH_HEAD' '--source-dir' \
     '022e286b98fbec7e1e916cb940cdf532cd9f488e' "$DECODER_CHECKPOINT_SHA256" \
     'nested_decoder_sha256' 'min_new_tokens' \
     'qwen3-tts-tokenizer-12hz' 'MIN_NEW_TOKENS=2' 'qwen3_tts_real_cpu_matches_official_reference' \
@@ -552,6 +557,7 @@ main() {
   step "Stage authenticated official source $OFFICIAL_SOURCE_REPO@$OFFICIAL_SOURCE_REVISION"
   source_tree="$work_dir/source-qwen3-tts"
   download_source_tree "$source_tree"
+  apply_source_compatibility "$source_tree" "$evidence/source-compatibility.json"
   step "Download and convert official decoder $DECODER_REPO@$DECODER_REVISION"
   decoder_source="$work_dir/source-decoder"; decoder_gguf="$work_dir/qwen3-tts-tokenizer-12hz.gguf"
   download_snapshot "$DECODER_REPO" "$DECODER_REVISION" "$decoder_source"

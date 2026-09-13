@@ -129,6 +129,55 @@ def _patch_records(originals: dict[str, bytes], patched: dict[str, bytes]) -> li
     ]
 
 
+def _expected_patch_records() -> list[dict[str, Any]]:
+    return [
+        {"status": PATCH_STATUS, "target": PATCH_TARGET, "operation": PATCH_OPERATION, "original_bytes": PATCH_ORIGINAL_BYTES, "original_sha256": PATCH_ORIGINAL_SHA256, "patched_bytes": PATCHED_BYTES, "patched_sha256": PATCHED_SHA256, "replacement_count": 1, "transformers_api": TRANSFORMERS_API},
+        {"status": PATCH_STATUS, "target": PATCH_25HZ_TARGET, "operation": PATCH_25HZ_OPERATION, "original_bytes": PATCH_25HZ_ORIGINAL_BYTES, "original_sha256": PATCH_25HZ_ORIGINAL_SHA256, "patched_bytes": PATCH_25HZ_PATCHED_BYTES, "patched_sha256": PATCH_25HZ_PATCHED_SHA256, "replacement_count": 1},
+        {"status": PATCH_STATUS, "target": PATCH_CORE_25HZ_TARGET, "operation": PATCH_CORE_25HZ_OPERATION, "original_bytes": PATCH_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": PATCH_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": PATCH_CORE_25HZ_PATCHED_BYTES, "patched_sha256": PATCH_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
+    ]
+
+
+def compatibility_patch_record() -> dict[str, Any]:
+    """Return the canonical record for the fixed three-patch contract."""
+    return {"status": PATCH_STATUS, "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": _expected_patch_records()}
+
+
+def validate_patch_record(record: Any) -> None:
+    if record != compatibility_patch_record():
+        raise CompatibilityPatchError("compatibility patch evidence is not the fixed three-patch contract")
+
+
+def verify_patched_source_checkout(source: Path, record: Any = None) -> dict[str, Any]:
+    """Verify an already patched checkout without changing it."""
+    if source.is_symlink() or not source.is_dir():
+        raise CompatibilityPatchError("patched source checkout is missing or symlinked")
+    source = source.resolve(strict=False)
+    targets = {relative: source / relative for relative in COMPATIBILITY_PATCH_TARGETS}
+    for relative, target in targets.items():
+        if target.is_symlink() or not target.is_file():
+            raise CompatibilityPatchError(f"patched compatibility target is missing or symlinked: {relative}")
+    status = subprocess.run(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout.rstrip("\r\n").splitlines()
+    expected_status = [f" M {relative}" for relative in sorted(COMPATIBILITY_PATCH_TARGETS)]
+    if status != expected_status:
+        raise CompatibilityPatchError(f"patched source checkout has unexpected status: {status!r}")
+    expected = _expected_patch_records()
+    for row in expected:
+        target = targets[row["target"]]
+        content = target.read_bytes()
+        if len(content) != row["patched_bytes"] or sha256_bytes(content) != row["patched_sha256"]:
+            raise CompatibilityPatchError(f"patched source identity drifted: {row['target']}")
+        if row["target"] == PATCH_TARGET and PATCH_FROM in content:
+            raise CompatibilityPatchError("decorator compatibility patch was reverted")
+        if row["target"] == PATCH_25HZ_TARGET and PATCH_25HZ_FROM in content:
+            raise CompatibilityPatchError("top-level 25Hz import compatibility patch was reverted")
+        if row["target"] == PATCH_CORE_25HZ_TARGET and PATCH_CORE_25HZ_FROM in content:
+            raise CompatibilityPatchError("core 25Hz import compatibility patch was reverted")
+    canonical = compatibility_patch_record()
+    if record is not None:
+        validate_patch_record(record)
+    return canonical
+
+
 def patch_source_checkout(source: Path) -> dict[str, Any]:
     """Apply all three patches, or leave the clean checkout completely untouched."""
     if source.is_symlink():
@@ -155,6 +204,7 @@ def patch_source_checkout(source: Path) -> dict[str, Any]:
         PATCH_CORE_25HZ_TARGET: patch_core_25hz_source_bytes(originals[PATCH_CORE_25HZ_TARGET]),
     }
     temporary: dict[str, Path] = {}
+    replaced: list[str] = []
     try:
         for index, (relative, target) in enumerate(targets.items()):
             path = target.with_name(f".{target.name}.{os.getpid()}.{index}.compat.tmp")
@@ -165,34 +215,63 @@ def patch_source_checkout(source: Path) -> dict[str, Any]:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(patched[relative])
             os.chmod(path, target.stat().st_mode & 0o777)
-        replaced: list[str] = []
-        try:
-            for relative, target in targets.items():
-                os.replace(temporary[relative], target)
-                replaced.append(relative)
-        except BaseException:
-            for relative in replaced:
-                target = targets[relative]
-                rollback = target.with_name(f".{target.name}.{os.getpid()}.{relative.count('/')}.rollback.tmp")
-                fd = os.open(rollback, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(originals[relative])
-                os.replace(rollback, target)
-            raise
+        for relative, target in targets.items():
+            os.replace(temporary[relative], target)
+            replaced.append(relative)
+    except BaseException as error:
+        if replaced:
+            try:
+                for relative in replaced:
+                    target = targets[relative]
+                    if target.is_symlink():
+                        raise CompatibilityPatchError(f"cannot rollback symlinked target: {relative}")
+                    rollback = target.with_name(f".{target.name}.{os.getpid()}.{relative.count('/')}.rollback.tmp")
+                    fd = os.open(rollback, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(originals[relative])
+                    os.replace(rollback, target)
+            except BaseException as rollback_error:
+                raise CompatibilityPatchError(f"compatibility patch application failed and rollback failed: {rollback_error}") from error
+        raise
     finally:
         for path in temporary.values():
             path.unlink(missing_ok=True)
-    after_status = subprocess.run(
-        ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"],
-        check=True, capture_output=True, text=True,
-    ).stdout.rstrip("\r\n").splitlines()
-    expected_status = [f" M {relative}" for relative in sorted(COMPATIBILITY_PATCH_TARGETS)]
-    if after_status != expected_status:
-        raise CompatibilityPatchError(f"compatibility patch changed unexpected source paths: {after_status!r}")
-    for relative, target in targets.items():
-        if target.read_bytes() != patched[relative]:
-            raise CompatibilityPatchError(f"compatibility patch output changed unexpectedly: {relative}")
-    return {"status": PATCH_STATUS, "operation": "apply_exactly_three_source_patches", "patch_count": 3, "patches": _patch_records(originals, patched)}
+    try:
+        after_status = subprocess.run(
+            ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"],
+            check=True, capture_output=True, text=True,
+        ).stdout.rstrip("\r\n").splitlines()
+        expected_status = [f" M {relative}" for relative in sorted(COMPATIBILITY_PATCH_TARGETS)]
+        if after_status != expected_status:
+            raise CompatibilityPatchError(f"compatibility patch changed unexpected source paths: {after_status!r}")
+        for relative, target in targets.items():
+            if target.read_bytes() != patched[relative]:
+                raise CompatibilityPatchError(f"compatibility patch output changed unexpectedly: {relative}")
+    except BaseException as error:
+        if replaced:
+            try:
+                for relative in replaced:
+                    target = targets[relative]
+                    if target.is_symlink():
+                        raise CompatibilityPatchError(f"cannot rollback symlinked target: {relative}")
+                    rollback = target.with_name(f".{target.name}.{os.getpid()}.{relative.count('/')}.rollback.tmp")
+                    fd = os.open(rollback, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(originals[relative])
+                    os.replace(rollback, target)
+                restored_status = subprocess.run(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout
+                if restored_status:
+                    raise CompatibilityPatchError(f"rollback left source dirty: {restored_status!r}")
+                for relative, target in targets.items():
+                    if target.read_bytes() != originals[relative]:
+                        raise CompatibilityPatchError(f"rollback identity drifted: {relative}")
+            except BaseException as rollback_error:
+                raise CompatibilityPatchError(f"compatibility patch validation failed and rollback failed: {rollback_error}") from error
+        raise
+    record = compatibility_patch_record()
+    record["patches"] = _patch_records(originals, patched)
+    validate_patch_record(record)
+    return record
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -237,6 +316,16 @@ def self_test_filesystem() -> None:
             assert (root / PATCH_TARGET).read_bytes() == decorator_patched
             assert (root / PATCH_25HZ_TARGET).read_bytes() == init_patched
             assert (root / PATCH_CORE_25HZ_TARGET).read_bytes() == core_patched
+            assert verify_patched_source_checkout(root, record) == record
+            reordered = {**record, "patches": list(reversed(record["patches"]))}
+            try: verify_patched_source_checkout(root, reordered)
+            except CompatibilityPatchError: pass
+            else: raise AssertionError("reordered patch evidence was accepted")
+            tampered = {**record, "patches": [dict(row) for row in record["patches"]]}
+            tampered["patches"][1]["patched_bytes"] += 1
+            try: verify_patched_source_checkout(root, tampered)
+            except CompatibilityPatchError: pass
+            else: raise AssertionError("tampered patch evidence was accepted")
             _git("add", PATCH_TARGET, PATCH_25HZ_TARGET, PATCH_CORE_25HZ_TARGET, cwd=root); _git("commit", "--quiet", "-m", "patched", cwd=root)
             try: patch_source_checkout(root)
             except CompatibilityPatchError: pass
@@ -248,6 +337,33 @@ def self_test_filesystem() -> None:
             except CompatibilityPatchError: pass
             else: raise AssertionError("pre-dirty checkout was accepted")
             assert before == {(root / relative).read_bytes() for relative in COMPATIBILITY_PATCH_TARGETS}
+
+        with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-clean-unpatched-") as directory:
+            root = Path(directory); _clean_repo(root, decorator, init, core)
+            try: verify_patched_source_checkout(root)
+            except CompatibilityPatchError: pass
+            else: raise AssertionError("clean unpatched source was accepted")
+
+        with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-extra-") as directory:
+            root = Path(directory); _clean_repo(root, decorator, init, core); record = patch_source_checkout(root)
+            (root / "extra.txt").write_text("unexpected", encoding="utf-8")
+            try: verify_patched_source_checkout(root, record)
+            except CompatibilityPatchError: pass
+            else: raise AssertionError("extra dirty source was accepted")
+
+        with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-tampered-") as directory:
+            root = Path(directory); _clean_repo(root, decorator, init, core); record = patch_source_checkout(root)
+            (root / PATCH_25HZ_TARGET).write_bytes(b"tampered")
+            try: verify_patched_source_checkout(root, record)
+            except CompatibilityPatchError: pass
+            else: raise AssertionError("tampered source was accepted")
+
+        with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-partial-state-") as directory:
+            root = Path(directory); _clean_repo(root, decorator, init, core); patch_source_checkout(root)
+            (root / PATCH_CORE_25HZ_TARGET).write_bytes(core)
+            try: verify_patched_source_checkout(root)
+            except CompatibilityPatchError: pass
+            else: raise AssertionError("partial patched source was accepted")
         with tempfile.TemporaryDirectory(prefix="qwen3-tts-compat-partial-") as directory:
             root = Path(directory); _clean_repo(root, decorator, init, core); (root / PATCH_25HZ_TARGET).write_bytes(b"drift")
             before = (root / PATCH_TARGET).read_bytes()
