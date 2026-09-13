@@ -46,8 +46,10 @@ self_test() {
   if bash "$self" --self-test --expected-head 0000000000000000000000000000000000000000 >/dev/null 2>&1; then die 'extra self-test argument accepted'; fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PROBE" --self-test || status=$?
   [[ "$status" == 0 ]] || die "probe self-test failed: $status"
-  local overlap_parent overlap_output overlap_work
-  overlap_parent="$(mktemp -d "${TMPDIR:-/tmp}/vokra-zonos-compat-wrapper-self-test.XXXXXX")"
+  local overlap_parent overlap_output overlap_work temp_root
+  temp_root="${TMPDIR:-/tmp}"
+  temp_root="${temp_root%/}"
+  overlap_parent="$(mktemp -d "$temp_root/vokra-zonos-compat-wrapper-self-test.XXXXXX")"
   overlap_output="$overlap_parent/out.json"; overlap_work="$overlap_parent/work"
   if ! require_absent_path "$overlap_output" || ! require_absent_path "$overlap_work"; then
     rm -rf -- "$overlap_parent"; die 'valid absent self-test paths were rejected'

@@ -583,7 +583,11 @@ def self_test() -> None:
         raise AssertionError(f"{label} was accepted")
 
     with tempfile.TemporaryDirectory(prefix="vokra-zonos-compat-self-test-") as temporary:
-        root = Path(temporary)
+        # macOS commonly exposes TMPDIR through /var -> /private/var. Keep
+        # the synthetic workspace on its physical path so the portable
+        # ancestry check does not reject the platform's own temp alias; the
+        # explicit symlink ancestry case below still exercises rejection.
+        root = Path(temporary).resolve()
         output = root / "evidence.json"
         external_output(output)
         write_evidence(output, {"synthetic": True})
