@@ -790,6 +790,19 @@ def self_test() -> None:
     global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
+    production_license_gate_path = Path(__file__).resolve().parent / "license_gate.py"
+    spec = importlib.util.spec_from_file_location(
+        "vokra_qwen3_tts_license_gate_self_test", production_license_gate_path,
+    )
+    if spec is None or spec.loader is None:
+        raise SmokeError("production license gate module cannot be loaded")
+    production_license_gate = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(production_license_gate)
+    except Exception as error:
+        raise SmokeError(f"production license gate module is not importable: {error}") from error
+    if getattr(production_license_gate, "OWNER_SIGNER", None) != OWNER_SIGNER:
+        raise SmokeError("API smoke owner signer drifted from license gate OWNER_SIGNER")
     if tuple(CHECKPOINTS) != EXPECTED_CHECKPOINT_SEQUENCE:
         raise SmokeError("checkpoint allow-list drifted from the production sequence")
     production_recorder = CheckpointRecorder()
