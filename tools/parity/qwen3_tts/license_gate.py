@@ -502,18 +502,23 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
     if not isinstance(compact, dict) or set(compact) != expected_top or compact.get("schema") != COMPACT_SCHEMA or compact.get("status") != "PENDING_OWNER_APPROVAL" or compact.get("full_audit_sha256") != reference["full_audit_sha256"]:
         fail("compact dependency audit schema/status/hash drifted")
     synthetic = reference["full_audit_sha256"] == "e" * 64
+    if not synthetic and compact.get("full_audit_status") != "PASS":
+        fail("real compact dependency audit is not a PASS report")
     expected_inputs = {"pyproject_sha256": manifest.get("pyproject_sha256"), "uv_lock_sha256": manifest.get("lock_sha256"), "package_rows_sha256": manifest.get("package_rows_sha256"), "review_rows_sha256": manifest.get("review_rows_sha256"), "component_rows_sha256": manifest.get("component_rows_sha256"), "approval_scope_sha256": manifest.get("approval_scope_sha256")}
     if compact.get("inputs") != expected_inputs or any(not isinstance(value, str) or not HEX64.fullmatch(value) for value in expected_inputs.values()):
         fail("compact dependency audit is not bound to the manifest inputs")
     repository = compact["repository"]
     if set(repository) != {"head", "clean", "audit_script_sha256"} or repository["clean"] is not True or not HEX40.fullmatch(str(repository["head"])) or not HEX64.fullmatch(str(repository["audit_script_sha256"])):
         fail("compact dependency audit repository identity is malformed")
+    audit_script = path.with_name("dependency_audit.py")
+    if audit_script.is_symlink() or not audit_script.is_file() or digest_bytes(audit_script.read_bytes()) != repository["audit_script_sha256"]:
+        fail("compact dependency audit script bytes drifted")
     environment = compact["environment"]
     expected_environment = {"python": "3.12", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False} if synthetic else {"python": "3.12.14", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False}
     if set(environment) != set(expected_environment) or environment != expected_environment:
         fail("compact dependency audit scope is unsafe or drifted")
     closure = compact["closure"]
-    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 57, "inactive_rows": 4, "expected_count": 57, "installed_count": 57, "missing": [], "unexpected": [], "exact": True}
+    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 55, "inactive_rows": 4, "expected_count": 55, "installed_count": 55, "missing": [], "unexpected": [], "exact": True}
     if set(closure) != {"active_rows", "inactive_rows", "expected_count", "installed_count", "missing", "unexpected", "exact", "expected_sha256", "installed_sha256"} or any(closure.get(key) != value for key, value in expected_closure.items()):
         fail("compact dependency audit closure counts are not exact")
     if any(not isinstance(closure.get(key), int) or closure[key] < 0 for key in ("active_rows", "inactive_rows", "expected_count", "installed_count")) or any(not isinstance(closure.get(key), str) or not HEX64.fullmatch(closure[key]) for key in ("expected_sha256", "installed_sha256")):
@@ -536,6 +541,9 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
         key = (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), row["reason"])
         if key not in expected_inactive or key in inactive_keys or digest_bytes(json.dumps({k: row[k] for k in row if k != "fact_sha256"}, sort_keys=True, separators=(",", ":")).encode()) != row["fact_sha256"]:
             fail("compact inactive fact identity/reason/hash drifted")
+        review = next((item for item in reviews if (item["name"], item["version"], json.dumps(item["source"], sort_keys=True)) == key[:3]), None)
+        if review is None or review.get("payload_sha256") != row["fact_sha256"]:
+            fail("compact inactive fact is not bound to its reviewed manifest row")
         inactive_keys.add(key)
     active_reviews = {(row["name"], row["version"], json.dumps(row["source"], sort_keys=True)): row for row in reviews if (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), next((item[3] for item in expected_inactive if item[:3] == (row["name"], row["version"], json.dumps(row["source"], sort_keys=True))), None)) not in expected_inactive}
     package_facts = compact["license_facts"].get("packages")
@@ -766,6 +774,8 @@ def run(
         evidence = strict_json_loads(evidence_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         fail(f"operator evidence is unreadable: {error}")
+    if not isinstance(evidence, dict) or set(evidence) != {"review_rows_sha256", "component_rows_sha256", "approval_scope_sha256", "rows", "components"}:
+        fail("operator evidence schema is not exact")
     if evidence.get("review_rows_sha256") != manifest.get("review_rows_sha256"):
         fail("operator evidence is not bound to the reviewed package rows")
     if evidence.get("component_rows_sha256") != manifest.get("component_rows_sha256"):
@@ -789,7 +799,7 @@ def run(
     for review in reviews:
         key = (review["name"], review["version"], json.dumps(review["source"], sort_keys=True))
         row = evidence_by_key.get(key)
-        if not isinstance(row, dict) or row.get("status") != "REVIEWED":
+        if not isinstance(row, dict) or set(row) != {"name", "version", "source", "status", "license", "native_bundled", "payload_sha256", "approval"} or row.get("status") != "REVIEWED":
             fail(f"missing reviewed evidence row: {key!r}")
         if row.get("license") != review["license"] or row.get("native_bundled") != review["native_bundled"]:
             fail(f"license/native/bundled evidence drifted: {key!r}")
@@ -815,7 +825,7 @@ def run(
         fail("operator evidence component rows do not exactly cover fixed identities")
     for component in components:
         row = component_evidence_by_key[component["component"]]
-        if row.get("status") != "REVIEWED":
+        if set(row) != {"component", "status", "license", "native_bundled", "payload_sha256", "approval"} or row.get("status") != "REVIEWED":
             fail(f"missing reviewed component evidence: {component['component']}")
         if row.get("license") != component["license"] or row.get("native_bundled") != component["native_bundled"]:
             fail(f"component license/native evidence drifted: {component['component']}")
@@ -1024,6 +1034,8 @@ def self_test() -> None:
         manifest["pyproject_sha256"] = digest_bytes(project.read_bytes())
         manifest_path = root / "manifest.json"
         compact_path = root / "dependency_audit_evidence.json"
+        audit_script = root / "dependency_audit.py"
+        audit_script.write_bytes((production_root / "dependency_audit.py").read_bytes())
         compact = {
             "schema": COMPACT_SCHEMA,
             "status": "PENDING_OWNER_APPROVAL",
@@ -1037,7 +1049,7 @@ def self_test() -> None:
                 "component_rows_sha256": manifest["component_rows_sha256"],
                 "approval_scope_sha256": "0" * 64,
             },
-            "repository": {"head": "a" * 40, "clean": True, "audit_script_sha256": "b" * 64},
+            "repository": {"head": "a" * 40, "clean": True, "audit_script_sha256": digest_bytes(audit_script.read_bytes())},
             "environment": {"python": "3.12", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False},
             "closure": {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True, "expected_sha256": "c" * 64, "installed_sha256": "d" * 64},
             "license_facts": {"package_count": 2, "declared_license_missing": 0, "publisher_file_count": 0, "unsafe_publisher_file_count": 0, "packages": [{"name": row["name"], "version": row["version"], "source": row["source"]} for row in rows], "classification": "self-test"},
@@ -1065,6 +1077,7 @@ def self_test() -> None:
             ("compact closure tamper", lambda value: value["closure"].update(exact=False)),
             ("compact model metadata tamper", lambda value: value["model_facts"]["metadata_records"][0].update(component="tampered")),
             ("compact approval tamper", lambda value: value["approval"].update(signer="a" * 40)),
+            ("compact audit script tamper", lambda value: value["repository"].update(audit_script_sha256="0" * 64)),
         ):
             candidate = json.loads(json.dumps(compact_base))
             mutate(candidate)
@@ -1232,6 +1245,7 @@ def self_test() -> None:
         blocked("native closure tamper", mutate_evidence=lambda value: value["rows"][0].update(native_bundled="changed"))
         blocked("approval tamper", mutate_evidence=lambda value: value["rows"][0]["approval"].update(signature_sha256="1" * 64))
         blocked("approval signer tamper", mutate_evidence=lambda value: value["rows"][0]["approval"].update(signer="other-owner"))
+        blocked("approval evidence extra key", mutate_evidence=lambda value: value.update(extra="rejected"))
         blocked(
             "unresolved license row",
             mutate_manifest=lambda value: value["review_rows"][0].update(license="UNRESOLVED"),
