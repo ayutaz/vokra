@@ -1,10 +1,11 @@
 #!/usr/bin/env -S uv run --no-project --offline --python 3.12
 """Fail-closed license/native evidence gate for the Zonos reference closure.
 
-The supplied publisher archive was collected at an earlier clean Vokra head.
-This gate records its exact reviewable facts, but refuses to treat that archive
-as approval for the newer Transformers 5.10.4/Torch 2.11 closure.  It never
-downloads, imports, or executes a reference package or model.
+The supplied publisher archive was collected at exact closure-equivalent Vokra
+head c82ed76e.  This gate records its exact reviewable facts and requires an
+explicit detached-head opt-in when that captured commit is not in the current
+branch graph.  It never downloads, imports, or executes a reference package or
+model.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -94,19 +96,23 @@ def validate_manifest(path: Path = MANIFEST) -> dict[str, Any]:
 
     evidence = require_keys(
         manifest["evidence"],
-        {"root_name", "audit_json_sha256", "checksum_verify_log_sha256", "head", "candidate_scope_sha256", "lock_rows_sha256", "active_lock_rows_sha256", "installed_closure_sha256", "native_files_sha256", "publisher_files_sha256", "numpy_record_sha256", "publisher_manifest_sha256", "counts", "project_sha256", "lock_sha256", "numpy_wheel_sha256", "constraints_sha256"},
+        {"root_name", "audit_json_sha256", "checksum_verify_log_sha256", "head", "candidate_scope_sha256", "lock_rows_sha256", "active_lock_rows_sha256", "installed_closure_sha256", "native_files_sha256", "publisher_files_sha256", "numpy_record_sha256", "publisher_manifest_sha256", "publisher_archive_dir", "counts", "project_sha256", "lock_sha256", "numpy_wheel_sha256", "constraints_sha256"},
         "evidence",
     )
-    for key in ("audit_json_sha256", "candidate_scope_sha256", "lock_rows_sha256", "active_lock_rows_sha256", "installed_closure_sha256", "native_files_sha256", "publisher_files_sha256", "publisher_manifest_sha256", "project_sha256", "lock_sha256", "numpy_wheel_sha256", "constraints_sha256"):
+    for key in ("audit_json_sha256", "candidate_scope_sha256", "lock_rows_sha256", "active_lock_rows_sha256", "installed_closure_sha256", "native_files_sha256", "publisher_files_sha256", "numpy_record_sha256", "publisher_manifest_sha256", "project_sha256", "lock_sha256", "numpy_wheel_sha256", "constraints_sha256"):
         if not HEX64.fullmatch(str(evidence[key])):
             raise GateError(f"evidence digest is malformed: {key}")
+    if evidence["checksum_verify_log_sha256"] is not None and not HEX64.fullmatch(str(evidence["checksum_verify_log_sha256"])):
+        raise GateError("checksum verification log digest is malformed")
     if not HEX40.fullmatch(str(evidence["head"])):
         raise GateError("evidence HEAD is malformed")
     counts = require_keys(evidence["counts"], {"lock_packages", "active_packages", "installed_distributions", "publisher_files", "native_files"}, "evidence counts")
-    if counts != {"lock_packages": 38, "active_packages": 34, "installed_distributions": 34, "publisher_files": 59, "native_files": 50}:
+    if counts != {"lock_packages": 38, "active_packages": 34, "installed_distributions": 34, "publisher_files": 59, "native_files": 41}:
         raise GateError("evidence counts are not the captured closure")
     if evidence["constraints_sha256"] != current["constraints_sha256"]:
         raise GateError("constraint identity is not shared by current and captured closure")
+    if evidence["publisher_archive_dir"] != "publisher-archive":
+        raise GateError("publisher archive directory is not exact")
 
     rows = manifest["package_rows"]
     if not isinstance(rows, list) or len(rows) != 34:
@@ -128,11 +134,11 @@ def validate_manifest(path: Path = MANIFEST) -> dict[str, Any]:
     native = require_keys(manifest["native_boundaries"], {"status", "count", "sha256", "root_counts", "numpy_policy_sha256", "numpy_runtime_config_sha256", "numpy_no_blas", "torch_and_torchaudio"}, "native boundaries")
     if native != {
         "status": "REVIEW_REQUIRED",
-        "count": 50,
+        "count": 41,
         "sha256": evidence["native_files_sha256"],
-        "root_counts": {"functorch": 1, "hf_xet": 1, "markupsafe": 1, "numpy": 21, "regex": 1, "safetensors": 1, "tokenizers": 1, "torchaudio": 4, "torio": 6, "torch": 12, "yaml": 1},
+        "root_counts": {"hf_xet": 1, "markupsafe": 1, "numpy": 21, "regex": 1, "safetensors": 1, "tokenizers": 1, "torchaudio": 2, "torch": 12, "yaml": 1},
         "numpy_policy_sha256": "1353c6c72ce22ff1af2885d1cecde7cde486d23b89bc80e7e5c7913c30606a7c",
-        "numpy_runtime_config_sha256": "6b0a8da490f29c7473c1de44b84dc0170f0b14e0867535b32cdcf84eccd9e7d6",
+        "numpy_runtime_config_sha256": "8ed54f6c33c562d3a462dc1570abb79b28dc034d2dd4e7a7be91444bc2051fb4",
         "numpy_no_blas": "PASS_NO_FORBIDDEN_BLAS",
         "torch_and_torchaudio": "BUNDLED_NATIVE_COMPONENTS_REQUIRE_OWNER_REVIEW",
     }:
@@ -164,7 +170,7 @@ def _safe_relative(path_text: str) -> PurePosixPath:
     return path
 
 
-def verify_checksums(root: Path, checksum_log_sha256: str) -> None:
+def verify_checksums(root: Path, checksum_log_sha256: str | None) -> None:
     sums_path = root / "SHA256SUMS"
     if not sums_path.is_file() or sums_path.is_symlink():
         raise GateError("evidence SHA256SUMS is missing or symlinked")
@@ -191,7 +197,7 @@ def verify_checksums(root: Path, checksum_log_sha256: str) -> None:
     # The verification log is written after ``sha256sum -c`` and therefore
     # cannot authenticate itself.  It is the sole explicitly allowed
     # post-verification file; every other regular file must be listed.
-    allowed_unhashed = {PurePosixPath("checksum-verify.log")}
+    allowed_unhashed = {PurePosixPath("checksum-verify.log")} if checksum_log_sha256 is not None else set()
     if set(expected) != actual - allowed_unhashed or not (actual - set(expected)) <= allowed_unhashed:
         raise GateError("evidence SHA256SUMS does not cover exactly every authenticated file")
     for relative, expected_digest in expected.items():
@@ -199,16 +205,16 @@ def verify_checksums(root: Path, checksum_log_sha256: str) -> None:
         if file_digest(path) != expected_digest:
             raise GateError(f"evidence checksum mismatch: {relative}")
     checksum_log = root / "checksum-verify.log"
-    if not checksum_log.is_file() or file_digest(checksum_log) != checksum_log_sha256:
+    if checksum_log_sha256 is not None and (not checksum_log.is_file() or file_digest(checksum_log) != checksum_log_sha256):
         raise GateError("checksum verification log identity mismatch")
 
 
-def validate_evidence(manifest: dict[str, Any], root: Path) -> str:
+def validate_evidence(manifest: dict[str, Any], root: Path, *, allow_ancestor_head: bool = False) -> str:
     evidence = manifest["evidence"]
     if not root.is_absolute() or root.is_symlink() or not root.is_dir() or root.name != evidence["root_name"]:
         raise GateError("evidence directory is not the exact captured root")
     verify_checksums(root, evidence["checksum_verify_log_sha256"])
-    report_path = root / "zonos-audit.json"
+    report_path = root / "dependency-audit.json"
     if file_digest(report_path) != evidence["audit_json_sha256"]:
         raise GateError("audit JSON SHA-256 does not match manifest")
     report = load_json(report_path)
@@ -263,7 +269,8 @@ def validate_evidence(manifest: dict[str, Any], root: Path) -> str:
     if captured_ids != expected_ids:
         raise GateError("manifest package rows do not match captured active rows")
     archive = installed.get("publisher_archive")
-    archive_manifest = root / "publisher-evidence" / "manifest.json"
+    archive_root = root / evidence["publisher_archive_dir"]
+    archive_manifest = archive_root / "manifest.json"
     if not isinstance(archive, dict) or file_digest(archive_manifest) != evidence["publisher_manifest_sha256"]:
         raise GateError("publisher archive manifest identity mismatch")
     archive_rows = load_json(archive_manifest)
@@ -277,12 +284,12 @@ def validate_evidence(manifest: dict[str, Any], root: Path) -> str:
         if relative in expected_archive_paths:
             raise GateError(f"duplicate publisher archive path: {relative}")
         expected_archive_paths.add(relative)
-        payload = root / "publisher-evidence" / Path(*relative.parts)
+        payload = archive_root / Path(*relative.parts)
         if not payload.is_file() or payload.is_symlink() or payload.stat().st_size != row["bytes"] or file_digest(payload) != row["sha256"]:
             raise GateError(f"publisher archive payload mismatch: {relative}")
     actual_archive_paths = {
-        PurePosixPath(path.relative_to(root / "publisher-evidence").as_posix())
-        for path in (root / "publisher-evidence").rglob("*")
+        PurePosixPath(path.relative_to(archive_root).as_posix())
+        for path in archive_root.rglob("*")
         if path.is_file() and path != archive_manifest
     }
     if actual_archive_paths != expected_archive_paths:
@@ -308,17 +315,29 @@ def validate_evidence(manifest: dict[str, Any], root: Path) -> str:
         raise GateError("installed digest map is not bound")
     if report.get("project", {}).get("pyproject_sha256") != evidence["project_sha256"] or report.get("project", {}).get("uv_lock_sha256") != evidence["lock_sha256"] or report.get("project", {}).get("constraints_sha256") != evidence["constraints_sha256"]:
         raise GateError("captured project identity is not exact")
-    if report.get("project", {}).get("expected_direct_versions", {}).get("torch") != "2.6.0+cpu" or report.get("project", {}).get("expected_direct_versions", {}).get("torchaudio") != "2.6.0+cpu":
+    if report.get("project", {}).get("expected_direct_versions", {}).get("torch") != "2.11.0+cpu" or report.get("project", {}).get("expected_direct_versions", {}).get("torchaudio") != "2.11.0+cpu":
         raise GateError("captured Torch CPU pair is not the supplied evidence closure")
+    wheel_identity = scope.get("wheel_identity")
+    if not isinstance(wheel_identity, dict) or wheel_identity.get("sha256") != evidence["numpy_wheel_sha256"]:
+        raise GateError("NumPy no-BLAS wheel identity is not bound")
     if scope.get("native_files_sha256") != evidence["native_files_sha256"] or scope.get("publisher_files_sha256") != evidence["publisher_files_sha256"] or scope.get("publisher_archive_manifest_sha256") != evidence["publisher_manifest_sha256"]:
         raise GateError("candidate scope does not bind native/publisher evidence")
 
-    # The archive is intentionally a historical review record.  The current
-    # main closure changed Torch/torchaudio and the lock after its capture.
-    stale = evidence["head"] != _current_head() or evidence["project_sha256"] != manifest["current_closure"]["project_sha256"] or evidence["lock_sha256"] != manifest["current_closure"]["lock_sha256"]
-    if not stale:
-        raise GateError("captured evidence unexpectedly claims the current closure")
-    return "captured publisher/native evidence is valid but stale for current main"
+    current_head = _current_head()
+    if evidence["head"] != current_head:
+        if not allow_ancestor_head:
+            raise GateError("captured evidence HEAD differs from the current checkout; explicit ancestor mode is required")
+        try:
+            subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", evidence["head"], "HEAD"], check=True, capture_output=True)
+        except (OSError, subprocess.CalledProcessError):
+            # The VAST worker may validate a clean side branch whose commit is
+            # not in the current branch graph.  Keep this opt-in and require
+            # that the exact commit is present and carries identical
+            # project/lock/constraint bytes before accepting its evidence.
+            _validate_detached_commit(evidence["head"], evidence)
+    if evidence["project_sha256"] != manifest["current_closure"]["project_sha256"] or evidence["lock_sha256"] != manifest["current_closure"]["lock_sha256"]:
+        raise GateError("captured dependency closure is not current")
+    return "captured publisher/native evidence is valid for the current dependency closure; owner/legal sign-off remains required"
 
 
 def _current_head() -> str:
@@ -327,6 +346,17 @@ def _current_head() -> str:
         return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     except (OSError, ValueError):
         return ""
+
+
+def _validate_detached_commit(expected_head: str, evidence: dict[str, Any]) -> None:
+    try:
+        subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", f"{expected_head}^{{commit}}"], check=True, capture_output=True)
+        for relative, expected_digest in (("tools/parity/zonos_v0_1_reference/pyproject.toml", evidence["project_sha256"]), ("tools/parity/zonos_v0_1_reference/uv.lock", evidence["lock_sha256"]), ("tools/parity/zonos_v0_1_reference/numpy-build-constraints.txt", evidence["constraints_sha256"])):
+            payload = subprocess.run(["git", "-C", str(ROOT), "show", f"{expected_head}:{relative}"], check=True, capture_output=True).stdout
+            if hashlib.sha256(payload).hexdigest() != expected_digest:
+                raise GateError(f"captured HEAD closure file differs: {relative}")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise GateError("captured evidence HEAD commit or closure files are unavailable") from error
 
 
 def self_test() -> None:
@@ -343,7 +373,7 @@ def self_test() -> None:
     assert manifest["publication"] == "NO_UPLOAD"
     assert manifest["approval"]["signer"] is None
     assert digest({"b": 1, "a": 2}) == digest({"a": 2, "b": 1})
-    assert _safe_relative("publisher-evidence/manifest.json").parts == ("publisher-evidence", "manifest.json")
+    assert _safe_relative("publisher-archive/manifest.json").parts == ("publisher-archive", "manifest.json")
     for unsafe in ("", "/tmp/file", "../file", "a\\b"):
         try:
             _safe_relative(unsafe)
@@ -357,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--allow-ancestor-head", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -364,13 +395,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.self_test:
             self_test()
             if args.evidence_dir is not None:
-                print(f"zonos license gate evidence self-test: PASS ({validate_evidence(manifest, args.evidence_dir)})")
+                print(f"zonos license gate evidence self-test: PASS ({validate_evidence(manifest, args.evidence_dir, allow_ancestor_head=args.allow_ancestor_head)})")
             print("zonos license gate self-test: PASS")
             return 0
         if args.evidence_dir is None:
             print("zonos license gate: BLOCKED (owner/legal sign-off and captured evidence are required)")
             return 2
-        print(f"zonos license gate: BLOCKED ({validate_evidence(manifest, args.evidence_dir)})")
+        print(f"zonos license gate: BLOCKED ({validate_evidence(manifest, args.evidence_dir, allow_ancestor_head=args.allow_ancestor_head)})")
         return 2
     except (GateError, OSError) as error:
         print(f"zonos license gate: FAIL-CLOSED ({error})", file=sys.stderr)

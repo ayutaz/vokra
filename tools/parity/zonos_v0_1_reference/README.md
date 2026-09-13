@@ -52,25 +52,28 @@ Linux x86_64 lock rows. The classifications are based on the captured
 publisher bytes, including the compound `regex` and `typing-extensions`
 notices, the dual-license `packaging` notice, the MPL boundary in `certifi`
 and `tqdm`, Setuptools' vendored notices, and the 21-file no-BLAS NumPy
-native policy. Torch/torchaudio have 12/4 native files in the 50-file native
+native policy. Torch/torchaudio have 12/2 native files in the 41-file native
 closure and retain an owner review boundary for bundled components.
 
 The supplied capture is bound to clean Vokra head
-`5a30084dcea18b9e72d7befb776f98a61a2a4286`, audit JSON SHA-256
-`1432d2ddb45a2f7b2d0f8490b83e2151c4a61e226899224963bd9f3d17ec7a9e`, and
+`c82ed76e308a13f5ca5324ae3d00f9935f40123b`, audit JSON SHA-256
+`d56994ebb79d1680f964984ec0e03fbc96d3ec6d05278031d7d8eec39c36361c`, and
 publisher archive manifest SHA-256
-`1f6b3bb82a6f4cf6f0eaca43ae6333bcb1b50b52e869d8d4aee2f4291b0a1332`.
-Because the capture predates the current Torch 2.11.0 lock, the gate treats
-it as historical review evidence and refuses to authorize the current
-closure. A fresh VAST capture is required before owner/legal sign-off or any
-publication transition.
+`7358b563f1cc6a96c91eef602c432a06fd02f25c84986c368c04f809f8cd4378`.
+The complete evidence archive is bound by SHA-256
+`bd5c4183e5a8b7372869f830efc2843acccf640ae10cb76e8f2d9194ffae2c09`.
+It matches the current `transformers==5.10.4` / Torch 2.11.0 lock. The
+captured head is an exact closure-equivalent side branch, so the gate requires
+an explicit ancestor/detached-head opt-in and verifies the commit's project,
+lock, and constraint bytes before accepting the evidence. Owner/legal
+sign-off and publication remain blocked.
 
 The gate is model-free and reads only external evidence:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python 3.12 \
   tools/parity/zonos_v0_1_reference/license_gate.py --self-test \
-  --evidence-dir /path/to/evidence-5a30084d
+  --allow-ancestor-head --evidence-dir /path/to/zonos-package-c82ed76e
 ```
 
 The command verifies the directory `SHA256SUMS`, exact active-row/native/
