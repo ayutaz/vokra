@@ -118,9 +118,19 @@ class at import time. NVIDIA has no newer released OneLogger PTL integration
 to resolve this mismatch. The real-weight workers therefore run the
 dependency gate's `--compatibility-check` mode and stop with
 `BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE` before checkpoint inspection.
-No older vulnerable Lightning release, advisory allowlist, or local
-monkeypatch is permitted. A future upstream-compatible pair requires a new
-VAST import probe before this gate can be relaxed.
+No older vulnerable Lightning release may be permitted by an advisory
+allowlist, and no local monkeypatch is permitted. The CI dependency-review job
+has one temporary,
+exact exception for this database false positive: PyPA's primary advisory
+record `PYSEC-2026-3624` marks `lightning` 2.6.6 as fixed and only enumerates
+versions through 2.6.5, while GitHub currently applies the corresponding GHSA
+to 2.6.6 as well. `scripts/check-canary-dependency-review-guard.sh` runs before
+dependency-review and fails closed unless the tracked Canary lock contains
+exactly one `lightning==2.6.6`, the exact pyproject override and compatibility
+block are present, and the exception occurs exactly once. This exception must
+never be copied to another lock or used to permit a vulnerable Lightning
+release. A future upstream-compatible pair requires a new VAST import probe
+before this gate can be relaxed.
 
 ## Dependency approval transition
 

@@ -607,6 +607,17 @@ appear nowhere outside `tools/parity/**`: the Rust runtime carries no
 dependencies (enforced by `scripts/check-zero-deps.sh`) and the published
 Python wheel declares `dependencies = []`, so no shipped artefact is exposed.
 
+The Canary follow-up is a separate, temporary database-false-positive
+exception. GitHub dependency-review currently applies `GHSA-qqmf-gpg7-g8gw` to
+`lightning==2.6.6`, while PyPA's primary `PYSEC-2026-3624` record (modified
+2026-09-10) marks 2.6.6 fixed and enumerates versions only through 2.6.5. The
+exception appears exactly once in the action configuration and is guarded by
+`scripts/check-canary-dependency-review-guard.sh`, which rejects any old or
+duplicate Lightning entry, a missing exact override, or a missing
+`BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE` contract. It is not permission
+to run or publish a vulnerable release and must be removed when GitHub's
+database stops misapplying the advisory.
+
 - [x] **VAST verification of the upgraded oracles** (2026-08-28, instance
       `48950897`, destroyed after log recovery, account verified at zero running
       instances). All sixteen touched trees installed from their committed
