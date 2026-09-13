@@ -1,7 +1,7 @@
 {
-  "review_rows_sha256": "11eef7843053e6d6644cb55e426769fb7360b45eabfb65d662d38382e35e97b6",
+  "review_rows_sha256": "cf1510901d42ab0a6f7d9039673ab139af8bdabd1de46caec322984f387b98ba",
   "component_rows_sha256": "33512712582ad711143922ece10da99a335d094a2bebf2e0bc8ff0563631d4fb",
-  "approval_scope_sha256": "49057f5950ee022e71647be665f3ace99aeb58566ce2065e94fa7e23966448ae",
+  "approval_scope_sha256": "a28b5d9014f1dc311c8600ad229d99eea27a062b0c4cadbd575946f7b2fadb6b",
   "rows": [
     {
       "name": "annotated-doc",
@@ -1468,12 +1468,12 @@
       "status": "REVIEWED",
       "license": "BSD-2-Clause",
       "native_bundled": "installed distribution contains 10 bundled native file(s); ELF NEEDED includes libsox.so and FFmpeg libavcodec/libavdevice/libavfilter/libavformat/libavutil SONAME groups (4/5/6); exact inventory/hash is in compact VAST evidence; dynamic NEEDED entries are runtime linkage facts, not bundled license conclusions",
-      "payload_sha256": "0a1d3f2a567622ed40903edaf935661cde9a7822d13dd3ee6a2977496e901720",
+      "payload_sha256": "0d0d46e824df337a8f7e0393951af1ade327dd29df15eb7def921178048f0499",
       "approval": {
         "schema": "v1",
         "decision": "APPROVED",
         "signer": "yousan",
-        "signature_sha256": "eecdc469b9fe80680d4b4b91f5b471ca6edba3fa750d9de192fd465fb60fd4eb",
+        "signature_sha256": "ae9cfb4a8eab4b8fd899dc696d88717c4c4837ad3106f154a9123f6bb847c203",
         "subject": {
           "kind": "package",
           "name": "torchaudio",
@@ -1483,7 +1483,7 @@
           },
           "license": "BSD-2-Clause",
           "native_bundled": "installed distribution contains 10 bundled native file(s); ELF NEEDED includes libsox.so and FFmpeg libavcodec/libavdevice/libavfilter/libavformat/libavutil SONAME groups (4/5/6); exact inventory/hash is in compact VAST evidence; dynamic NEEDED entries are runtime linkage facts, not bundled license conclusions",
-          "payload_sha256": "0a1d3f2a567622ed40903edaf935661cde9a7822d13dd3ee6a2977496e901720"
+          "payload_sha256": "0d0d46e824df337a8f7e0393951af1ade327dd29df15eb7def921178048f0499"
         }
       }
     },

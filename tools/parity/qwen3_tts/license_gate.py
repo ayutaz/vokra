@@ -119,6 +119,29 @@ EXPECTED_MODEL_METADATA = {
 }
 EXPECTED_SOURCE_LICENSE = {"sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655", "size": 11343}
 INACTIVE_ROW_REASON = "resolution marker is false or row is unreachable from the virtual project"
+# Exact factual fields from the primary VAST compact projection for the
+# torchaudio 2.7.1+cpu row.  Review fields are deliberately supplied from the
+# manifest below so this fixture exercises the same future-compact projection
+# used by dependency_audit.compact_digest without depending on /tmp evidence.
+TORCHAUDIO_FUTURE_FACTUAL = {
+    "declared_license": None,
+    "declared_license_bytes": None,
+    "declared_license_sha256": None,
+    "declared_license_truncated": False,
+    "license_classifiers": ["OSI Approved :: BSD License"],
+    "name": "torchaudio",
+    "native_file_count": 10,
+    "native_files_sha256": "03ac8e9bb516f5ea729658e7917567f602542d9759ebe6e606ccc3c6cabd34f9",
+    "native_files_unsafe": [],
+    "owner_review": "PENDING_OWNER_APPROVAL",
+    "publisher_file_count": 1,
+    "publisher_files_sha256": "21c6b1de6ecd0e63cdf1ae9f4d08248d9038328688043337533ef2accbcdcb1d",
+    "publisher_files_unsafe": [],
+    "sdist_license_status": None,
+    "source": {"registry": PYTORCH_CPU_INDEX},
+    "version": "2.7.1+cpu",
+}
+TORCHAUDIO_FUTURE_PAYLOAD_SHA256 = "0d0d46e824df337a8f7e0393951af1ade327dd29df15eb7def921178048f0499"
 EXPECTED_INACTIVE_ROWS = (
     ("colorama", "0.4.6", json.dumps({"registry": "https://pypi.org/simple"}, sort_keys=True), INACTIVE_ROW_REASON),
     ("torch", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
@@ -871,6 +894,17 @@ def self_test() -> None:
     production_rows = package_rows(production_lock)
     production_reviews = review_rows(production_rows, production_manifest)
     production_components = component_rows(production_manifest)
+    torchaudio_review = next(
+        row for row in production_reviews
+        if row["name"] == "torchaudio" and row["version"] == "2.7.1+cpu"
+    )
+    torchaudio_future_payload = {
+        **TORCHAUDIO_FUTURE_FACTUAL,
+        "review_license": torchaudio_review["license"],
+        "review_native_bundled": torchaudio_review["native_bundled"],
+    }
+    assert canonical_digest(torchaudio_future_payload) == TORCHAUDIO_FUTURE_PAYLOAD_SHA256
+    assert torchaudio_review["payload_sha256"] == TORCHAUDIO_FUTURE_PAYLOAD_SHA256
     # Keep the manifest hash cascade covered even when the stale-evidence
     # blocker returns before normal component/approval validation.
     assert production_manifest["package_rows_sha256"] == canonical_digest(production_rows)
