@@ -67,10 +67,9 @@ so the candidate route uses ordinary CPU `from_pretrained` with
 `low_cpu_mem_usage=False`. The shell and Python gates reject any lock that
 reintroduces Accelerate before synchronization or model download. This is a
 Accelerate-free load design candidate, not a completed reference result: the
-existing owner/license gate remains before dependency synchronization and model
-acquisition, the VAST worker requires at least 60 GB RAM and 100 GB free
-scratch space, and the real-weight load remains unverified until an authorized
-VAST run. After those gates pass it calls the official
+VAST worker requires at least 60 GB RAM and 100 GB free scratch space, and the
+real-weight load remains unverified until an authorized VAST run. After those
+gates pass it calls the official
 `Qwen3TTSModel.from_pretrained` wrapper and emits `api-smoke.json` under the
 disposable work directory. The evidence is a
 strict `vokra-qwen3-tts-api-smoke-v1` JSON document containing the exact source,
@@ -128,18 +127,19 @@ the SHA-256 and byte length of canonical JSON with
 (including sorted sibling filenames). The raw API body is size-bounded before
 parsing but is not retained or hashed as evidence, so ignored API/card fields,
 whitespace, and object ordering cannot create evidence drift.
-README text and arbitrary metadata are never accepted as license evidence. It never acquires weights,
-imports model code, invokes Cargo, or uploads anything. The dependency audit
-evidence is currently `STALE_REQUIRES_VAST_AUDIT` because the security removal
-of `accelerate==1.12.0` (and its `psutil` transitive dependency) invalidated the
-prior installed-payload and native facts; an authorized Linux x86_64 VAST audit
-must rerun before replacing the stale projection. A model-free VAST audit was
-collected as a factual supersession candidate (compact SHA-256
-`4a9671cc9c828e93cdcbba84639480dd2dee090ea1a761b1e2158c0cb2964665`; full
-report SHA-256
-`c788f0aa638a3cce9fd9e474fb6658d9720c7f817bcec9392e564a62d5a06381`). The
-candidate must be rerun at the clean post-review HEAD. This stale marker is
-intentional and does not bypass dependency review.
+README text and arbitrary metadata are never accepted as license evidence. It
+never acquires weights, imports model code, invokes Cargo, or uploads anything.
+The fresh dependency audit at clean exact head
+`27c44dfd40c7fc807ecbf8e17afcfc5f53d9a320` reports
+`full_audit_status=PASS` for 55 active and 4 inactive rows, with 92 publisher
+license files and 253 native files, all with zero unsafe paths. Its committed
+compact evidence SHA-256 is
+`7f80d3c93d928720c390a6f5cbf96ac6e11c7ac07e622fff975343e4c9486d1d`; the
+full VAST report SHA-256 is
+`c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a`.
+The audit environment is Linux x86_64 with Python 3.12.14; model code,
+checkpoints, Cargo and upload were not used. This PASS is factual dependency
+evidence, not real-weight or numerical parity evidence.
 The owner-approval scope intentionally excludes this volatile dependency-audit
 reference to avoid a hash cycle; the compact bytes, full-report SHA-256, input
 hashes, closure/facts, and approval state remain bound separately by the gate.
@@ -151,9 +151,9 @@ and torchaudio's native libsox/libav inventory remain audit facts and are not
 embedded in Vokra runtime or GGUF publication payloads. No model bytes are
 committed or uploaded, and the publication decision remains `NO_UPLOAD`. The
 compact evidence records factual installed metadata only and is not an owner
-legal conclusion. A fresh exact-head VAST audit is required before the stale
-projection can be superseded; only then may the authorized real-weight
-smoke/parity sequence proceed. The follow-on Scaleway Apple CPU/Metal
+legal conclusion. The owner/operator gate is now runnable against this exact
+fresh compact, but the authorized real-weight smoke/parity sequence still
+requires its own execution result. The follow-on Scaleway Apple CPU/Metal
 no-fallback check remains after that VAST gate.
 Run its `--self-test` locally; do not run the production audit on the
 maintainer machine. The production audit can optionally emit the compact

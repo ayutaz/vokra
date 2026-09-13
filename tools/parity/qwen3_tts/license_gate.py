@@ -931,10 +931,9 @@ def self_test() -> None:
     assert production_manifest["dependency_audit_evidence"] == {
         "schema": COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "563d70ce7977f83ea56717e10ccb3d2a7f9d444ee2cbd4481ea302aad101a78b",
-        "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
-        "status": "STALE_REQUIRES_VAST_AUDIT",
-        "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before evidence supersession or any weight acquisition.",
+        "sha256": "7f80d3c93d928720c390a6f5cbf96ac6e11c7ac07e622fff975343e4c9486d1d",
+        "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
+        "status": "PENDING_OWNER_APPROVAL",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
     assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
