@@ -102,6 +102,8 @@ EXPECTED_CHECKPOINT_SEQUENCE = (
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+# Must match the fixed owner identity enforced by license_gate.py.
+OWNER_SIGNER = "yousan"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 EXPECTED_TORCH_FAMILY = "2.7.1"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
@@ -606,7 +608,7 @@ def validate_evidence_data(data: Any) -> None:
         raise SmokeError("license approval scope SHA-256 in evidence is malformed")
     if not isinstance(data["approval"]["owner_signoffs"], list) or any(
         not isinstance(row, dict) or set(row) != {"scope", "signer", "digest"}
-        or not isinstance(row["scope"], str) or not isinstance(row["signer"], str) or not HEX40.fullmatch(row["signer"])
+        or not isinstance(row["scope"], str) or row["signer"] != OWNER_SIGNER
         or not isinstance(row["digest"], str) or not HEX64.fullmatch(row["digest"])
         for row in data["approval"]["owner_signoffs"]
     ):
@@ -888,6 +890,21 @@ def self_test() -> None:
             "error": "SmokeError: host gate",
         }
         validate_evidence_data(failure)
+        failure["approval"]["owner_signoffs"] = [{
+            "scope": "qwen3-tts-package",
+            "signer": OWNER_SIGNER,
+            "digest": "0" * 64,
+        }]
+        validate_evidence_data(failure)
+        for signer in ("0" * 40, "other-owner"):
+            candidate = json.loads(json.dumps(failure))
+            candidate["approval"]["owner_signoffs"][0]["signer"] = signer
+            try:
+                validate_evidence_data(candidate)
+            except SmokeError:
+                pass
+            else:
+                raise SmokeError(f"non-fixed owner signer was accepted: {signer!r}")
         source_evidence = {
             "repository": SOURCE_REPOSITORY,
             "revision": SOURCE_REVISION,
