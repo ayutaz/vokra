@@ -39,7 +39,7 @@ require_absent_path() {
 self_test() {
   local self="${BASH_SOURCE[0]}" status=0
   [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" && -f "$PROBE" ]] || die 'Zonos project/probe is missing'
-  for needle in "$SOURCE_REPOSITORY" "$SOURCE_REVISION" 'GIT_LFS_SKIP_SMUDGE=1' 'transformers_compatibility.py' 'DacModel' 'audio_codes' 'audio_values' 'PASS_COMPATIBLE' 'NO_UPLOAD' '--validate-evidence' 'HF_TOKEN' 'HUGGING_FACE_HUB_TOKEN' 'HUGGINGFACE_API_TOKEN' 'checkpoint_access' 'constructor_calls' 'PYTHONDONTWRITEBYTECODE'; do
+  for needle in "$SOURCE_REPOSITORY" "$SOURCE_REVISION" 'GIT_LFS_SKIP_SMUDGE=1' 'transformers_compatibility.py' 'DacModel' 'DacEncoderOutput' 'DacDecoderOutput' 'DacConfig' 'n_codebooks' 'audio_codes' 'audio_values' 'get_type_hints' 'PASS_COMPATIBLE' 'NO_UPLOAD' '--validate-evidence' 'HF_TOKEN' 'HUGGING_FACE_HUB_TOKEN' 'HUGGINGFACE_API_TOKEN' 'checkpoint_access' 'constructor_calls' 'PYTHONDONTWRITEBYTECODE'; do
     grep -Fq -- "$needle" "$self" "$PROBE" || die "self-test contract missing: $needle"
   done
   if grep -En '^[[:space:]]*(python|python3|pip)([[:space:]]|$)' "$self" >/dev/null; then die 'raw Python/pip invocation found'; fi

@@ -41,6 +41,10 @@ contract (`from_pretrained`, positional `encode`, keyword `decode` with
 `audio_codes`), its `audio_codes`/`audio_values` result flow, and the
 `codebook_size`/`n_codebooks`/`sampling_rate` configuration fields, without
 constructing a Zonos or DAC object. The
+return annotations are resolved to the installed DAC output dataclasses and
+their fields, while `DacConfig` and the residual quantizer are inspected for
+the corresponding configuration/API symbols; a string-only claim is not
+accepted.
 source `LICENSE`, repository origin, Vokra HEAD, dedicated
 `pyproject.toml`/`uv.lock`, package versions, Linux x86_64 environment, and
 the no-model/no-checkpoint/no-token conditions are written to a small,

@@ -8,7 +8,9 @@ stdlib-only and authenticates evidence produced by a disposable VAST worker.
 from __future__ import annotations
 import argparse
 import builtins
+import copy
 from contextlib import contextmanager
+import dataclasses
 import hashlib
 import io
 import importlib
@@ -23,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import typing
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -283,6 +286,55 @@ def dac_signature_surface(callable_object: Any, *, positional_input: bool = Fals
         result["keyword_input"] = {"name": keyword_input, "kind": parameter.kind.name}
     return result
 
+def dac_output_surface(callable_object: Any, required_field: str, expected_type_name: str) -> dict[str, Any]:
+    try:
+        hints = typing.get_type_hints(callable_object)
+    except (NameError, TypeError, AttributeError) as error:
+        raise ProbeError(f"cannot resolve DAC return type hints: {callable_object}") from error
+    annotation = hints.get("return")
+    if annotation is None:
+        raise ProbeError(f"DAC {callable_object} has no resolved return annotation")
+    candidates = list(typing.get_args(annotation)) or [annotation]
+    matches = []
+    for candidate in candidates:
+        if not inspect.isclass(candidate) or candidate.__name__ != expected_type_name or candidate.__module__ != "transformers.models.dac.modeling_dac":
+            continue
+        if dataclasses.is_dataclass(candidate):
+            fields = [field.name for field in dataclasses.fields(candidate)]
+        else:
+            fields = list(getattr(candidate, "__annotations__", {}))
+        if required_field not in fields:
+            raise ProbeError(f"DAC output type {expected_type_name} lacks {required_field}")
+        matches.append({"identity": f"{candidate.__module__}.{candidate.__qualname__}", "fields": fields})
+    if len(matches) != 1:
+        raise ProbeError(f"DAC return type does not resolve to {expected_type_name}")
+    return {"required_field": required_field, "types": matches}
+
+def dac_config_surface(config_class: Any) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(config_class.__init__)
+    except (TypeError, ValueError) as error:
+        raise ProbeError("cannot inspect DacConfig constructor") from error
+    fields = []
+    for name, expected_default in (("codebook_size", "1024"), ("sampling_rate", "16000")):
+        parameter = signature.parameters.get(name)
+        if parameter is None or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY) or repr(parameter.default) != expected_default:
+            raise ProbeError(f"DacConfig field contract drifted: {name}")
+        fields.append({"name": name, "kind": parameter.kind.name, "default": repr(parameter.default)})
+    return {"identity": f"{config_class.__module__}.{config_class.__qualname__}", "fields": fields}
+
+def dac_quantizer_surface(module: Any) -> dict[str, Any]:
+    for candidate in vars(module).values():
+        if not inspect.isclass(candidate) or "quant" not in candidate.__name__.casefold():
+            continue
+        try:
+            source = inspect.getsource(candidate)
+        except (OSError, TypeError):
+            continue
+        if "n_codebooks" in source and "self.n_codebooks" in source:
+            return {"identity": f"{candidate.__module__}.{candidate.__qualname__}", "attribute": "n_codebooks", "source_assignment": True}
+    raise ProbeError("Transformers DAC quantizer n_codebooks API was not found")
+
 def api_contract(root: Path, source: Path) -> dict[str, Any]:
     sys.path.insert(0, str(root / PROJECT_RELATIVE))
     sys.path.insert(0, str(source))
@@ -326,9 +378,11 @@ def api_contract(root: Path, source: Path) -> dict[str, Any]:
     dac_contract = {
         "class_identity": "transformers.models.dac.DacModel",
         "same_class_object": True,
-        "from_pretrained": dac_signature_surface(dac_class.from_pretrained),
-        "encode": dac_signature_surface(dac_class.encode, positional_input=True),
-        "decode": dac_signature_surface(dac_class.decode, keyword_input="audio_codes"),
+        "from_pretrained": dac_signature_surface(dac_class.from_pretrained, positional_input=True),
+        "encode": dac_signature_surface(dac_class.encode, positional_input=True) | {"output": dac_output_surface(dac_class.encode, "audio_codes", "DacEncoderOutput")},
+        "decode": dac_signature_surface(dac_class.decode, keyword_input="audio_codes") | {"output": dac_output_surface(dac_class.decode, "audio_values", "DacDecoderOutput")},
+        "config": dac_config_surface(transformers_dac.DacConfig),
+        "quantizer": dac_quantizer_surface(transformers_dac),
         "caller_flow": {
             "encode_result": "audio_codes",
             "decode_keyword": "audio_codes",
@@ -394,12 +448,16 @@ def verify_safety(evidence: dict[str, Any]) -> None:
         raise ProbeError("compatibility evidence access/publication contract is not fail-closed")
 
 def validate_dac_contract(dac: Any) -> None:
-    if not isinstance(dac, dict) or set(dac) != {"class_identity", "same_class_object", "from_pretrained", "encode", "decode", "caller_flow"} or dac["class_identity"] != "transformers.models.dac.DacModel" or dac["same_class_object"] is not True:
+    if not isinstance(dac, dict) or set(dac) != {"class_identity", "same_class_object", "from_pretrained", "encode", "decode", "config", "quantizer", "caller_flow"} or dac["class_identity"] != "transformers.models.dac.DacModel" or dac["same_class_object"] is not True:
         raise ProbeError("DAC class identity contract is incomplete")
     valid_kinds = {kind.name for kind in inspect._ParameterKind}
     for key in ("from_pretrained", "encode", "decode"):
         record = dac[key]
         expected_keys = {"callable", "parameters"}
+        if key == "from_pretrained":
+            expected_keys.add("positional_input")
+        if key in {"encode", "decode"}:
+            expected_keys.add("output")
         if key == "encode":
             expected_keys.add("positional_input")
         if key == "decode":
@@ -409,14 +467,29 @@ def validate_dac_contract(dac: Any) -> None:
         for item in record["parameters"]:
             if not isinstance(item, dict) or set(item) != {"name", "kind", "default"} or not isinstance(item["name"], str) or item["kind"] not in valid_kinds or not isinstance(item["default"], str):
                 raise ProbeError(f"DAC {key} parameter record is malformed")
-        if key == "encode":
+        if key in {"from_pretrained", "encode"}:
             positional = record["positional_input"]
             if not isinstance(positional, dict) or set(positional) != {"name", "kind"} or positional["kind"] not in {"POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD"} or not any(item["name"] == positional["name"] and item["kind"] == positional["kind"] for item in record["parameters"]):
-                raise ProbeError("DAC encode positional caller contract is invalid")
+                raise ProbeError(f"DAC {key} positional caller contract is invalid")
         if key == "decode":
             keyword = record["keyword_input"]
             if not isinstance(keyword, dict) or set(keyword) != {"name", "kind"} or keyword.get("name") != "audio_codes" or keyword["kind"] not in {"POSITIONAL_OR_KEYWORD", "KEYWORD_ONLY"} or not any(item["name"] == "audio_codes" and item["kind"] == keyword["kind"] for item in record["parameters"]):
                 raise ProbeError("DAC decode audio_codes contract is invalid")
+        if key in {"encode", "decode"}:
+            output = record["output"]
+            expected_field = "audio_codes" if key == "encode" else "audio_values"
+            expected_type = "DacEncoderOutput" if key == "encode" else "DacDecoderOutput"
+            if not isinstance(output, dict) or set(output) != {"required_field", "types"} or output["required_field"] != expected_field or not isinstance(output["types"], list) or len(output["types"]) != 1:
+                raise ProbeError(f"DAC {key} output contract is malformed")
+            output_type = output["types"][0]
+            if not isinstance(output_type, dict) or set(output_type) != {"identity", "fields"} or output_type["identity"] != f"transformers.models.dac.modeling_dac.{expected_type}" or not isinstance(output_type["fields"], list) or any(not isinstance(field, str) for field in output_type["fields"]) or expected_field not in output_type["fields"]:
+                raise ProbeError(f"DAC {key} output field contract is invalid")
+    config = dac["config"]
+    if not isinstance(config, dict) or set(config) != {"identity", "fields"} or config["identity"] != "transformers.models.dac.configuration_dac.DacConfig" or config["fields"] != [{"name": "codebook_size", "kind": "POSITIONAL_OR_KEYWORD", "default": "1024"}, {"name": "sampling_rate", "kind": "POSITIONAL_OR_KEYWORD", "default": "16000"}]:
+        raise ProbeError("DacConfig field contract is invalid")
+    quantizer = dac["quantizer"]
+    if not isinstance(quantizer, dict) or quantizer != {"identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer", "attribute": "n_codebooks", "source_assignment": True}:
+        raise ProbeError("DAC quantizer n_codebooks contract is invalid")
     flow = dac["caller_flow"]
     if flow != {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"}:
         raise ProbeError("DAC caller flow contract is invalid")
@@ -541,9 +614,11 @@ def self_test() -> None:
             expect_error(lambda tampered=tampered: verify_safety(tampered), f"tampered {key}")
         dac_safe = {
             "class_identity": "transformers.models.dac.DacModel", "same_class_object": True,
-            "from_pretrained": {"callable": True, "parameters": [{"name": "model", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}]},
-            "encode": {"callable": True, "parameters": [{"name": "wav", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "wav", "kind": "POSITIONAL_OR_KEYWORD"}},
-            "decode": {"callable": True, "parameters": [{"name": "audio_codes", "kind": "KEYWORD_ONLY", "default": "<class 'inspect._empty'>"}], "keyword_input": {"name": "audio_codes", "kind": "KEYWORD_ONLY"}},
+            "from_pretrained": {"callable": True, "parameters": [{"name": "model", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "model", "kind": "POSITIONAL_OR_KEYWORD"}},
+            "encode": {"callable": True, "parameters": [{"name": "wav", "kind": "POSITIONAL_OR_KEYWORD", "default": "<class 'inspect._empty'>"}], "positional_input": {"name": "wav", "kind": "POSITIONAL_OR_KEYWORD"}, "output": {"required_field": "audio_codes", "types": [{"identity": "transformers.models.dac.modeling_dac.DacEncoderOutput", "fields": ["audio_codes"]}]}},
+            "decode": {"callable": True, "parameters": [{"name": "audio_codes", "kind": "KEYWORD_ONLY", "default": "<class 'inspect._empty'>"}], "keyword_input": {"name": "audio_codes", "kind": "KEYWORD_ONLY"}, "output": {"required_field": "audio_values", "types": [{"identity": "transformers.models.dac.modeling_dac.DacDecoderOutput", "fields": ["audio_values"]}]}},
+            "config": {"identity": "transformers.models.dac.configuration_dac.DacConfig", "fields": [{"name": "codebook_size", "kind": "POSITIONAL_OR_KEYWORD", "default": "1024"}, {"name": "sampling_rate", "kind": "POSITIONAL_OR_KEYWORD", "default": "16000"}]},
+            "quantizer": {"identity": "transformers.models.dac.modeling_dac.DacResidualVectorQuantizer", "attribute": "n_codebooks", "source_assignment": True},
             "caller_flow": {"encode_result": "audio_codes", "decode_keyword": "audio_codes", "decode_result": "audio_values", "config_codebook_size": "config.codebook_size", "quantizer_codebooks": "quantizer.n_codebooks", "config_sampling_rate": "config.sampling_rate"},
         }
         validate_dac_contract(dac_safe)
@@ -551,6 +626,17 @@ def self_test() -> None:
             tampered = dict(dac_safe)
             tampered[field] = "tampered" if field != "same_class_object" else False
             expect_error(lambda tampered=tampered: validate_dac_contract(tampered), f"tampered DAC {field}")
+        for path in (("from_pretrained", "positional_input"), ("encode", "output"), ("decode", "output"), ("config", "fields"), ("quantizer", "attribute")):
+            tampered = copy.deepcopy(dac_safe)
+            if path == ("from_pretrained", "positional_input"):
+                tampered[path[0]][path[1]]["kind"] = "KEYWORD_ONLY"
+            elif path[1] == "output":
+                tampered[path[0]][path[1]]["required_field"] = "tampered"
+            elif path == ("config", "fields"):
+                tampered[path[0]][path[1]][0]["default"] = "0"
+            else:
+                tampered[path[0]][path[1]] = "tampered"
+            expect_error(lambda tampered=tampered: validate_dac_contract(tampered), f"tampered DAC {path[0]}.{path[1]}")
         original_path_open, original_io_open = Path.open, io.open
         with refuse_model_access():
             expect_error(lambda: Path(root / "synthetic.safetensors").open("rb"), "pathlib model loader")
