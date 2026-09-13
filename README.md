@@ -19,9 +19,12 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 > the observed `main` baseline for this campaign is `50981d60`. The latest
 > live, read-only public inventory, evaluated with audit logic through
 > `87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
-> GGUF files: 136 Mac-CPU-complete, 42 partial, 15 without a runtime binder and
+> GGUF files: 136 Mac-CPU-complete, 43 partial, 14 without a runtime binder and
 > 1 non-artifact; Apple Metal is 136 full, 57 blocked by CPU and 1
-> non-artifact. The bounded Apple Silicon batch recorded
+> non-artifact. VibeVoice Realtime-0.5B now has a strict structural
+> `vibevoice_streaming` binder and CLI inspection route, so it is partial;
+> synthesis, the complete weight manifest, independent reference, and CPU
+> parity remain pending. The bounded Apple Silicon batch recorded
 > in the [Apple results](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
 > passed only for its named scopes, and four explicitly approved artifacts
 > were subsequently published. There are still 58 unresolved public rows,
