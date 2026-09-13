@@ -85,3 +85,30 @@ return `OWNER_APPROVED`, `owner_approval.status=VALIDATED`, no collection
 failures, and matching artifact SHA-256 before the snapshot step is reachable.
 An invalid, symlinked, stale, or partially reviewed file remains blocked and
 is never rewritten by the worker.
+
+## Frozen closure gate (2026-09-13)
+
+The checked-in `license_gate_manifest.json` records the review facts from the
+VAST evidence packet (archive SHA-256
+`580ee2b1750a7839bb2e9b57925a7e34ad33ecce4113d931891678bf09af7ad2`): all 27
+lock rows, 186 required paths, and 135 unique license/native payloads. Each
+row is bound to its exact METADATA, publisher URL, license-candidate, native
+payload, and lock-row digests. The first-party virtual project is explicit:
+it has no license field and no external payload.
+
+The disposition remains fail-closed. `kaldiio` contains an NTT
+evaluation-only/non-transferable license; setuptools carries vendored
+LGPL-3.0-only and MPL material; and NumPy, Torch, and other native/bundled
+payloads remain visible for owner/legal review. The FireRed source license is
+captured, but model-weight licensing and training provenance were not
+contacted or assessed. Owner sign-off is blank and publication is
+`NO_UPLOAD`.
+
+Run the focused gate without acquiring or executing a model:
+
+```bash
+uv run --no-project --offline --python 3.12 python license_gate.py --self-test
+```
+
+The self-test must pass, while the normal gate intentionally exits 2 until a
+separate owner/legal artifact is supplied.

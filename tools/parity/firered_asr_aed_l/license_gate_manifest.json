@@ -1,0 +1,532 @@
+{
+  "approval": {
+    "digest": null,
+    "signer": null,
+    "status": "OWNER_SIGNOFF_REQUIRED"
+  },
+  "approval_scope_sha256": "ee84a6d15aaa9e8e594fc2b2fffe59f0e3a70360f0fcae1629641ec3f1375d9e",
+  "audit_evidence": {
+    "archive_sha256": "580ee2b1750a7839bb2e9b57925a7e34ad33ecce4113d931891678bf09af7ad2",
+    "dependency_audit_json_sha256": "430acd2ec0ccd4c4122fc9638ce3251017b4c57c99a9f3586668207a22a87d8b",
+    "distribution_rows": 27,
+    "expected_head": "77984f048069bd9130f8f414a4dd915595a3aee8",
+    "format": "vokra-firered-asr-aed-l-dependency-audit-only-v1",
+    "publication": "NO_UPLOAD",
+    "required_file_paths": 186,
+    "scope": {
+      "active_closure_sha256": "b79e93fabc422b5b9a1c4347402829ad46d2e82afc342e7cf5125f50286e768c",
+      "distribution_evidence_sha256": "b6c341bb6e9244936ee6339bd5101ad3441bd38d8a71972685546026371a57ae",
+      "expected_head": "77984f048069bd9130f8f414a4dd915595a3aee8",
+      "fire_red_source_file_aggregate_sha256": "6024e41faa03f4981215024add740b65b03bb6ee4f336b373a062fa4d8a88a01",
+      "fire_red_source_identity_sha256": "a93d202f09efe7a59686850413186eb26546e80d5fddcc29b8fedd958eab720c",
+      "license_candidate_aggregate_sha256": "fb0ed78afaba8614a04b3b2893915e71cef07ae3c23b8591244ff90052ec659c",
+      "lock_sha256": "d129bd9f12fcee2083243ce2312eff1a6c4a74ab2845b2ef069f60454709c1eb",
+      "native_payload_aggregate_sha256": "d74c080e24b13f1b0483e7c35ee3dfbe18be972e4d0df008f5146c6a8bdb9931",
+      "publisher_url_aggregate_sha256": "b8fca4c78d182abe827b3bd006b38e801cc31df3d02cf7793a4dea9809c1ee1f",
+      "review_ledger_sha256": "61ba58e8da8a8d2279b36ea560ffd442bae0ed79ec6dae99eb0cdc1c1e4c9763"
+    },
+    "status": "BLOCKED_UNREVIEWED_TRANSITIVE",
+    "unique_file_payloads": 135
+  },
+  "forbidden_dependencies": [
+    "librosa",
+    "soxr",
+    "soundfile",
+    "triton",
+    "nvidia-cuda"
+  ],
+  "gate_version": 1,
+  "identities": {
+    "execution": "NOT_PERFORMED",
+    "model_acquisition": "NOT_ACQUIRED",
+    "model_import": "NOT_PERFORMED",
+    "model_repository": "FireRedTeam/FireRedASR-AED-L",
+    "model_revision": "e57f5960d03cff1071ff7acbb409314d1e70ed3d",
+    "source_files": {
+      "LICENSE": {
+        "bytes": 11357,
+        "git_blob_oid": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "README.md": {
+        "bytes": 7183,
+        "git_blob_oid": "50102dc79e5c43dd46c2c4503ae273714e2dc6a0",
+        "sha256": "4d9f96f6485690ad598b63cb10aa9b2ff44aec7975036016c18f932772014b08"
+      },
+      "pretrained_models/README.md": {
+        "bytes": 28,
+        "git_blob_oid": "7d8271f29b961be90788f7fe9e0364f76f74e8f1",
+        "sha256": "b6f4b724759dd430194d7e53e95034a9774439b89518462d1331e02a18be0c60"
+      },
+      "runtime/triton_tensorrt/README.md": {
+        "bytes": 2192,
+        "git_blob_oid": "c8246cb38f9928068580470e89fb6f4e987ff97c",
+        "sha256": "0ccee4a04fa95031bf94fb28ef41d4db3d82551e7ecdb82cc4c92ac1fa595e70"
+      }
+    },
+    "source_repository": "https://github.com/FireRedTeam/FireRedASR.git",
+    "source_revision": "834635e4cf277ed8ca92049fc375b17c3dc20748",
+    "training_provenance": "OWNER_REVIEW_REQUIRED"
+  },
+  "license_rows": [
+    {
+      "component": "FireRedASR source LICENSE at pinned revision",
+      "id": "firered-source-license",
+      "license": "Apache-2.0",
+      "payload_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "review": "Source LICENSE bytes and git blob are authenticated; this does not approve model weights or training provenance.",
+      "source": "https://github.com/FireRedTeam/FireRedASR.git",
+      "status": "PRIMARY_EVIDENCE_CAPTURED_OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "component": "FireRedTeam/FireRedASR-AED-L model weight",
+      "id": "firered-model-weight",
+      "license": "UNRESOLVED_PRIMARY_SOURCE_NOT_ACQUIRED",
+      "payload_sha256": null,
+      "review": "Dependency-only packet intentionally did not contact HF, acquire a checkpoint, import model code, or infer a model license.",
+      "source": "https://huggingface.co/FireRedTeam/FireRedASR-AED-L",
+      "status": "PRIMARY_LICENSE_NOT_CONTACTED"
+    },
+    {
+      "component": "FireRedASR-AED-L training/data provenance",
+      "id": "firered-training-provenance",
+      "license": "NOT_ASSESSED",
+      "payload_sha256": null,
+      "review": "Training/data provenance is outside the captured dependency closure and remains an owner/legal decision.",
+      "source": "FireRed source README and model card boundary",
+      "status": "OWNER_REVIEW_REQUIRED"
+    },
+    {
+      "component": "27-row Linux/x86_64 Python closure including native/bundled payloads",
+      "id": "python-dependency-closure",
+      "license": "MIXED_REVIEWED: MIT, BSD, Apache-2.0, PSF-2.0, MPL-2.0, and NTT evaluation-only material; setuptools vendored LGPL/MPL remains a blocker",
+      "payload_sha256": null,
+      "required_evidence": "lock_sha256, package_rows_sha256, per-row metadata/license/native digests, audit archive identity",
+      "review": "All 27 rows are evidence-reviewed. This is not a publication approval; kaldiio and setuptools require explicit owner/legal disposition.",
+      "source": "tools/parity/firered_asr_aed_l/uv.lock",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "component": "Pinned kaldi-native-fbank source and native frontend",
+      "id": "kaldi-native-fbank-source",
+      "license": "Apache-2.0",
+      "payload_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "review": "Pinned source LICENSE is verified in the VAST packet; two native payloads are hash-bound and still require owner review.",
+      "source": "https://github.com/csukuangfj/kaldi-native-fbank.git@f68c6b43f739697d7ab02ff6debacee130e1d541",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    }
+  ],
+  "license_rows_sha256": "13950023a3912d25e2abaef85f6754bfb76bcaaaa64730276fbd3a3a01f699be",
+  "lock_sha256": "d129bd9f12fcee2083243ce2312eff1a6c4a74ab2845b2ef069f60454709c1eb",
+  "package_review_rows": [
+    {
+      "evidence": {
+        "license_candidates_sha256": "cabd19d24c9b440ecea88f641363bc9e84a3018e73c4de9b4ccf2f81b22b4141",
+        "metadata_sha256": "c5e6fc4dfd833319913b287be7a30d9935e9208c7ef917630621855aaac4d419",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "07481299ccb68fc1b3b187a4feb88b4ad5274a8bd750fa86cdfb1b74c08f423e",
+        "row_sha256": "2647c37a84997b88682f7b20b68c853fa37e32335056296dbb996c93810ee044"
+      },
+      "id": "anyio@4.14.2",
+      "license": "LICENSE; MIT",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "c215f1219047abb12f714504c9893a95da2b47ce548f3d120f567d94d79de36f",
+        "metadata_sha256": "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "b2bbf2f4cdfa818d8f7390bc3b8731be5a69f4ff005389a007ae4971bc6bc8f4",
+        "row_sha256": "0dde29212d5db92606c7be633367dc8e0a86951b4f986ed293032381b4c421d2"
+      },
+      "id": "certifi@2026.7.22",
+      "license": "LICENSE; License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0); MPL-2.0",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "fbfeb7055cdb6afca2c34fe89346f34342629cd9a92637dcf4e3e15445cd1772",
+        "metadata_sha256": "e87bce0bd194de70dfb8e708e0a6b0483009f25611804eaf87bfeb63e6c20501",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "4b88c6d7d899c489183e2907b9631bf25abb91609eeeb29d32d48777d0809c6d",
+        "row_sha256": "bae1f65c0f4112f8680ec71544178e672b28583241c6a4d5e5a76f747d3b1d56"
+      },
+      "id": "click@8.5.0",
+      "license": "BSD-3-Clause; LICENSE.txt",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "c31636861fb7620e54ed75c2d9c16a50c3c5dfaae2247cd8e63c43d29c2312ae",
+        "metadata_sha256": "7886b747148c0aa7889c4ec33f3529b8c21f15142063b5e1ddbb96a8a5442724",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "dbc2e6ca1ba0032757482f682420350e1045a7ea1ff404eebaa9a7d64f39dbc9",
+        "row_sha256": "874ed5757489758cdfc1a193bf47072eef208065c02b604b5592f1bc768b5a89"
+      },
+      "id": "filelock@3.32.5",
+      "license": "LICENSE; License :: OSI Approved :: MIT License; MIT",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "a5ee9839a485fbff00b31fcca372cd3949dec9e8742a5e294b9eb140ec97019c",
+        "metadata_sha256": "88b1657585de14e3bb82aa5278aa9595b30aa4ca74ead073d8950615c808099d",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "effb442941dc49840c73cf8fbc39242da182eebc84d137fea71ba2752aed7d8b",
+        "row_sha256": "9cda3f1d338f993c00b6334f7523a67c6bd923322d5c5e6127859d5c74f76eb6"
+      },
+      "id": "fsspec@2026.7.0",
+      "license": "BSD-3-Clause; LICENSE",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "541879227b5c677f5bb765a9f4dd46ed72a223513f25d684ba7b1d43f0734b3a",
+        "metadata_sha256": "28f326098ac09fcba79b8f180f96087c841fe2456215cb7b872a9c7d5cd19d64",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "563d7a22dca381d7d09455b88a2775313747e5126ad350459d08d795a86cb548",
+        "row_sha256": "af13d166105e452f1d8c1455f1c1e67ca11927a66a2dea8ef2272520aa49de89"
+      },
+      "id": "h11@0.16.0",
+      "license": "LICENSE.txt; License :: OSI Approved :: MIT License; MIT",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "c1a797527646a5dcee18317a9ce2054094a0b90948b104834a40ca9d189d2a26",
+        "metadata_sha256": "becdd6ec73b515dc38c59501956134eb0b903bfed33ffcd99b252361acd926e9",
+        "native_payload_count": 1,
+        "native_payloads_sha256": "5dada5221e396b92528fc725d83f7a697ae287ae4cec0bee5d121e7461419343",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "c823b489ae28bbcf3934d8ffa0f2c1fc8d0632722c87281664a3ff09626d5e09",
+        "row_sha256": "b1625f78d973121dd3d01dc2e13736aa79ad68c1374924d08c17cd9009062513"
+      },
+      "id": "hf-xet@1.6.0",
+      "license": "Apache-2.0; LICENSE; License :: OSI Approved :: Apache Software License",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=1; native_payloads=1; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "2d95736e4a15999af9a65d179913b30a8280c0ccbc18a3a0a9b469c1d97147be",
+        "metadata_sha256": "fe2d4fda6199128978779e0cf27f3c045c531863fcdd987eacc74f3a18d41c21",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "53fc85b65ea904a873c7e9bfa00e354161a1e3423ade987c5fc61e4d98c045dd",
+        "row_sha256": "6595cc2293f392e1a92dc3584de4e820e6c737894eae5a40e2f96ae4ee190545"
+      },
+      "id": "httpcore@1.0.9",
+      "license": "BSD-3-Clause; LICENSE.md; License :: OSI Approved :: BSD License",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "bd1655c5a3880ee41bf2556bccc94916a2709cdab8618b0c9176742cce3f5c98",
+        "metadata_sha256": "febb9b0f8f3e80d57c8199c304f35c4336e8581d1d18d7983c92766b82793b25",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "0d7591290b39cd7e83becc6f873c86a9d50a58cb05cbac867ed3883c8cdb4c12",
+        "row_sha256": "7279524a750ff10c81d6909c81e4792c34dfef7f1f375d1213c56f797017fc5e"
+      },
+      "id": "httpx@0.28.1",
+      "license": "BSD-3-Clause; License :: OSI Approved :: BSD License",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "a3058943e193c0ff5d4718039771a68a791a3eeadaca6c1f7476a1ae37d8946e",
+        "metadata_sha256": "60b2bcb58f6d852eaa21eeae6f0030354278ecab9620dfe83e350a93a268e647",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "532e97f4d9f0a5efba7c44f6f903518de7f189d43f7a9b78f744da6a2e2d6707",
+        "row_sha256": "a6c425888789db74f055a15fe693f344889141e1cdd53c7ddf9f56c7f5a677dc"
+      },
+      "id": "huggingface-hub@1.29.0",
+      "license": "Apache-2.0; LICENSE; License :: OSI Approved :: Apache Software License",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "2424cf63ecee2cfad4c8b502cd82fc4cf98c83f795abe1f3bc425a7bef3359cd",
+        "metadata_sha256": "4d113161aca8582e8d28fddf3ea50f19b607209c2b3e4364379a163454680084",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "c43b115e0ccb58422192084665b9b1ca7fc7d05e0a490d4200a31e3f09a5cffa",
+        "row_sha256": "b6e8ce6f867f02486e5a193cffbca6508683778868211a423cf3eba3db78489c"
+      },
+      "id": "idna@3.19",
+      "license": "BSD-3-Clause; LICENSE.md",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "7797c297e57460b4d9e0b3f300f0fb8568fc1a4813a237ef973f724560934005",
+        "metadata_sha256": "68c5548fb67c4132a13898d9b31ec50c6bea2abdd915d921f214355c3a6499c8",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "50ed16eba7c82c455d346154f7151f0ab80c2ab2d875b356c094de8d76ff633a",
+        "row_sha256": "53651b9c18cf35a2e8d75a17c733b83b82740615bdfe8811fc162f9d79ae07c8"
+      },
+      "id": "jinja2@3.1.6",
+      "license": "LICENSE.txt; License :: OSI Approved :: BSD License",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "8ba1524ddb92d8f79c5fe12cffe4de154593db5dce107a2004e866f60ed2bb99",
+        "metadata_sha256": "6c43dacd8008fb7613b54a215d9d419e479c3af16512f10de4bd9399cd9b0cd5",
+        "native_payload_count": 2,
+        "native_payloads_sha256": "2f711484d299a7426dc0c2f1d9dc81e713a7f30d0d77759d7d1a42740a78afae",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "d85b541ba46ab96cfc99b315ef2c16845c2a4c043b366a6b9cf773f8790aba4e",
+        "row_sha256": "1ff810462a8705d4b728c9d9743b8059682318c6677e940a90b0685ca41d3181"
+      },
+      "id": "kaldi-native-fbank@1.15",
+      "license": "Apache licensed, as found in the LICENSE file; LICENSE",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=1; native_payloads=2; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "359f2884ee5c5d9c9a226155a808c7e14688c4fcb8d20b173d455a77a77a09be",
+        "metadata_sha256": "654f114c1b49054c265e4e2e894f4c4489ee3b25430fa5e549d155ef3b7d24e9",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "d23365b84af119c090d763c4c127063bf870786864f2bcc31c554460fb333ff0",
+        "row_sha256": "d4dfb83616e53abcfc51ad6c50fdee3e5b5b6eb20eeb68d2e443256ff1b20ba3"
+      },
+      "id": "kaldiio@2.18.1",
+      "license": "NTT SOFTWARE EVALUATION LICENSE (nontransferable, internal evaluation only)",
+      "native_bundled_review": "BLOCKED_PUBLIC_DISTRIBUTION; captured LICENSE is NTT evaluation-only, nontransferable, no third-party redistribution without consent",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "ed8165a9a55f926b37bd170dd2c335b4f43f09eccd2e57a347c9adca9648eaa2",
+        "metadata_sha256": "12b4cc61a7fa288cf7667ee3f213786d9619db57fb33ff6f934afbcb5c12ec81",
+        "native_payload_count": 1,
+        "native_payloads_sha256": "7be2537dd359d998ae1416ab59c1a42e11b5aca5644f8a73038dd7ccf94fa25b",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "58ba72ec0be90a65fe40fed7cc7bc3aa97e4a7652f4afe6bd1865f678a3259bb",
+        "row_sha256": "ec498603fd88afd79cec65e54d57be481ae51ad938adafc9948452d89a23c5f6"
+      },
+      "id": "markupsafe@3.0.3",
+      "license": "BSD-3-Clause; LICENSE.txt",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=1; native_payloads=1; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "c671c0bb6ffc4784dfe3d5bac6ec9172e85d436d39b7fd2322ce83bc092cc277",
+        "metadata_sha256": "44b66ea444b9c0d19ae94815d356bf047ae6b680c19268b5c265687cd6a81406",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "3f4cf7d80b532e8df98ce08d418d259e0c2a12358344c8b6efdbb1ad72f8eda4",
+        "row_sha256": "d95f5545d9575fa8ddaff4526c0b1c85fe6569c71594e606835d09a6f78a6e88"
+      },
+      "id": "mpmath@1.3.0",
+      "license": "BSD; LICENSE; License :: OSI Approved :: BSD License",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "9cd3e804f3195a590587e138de33c2b6856d7428cfd49f2c9f045ce2852f211b",
+        "metadata_sha256": "aca5d94a97d1f70f301d033addb635f6e66be8973a00aba4127637eed2ef316a",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "44f9410ccae91642b32ab65b7e76d4ba6c409d1c9792d51ea6d520207df19150",
+        "row_sha256": "e09971604cd59de4c8654c8ee047f72a28486a09f59bf5d4b19c8bd9679189f0"
+      },
+      "id": "networkx@3.6.1",
+      "license": "BSD-3-Clause; LICENSE.txt",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "206a52e979df3f56250d2ebe3db84a2887392411953b41fed852eec9dc258941",
+        "metadata_sha256": "9a895d801184d2176f926af84eb47f2db1af2756afac99d64a2bf482d5d5e024",
+        "native_payload_count": 22,
+        "native_payloads_sha256": "394de51c30518b9138df9c6f0e1ebb060746e9cd9d30c4872c63568d3538bc14",
+        "publisher_file_count": 20,
+        "publisher_urls_sha256": "b49a7d03d1fecdd4a60c8d1c0f688a0a397669435cf88588254617ed4255d4a8",
+        "row_sha256": "c59536da0e209eca2af5ecddfbb11d807a5fa59f5c285139011441452b76f16d"
+      },
+      "id": "numpy@2.5.2",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0; LICENSE.txt; numpy/_core/include/numpy/libdivide/LICENSE.txt; numpy/_core/src/common/pythoncapi-compat/COPYING; numpy/_core/src/highway/LICENSE; numpy/_core/src/multiarray/dragon4_LICENSE.txt; numpy/_core/src/npysort/x86-simd-sort/LICENSE.md; numpy/_core/src/umath/svml/LICENSE; numpy/fft/pocketfft/LICENSE.md; numpy/linalg/lapack_lite/LICENSE.txt; numpy/ma/LICENSE; numpy/random/LICENSE.md; numpy/random/src/distributions/LICENSE.md; numpy/random/src/mt19937/LICENSE.md; numpy/random/src/pcg64/LICENSE.md; numpy/random/src/philox/LICENSE.md; numpy/random/src/sfc64/LICENSE.md; numpy/random/src/splitmix64/LICENSE.md",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=20; native_payloads=22; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "73b85014087e44fdf55adf7cb0dacaa2f21dd05a861d9634d5f6b2f67adc2772",
+        "metadata_sha256": "70fdb89fc4d4a9a043bf7372b8972bcc883fddff34ab55e9cf80d73875384763",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 3,
+        "publisher_urls_sha256": "248a43c2166bcda0ea35c28da078bdcad8d6408959adfecbc96b646adbfd42de",
+        "row_sha256": "b675808d875985e1f72b7d6e96e61ee4e0f90308457c5796c19cc0cefa6c3025"
+      },
+      "id": "packaging@26.3",
+      "license": "Apache-2.0 OR BSD-2-Clause; LICENSE; LICENSE.APACHE; LICENSE.BSD",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "d1ed007cf002c38c444532deab3307370818bd9ba5c8b7e6ea0f058d5539af84",
+        "metadata_sha256": "03c3b415ed38d09faedc49360e930769b40c58f68585e6de00e2e4916a858d34",
+        "native_payload_count": 1,
+        "native_payloads_sha256": "316aecde752257912d3d2e526fc9607d4181093f28503848f6a5ed6590947926",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "895cdb36053935e1554285a05f1c00aa64fcfa11ccf655b22b85547236011a04",
+        "row_sha256": "c80b974ee99083aba073141ed69ca5c74225a1896f326eafd17001729be7e2ca"
+      },
+      "id": "pyyaml@6.0.3",
+      "license": "LICENSE; License :: OSI Approved :: MIT License; MIT",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=1; native_payloads=1; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "80a2d2c2389f0b1126fe1496f5548521cf454b6c44d10e97341845ecb6c33ecc",
+        "metadata_sha256": "bb49c79797fff1b8f3048efd4849d86dce4adbe26f7f3f0a5b37239a59d88ee8",
+        "native_payload_count": 1,
+        "native_payloads_sha256": "35517b1f80d8b18a139a63b635fd28b901477689062025178983220e5f58a7e4",
+        "publisher_file_count": 0,
+        "publisher_urls_sha256": "fe5198ade54c50ccb562a898e349eeb17226dacbc15907644da4c983fa88c8c1",
+        "row_sha256": "4994b28330b0f6f947e8235d17ded5715e4ff496662c3fe9626965ce91a58d0b"
+      },
+      "id": "sentencepiece@0.2.2",
+      "license": "Apache-2.0",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=0; native_payloads=1; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "fe531270fdd6dfd7bbe53f295e79ce7a71883f922b3d7ba92202809bff60cd38",
+        "metadata_sha256": "26e45e90de763c6938d93d1df2ecd6782a0f1514d41cbd22ebef4e0ab6475771",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 17,
+        "publisher_urls_sha256": "89cc0825a456acba9a13b7d462283c47fb3e80bce28201fbbf12846270d91181",
+        "row_sha256": "1f0b573431187566c9e1fe97d47282cf7d8440d8b6d803c918ac7bb7d06a4ed7"
+      },
+      "id": "setuptools@83.0.0",
+      "license": "MIT (setuptools); LGPL-3.0-only (vendored autocommand); Apache-2.0 (vendored importlib_metadata); MPL-2.0 (validate-pyproject notice); BSD/MIT (other vendored notices)",
+      "native_bundled_review": "BLOCKED_PUBLIC_DISTRIBUTION; vendored LGPL-3.0-only and MPL-2.0 material are explicit; 17 publisher/NOTICE payloads captured",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "f4115bd154e9b52e3b180182538ce6d47090638c8756e0401e7b9dd6e761f6ab",
+        "metadata_sha256": "b756c2fbfd5be05ac5bdb0ebca61f55618f30f633ed92d88a5687429313a7595",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 2,
+        "publisher_urls_sha256": "1d8ab556984b60f3fc63de3c438b13757cd26c2c9c2cf5ebf2380ad49f673c23",
+        "row_sha256": "6638ca63bb2fd8cb627110e2719f8876c3980629a67650b8cf92ea842e4c5cfb"
+      },
+      "id": "sympy@1.14.0",
+      "license": "AUTHORS; BSD; LICENSE; License :: OSI Approved :: BSD License",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "96828e0eb20116123d5c4907c46dedac5e9aa0210d290efd37010b253a9ae008",
+        "metadata_sha256": "b3c7f4b3f77d06f86a42aab7d0facef7b661ca3c22967bfcc396917d935dd335",
+        "native_payload_count": 136,
+        "native_payloads_sha256": "607e09390e289f6db7751a77e1fb4180864d580e4a49d06870ac5a2b6490db3c",
+        "publisher_file_count": 98,
+        "publisher_urls_sha256": "023431aa72a9f2ae9e34adb9622c34c825e87e7989070458c79b0ebb7efcf67c",
+        "row_sha256": "51d03bec01aead1d44155bfcdc1760241d612168ab8f759476de3abb16780bb8"
+      },
+      "id": "torch@2.13.0+cpu",
+      "license": "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT; LICENSE; third_party/FP16/LICENSE; third_party/FXdiv/LICENSE; third_party/NNPACK/LICENSE; third_party/NVTX/LICENSE.txt; third_party/NVTX/docs/LICENSE.txt; third_party/NVTX/python/LICENSE.txt; third_party/VulkanMemoryAllocator/LICENSE.txt; third_party/XNNPACK/LICENSE; third_party/aiter/3rdparty/composable_kernel/LICENSE; third_party/aiter/LICENSE; third_party/benchmark/LICENSE; third_party/composable_kernel/LICENSE; third_party/cpp-httplib/LICENSE; third_party/cpuinfo/LICENSE; third_party/cpuinfo/deps/clog/LICENSE; third_party/cudnn_frontend/LICENSE.txt; third_party/cutlass/LICENSE.txt; third_party/cutlass/python/LICENSE.txt; third_party/fbgemm/LICENSE; third_party/fbgemm/external/composable_kernel/LICENSE; third_party/fbgemm/external/cpuinfo/LICENSE; third_party/fbgemm/external/cpuinfo/deps/clog/LICENSE; third_party/fbgemm/external/cutlass/LICENSE.txt; third_party/fbgemm/external/cutlass/python/LICENSE.txt; third_party/fbgemm/external/googletest/LICENSE; third_party/fbgemm/external/hipify_torch/LICENSE.txt; third_party/fbgemm/fbgemm_gpu/experimental/hstu/LICENSE; third_party/fbgemm/fbgemm_gpu/src/quantize_ops/mx/LICENSE; third_party/fbgemm/fbgemm_gpu/test/quantize/mx/LICENSE; third_party/flash-attention/LICENSE; third_party/flash-attention/csrc/composable_kernel/LICENSE; third_party/flash-attention/csrc/cutlass/LICENSE.txt; third_party/flash-attention/csrc/cutlass/python/LICENSE.txt; third_party/flash-attention/flash_attn/cute/LICENSE; third_party/flash-attention/third_party/aiter/3rdparty/composable_kernel/LICENSE; third_party/flash-attention/third_party/aiter/LICENSE; third_party/flatbuffers/LICENSE; third_party/flatbuffers/dart/LICENSE; third_party/flatbuffers/swift/LICENSE; third_party/fmt/LICENSE; third_party/gemmlowp/gemmlowp/LICENSE; third_party/gloo/LICENSE; third_party/googletest/LICENSE; third_party/ideep/LICENSE; third_party/ideep/mkl-dnn/LICENSE; third_party/ideep/mkl-dnn/third_party/gtest/LICENSE; third_party/ideep/mkl-dnn/third_party/opencl/LICENSE; third_party/kineto/LICENSE; third_party/kineto/libkineto/third_party/dynolog/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/DCGM/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/DCGM/testing/python3/libs_3rdparty/colorama/LICENSE.txt; third_party/kineto/libkineto/third_party/dynolog/third_party/cpr/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/cpr/test/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/fmt/LICENSE.rst; third_party/kineto/libkineto/third_party/dynolog/third_party/googletest/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/json/test/thirdparty/doctest/LICENSE.txt; third_party/kineto/libkineto/third_party/dynolog/third_party/json/third_party/cpplint/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/pfs/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/prometheus-cpp/3rdparty/civetweb/examples/rest/cJSON/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/prometheus-cpp/3rdparty/civetweb/src/third_party/duktape-1.5.2/LICENSE.txt; third_party/kineto/libkineto/third_party/dynolog/third_party/prometheus-cpp/3rdparty/civetweb/src/third_party/duktape-1.8.0/LICENSE.txt; third_party/kineto/libkineto/third_party/dynolog/third_party/prometheus-cpp/3rdparty/googletest/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/prometheus-cpp/3rdparty/googletest/googlemock/scripts/generator/LICENSE; third_party/kineto/libkineto/third_party/dynolog/third_party/prometheus-cpp/LICENSE; third_party/kineto/libkineto/third_party/fmt/LICENSE; third_party/kineto/libkineto/third_party/googletest/LICENSE; third_party/llvm-openmp/LICENSE.txt; third_party/mimalloc/LICENSE; third_party/miniz-3.0.2/LICENSE; third_party/mslk/LICENSE; third_party/mslk/external/composable_kernel/LICENSE; third_party/mslk/external/cutlass/LICENSE.txt; third_party/mslk/external/cutlass/python/LICENSE.txt; third_party/mslk/external/googletest/LICENSE; third_party/mslk/external/hipify_torch/LICENSE.txt; third_party/mslk/mslk/attention/flash_attn/LICENSE; third_party/onnx/LICENSE; third_party/onnx/third_party/pybind11/LICENSE; third_party/protobuf/LICENSE; third_party/protobuf/third_party/benchmark/LICENSE; third_party/protobuf/third_party/googletest/LICENSE; third_party/protobuf/third_party/googletest/googlemock/LICENSE; third_party/protobuf/third_party/googletest/googlemock/scripts/generator/LICENSE; third_party/protobuf/third_party/googletest/googletest/LICENSE; third_party/psimd/LICENSE; third_party/pthreadpool/LICENSE; third_party/pybind11/LICENSE; third_party/python-peachpy/LICENSE.rst; third_party/sleef/LICENSE.txt; third_party/tensorpipe/LICENSE.txt; third_party/tensorpipe/third_party/googletest/LICENSE; third_party/tensorpipe/third_party/googletest/googlemock/LICENSE; third_party/tensorpipe/third_party/googletest/googlemock/scripts/generator/LICENSE; third_party/tensorpipe/third_party/googletest/googletest/LICENSE; third_party/tensorpipe/third_party/libnop/LICENSE; third_party/tensorpipe/third_party/libuv/LICENSE; third_party/tensorpipe/third_party/pybind11/LICENSE",
+      "native_bundled_review": "NATIVE_PAYLOADS_HASHED; publisher_license_files=98; native_payloads=136; no license change inferred from binary",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "bc9fd2f28012018cf50e8bf364acdd3e8bcce9d2dfe3438b87135c4586ae51f8",
+        "metadata_sha256": "0d95b85b90428f8776afc4a92b17c5094f78ee98d150b3255acbcdf4e9d57941",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 0,
+        "publisher_urls_sha256": "24b263a42a27d98d03f2b9836fa287ed262ea6ef800136184770a89bc9df10eb",
+        "row_sha256": "505e123c9578895293f2662e1b42e8b79d7cc5f64fe35995bd57fbe16d73384d"
+      },
+      "id": "tqdm@4.70.0",
+      "license": "LICENCE; MPL-2.0 AND MIT",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "59d7fa7deaa79203083dae2bbe0ff67e7f983bfea94420e8913edb2c9a63c976",
+        "metadata_sha256": "b05084ca1d50879865178d9fff9fabeab61bdfb1f361bfbde95421ffc8f9be46",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 1,
+        "publisher_urls_sha256": "89c532549428fd4458cf984a459d8109710305118dd90ab8ce33c6c686751d4d",
+        "row_sha256": "8b727eb179891bcb26f9134a7ec984cddda803dbdec6aeb2ad2f209f422d6d68"
+      },
+      "id": "typing-extensions@4.16.0",
+      "license": "LICENSE; PSF-2.0",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    },
+    {
+      "evidence": {
+        "license_candidates_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "metadata_sha256": "e39cdebb978dff399c76edad97f32f000e6f950c1cd27a4a35ecefd61579afc2",
+        "native_payload_count": 0,
+        "native_payloads_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "publisher_file_count": 0,
+        "publisher_urls_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_sha256": "3fc65eee51b7df286fb3efef0a09cb5a5ebf20d04518796ec65157de0d9f6372"
+      },
+      "id": "vokra-firered-asr-aed-l-reference@0.1.0",
+      "license": "NO_LICENSE_FIELD; first-party virtual project only (package=false); no external payload",
+      "native_bundled_review": "NONE_OBSERVED; publisher/license evidence is captured; native_payloads=0",
+      "status": "REVIEWED_FACTS_OWNER_APPROVAL_REQUIRED"
+    }
+  ],
+  "package_review_rows_sha256": "c796664bad39087f1a9be3b8339921f1cbc51338f9ba00eb6ae2f5f46decd9aa",
+  "package_rows_sha256": "b79e93fabc422b5b9a1c4347402829ad46d2e82afc342e7cf5125f50286e768c",
+  "project_sha256": "e39cdebb978dff399c76edad97f32f000e6f950c1cd27a4a35ecefd61579afc2",
+  "publication": "NO_UPLOAD"
+}
