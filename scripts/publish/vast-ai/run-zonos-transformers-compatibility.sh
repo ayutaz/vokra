@@ -62,6 +62,13 @@ self_test() {
   if ! paths_overlap "$overlap_output" "$overlap_output"; then
     rm -rf -- "$overlap_parent"; die 'path overlap self-test failed'
   fi
+  local run_line validate_line pass_line
+  run_line="$(grep -n -- '--run --vokra-root' "$self" | tail -n 1 | cut -d: -f1)"
+  validate_line="$(grep -n -- '--validate-evidence' "$self" | tail -n 1 | cut -d: -f1)"
+  pass_line="$(grep -n -- 'PASS_COMPATIBLE; no model' "$self" | tail -n 1 | cut -d: -f1)"
+  [[ -n "$run_line" && -n "$validate_line" && -n "$pass_line" && "$run_line" -lt "$validate_line" && "$validate_line" -lt "$pass_line" ]] || {
+    rm -rf -- "$overlap_parent"; die 'evidence validator is not ordered before PASS_COMPATIBLE'
+  }
   mkdir "$overlap_work"
   if paths_overlap "$overlap_output" "$overlap_work/child"; then
     rm -rf -- "$overlap_parent"; die 'non-overlapping output/work paths were considered overlapping'
@@ -120,4 +127,9 @@ step 'run model-free official import/API contract probe'
 UV_NO_CACHE=1 uv run --no-cache --project "$PROJECT" --frozen --python 3.12 python "$PROBE" \
   --run --vokra-root "$ROOT" --source-dir "$source_dir" --caller-script "$SCRIPT_DIR/run-zonos-transformers-compatibility.sh" \
   --expected-head "$expected_head" --output "$output"
-echo "zonos-transformers-compatibility: PASS_COMPATIBLE; no model/checkpoint/token; evidence_sha256=$(sha256sum "$output" | awk '{print $1}')" >&2
+evidence_sha256="$(sha256sum "$output" | awk '{print $1}')"
+step 'validate freshly generated hash-bound evidence'
+UV_NO_CACHE=1 uv run --no-cache --project "$PROJECT" --frozen --python 3.12 python "$PROBE" \
+  --validate-evidence --vokra-root "$ROOT" --expected-head "$expected_head" \
+  --evidence "$output" --evidence-sha256 "$evidence_sha256"
+echo "zonos-transformers-compatibility: PASS_COMPATIBLE; no model/checkpoint/token; evidence_sha256=$evidence_sha256" >&2
