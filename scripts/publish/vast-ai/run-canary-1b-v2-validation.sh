@@ -195,7 +195,7 @@ run_self_test() {
     "--approval-evidence" "--approval-sha256" "tools/parity/canary_1b/preflight_gate.py" \
     "license_gate_manifest.json" "--variant \"\$VARIANT\"" \
     "dependency_approval_gate.py" "--dependency-approval" "--dependency-approval-sha256" "--dependency-signer-key" \
-    "compatibility_gate.py" "BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE" \
+    "--compatibility-check" "BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE" \
     "$MAIN_CHECKPOINT_MEMBER" "$MAIN_CHECKPOINT_BYTES" \
     "tools/parity/canary_1b_v2_prepare_checkpoint.py" \
     "tools/parity/canary_1b_v2_dump_reference.py" \
@@ -218,11 +218,16 @@ run_self_test() {
       fail=1
     }
 
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
-    "$COMPATIBILITY_GATE" --self-test >/dev/null || {
-      echo 'run-canary-1b-v2-validation: self-test FAIL: compatibility gate self-test failed' >&2
-      fail=1
-    }
+  local compatibility_rc=0
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$DEPENDENCY_GATE" --compatibility-check --lock "$CANARY_REFERENCE_PROJECT/uv.lock" >"$tmp/compatibility.log" 2>&1; then
+    echo 'run-canary-1b-v2-validation: self-test FAIL: compatibility gate unexpectedly passed' >&2
+    fail=1
+  else
+    compatibility_rc=$?
+    [[ "$compatibility_rc" == 2 ]] || fail=1
+    grep -Fq -- 'BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE' "$tmp/compatibility.log" || fail=1
+  fi
 
   cases=$((cases + 1))
   if grep -En '^[[:space:]]+(released_checkpoint_matches_official_nemo_greedy_tokens|canary_v2_released_checkpoint_matches_official_nemo_greedy_tokens)[[:space:]]+--' \
@@ -467,7 +472,7 @@ license_preflight "$approval_evidence" "$approval_sha256"
 # dependency sync, archive inspection, scratch creation, or model work until
 # an upstream-compatible pair has been reviewed on VAST.
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
-  "$COMPATIBILITY_GATE" --lock "$CANARY_REFERENCE_PROJECT/uv.lock"
+  "$DEPENDENCY_GATE" --compatibility-check --lock "$CANARY_REFERENCE_PROJECT/uv.lock"
 
 # Resolve and audit the dedicated dependency closure before archive inspection,
 # scratch creation, model processing, or Cargo.

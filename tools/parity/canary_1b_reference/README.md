@@ -114,8 +114,8 @@ cannot be imported: the released NVIDIA OneLogger trainer override has a
 `save_checkpoint(weights_only: bool)` signature while Lightning 2.6.6
 requires `Optional[bool]`, and the upstream `overrides` check rejects the
 class at import time. NVIDIA has no newer released OneLogger PTL integration
-to resolve this mismatch. The real-weight workers therefore run
-`compatibility_gate.py` and stop with
+to resolve this mismatch. The real-weight workers therefore run the
+dependency gate's `--compatibility-check` mode and stop with
 `BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE` before checkpoint inspection.
 No older vulnerable Lightning release, advisory allowlist, or local
 monkeypatch is permitted. A future upstream-compatible pair requires a new

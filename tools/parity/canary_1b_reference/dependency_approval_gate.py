@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -79,10 +80,17 @@ MODEL_FREE_KEYS = (
     "cargo_invoked",
     "upload",
 )
+COMPATIBILITY_BLOCKED = "BLOCKED_SECURITY_INCOMPATIBLE_CANARY_CLOSURE"
+MIN_SAFE_LIGHTNING = (2, 6, 6)
+KNOWN_ONELOGGER = (2, 3, 1)
 
 
 class ApprovalError(ValueError):
     """Malformed, stale, unsigned, or unsafe approval input."""
+
+
+class CompatibilityError(ValueError):
+    """The locked Canary dependency closure is not an explicitly reviewed safe pair."""
 
 
 def canonical(value: Any) -> str:
@@ -99,6 +107,60 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(block)
     return hasher.hexdigest()
+
+
+def version_tuple(value: object, label: str) -> tuple[int, ...]:
+    if not isinstance(value, str):
+        raise CompatibilityError(f"{label} version is missing")
+    match = re.fullmatch(r"(\d+(?:\.\d+)*)", value)
+    if match is None:
+        raise CompatibilityError(f"{label} version is malformed: {value!r}")
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def compatibility_check(lock_path: Path) -> int:
+    """Block model workers until an upstream-compatible secure closure exists."""
+    try:
+        with lock_path.open("rb") as stream:
+            lock = tomllib.load(stream)
+        rows = lock.get("package")
+        if not isinstance(rows, list):
+            raise CompatibilityError("uv lock package table is missing")
+        packages = {
+            row.get("name"): row.get("version")
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("name"), str)
+        }
+        lightning = version_tuple(packages.get("lightning"), "lightning")
+        one_logger = version_tuple(
+            packages.get("nv-one-logger-pytorch-lightning-integration"),
+            "nv-one-logger-pytorch-lightning-integration",
+        )
+    except (OSError, tomllib.TOMLDecodeError, CompatibilityError) as error:
+        print(f"{COMPATIBILITY_BLOCKED}: cannot establish locked closure: {error}", file=sys.stderr)
+        return 2
+
+    if lightning < MIN_SAFE_LIGHTNING:
+        print(
+            f"{COMPATIBILITY_BLOCKED}: lightning {'.'.join(map(str, lightning))} "
+            f"is below security floor {'.'.join(map(str, MIN_SAFE_LIGHTNING))}",
+            file=sys.stderr,
+        )
+        return 2
+    if lightning == MIN_SAFE_LIGHTNING and one_logger == KNOWN_ONELOGGER:
+        print(
+            f"{COMPATIBILITY_BLOCKED}: lightning 2.6.6 is security-fixed but "
+            "the released OneLogger 2.3.1 trainer override is incompatible at import time",
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        f"{COMPATIBILITY_BLOCKED}: no VAST-reviewed safe Lightning/OneLogger pair "
+        f"is recorded (lightning={'.'.join(map(str, lightning))}, "
+        f"one_logger={'.'.join(map(str, one_logger))})",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -438,6 +500,8 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--compatibility-check", action="store_true")
+    parser.add_argument("--lock", type=Path)
     parser.add_argument("--audit-report", type=Path)
     parser.add_argument("--approval", type=Path)
     parser.add_argument("--trusted-signer-key", type=Path)
@@ -446,6 +510,11 @@ def main() -> int:
     parser.add_argument("--variant", choices=sorted(VARIANTS))
     parser.add_argument("--approval-sha256")
     args = parser.parse_args()
+    if args.compatibility_check:
+        normal_values = (args.audit_report, args.approval, args.trusted_signer_key, args.repo_root, args.expected_head, args.variant, args.approval_sha256)
+        if args.self_test or args.lock is None or any(value is not None for value in normal_values):
+            parser.error("--compatibility-check requires only --lock")
+        return compatibility_check(args.lock)
     values = (args.audit_report, args.approval, args.trusted_signer_key, args.repo_root, args.expected_head, args.variant, args.approval_sha256)
     if args.self_test:
         if any(value is not None for value in values):
