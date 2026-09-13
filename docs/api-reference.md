@@ -67,13 +67,16 @@ The current release line is workspace version `0.3.0`.
 
 **2026-09-13 current snapshot:** the observed `main` baseline is `50981d60`.
 The latest live, read-only public audit, evaluated with audit logic through
-`87da78dc`, reports 194 repositories, 193 GGUF-bearing repositories and 198
-GGUF files. CPU status is `full=136`, `partial=42`,
-`no-runtime-binder=15`, `not-artifact=1`; Metal status is `full=136`,
+`a4af7800`, reports 194 repositories, 193 GGUF-bearing repositories and 198
+GGUF files. CPU status is `full=136`, `partial=43`,
+`no-runtime-binder=14`, `not-artifact=1`; Metal status is `full=136`,
 `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. The
 authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback batch
 passed only for its named scopes; four separately approved artifacts were then
-published through the gated workflow. UTMOS numeric parity remains unclaimed,
+published through the gated workflow. VibeVoice Realtime-0.5B now has a strict
+structural `vibevoice_streaming` binder and CLI inspection route, so it is
+partial; synthesis, the complete weight manifest, independent reference, and
+CPU parity remain pending. UTMOS numeric parity remains unclaimed,
 and there are 0 release tags and 0 GitHub Releases. This is not a claim of
 complete public model-catalog support or v1.0 release readiness.
 

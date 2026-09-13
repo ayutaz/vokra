@@ -63,11 +63,13 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 現行の workspace release line は `0.3.0` である。
 
 **2026-09-13 current snapshot:** 観測済み `main` baseline は `50981d60` である。監査実装
-`87da78dc` までを使った最新の読み取り専用 live public audit は repository 194、GGUF
-repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=42`、
-`no-runtime-binder=15`、`not-artifact=1`、Metal status は `full=136`、
+`a4af7800` までを使った最新の読み取り専用 live public audit は repository 194、GGUF
+repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=43`、
+`no-runtime-binder=14`、`not-artifact=1`、Metal status は `full=136`、
 `blocked-by-cpu=57`、`not-artifact=1` で、未解決の public row は58件
-である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
+である。VibeVoice Realtime-0.5B は strict structural `vibevoice_streaming` binder と
+CLI inspection route に進み partial となったが、synthesis、完全な weight manifest、独立
+reference、CPU parity は未完了である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
 named scope のみ合格し、その後、明示的に承認された4件の artifact が gated workflow 経由で
 公開された。UTMOS numeric parity は未主張で、release tag は0、GitHub Release も0である。
 これは public model catalog 全体の対応完了や v1.0 release readiness を主張するものではない。

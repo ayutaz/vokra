@@ -506,6 +506,9 @@ pub mod voxcpm2;
 // dispatch (VoxCPM → flow_sample, VibeVoice → ddpm_sample; the two
 // samplers are irreconcilable).
 pub mod vibevoice;
+/// Strict structural binder for the distinct VibeVoice-Realtime-0.5B
+/// streaming topology; synthesis remains explicitly VAST-gated.
+pub mod vibevoice_streaming;
 // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Aratako **Irodori-TTS-500M-v3**
 // Japanese TTS (MIT). A Rectified-Flow Diffusion Transformer (RF-DiT)
 // over the paired `Semantic-DACVAE-Japanese-32dim` codec (32-d continuous

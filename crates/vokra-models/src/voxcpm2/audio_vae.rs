@@ -589,6 +589,20 @@ impl AudioVaeEncoder {
         stages: Vec<EncoderStage>,
         terminal: CausalConv1d,
     ) -> Result<Self> {
+        let encoder = Self {
+            stem,
+            stages,
+            terminal,
+        };
+        encoder.validate_source_topology()?;
+        Ok(encoder)
+    }
+
+    /// Revalidate the fixed source 0.5B encoder topology immediately before
+    /// execution.  The staged constructor uses the same method so binding
+    /// and execution cannot drift to different channel/rate contracts.
+    fn validate_source_topology(&self) -> Result<()> {
+        let stem = &self.stem;
         if stem.in_channels != 1
             || stem.out_channels != AUDIO_VAE_ENCODER_DIM
             || stem.kernel != 7
@@ -596,33 +610,29 @@ impl AudioVaeEncoder {
             || stem.stride != 1
             || stem.padding != 3
             || stem.groups != 1
-            || stages.len() != AUDIO_VAE_ENCODER_RATES.len()
+            || self.stages.len() != AUDIO_VAE_ENCODER_RATES.len()
         {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE encoder stem/rate contract mismatch".to_owned(),
             ));
         }
         let mut channels = AUDIO_VAE_ENCODER_DIM;
-        for (stage, &rate) in stages.iter().zip(AUDIO_VAE_ENCODER_RATES.iter()) {
+        for (stage, &rate) in self.stages.iter().zip(AUDIO_VAE_ENCODER_RATES.iter()) {
             channels = stage.validate(channels, rate)?;
         }
-        if terminal.in_channels != channels
-            || terminal.out_channels != AUDIO_VAE_LATENT_DIM
-            || terminal.kernel != 3
-            || terminal.dilation != 1
-            || terminal.stride != 1
-            || terminal.padding != 1
-            || terminal.groups != 1
+        if self.terminal.in_channels != channels
+            || self.terminal.out_channels != AUDIO_VAE_LATENT_DIM
+            || self.terminal.kernel != 3
+            || self.terminal.dilation != 1
+            || self.terminal.stride != 1
+            || self.terminal.padding != 1
+            || self.terminal.groups != 1
         {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE encoder terminal contract mismatch".to_owned(),
             ));
         }
-        Ok(Self {
-            stem,
-            stages,
-            terminal,
-        })
+        Ok(())
     }
 
     /// Attach a VAST-staged encoder bundle after the converter has resolved
@@ -640,9 +650,93 @@ impl AudioVaeEncoder {
         Self::from_source(stem, stages, terminal)
     }
 
+    /// Validate every learned buffer before entering an encoder kernel.
+    ///
+    /// The source topology validator intentionally accepts metadata-only
+    /// fixtures with empty buffers.  Execution must apply the stronger
+    /// learned-buffer check so a malformed bound cannot reach convolution
+    /// indexing or silently produce a partial latent stream.
+    fn validate_bound_weights(&self) -> Result<()> {
+        let validate_conv = |label: &str, conv: &CausalConv1d| -> Result<()> {
+            let grouped_inputs = conv.in_channels / conv.groups;
+            let expected = conv
+                .out_channels
+                .checked_mul(grouped_inputs)
+                .and_then(|value| value.checked_mul(conv.kernel))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "voxcpm AudioVAE {label} weight shape overflows"
+                    ))
+                })?;
+            if conv.weight_v.len() != expected
+                || conv.weight_g.len() != conv.out_channels
+                || conv.bias.len() != conv.out_channels
+                || conv
+                    .weight_v
+                    .iter()
+                    .chain(&conv.weight_g)
+                    .chain(&conv.bias)
+                    .any(|value| !value.is_finite())
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid bound weights"
+                )));
+            }
+            Ok(())
+        };
+        let validate_snake = |label: &str, snake: &Snake, channels: usize| -> Result<()> {
+            if snake.alpha.len() != channels || snake.alpha.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid Snake weights"
+                )));
+            }
+            Ok(())
+        };
+
+        validate_conv("encoder stem", &self.stem)?;
+        let mut channels = AUDIO_VAE_ENCODER_DIM;
+        for (index, stage) in self.stages.iter().enumerate() {
+            for (residual_index, residual) in stage.residuals.iter().enumerate() {
+                validate_conv(
+                    &format!("encoder stage {index} residual {residual_index} filter"),
+                    &residual.filter,
+                )?;
+                validate_snake(
+                    &format!("encoder stage {index} residual {residual_index} activation"),
+                    &residual.activation,
+                    channels,
+                )?;
+                validate_snake(
+                    &format!(
+                        "encoder stage {index} residual {residual_index} pointwise activation"
+                    ),
+                    &residual.pointwise_activation,
+                    channels,
+                )?;
+                validate_conv(
+                    &format!("encoder stage {index} residual {residual_index} pointwise"),
+                    &residual.pointwise,
+                )?;
+            }
+            validate_snake(
+                &format!("encoder stage {index} activation"),
+                &stage.activation,
+                channels,
+            )?;
+            validate_conv(
+                &format!("encoder stage {index} downsample"),
+                &stage.downsample,
+            )?;
+            channels *= 2;
+        }
+        validate_conv("encoder terminal", &self.terminal)
+    }
+
     /// Encode mono channel-major 16-kHz PCM with the scalar reference path.
     pub fn encode(&self, pcm: &[f32], samples: usize) -> Result<Vec<f32>> {
         let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let mut values = self.stem.forward(&padded_pcm, padded_samples)?;
         let mut time = values.len() / self.stem.out_channels;
         for stage in &self.stages {
@@ -661,6 +755,8 @@ impl AudioVaeEncoder {
         compute: &Compute,
     ) -> Result<Vec<f32>> {
         let (padded_pcm, padded_samples) = pad_audio_vae_pcm(pcm, samples)?;
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let mut values = self
             .stem
             .forward_with_compute(&padded_pcm, padded_samples, compute)?;
@@ -1076,6 +1172,118 @@ impl AudioVaeDecoder {
         Ok(())
     }
 
+    /// Validate every learned buffer before entering a decoder kernel.
+    ///
+    /// The decoder fields are public for inspection and binding, so checking
+    /// only the architectural axes is not sufficient: a caller can mutate a
+    /// weight vector after construction and otherwise turn a malformed
+    /// checkpoint into an indexing panic.  Keep this check separate from
+    /// [`Self::validate_source_topology`] because metadata-only topology
+    /// fixtures intentionally carry empty buffers.
+    fn validate_bound_weights(&self) -> Result<()> {
+        let validate_conv = |label: &str, conv: &CausalConv1d| -> Result<()> {
+            let grouped_inputs = conv.in_channels / conv.groups;
+            let expected = conv
+                .out_channels
+                .checked_mul(grouped_inputs)
+                .and_then(|value| value.checked_mul(conv.kernel))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "voxcpm AudioVAE {label} weight shape overflows"
+                    ))
+                })?;
+            if conv.weight_v.len() != expected
+                || conv.weight_g.len() != conv.out_channels
+                || conv.bias.len() != conv.out_channels
+                || conv
+                    .weight_v
+                    .iter()
+                    .chain(&conv.weight_g)
+                    .chain(&conv.bias)
+                    .any(|value| !value.is_finite())
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid bound weights"
+                )));
+            }
+            Ok(())
+        };
+        let validate_transpose = |label: &str, conv: &CausalConvTranspose1d| -> Result<()> {
+            let expected = conv
+                .in_channels
+                .checked_mul(conv.out_channels / conv.groups)
+                .and_then(|value| value.checked_mul(conv.kernel))
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "voxcpm AudioVAE {label} weight shape overflows"
+                    ))
+                })?;
+            if conv.weight_v.len() != expected
+                || conv.weight_g.len() != conv.in_channels
+                || conv.bias.len() != conv.out_channels
+                || conv
+                    .weight_v
+                    .iter()
+                    .chain(&conv.weight_g)
+                    .chain(&conv.bias)
+                    .any(|value| !value.is_finite())
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid bound weights"
+                )));
+            }
+            Ok(())
+        };
+        let validate_snake = |label: &str, snake: &Snake, channels: usize| -> Result<()> {
+            if snake.alpha.len() != channels || snake.alpha.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxcpm AudioVAE {label} has invalid Snake weights"
+                )));
+            }
+            Ok(())
+        };
+
+        validate_conv("decoder stem", &self.stem)?;
+        let mut channels = self.stem.out_channels;
+        for (index, stage) in self.stages.iter().enumerate() {
+            validate_snake(
+                &format!("decoder stage {index} activation"),
+                &stage.activation,
+                channels,
+            )?;
+            validate_transpose(&format!("decoder stage {index} upsample"), &stage.upsample)?;
+            channels /= 2;
+            for (residual_index, residual) in stage.residuals.iter().enumerate() {
+                validate_conv(
+                    &format!("decoder stage {index} residual {residual_index} filter"),
+                    &residual.filter,
+                )?;
+                validate_snake(
+                    &format!("decoder stage {index} residual {residual_index} activation"),
+                    &residual.activation,
+                    channels,
+                )?;
+                validate_snake(
+                    &format!(
+                        "decoder stage {index} residual {residual_index} pointwise activation"
+                    ),
+                    &residual.pointwise_activation,
+                    channels,
+                )?;
+                validate_conv(
+                    &format!("decoder stage {index} residual {residual_index} pointwise"),
+                    &residual.pointwise,
+                )?;
+            }
+        }
+        validate_snake(
+            "decoder terminal activation",
+            &self.terminal_activation,
+            channels,
+        )?;
+        validate_conv("decoder terminal", &self.terminal)
+    }
+
     #[allow(dead_code)] // Staged topology constructor awaits complete composite authorization.
     pub(crate) fn from_staged_parts(
         stem: CausalConv1d,
@@ -1093,6 +1301,21 @@ impl AudioVaeDecoder {
                 "voxcpm audio VAE decoder input is empty".to_owned(),
             ));
         }
+        let expected = self.stem.in_channels.checked_mul(time).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "voxcpm audio VAE causal convolution input shape overflows".to_owned(),
+            )
+        })?;
+        if latents.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxcpm audio VAE causal convolution input {} != {}*{}",
+                latents.len(),
+                self.stem.in_channels,
+                time
+            )));
+        }
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let mut values = self.stem.forward(latents, time)?;
         let mut current_time = time;
         for stage in &self.stages {
@@ -1116,11 +1339,23 @@ impl AudioVaeDecoder {
         time: usize,
         compute: &Compute,
     ) -> Result<Vec<f32>> {
-        if latents.is_empty() || time == 0 || latents.len() != self.stem.in_channels * time {
+        if latents.is_empty() || time == 0 {
             return Err(VokraError::InvalidArgument(
                 "voxcpm AudioVAE backend decoder input shape mismatch".to_owned(),
             ));
         }
+        let expected = self.stem.in_channels.checked_mul(time).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "voxcpm AudioVAE backend decoder input shape mismatch".to_owned(),
+            )
+        })?;
+        if latents.len() != expected {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm AudioVAE backend decoder input shape mismatch".to_owned(),
+            ));
+        }
+        self.validate_source_topology()?;
+        self.validate_bound_weights()?;
         let mut values = self.stem.forward_with_compute(latents, time, compute)?;
         let stem_effective = (self.stem.kernel - 1) * self.stem.dilation + 1;
         let mut current_time =
@@ -1224,6 +1459,56 @@ mod tests {
             },
             upsample: metadata_transpose(channels, next_channels, 2 * rate, rate),
             residuals,
+        }
+    }
+
+    fn metadata_encoder_stage(channels: usize, rate: usize) -> EncoderStage {
+        let residuals = std::array::from_fn(|index| {
+            let dilation = 3usize.pow(index as u32);
+            ResidualUnit {
+                filter: metadata_conv(channels, channels, 7, dilation, 1, 3 * dilation, channels),
+                activation: Snake {
+                    alpha: vec![0.0; channels],
+                },
+                pointwise_activation: Snake {
+                    alpha: vec![0.0; channels],
+                },
+                pointwise: metadata_conv(channels, channels, 1, 1, 1, 0, 1),
+            }
+        });
+        EncoderStage {
+            residuals,
+            activation: Snake {
+                alpha: vec![0.0; channels],
+            },
+            downsample: metadata_conv(
+                channels,
+                channels * 2,
+                rate * 2,
+                1,
+                rate,
+                rate.div_ceil(2),
+                1,
+            ),
+        }
+    }
+
+    fn metadata_source_encoder() -> AudioVaeEncoder {
+        let stem = metadata_conv(1, AUDIO_VAE_ENCODER_DIM, 7, 1, 1, 3, 1);
+        let mut channels = AUDIO_VAE_ENCODER_DIM;
+        let stages = AUDIO_VAE_ENCODER_RATES
+            .into_iter()
+            .map(|rate| {
+                let stage = metadata_encoder_stage(channels, rate);
+                channels *= 2;
+                stage
+            })
+            .collect();
+        let terminal = metadata_conv(channels, AUDIO_VAE_LATENT_DIM, 3, 1, 1, 1, 1);
+        AudioVaeEncoder {
+            stem,
+            stages,
+            terminal,
         }
     }
 
@@ -1332,6 +1617,88 @@ mod tests {
             .expect_err("drifted public decoder must be rejected");
         assert!(matches!(error, VokraError::InvalidArgument(_)));
         assert!(error.to_string().contains("stage contract"));
+    }
+
+    #[test]
+    fn decoder_execution_rejects_unbound_public_buffers_before_indexing() {
+        let decoder = metadata_source_decoder();
+        let error = decoder
+            .decode(&[0.0; AUDIO_VAE_LATENT_DIM], 1)
+            .expect_err("metadata-only decoder must not execute");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(error.to_string().contains("bound weights"));
+
+        let mut decoder = metadata_source_decoder();
+        decoder.stem.weight_v.push(0.0);
+        let error = decoder
+            .decode_with_compute(&[0.0; AUDIO_VAE_LATENT_DIM], 1, &Compute::cpu())
+            .expect_err("mutated decoder must be rejected before a kernel");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(error.to_string().contains("bound weights"));
+    }
+
+    #[test]
+    fn decoder_input_errors_precede_bound_weight_validation() {
+        let decoder = metadata_source_decoder();
+        let error = decoder
+            .decode(&[], 0)
+            .expect_err("empty decoder input must fail before scanning weights");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("decoder input is empty"));
+
+        let error = decoder
+            .decode(&[0.0], 2)
+            .expect_err("decoder shape mismatch must fail before scanning weights");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("causal convolution input"));
+    }
+
+    #[test]
+    fn encoder_execution_rejects_unbound_buffers_before_indexing() {
+        let encoder = metadata_source_encoder();
+        let error = encoder
+            .encode(&[0.0], 1)
+            .expect_err("metadata-only encoder must not execute");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(error.to_string().contains("bound weights"));
+
+        let mut encoder = metadata_source_encoder();
+        encoder.stem.weight_v.push(0.0);
+        let error = encoder
+            .encode_with_compute(&[0.0], 1, &Compute::cpu())
+            .expect_err("mutated encoder must be rejected before a kernel");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(error.to_string().contains("bound weights"));
+    }
+
+    #[test]
+    fn encoder_execution_rejects_topology_drift_before_weight_scan() {
+        let mut encoder = metadata_source_encoder();
+        encoder.stages[0].downsample.stride = 7;
+        let error = encoder
+            .encode(&[0.0], 1)
+            .expect_err("drifted encoder topology must not execute");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("downsample contract"));
+
+        // Keep the buffer malformed as well: topology rejection must remain
+        // the first error and must not force a full parameter scan.
+        encoder.stem.weight_v.push(0.0);
+        let error = encoder
+            .encode_with_compute(&[0.0], 1, &Compute::cpu())
+            .expect_err("topology must precede bound-weight validation");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("downsample contract"));
+    }
+
+    #[test]
+    fn encoder_input_errors_precede_bound_weight_validation() {
+        let encoder = metadata_source_encoder();
+        let error = encoder
+            .encode(&[], 0)
+            .expect_err("empty encoder input must fail before scanning weights");
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert!(error.to_string().contains("requires finite mono PCM"));
     }
 
     #[test]

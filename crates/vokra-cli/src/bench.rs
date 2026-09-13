@@ -1698,6 +1698,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsVibeVoiceRealtime => {
+            return Err(
+                "bench: arch `vibevoice_streaming` is INSPECTION_ONLY — the strict streaming binder has no authenticated real-weight manifest, prefill/state, CFG diffusion, acoustic decoder, tokenizer policy, or independent CPU parity packet; refusing to fabricate an RTF measurement"
+                    .to_owned(),
+            );
+        }
         ModelTask::TtsSpeechT5 => {
             return Err(
                 "bench: arch `speecht5` requires both a strict SpeechT5 HiFi-GAN GGUF and a caller-supplied 512-value x-vector; the generic bench surface has neither sidecar input. Use `vokra-cli run --model <speecht5.gguf> --vocoder <speecht5-hifigan.gguf> --speaker-embedding <xvector-512.f32> --text <string> [--backend cpu|metal]` (FR-EX-08: refusing to fabricate a speaker or vocoder)"
