@@ -7,8 +7,8 @@ PROJECT="$SCRIPT_DIR"
 REPOSITORY_ROOT="$(cd "$PROJECT/../../.." && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 CONSTRAINTS="$PROJECT/numpy-build-constraints.txt"
-LOCK_SHA256="40fa51a7cffcfed126e073ecf0813fcbdb0935ea1bef05f51be1e75585fbcf76"
-PYPROJECT_SHA256="5cb58da85195f8f0812aa18bedd6a320226c7a3ef94e64c33e5782414c115b29"
+LOCK_SHA256="d533b5917f820cca4bb0776b282ffa3749d89152acf94fca755dc78fdfcb82a1"
+PYPROJECT_SHA256="d1147745ce62515adfa4aaa28a896a1f8765592f77404ed3e9b8ba4a4c0d7f97"
 CONSTRAINTS_SHA256="812ab3e215d7756738ab9a9aca7b8c94b53a3b10e8f1e43228e1b74965be020a"
 NUMPY_SDIST_URL="https://files.pythonhosted.org/packages/ec/d0/c12ddfd3a02274be06ffc71f3efc6d0e457b0409c4481596881e748cb264/numpy-2.2.2.tar.gz"
 NUMPY_SDIST_SHA256="ed6906f61834d687738d25988ae117683705636936cc605be0bb208b23df4d8f"
@@ -17,6 +17,17 @@ MIN_VAST_MEM_KIB=60000000
 
 log() { printf '[zonos-numpy-no-blas] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
+
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    return 2
+  fi
+}
 
 canonicalize_uncreated() {
   local path="$1" suffix='' name parent component rest scan
@@ -49,9 +60,9 @@ require_contract() {
   [[ -f "$PROJECT/pyproject.toml" && ! -L "$PROJECT/pyproject.toml" ]] || { die 'Zonos pyproject is missing or symlinked'; return 2; }
   [[ -f "$PROJECT/uv.lock" && ! -L "$PROJECT/uv.lock" ]] || { die 'Zonos uv.lock is missing or symlinked'; return 2; }
   [[ -f "$CONSTRAINTS" && ! -L "$CONSTRAINTS" ]] || { die 'NumPy builder constraints are missing or symlinked'; return 2; }
-  [[ "$(sha256sum "$PROJECT/pyproject.toml" | awk '{print $1}')" == "$PYPROJECT_SHA256" ]] || { die 'Zonos pyproject identity mismatch'; return 2; }
-  [[ "$(sha256sum "$PROJECT/uv.lock" | awk '{print $1}')" == "$LOCK_SHA256" ]] || { die 'Zonos uv.lock identity mismatch'; return 2; }
-  [[ "$(sha256sum "$CONSTRAINTS" | awk '{print $1}')" == "$CONSTRAINTS_SHA256" ]] || { die 'NumPy builder constraints identity mismatch'; return 2; }
+  [[ "$(sha256_file "$PROJECT/pyproject.toml")" == "$PYPROJECT_SHA256" ]] || { die 'Zonos pyproject identity mismatch'; return 2; }
+  [[ "$(sha256_file "$PROJECT/uv.lock")" == "$LOCK_SHA256" ]] || { die 'Zonos uv.lock identity mismatch'; return 2; }
+  [[ "$(sha256_file "$CONSTRAINTS")" == "$CONSTRAINTS_SHA256" ]] || { die 'NumPy builder constraints identity mismatch'; return 2; }
 }
 
 download_sdist() {
@@ -314,9 +325,13 @@ PY
 
 self_test() {
   local failed=0 token temporary diagnostic
-  for token in 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '-Dblas=none' '-Dlapack=none' '-Dallow-noblas=true' 'PREPARED_NO_BLAS' 'NO_UPLOAD' 'NUMPY_SDIST_SHA256' 'preparation.json' 'SHA256SUMS' 'redirect is forbidden' 'assert_build_requirements' 'member.issym()' 'member.islnk()' 'maximum_members' 'maximum_bytes'; do
+  for token in 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '-Dblas=none' '-Dlapack=none' '-Dallow-noblas=true' 'PREPARED_NO_BLAS' 'NO_UPLOAD' 'NUMPY_SDIST_SHA256' 'preparation.json' 'SHA256SUMS' 'redirect is forbidden' 'assert_build_requirements' 'member.issym()' 'member.islnk()' 'maximum_members' 'maximum_bytes' 'PYPROJECT_SHA256' 'LOCK_SHA256' 'require_contract'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
+  # Keep this model-free self-test bound to the same source identities as the
+  # VAST preparation path.  A dependency lock/metadata edit must fail here
+  # until the constants are deliberately restamped from the reviewed files.
+  require_contract || failed=1
   if temporary="$(mktemp -d "${TMPDIR:-/tmp}/zonos-numpy-selftest.XXXXXX")"; then
     local fake_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     mkdir "$temporary/preparation"
