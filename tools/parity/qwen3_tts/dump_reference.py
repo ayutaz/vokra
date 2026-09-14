@@ -52,7 +52,10 @@ SPEAKER = "Serena"
 DECODER_REPO = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+TRANSFORMERS_COMPATIBILITY_ENV = "TRANSFORMERS_COMPATIBILITY_STATUS"
+TRANSFORMERS_COMPATIBILITY_STATUS = os.environ.get(
+    TRANSFORMERS_COMPATIBILITY_ENV, "BLOCKED_UNVERIFIED_API_SMOKE"
+)
 SNAPSHOT_TOP_LEVEL_ALLOWED = frozenset({
     "LICENSE", "README.md", "config.json", "generation_config.json", "merges.txt",
     "model.safetensors", "preprocessor_config.json", "tokenizer_config.json", "vocab.json",
@@ -150,12 +153,20 @@ def strict_json_loads(text: str) -> Any:
     return json.loads(text, object_pairs_hook=reject_duplicates)
 
 
+def _transformers_compatibility_status() -> str:
+    """Read the runner's exact status, defaulting safely to blocked."""
+    return os.environ.get(
+        TRANSFORMERS_COMPATIBILITY_ENV, "BLOCKED_UNVERIFIED_API_SMOKE"
+    )
+
+
 def require_transformers_api_smoke() -> None:
-    if TRANSFORMERS_COMPATIBILITY_STATUS == "AUTHENTICATED_API_SMOKE":
+    status = _transformers_compatibility_status()
+    if status == "AUTHENTICATED_API_SMOKE":
         return
-    if TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE":
+    if status == "BLOCKED_UNVERIFIED_API_SMOKE":
         die("Transformers API smoke is not authenticated; refusing official reference imports")
-    die(f"unknown Transformers API smoke status: {TRANSFORMERS_COMPATIBILITY_STATUS}")
+    die(f"unknown Transformers API smoke status: {status}")
 
 
 def sha256_file(path: Path) -> str:
@@ -304,19 +315,30 @@ def environment() -> dict[str, object]:
 
 def run_self_test() -> int:
     """Exercise the immutable packet contract without importing torch or weights."""
-    global TRANSFORMERS_COMPATIBILITY_STATUS
-    saved_status = TRANSFORMERS_COMPATIBILITY_STATUS
+    if TRANSFORMERS_COMPATIBILITY_STATUS != _transformers_compatibility_status():
+        die("Transformers API smoke environment was not reflected at startup")
+    had_status = TRANSFORMERS_COMPATIBILITY_ENV in os.environ
+    saved_status = os.environ.get(TRANSFORMERS_COMPATIBILITY_ENV)
     try:
-        TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+        os.environ.pop(TRANSFORMERS_COMPATIBILITY_ENV, None)
+        try:
+            require_transformers_api_smoke()
+        except SystemExit:
+            pass
+        else:
+            die("unset Transformers API smoke status was accepted")
+        os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = "BLOCKED_UNVERIFIED_API_SMOKE"
         try:
             require_transformers_api_smoke()
         except SystemExit:
             pass
         else:
             die("blocked Transformers API smoke status was accepted")
-        TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
+        os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = "AUTHENTICATED_API_SMOKE"
+        if _transformers_compatibility_status() != "AUTHENTICATED_API_SMOKE":
+            die("authenticated Transformers API smoke status was not read from the environment")
         require_transformers_api_smoke()
-        TRANSFORMERS_COMPATIBILITY_STATUS = "UNKNOWN_STATUS"
+        os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = "UNKNOWN_STATUS"
         try:
             require_transformers_api_smoke()
         except SystemExit:
@@ -324,7 +346,11 @@ def run_self_test() -> int:
         else:
             die("unknown Transformers API smoke status was accepted")
     finally:
-        TRANSFORMERS_COMPATIBILITY_STATUS = saved_status
+        if had_status:
+            assert saved_status is not None
+            os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = saved_status
+        else:
+            os.environ.pop(TRANSFORMERS_COMPATIBILITY_ENV, None)
     try:
         strict_json_loads('{"key": 1, "key": 2}')
     except ValueError:
