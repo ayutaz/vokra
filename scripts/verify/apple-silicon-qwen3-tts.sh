@@ -220,11 +220,21 @@ require_reference() {
 }
 
 require_exact_test_result() {
-  local log_file="$1" test_name="$2" test_count result_count result_total
-  test_count="$(grep -Ecx "^test ${test_name} \.\.\. ok$" "$log_file" || true)"
-  result_count="$(grep -Ecx '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in .+)?$' "$log_file" || true)"
+  local log_file="$1" test_name="$2" expected_filtered="$3" test_count inline_count standalone_count result_count result_total
+  if ! [[ "$expected_filtered" =~ ^[0-9]+$ ]]; then
+    die "invalid expected filtered count: $expected_filtered"
+    return 2
+  fi
+  test_count="$(grep -Ec "^test ${test_name} \.\.\. " "$log_file" || true)"
+  inline_count="$(grep -Ecx "^test ${test_name} \.\.\. ok$" "$log_file" || true)"
+  standalone_count="$(grep -Ecx '^ok$' "$log_file" || true)"
+  result_count="$(grep -Ecx "^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; ${expected_filtered} filtered out(; finished in .+)?$" "$log_file" || true)"
   result_total="$(grep -Ec '^test result:' "$log_file" || true)"
-  [[ "$test_count" == 1 && "$result_count" == 1 && "$result_total" == 1 ]] || die "${test_name} did not produce exactly one passing, non-ignored result"
+  if grep -Eq '(^|[[:space:]])FAILED([[:space:]]|$)|panic|^error: test failed' "$log_file"; then
+    die "${test_name} log contains a failure token"
+    return 2
+  fi
+  [[ "$test_count" == 1 && $((inline_count + standalone_count)) == 1 && "$result_count" == 1 && "$result_total" == 1 ]] || die "${test_name} did not produce exactly one passing, non-ignored result"
 }
 
 require_exact_marker() {
@@ -271,7 +281,7 @@ run_self_test() {
     '--features metal --test qwen3_tts_real' '-- --ignored --exact --nocapture' \
     'MIN_NEW_TOKENS=2' 'QWEN3_TTS_0_6B_BASE_GGUF' 'QWEN3_TTS_0_6B_BASE_DECODER_GGUF' 'QWEN3_TTS_0_6B_BASE_REFERENCE_DIR' \
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' '--gguf-1.7b-customvoice-sha256' '--reference-0.6b-base-sha256' '--reference-0.6b-customvoice-sha256' '--reference-1.7b-base-sha256' '--reference-1.7b-customvoice-sha256' '--decoder-gguf-sha256' 'require_expected_sha256' 'require_distinct_reference_hashes' \
-    "require_exact_test_result \"\$evidence/parity.log\" \"\$TEST_NAME\"" '0 failed; 0 ignored; 0 measured' \
+    "require_exact_test_result \"\$evidence/parity.log\" \"\$TEST_NAME\" 2" '0 failed; 0 ignored; 0 measured' \
     'QWEN3_TTS_PARITY' 'codes_exact=PASS' 'QWEN3_TTS_METAL_CPU' 'MEASURED_NOT_GATED' 'upload, publish' \
     'TRANSFORMERS_VERSION="5.10.4"' 'previous_isolated_transformers_pin=transformers==4.57.3' \
     'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w' 'transformers_security_patched_minimum=5.10.0' \
@@ -330,24 +340,37 @@ run_self_test() {
   if require_absent_evidence_dir "$path_probe/value/child" "$path_probe/value" "$path_probe/approval.json" >/dev/null 2>&1; then failed=1; fi
   rm -rf "$path_probe"
   rm -f "$sha_probe"
-  local result_probe duplicate_probe malformed_probe
+  local result_probe inline_probe duplicate_probe malformed_probe filtered_probe failure_probe
   result_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-result-selftest.XXXXXX")"
   printf '%s\n' \
-    "test $TEST_NAME ... ok" \
-    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    "test $TEST_NAME ... QWEN3_TTS_MEASUREMENT variant=0.6b-base backend=cpu pcm_max_abs=0.0 pcm_rmse=0.0 numeric_bound=UNSET verdict=MEASURED_NOT_GATED" \
+    'ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s' \
     'QWEN3_TTS_PARITY variant=0.6b-base backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED' \
     'QWEN3_TTS_PARITY variant=0.6b-base backend=metal prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED' \
     'QWEN3_TTS_METAL_CPU variant=0.6b-base codes_exact=PASS pcm=MEASURED_NOT_GATED' > "$result_probe"
-  if ! require_exact_test_result "$result_probe" "$TEST_NAME"; then failed=1; fi
+  if ! require_exact_test_result "$result_probe" "$TEST_NAME" 2; then failed=1; fi
+  inline_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-result-inline.XXXXXX")"
+  printf '%s\n' \
+    "test $TEST_NAME ... ok" \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out' > "$inline_probe"
+  if ! require_exact_test_result "$inline_probe" "$TEST_NAME" 2; then failed=1; fi
   duplicate_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-result-duplicate.XXXXXX")"
   cat "$result_probe" "$result_probe" > "$duplicate_probe"
-  if require_exact_test_result "$duplicate_probe" "$TEST_NAME"; then failed=1; fi
+  if require_exact_test_result "$duplicate_probe" "$TEST_NAME" 2; then failed=1; fi
   malformed_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-result-malformed.XXXXXX")"
-  { sed -n '1p' "$result_probe"; echo 'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out'; sed -n '2,$p' "$result_probe"; } > "$malformed_probe"
-  if require_exact_test_result "$malformed_probe" "$TEST_NAME"; then failed=1; fi
+  { sed -n '1p' "$result_probe"; echo 'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out'; sed -n '2,$p' "$result_probe"; } > "$malformed_probe"
+  if require_exact_test_result "$malformed_probe" "$TEST_NAME" 2; then failed=1; fi
+  filtered_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-result-filtered.XXXXXX")"
+  sed 's/2 filtered out/1 filtered out/' "$result_probe" > "$filtered_probe"
+  if require_exact_test_result "$filtered_probe" "$TEST_NAME" 2; then failed=1; fi
+  failure_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-apple-result-failure.XXXXXX")"
+  cp "$result_probe" "$failure_probe"
+  printf '%s\n' FAILED >> "$failure_probe"
+  if require_exact_test_result "$failure_probe" "$TEST_NAME" 2; then failed=1; fi
   if ! require_exact_marker "$result_probe" 'QWEN3_TTS_PARITY variant=0.6b-base backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED'; then failed=1; fi
   if require_exact_marker "$result_probe" 'QWEN3_TTS_PARITY variant=0.6b-customvoice backend=metal prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED'; then failed=1; fi
-  rm -f "$result_probe" "$duplicate_probe" "$malformed_probe"
+  rm -f "$result_probe" "$inline_probe" "$duplicate_probe" "$malformed_probe" "$filtered_probe" "$failure_probe"
   (( failed == 0 )) || return 1
   log 'self-test PASS'
 }
@@ -417,7 +440,7 @@ main() {
     VOKRA_QWEN3_TTS_1_7B_BASE_GGUF="$base17" VOKRA_QWEN3_TTS_1_7B_BASE_DECODER_GGUF="$decoder" VOKRA_QWEN3_TTS_1_7B_BASE_REFERENCE_DIR="$ref_base17" \
     VOKRA_QWEN3_TTS_1_7B_CUSTOMVOICE_GGUF="$custom17" VOKRA_QWEN3_TTS_1_7B_CUSTOMVOICE_DECODER_GGUF="$decoder" VOKRA_QWEN3_TTS_1_7B_CUSTOMVOICE_REFERENCE_DIR="$ref_custom17" \
     VOKRA_REMOTE_APPLE_SILICON=1 CARGO_NET_OFFLINE=true RUST_TEST_THREADS=1 cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-models --features metal --test qwen3_tts_real "$TEST_NAME" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/parity.log"
-  require_exact_test_result "$evidence/parity.log" "$TEST_NAME"
+  require_exact_test_result "$evidence/parity.log" "$TEST_NAME" 2
   for marker in 'variant=0.6b-base backend=cpu' 'variant=0.6b-base backend=metal' 'variant=0.6b-customvoice backend=cpu' 'variant=0.6b-customvoice backend=metal' 'variant=1.7b-base backend=cpu' 'variant=1.7b-base backend=metal' 'variant=1.7b-customvoice backend=cpu' 'variant=1.7b-customvoice backend=metal'; do require_exact_marker "$evidence/parity.log" "QWEN3_TTS_PARITY $marker prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"; done
   for variant in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do require_exact_marker "$evidence/parity.log" "QWEN3_TTS_METAL_CPU variant=$variant codes_exact=PASS pcm=MEASURED_NOT_GATED"; done
   { echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo "official_source_pr_url=$OFFICIAL_SOURCE_PR_URL"; echo "official_source_pr_status=$OFFICIAL_SOURCE_PR_STATUS"; echo "official_source_pr_head=$OFFICIAL_SOURCE_PR_HEAD"; echo 'compatibility_patch_operation=apply_exactly_seven_source_transforms'; echo 'compatibility_patch_count=7'; echo 'cpu_reference=MEASURED_NOT_GATED'; echo 'metal_vs_cpu=MEASURED_NOT_GATED'; echo 'public_precontract_ggufs=NOT_USED'; echo 'upload=NOT_PERFORMED'; } > "$evidence/summary.txt"

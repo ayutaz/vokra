@@ -334,11 +334,21 @@ require_single_file_snapshot() {
 }
 
 require_exact_test_result() {
-  local log_file="$1" test_name="$2" test_count result_count result_total
-  test_count="$(grep -Ecx "^test ${test_name} \.\.\. ok$" "$log_file" || true)"
-  result_count="$(grep -Ecx '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in .+)?$' "$log_file" || true)"
+  local log_file="$1" test_name="$2" expected_filtered="$3" test_count inline_count standalone_count result_count result_total
+  if ! [[ "$expected_filtered" =~ ^[0-9]+$ ]]; then
+    die "invalid expected filtered count: $expected_filtered"
+    return 2
+  fi
+  test_count="$(grep -Ec "^test ${test_name} \.\.\. " "$log_file" || true)"
+  inline_count="$(grep -Ecx "^test ${test_name} \.\.\. ok$" "$log_file" || true)"
+  standalone_count="$(grep -Ecx '^ok$' "$log_file" || true)"
+  result_count="$(grep -Ecx "^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; ${expected_filtered} filtered out(; finished in .+)?$" "$log_file" || true)"
   result_total="$(grep -Ec '^test result:' "$log_file" || true)"
-  [[ "$test_count" == 1 && "$result_count" == 1 && "$result_total" == 1 ]] || die "${test_name} did not produce exactly one passing, non-ignored result"
+  if grep -Eq '(^|[[:space:]])FAILED([[:space:]]|$)|panic|^error: test failed' "$log_file"; then
+    die "${test_name} log contains a failure token"
+    return 2
+  fi
+  [[ "$test_count" == 1 && $((inline_count + standalone_count)) == 1 && "$result_count" == 1 && "$result_total" == 1 ]] || die "${test_name} did not produce exactly one passing, non-ignored result"
 }
 
 require_exact_marker() {
@@ -437,7 +447,7 @@ run_self_test() {
   cpu_log_token="tee \"\$evidence/parity-cpu.log\""
   cpu_sentinel_token="QWEN3_TTS_PARITY variant=\$variant backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"
   [[ "$cpu_command" == *"$cpu_log_token"* ]] || { log 'self-test CPU command does not capture a dedicated result log'; failed=1; }
-  grep -Fq "require_exact_test_result \"\$evidence/parity-cpu.log\" qwen3_tts_real_cpu_matches_official_reference" "$script_path" || { log 'self-test does not require exactly one CPU test pass'; failed=1; }
+  grep -Fq "require_exact_test_result \"\$evidence/parity-cpu.log\" qwen3_tts_real_cpu_matches_official_reference 1" "$script_path" || { log 'self-test does not require exactly one CPU test pass'; failed=1; }
   grep -Fq '0 failed; 0 ignored; 0 measured' "$script_path" || { log 'self-test does not reject failed/ignored/filtered test results'; failed=1; }
   grep -Fq "$cpu_sentinel_token" "$script_path" || { log 'self-test does not require per-variant CPU sentinels'; failed=1; }
   # shellcheck disable=SC2016
@@ -450,24 +460,37 @@ run_self_test() {
   # shellcheck disable=SC2016
   gate_line="$(grep -nF 'preflight "$approval"' "$script_path" | tail -n1 | cut -d: -f1)"
   [[ "$api_smoke_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$api_smoke_line" -lt "$gate_line" ]] || { log 'self-test API smoke evidence gate ordering is invalid'; failed=1; }
-  local result_probe duplicate_probe malformed_probe
+  local result_probe inline_probe duplicate_probe malformed_probe filtered_probe failure_probe
   result_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-selftest.XXXXXX")"
   printf '%s\n' \
-    'test qwen3_tts_real_cpu_matches_official_reference ... ok' \
-    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s' \
+    'test qwen3_tts_real_cpu_matches_official_reference ... QWEN3_TTS_MEASUREMENT variant=0.6b-base backend=cpu pcm_max_abs=0.0 pcm_rmse=0.0 numeric_bound=UNSET verdict=MEASURED_NOT_GATED' \
+    'ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s' \
     'QWEN3_TTS_PARITY variant=0.6b-base backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED' \
     'QWEN3_TTS_PARITY variant=0.6b-customvoice backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED' \
     'QWEN3_TTS_PARITY variant=1.7b-base backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED' \
     'QWEN3_TTS_PARITY variant=1.7b-customvoice backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED' > "$result_probe"
-  if ! require_exact_test_result "$result_probe" qwen3_tts_real_cpu_matches_official_reference; then failed=1; fi
+  if ! require_exact_test_result "$result_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
+  inline_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-inline.XXXXXX")"
+  printf '%s\n' \
+    'test qwen3_tts_real_cpu_matches_official_reference ... ok' \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out' > "$inline_probe"
+  if ! require_exact_test_result "$inline_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
   duplicate_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-duplicate.XXXXXX")"
   cat "$result_probe" "$result_probe" > "$duplicate_probe"
-  if require_exact_test_result "$duplicate_probe" qwen3_tts_real_cpu_matches_official_reference; then failed=1; fi
+  if require_exact_test_result "$duplicate_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
   malformed_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-malformed.XXXXXX")"
-  { sed -n '1p' "$result_probe"; echo 'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out'; sed -n '2,$p' "$result_probe"; } > "$malformed_probe"
-  if require_exact_test_result "$malformed_probe" qwen3_tts_real_cpu_matches_official_reference; then failed=1; fi
+  { sed -n '1p' "$result_probe"; echo 'test result: ok. 1 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out'; sed -n '2,$p' "$result_probe"; } > "$malformed_probe"
+  if require_exact_test_result "$malformed_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
+  filtered_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-filtered.XXXXXX")"
+  sed 's/1 filtered out/0 filtered out/' "$result_probe" > "$filtered_probe"
+  if require_exact_test_result "$filtered_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
+  failure_probe="$(mktemp "${TMPDIR:-/tmp}/qwen3-tts-result-failure.XXXXXX")"
+  cp "$result_probe" "$failure_probe"
+  printf '%s\n' FAILED >> "$failure_probe"
+  if require_exact_test_result "$failure_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
   if require_exact_marker "$result_probe" 'QWEN3_TTS_PARITY variant=0.6b-base backend=metal prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED'; then failed=1; fi
-  rm -f "$result_probe" "$duplicate_probe" "$malformed_probe"
+  rm -f "$result_probe" "$inline_probe" "$duplicate_probe" "$malformed_probe" "$filtered_probe" "$failure_probe"
   # shellcheck disable=SC2016
   gate_line="$(grep -n '^  preflight "\$approval"; require_tooling;' "$script_path" | cut -d: -f1)"
   sync_line="$(grep -n 'uv sync --project' "$script_path" | tail -n 1 | cut -d: -f1)"
@@ -625,7 +648,7 @@ main() {
     env_args+=("$(variant_env_prefix "$variant")_REFERENCE_DIR=$evidence/reference-$variant")
   done
   env "${env_args[@]}" RUST_TEST_THREADS=1 CARGO_NET_OFFLINE=true cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --offline --release -p vokra-models --test qwen3_tts_real qwen3_tts_real_cpu_matches_official_reference -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/parity-cpu.log"
-  require_exact_test_result "$evidence/parity-cpu.log" qwen3_tts_real_cpu_matches_official_reference
+  require_exact_test_result "$evidence/parity-cpu.log" qwen3_tts_real_cpu_matches_official_reference 1
   for variant in 0.6b-base 0.6b-customvoice 1.7b-base 1.7b-customvoice; do
     require_exact_marker "$evidence/parity-cpu.log" "QWEN3_TTS_PARITY variant=$variant backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"
   done
