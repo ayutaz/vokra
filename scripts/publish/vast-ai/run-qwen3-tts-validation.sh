@@ -345,7 +345,7 @@ require_exact_marker() {
 }
 
 run_self_test() {
-  local script_path="${BASH_SOURCE[0]}" failed=0 required api_smoke_line gate_line sync_line cpu_command cpu_log_token cpu_sentinel_token overlap_evidence
+  local script_path="${BASH_SOURCE[0]}" failed=0 required api_smoke_line auth_line export_line reference_line run_variant_line gate_line sync_line cpu_command cpu_log_token cpu_sentinel_token overlap_evidence
   for required in \
     '0.6b-base' '0.6b-customvoice' '1.7b-base' '1.7b-customvoice' \
     '5d83992436eae1d760afd27aff78a71d676296fc' \
@@ -438,6 +438,11 @@ run_self_test() {
   grep -Fq "$cpu_sentinel_token" "$script_path" || { log 'self-test does not require per-variant CPU sentinels'; failed=1; }
   # shellcheck disable=SC2016
   api_smoke_line="$(grep -nF 'require_api_smoke_evidence "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head" "$selection" "$work_dir" "$approval"' "$script_path" | grep -v 'api_smoke_line=' | cut -d: -f1)"
+  auth_line="$(grep -nF "TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'" "$script_path" | grep -v 'auth_line=' | tail -n1 | cut -d: -f1)"
+  export_line="$(grep -nF 'export TRANSFORMERS_COMPATIBILITY_STATUS' "$script_path" | grep -v 'export_line=' | cut -d: -f1)"
+  reference_line="$(grep -nF 'TRANSFORMERS_COMPATIBILITY_STATUS="$TRANSFORMERS_COMPATIBILITY_STATUS" PYTHONPATH=' "$script_path" | grep -v 'reference_line=' | cut -d: -f1)"
+  run_variant_line="$(grep -n '^    run_variant ' "$script_path" | grep -v 'run_variant_line=' | cut -d: -f1)"
+  [[ "$auth_line" =~ ^[0-9]+$ && "$export_line" =~ ^[0-9]+$ && "$reference_line" =~ ^[0-9]+$ && "$run_variant_line" =~ ^[0-9]+$ && "$api_smoke_line" -lt "$auth_line" && "$export_line" -eq $((auth_line + 1)) && "$export_line" -lt "$run_variant_line" ]] || { log 'self-test Transformers compatibility status is not exported after API-smoke evidence and before the reference dumper'; failed=1; }
   # shellcheck disable=SC2016
   gate_line="$(grep -nF 'preflight "$approval"' "$script_path" | tail -n1 | cut -d: -f1)"
   [[ "$api_smoke_line" =~ ^[0-9]+$ && "$gate_line" =~ ^[0-9]+$ && "$api_smoke_line" -lt "$gate_line" ]] || { log 'self-test API smoke evidence gate ordering is invalid'; failed=1; }
@@ -521,7 +526,7 @@ run_variant() {
   step "Generate independent official reference for $variant"
   local audio_args=()
   [[ "$variant" == *-base ]] && audio_args=(--reference-audio "$REFERENCE_AUDIO")
-  PYTHONPATH="$source_tree${PYTHONPATH:+:$PYTHONPATH}" uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$REFERENCE_DUMPER" --variant "$variant" --model-dir "$source" --decoder-dir "$work_dir/source-decoder" --source-dir "$source_tree" --output "$ref" "${audio_args[@]}" 2>&1 | tee "$evidence/reference-$variant.log"
+  TRANSFORMERS_COMPATIBILITY_STATUS="$TRANSFORMERS_COMPATIBILITY_STATUS" PYTHONPATH="$source_tree${PYTHONPATH:+:$PYTHONPATH}" uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$REFERENCE_DUMPER" --variant "$variant" --model-dir "$source" --decoder-dir "$work_dir/source-decoder" --source-dir "$source_tree" --output "$ref" "${audio_args[@]}" 2>&1 | tee "$evidence/reference-$variant.log"
   verify_reference_hashes "$ref"
   step "Hash and record $variant corrected inputs"
   {
@@ -562,6 +567,7 @@ main() {
   [[ -n "$approval" && -n "$expected_head" && "$api_smoke_evidence_seen" == 1 && "$api_smoke_sha256_seen" == 1 ]] || { usage; die '--approval-evidence, --expected-head, --api-smoke-evidence, and --api-smoke-sha256 are required'; }
   require_api_smoke_evidence "$api_smoke_evidence" "$api_smoke_sha256" "$expected_head" "$selection" "$work_dir" "$approval"
   TRANSFORMERS_COMPATIBILITY_STATUS='AUTHENTICATED_API_SMOKE'
+  export TRANSFORMERS_COMPATIBILITY_STATUS
   require_transformers_api_smoke
   preflight "$approval"; require_tooling; require_vast_host
   local actual_head
