@@ -935,6 +935,7 @@ fn project_text_ids(model: &Qwen3TtsMain, ids: &[u32]) -> Result<Vec<f32>> {
         ..
     } = &mut *scratch;
     resize_zero(fc1_hidden, rows * text_hidden);
+    resize_zero(activated, rows * text_hidden);
     compute.gemm_f32(
         rows,
         text_hidden,
