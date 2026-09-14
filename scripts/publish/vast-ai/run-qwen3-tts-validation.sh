@@ -383,6 +383,7 @@ run_self_test() {
     'transformers_compatibility_status=BLOCKED_UNVERIFIED_API_SMOKE' 'require_transformers_api_smoke' \
     'AUTHENTICATED_API_SMOKE' 'UNKNOWN_STATUS' 'API_SMOKE_VALIDATOR=' 'require_api_smoke_evidence' '--api-smoke-evidence' '--api-smoke-sha256' \
     'license_gate_manifest.json' '--no-project --offline --python 3.12' 'test result: ok. 1 passed' \
+    '! -name run.log' '! -name SHA256SUMS' 'sha256sum -c' \
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' \
     '--gguf-1.7b-customvoice-sha256' '--decoder-gguf-sha256' '--reference-0.6b-base-sha256' \
     '--reference-0.6b-customvoice-sha256' '--reference-1.7b-base-sha256' '--reference-1.7b-customvoice-sha256' \
@@ -491,6 +492,18 @@ run_self_test() {
   if require_exact_test_result "$failure_probe" qwen3_tts_real_cpu_matches_official_reference 1; then failed=1; fi
   if require_exact_marker "$result_probe" 'QWEN3_TTS_PARITY variant=0.6b-base backend=metal prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED'; then failed=1; fi
   rm -f "$result_probe" "$inline_probe" "$duplicate_probe" "$malformed_probe" "$filtered_probe" "$failure_probe"
+  local checksum_probe checksum_manifest
+  checksum_probe="$(mktemp -d "${TMPDIR:-/tmp}/qwen3-tts-checksum-selftest.XXXXXX")"
+  mkdir "$checksum_probe/evidence"
+  printf '%s\n' immutable > "$checksum_probe/evidence/packet.txt"
+  printf '%s\n' mutable > "$checksum_probe/evidence/run.log"
+  (cd "$checksum_probe" && find evidence -type f ! -name run.log ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > evidence/SHA256SUMS)
+  checksum_manifest="$checksum_probe/evidence/SHA256SUMS"
+  if ! (cd "$checksum_probe" && sha256sum -c evidence/SHA256SUMS >/dev/null); then failed=1; fi
+  if grep -Eq 'run\.log|SHA256SUMS' "$checksum_manifest"; then failed=1; fi
+  printf '%s\n' appended >> "$checksum_probe/evidence/run.log"
+  if ! (cd "$checksum_probe" && sha256sum -c evidence/SHA256SUMS >/dev/null); then failed=1; fi
+  rm -rf "$checksum_probe"
   # shellcheck disable=SC2016
   gate_line="$(grep -n '^  preflight "\$approval"; require_tooling;' "$script_path" | cut -d: -f1)"
   sync_line="$(grep -n 'uv sync --project' "$script_path" | tail -n 1 | cut -d: -f1)"
@@ -655,7 +668,9 @@ main() {
   {
     echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo "api_smoke_evidence_sha256=$api_smoke_sha256"; echo "api_smoke_variant_scope=$selection"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo "official_source_pr_url=$OFFICIAL_SOURCE_PR_URL"; echo "official_source_pr_status=$OFFICIAL_SOURCE_PR_STATUS"; echo "official_source_pr_head=$OFFICIAL_SOURCE_PR_HEAD"; echo 'compatibility_patch_operation=apply_exactly_seven_source_transforms'; echo 'compatibility_patch_count=7'; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
   } > "$evidence/summary.txt"
-  (cd "$work_dir" && find evidence -type f -print0 | sort -z | xargs -0 sha256sum > evidence/SHA256SUMS)
+  # Keep the checksum manifest self-contained: it cannot hash itself, and the
+  # tee-backed run log remains mutable until this worker exits.
+  (cd "$work_dir" && find evidence -type f ! -name run.log ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > evidence/SHA256SUMS)
   log 'MEASURED_NOT_GATED: pull evidence only, then destroy the VAST instance'
 }
 
