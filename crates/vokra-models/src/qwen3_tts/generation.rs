@@ -30,6 +30,14 @@ const HEAD_CHUNK_ROWS: usize = 512;
 const OFFICIAL_MAX_NEW_TOKENS: usize = 8_192;
 const OFFICIAL_MIN_NEW_TOKENS: usize = 2;
 
+/// The official wrapper samples one extra first-codebook token as the
+/// look-ahead token that drives the next talker forward.  That terminal token
+/// is not a complete sixteen-row frame, so the native frame stream is capped
+/// one below the public `max_new_tokens` value.
+const fn complete_frame_limit(max_new_tokens: usize) -> usize {
+    max_new_tokens.saturating_sub(1)
+}
+
 /// Official high-level generation controls for every released Qwen3-TTS
 /// checkpoint variant.
 #[non_exhaustive]
@@ -50,6 +58,8 @@ pub struct Qwen3TtsGenerationOptions {
     /// Base and non-streaming text prefill for CustomVoice/VoiceDesign.
     pub non_streaming_mode: Option<bool>,
     /// Maximum first-codebook tokens, including terminal EOS when emitted.
+    /// The final look-ahead token is not a complete audio frame, so at most
+    /// `max_new_tokens - 1` complete frames are returned.
     pub max_new_tokens: usize,
     /// Minimum tokens before first-codebook EOS may be sampled.
     pub min_new_tokens: usize,
@@ -539,24 +549,21 @@ fn generate_codes(
     let hidden = mapped.config().talker.hidden_dim as usize;
     let prompt_rows = prompt.prompt.len() / hidden;
     let max_positions = mapped.config().talker.max_position_embeddings as usize;
+    let complete_frames = complete_frame_limit(options.max_new_tokens);
     if prompt_rows
-        .checked_add(options.max_new_tokens.saturating_sub(1))
+        .checked_add(complete_frames)
         .is_none_or(|rows| rows > max_positions)
     {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: prompt rows {prompt_rows} plus up to {} cached decode rows exceed talker max positions {max_positions}",
-            options.max_new_tokens.saturating_sub(1)
+            "{LABEL}: prompt rows {prompt_rows} plus up to {complete_frames} cached decode rows exceed talker max positions {max_positions}",
         )));
     }
 
     let mut session = model.start_talker_session(&prompt.prompt)?;
     let mut talker_sampler = Sampler::new(options.talker_sampler());
     let mut predictor_sampler = Sampler::new(options.predictor_sampler());
-    let mut frame_major = Vec::with_capacity(
-        options
-            .max_new_tokens
-            .saturating_mul(QWEN3_TTS_NUM_CODE_GROUPS as usize),
-    );
+    let mut frame_major =
+        Vec::with_capacity(complete_frames.saturating_mul(QWEN3_TTS_NUM_CODE_GROUPS as usize));
     let mut ended = false;
     for generated in 0..options.max_new_tokens {
         let mut logits = session.output().logits.clone();
@@ -566,15 +573,18 @@ fn generate_codes(
             ended = true;
             break;
         }
+        // The official wrapper samples this final look-ahead token but does
+        // not pass it to the code predictor, so it never becomes a complete
+        // sixteen-row frame.
+        if generated + 1 == options.max_new_tokens {
+            break;
+        }
         let frame = model.predict_code_frame(
             &session.output().hidden,
             first_code,
             &mut predictor_sampler,
         )?;
         frame_major.extend_from_slice(&frame);
-        if generated + 1 == options.max_new_tokens {
-            break;
-        }
         let embedding = compose_next_talker_embedding(
             model,
             &frame,
@@ -1907,6 +1917,64 @@ mod tests {
         assert_eq!(options.min_new_tokens, OFFICIAL_MIN_NEW_TOKENS);
         assert_eq!(options.temperature, 0.0);
         assert_eq!(options.predictor_temperature, 0.0);
+    }
+
+    #[test]
+    fn complete_frame_limit_matches_official_lookahead_contract() {
+        for (max_new_tokens, expected_frames) in [(1, 0), (2, 1), (8, 7)] {
+            assert_eq!(
+                complete_frame_limit(max_new_tokens),
+                expected_frames,
+                "max_new_tokens={max_new_tokens}"
+            );
+        }
+    }
+
+    #[test]
+    fn complete_frame_limit_handles_eos_and_position_preflight() {
+        fn simulated_generation(max_new_tokens: usize, eos_at: Option<usize>) -> (usize, bool) {
+            let mut frames = 0;
+            for generated in 0..max_new_tokens {
+                if eos_at == Some(generated) {
+                    return (frames, true);
+                }
+                if generated + 1 == max_new_tokens {
+                    break;
+                }
+                frames += 1;
+            }
+            (frames, false)
+        }
+
+        // EOS before the first frame stops immediately; EOS after a complete
+        // frame preserves the already emitted frames. Without EOS, the final
+        // look-ahead token is sampled for the EOS status but never exposed as
+        // a frame.
+        assert_eq!(simulated_generation(1, None), (0, false));
+        assert_eq!(simulated_generation(1, Some(0)), (0, true));
+        assert_eq!(simulated_generation(2, None), (1, false));
+        assert_eq!(simulated_generation(2, Some(0)), (0, true));
+        assert_eq!(simulated_generation(2, Some(1)), (1, true));
+        assert_eq!(simulated_generation(8, None), (7, false));
+        assert_eq!(simulated_generation(8, Some(0)), (0, true));
+        assert_eq!(simulated_generation(8, Some(1)), (1, true));
+        assert_eq!(simulated_generation(8, Some(7)), (7, true));
+
+        // The same complete-frame budget is used by the max-position
+        // preflight, including the zero-budget max_new_tokens=1 edge case.
+        assert_eq!(10usize.checked_add(complete_frame_limit(1)), Some(10));
+        assert_eq!(10usize.checked_add(complete_frame_limit(2)), Some(11));
+        assert_eq!(10usize.checked_add(complete_frame_limit(8)), Some(17));
+        assert!(
+            10usize
+                .checked_add(complete_frame_limit(8))
+                .is_some_and(|rows| rows <= 17)
+        );
+        assert!(
+            !10usize
+                .checked_add(complete_frame_limit(8))
+                .is_some_and(|rows| rows <= 16)
+        );
     }
 
     #[test]
