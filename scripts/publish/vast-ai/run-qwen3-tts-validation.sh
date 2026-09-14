@@ -25,6 +25,9 @@ DECODER_CHECKPOINT_SHA256="836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0db
 OFFICIAL_SOURCE_REPO="QwenLM/Qwen3-TTS"
 OFFICIAL_SOURCE_URL="https://github.com/QwenLM/Qwen3-TTS.git"
 OFFICIAL_SOURCE_REVISION="022e286b98fbec7e1e916cb940cdf532cd9f488e"
+OFFICIAL_SOURCE_PR_URL="https://github.com/QwenLM/Qwen3-TTS/pull/360"
+OFFICIAL_SOURCE_PR_STATUS="OPEN_UNMERGED"
+OFFICIAL_SOURCE_PR_HEAD="00969daa8064e23adc9e5f52cdf20cf247f94159"
 REFERENCE_AUDIO_SHA256="241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 MIN_NEW_TOKENS=2
 TRANSFORMERS_VERSION="5.10.4"
@@ -278,6 +281,15 @@ apply_source_compatibility() {
   PYTHONPATH="$PARITY_PROJECT${PYTHONPATH:+:$PYTHONPATH}" uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import json,sys; from pathlib import Path; from qwen_source_compat import patch_source_checkout; print(json.dumps(patch_source_checkout(Path(sys.argv[1])), sort_keys=True))' \
     "$source" > "$evidence"
+  for required in \
+    '"operation": "apply_exactly_seven_source_transforms"' '"patch_count": 7' \
+    '"source_repository": "QwenLM/Qwen3-TTS"' \
+    '"source_base_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e"' \
+    '"source_head_revision": "00969daa8064e23adc9e5f52cdf20cf247f94159"' \
+    '"source_pr_url": "https://github.com/QwenLM/Qwen3-TTS/pull/360"' \
+    '"source_pr_status": "OPEN_UNMERGED"' '"transformers_version": "5.10.4"'; do
+    grep -Fq -- "$required" "$evidence" || die "source compatibility evidence lacks canonical seven-target marker: $required"
+  done
 }
 
 require_single_file_snapshot() {
@@ -346,7 +358,7 @@ run_self_test() {
     '17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9' \
     'Qwen/Qwen3-TTS-Tokenizer-12Hz' 'a87c50897bb00837eb857d0538b29d117541d7f6' \
     'https://github.com/QwenLM/Qwen3-TTS.git' 'download_source_tree' 'apply_source_compatibility' 'patch_source_checkout' 'source-compatibility.json' 'PYTHONDONTWRITEBYTECODE=1' 'git init' 'remote add origin' 'fetch --depth 1 origin' 'FETCH_HEAD' '--source-dir' \
-    '022e286b98fbec7e1e916cb940cdf532cd9f488e' "$DECODER_CHECKPOINT_SHA256" \
+    '022e286b98fbec7e1e916cb940cdf532cd9f488e' "$OFFICIAL_SOURCE_PR_URL" "$OFFICIAL_SOURCE_PR_STATUS" "$OFFICIAL_SOURCE_PR_HEAD" "$DECODER_CHECKPOINT_SHA256" \
     'nested_decoder_sha256' 'min_new_tokens' \
     'qwen3-tts-tokenizer-12hz' 'MIN_NEW_TOKENS=2' 'qwen3_tts_real_cpu_matches_official_reference' \
     'qwen3_tts_real_metal_matches_cpu_and_official_reference' 'single-file checkpoint' '.cache/huggingface' \
@@ -363,6 +375,16 @@ run_self_test() {
     '--decoder-gguf %q' '--reference-0.6b-base %q' '<APPLE_QWEN3_TTS_APPROVAL_EVIDENCE>' '<APPLE_QWEN3_TTS_EVIDENCE_DIR>' '--expected-head'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing token: $required"; failed=1; }
   done
+  for required in \
+    'vokra-qwen3-tts-reference-v3' 'apply_exactly_seven_source_transforms' '"patch_count": 7' \
+    'source_base_revision' 'source_head_revision' 'source_pr_url' 'source_pr_status' \
+    'qwen_tts/__init__.py' 'qwen_tts/_transformers_compat.py' \
+    'qwen_tts/core/__init__.py' 'qwen_tts/core/models/configuration_qwen3_tts.py' \
+    'qwen_tts/core/models/modeling_qwen3_tts.py' \
+    'qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py' \
+    'qwen_tts/inference/qwen3_tts_tokenizer.py'; do
+    grep -Fq -- "$required" "$script_path" || { log "self-test missing seven-target contract token: $required"; failed=1; }
+  done
   local apple_hash_flag apple_hash_echo_count
   for apple_hash_flag in \
     '--gguf-0.6b-base-sha256' '--gguf-0.6b-customvoice-sha256' '--gguf-1.7b-base-sha256' \
@@ -376,6 +398,7 @@ run_self_test() {
   if grep -Fq "$forbidden_marker" "$script_path"; then failed=1; fi
   if grep -En '(upload|publish|push|--push|huggingface-cli)' "$script_path" | grep -Ev 'never uploads|never.*publish|no upload|not.*push|NOT_PERFORMED|--push|scripts/publish/' >/dev/null; then failed=1; fi
   grep -Fq -- '--expected-head' "$script_path" || { log 'self-test missing expected HEAD contract'; failed=1; }
+  [[ "$(grep -Fc -- '--expected-head %q\\n' "$script_path" || true)" == 1 ]] || { log 'self-test Apple transfer command must emit expected HEAD exactly once'; failed=1; }
   if "$script_path" --self-test --self-test >/dev/null 2>&1; then
     log 'self-test accepted duplicate --self-test'; failed=1
   fi
@@ -503,7 +526,7 @@ run_variant() {
   step "Hash and record $variant corrected inputs"
   {
     echo "variant=$variant"; echo "upstream_repo=$repo"; echo "upstream_revision=$revision"
-    echo "official_source_repo=$OFFICIAL_SOURCE_REPO"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"
+    echo "official_source_repo=$OFFICIAL_SOURCE_REPO"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo "official_source_pr_url=$OFFICIAL_SOURCE_PR_URL"; echo "official_source_pr_status=$OFFICIAL_SOURCE_PR_STATUS"; echo "official_source_pr_head=$OFFICIAL_SOURCE_PR_HEAD"
     echo "config_bytes=$(variant_config_bytes "$variant")"; echo "config_sha256=$(variant_config_sha256 "$variant")"
     echo "decoder_repo=$DECODER_REPO"; echo "decoder_revision=$DECODER_REVISION"; echo "decoder_checkpoint_sha256=$DECODER_CHECKPOINT_SHA256"
     echo "gguf_sha256=$(sha256_file "$gguf")"; echo "reference_manifest_sha256=$(sha256_file "$ref/manifest.json")"
@@ -581,7 +604,7 @@ main() {
     printf " --reference-0.6b-customvoice '%s' --reference-0.6b-customvoice-sha256 %q" '<APPLE_QWEN3_TTS_0_6B_CUSTOMVOICE_REFERENCE>' "$(sha256_file "$evidence/reference-0.6b-customvoice/manifest.json")"
     printf " --reference-1.7b-base '%s' --reference-1.7b-base-sha256 %q" '<APPLE_QWEN3_TTS_1_7B_BASE_REFERENCE>' "$(sha256_file "$evidence/reference-1.7b-base/manifest.json")"
     printf " --reference-1.7b-customvoice '%s' --reference-1.7b-customvoice-sha256 %q" '<APPLE_QWEN3_TTS_1_7B_CUSTOMVOICE_REFERENCE>' "$(sha256_file "$evidence/reference-1.7b-customvoice/manifest.json")"
-    printf " --approval-evidence '%s' --evidence-dir '%s'\n" '<APPLE_QWEN3_TTS_APPROVAL_EVIDENCE>' '<APPLE_QWEN3_TTS_EVIDENCE_DIR>'
+    printf " --approval-evidence '%s' --evidence-dir '%s' --expected-head %q\n" '<APPLE_QWEN3_TTS_APPROVAL_EVIDENCE>' '<APPLE_QWEN3_TTS_EVIDENCE_DIR>' "$expected_head"
   } > "$evidence/apple-gguf-sha256-args.txt"
   step 'Run four-variant real CPU parity on VAST'
   local env_args=()
@@ -597,7 +620,7 @@ main() {
     require_exact_marker "$evidence/parity-cpu.log" "QWEN3_TTS_PARITY variant=$variant backend=cpu prompt_ids=exact codes_exact=PASS pcm=MEASURED_NOT_GATED"
   done
   {
-    echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo "api_smoke_evidence_sha256=$api_smoke_sha256"; echo "api_smoke_variant_scope=$selection"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
+    echo 'verdict=MEASURED_NOT_GATED'; echo 'numeric_bound=UNSET'; echo "min_new_tokens=$MIN_NEW_TOKENS"; echo 'previous_isolated_transformers_pin=transformers==4.57.3'; echo 'transformers_security_advisory=GHSA-xrqw-3rrv-vx5w'; echo 'transformers_security_patched_minimum=5.10.0'; echo "isolated_transformers_pin=transformers==$TRANSFORMERS_VERSION"; echo "transformers_compatibility_status=$TRANSFORMERS_COMPATIBILITY_STATUS"; echo "api_smoke_evidence_sha256=$api_smoke_sha256"; echo "api_smoke_variant_scope=$selection"; echo 'nested_decoder_sha256=validated_in_reference'; echo "decoder_gguf_sha256=$(sha256_file "$decoder_gguf")"; echo "official_source_revision=$OFFICIAL_SOURCE_REVISION"; echo "official_source_pr_url=$OFFICIAL_SOURCE_PR_URL"; echo "official_source_pr_status=$OFFICIAL_SOURCE_PR_STATUS"; echo "official_source_pr_head=$OFFICIAL_SOURCE_PR_HEAD"; echo 'compatibility_patch_operation=apply_exactly_seven_source_transforms'; echo 'compatibility_patch_count=7'; echo 'public_precontract_artifacts=NOT_USED'; echo 'upload=NOT_PERFORMED'
   } > "$evidence/summary.txt"
   (cd "$work_dir" && find evidence -type f -print0 | sort -z | xargs -0 sha256sum > evidence/SHA256SUMS)
   log 'MEASURED_NOT_GATED: pull evidence only, then destroy the VAST instance'

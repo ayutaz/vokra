@@ -38,41 +38,29 @@ uses the corresponding `+cpu` lock rows). PyPI torchaudio and CUDA/NVIDIA
 runtime packages are rejected by the lock and smoke gates. The isolated
 reference previously used `transformers==4.57.3`, which is
 affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
-`transformers==5.10.4`; source/API compatibility remains
-`BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
-completed. This dependency remediation does not claim API parity.
+`transformers==5.10.4`. The official upstream Transformers-5 compatibility
+change is tracked as open and unmerged [QwenLM/Qwen3-TTS PR #360](https://github.com/QwenLM/Qwen3-TTS/pull/360),
+with fixed base `022e286b98fbec7e1e916cb940cdf532cd9f488e` and PR head
+`00969daa8064e23adc9e5f52cdf20cf247f94159`. PR #360 reports validation on
+Transformers `>=5.15.1`; Vokra's reviewed lock intentionally remains on
+`5.10.4`, so compatibility is established only by the bounded VAST smoke and
+parity runs described below, not by the PR author's environment claim.
 
-The pinned upstream source contains one `@check_model_inputs()` decorator,
-while Transformers 5.10.4 exposes `check_model_inputs(func)`. It also eagerly
-imports unused 25Hz tokenizer code from the core initializer and tokenizer
-registration module. Both API
-smoke phases therefore import the single shared bounded compatibility adapter
-from `qwen_source_compat.py` and apply exactly four patches only inside the
-disposable clean VAST source checkout: target
-`qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, original
-bytes `40519`, original SHA-256
-`844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628`, exactly
-one replacement of `@check_model_inputs()` with `@check_model_inputs`, yielding
-patched bytes `40517` and patched SHA-256
-`a9da44f2f6b7ff0beb4dd43e8c4c48138e51423e9bcc515a253ea088381d3b9c`. The
-public package initializer remains unchanged at 839 bytes
-(`ea52de59d070fde366467a6902d0edcfc1b0575b8c570a0c71020c41d6a593ed`). The
-tokenizer registration module removes its exact V1 imports and 25Hz
-registration block, changing 15699 bytes
-(`ac2d855022a1bd21d33ab7b267ec952eef71f81d3f8d969a306139ff1a929515`) to
-15474 bytes (`dd66d8c6affed9b64f1509634944a7a5e9de79e7a70d9f542e3ac2caa985e169`).
-The core initializer removes its two exact 25Hz imports, changing 990 bytes
-(`1b380d9de843b6d585d938c339d066136567ca7125412674234204af4386679e`) to
-814 bytes (`c3d2f2f28cae7a0ec4d8dd8251470c8871acd2bf143d2fc239fcfbe8f2938497`).
-Finally, the Talker configuration restores the `pad_token_id=None` special-token
-default that Transformers v4.57.3 supplied implicitly. The exact Talker block
-changes `qwen_tts/core/models/configuration_qwen3_tts.py` from 26428 bytes
-(`f52867f14fde06a416dd14864d503ce6d13d0a08d5f5da30191e1c80c13f5d18`) to
-26459 bytes (`a5534eeefbc01dec2bc9c594b34d4b5431e6dfde7d30eea57dc603435e7e6131`).
-Primary inspection of all four fixed model configs found the Talker key absent;
-only the nested code-predictor config carries an explicit null, so no other
-configuration or code-predictor field is changed. The evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
-compatibility, and any source/hash/count/path drift blocks before import.
+Both API smoke phases import the single shared bounded compatibility adapter
+from `qwen_source_compat.py` and apply exactly seven canonical source
+transforms only inside the disposable clean VAST source checkout. The
+enclosing reference manifest uses schema `vokra-qwen3-tts-reference-v3`; its
+nested compatibility record has operation
+`apply_exactly_seven_source_transforms` and `patch_count=7`, and binds these
+targets: `qwen_tts/__init__.py`, the newly created
+`qwen_tts/_transformers_compat.py`, `qwen_tts/core/__init__.py`,
+`qwen_tts/core/models/configuration_qwen3_tts.py`,
+`qwen_tts/core/models/modeling_qwen3_tts.py`,
+`qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, and
+`qwen_tts/inference/qwen3_tts_tokenizer.py`. Every target has fixed original
+and patched byte/hash identities in the record. The transform status is
+`COMPATIBILITY_PATCH_APPLIED`; it is not raw upstream compatibility, and any
+source, hash, count, or path drift blocks before import.
 
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
 It is VAST/Linux x86_64-only, requires `VOKRA_PUBLISH_ON_VAST=1`, and stages
@@ -90,7 +78,7 @@ real-weight load remains unverified until an authorized VAST run. After those
 gates pass it calls the official
 `Qwen3TTSModel.from_pretrained` wrapper and emits `api-smoke.json` under the
 disposable work directory. The evidence is a
-strict `vokra-qwen3-tts-api-smoke-v2` JSON document containing the exact source,
+strict `vokra-qwen3-tts-api-smoke-v3` JSON document containing the exact source,
 model, decoder, lock, approval-evidence SHA-256 plus the existing license gate
 manifest digest/approval scope/owner sign-offs, Vokra checkout HEAD/clean
 status, package-version, input-hash, and call-checkpoint records; its

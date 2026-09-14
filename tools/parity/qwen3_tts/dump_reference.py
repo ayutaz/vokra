@@ -24,12 +24,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from qwen_source_compat import CompatibilityPatchError, loaded_forbidden_imports, verify_patched_source_checkout
+from qwen_source_compat import (
+    SOURCE_BASE_REVISION,
+    SOURCE_HEAD_REVISION,
+    SOURCE_PR_STATUS,
+    SOURCE_PR_URL,
+    SOURCE_REPOSITORY,
+    TRANSFORMERS_VERSION,
+    CompatibilityPatchError,
+    compatibility_patch_record,
+    loaded_forbidden_imports,
+    validate_patch_record,
+    verify_patched_source_checkout,
+)
 
 SOURCE_REPO = "QwenLM/Qwen3-TTS"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 PACKAGE_VERSION = "0.1.1"
-SCHEMA = "vokra-qwen3-tts-reference-v2"
+SCHEMA = "vokra-qwen3-tts-reference-v3"
 CODEBOOKS = 16
 OUTPUT_SAMPLE_RATE = 24_000
 TEXT = "The Vokra parity packet is short and deterministic."
@@ -279,6 +291,10 @@ def require_source_tree(source_dir: Path) -> dict[str, Any]:
         patch = verify_patched_source_checkout(source_dir)
     except CompatibilityPatchError as error:
         die(f"official source compatibility patch failed closed: {error}")
+    try:
+        validate_patch_record(patch)
+    except CompatibilityPatchError as error:
+        die(f"official source compatibility evidence is malformed: {error}")
     return patch
 
 
@@ -353,6 +369,31 @@ def run_self_test() -> int:
         die("fixed packet contract drifted")
     if DECODER_REPO != "Qwen/Qwen3-TTS-Tokenizer-12Hz" or len(DECODER_REVISION) != 40:
         die("decoder identity drifted")
+    canonical_patch = compatibility_patch_record()
+    if (
+        canonical_patch["patch_count"] != 7
+        or canonical_patch["source_repository"] != SOURCE_REPOSITORY
+        or SOURCE_REPO != SOURCE_REPOSITORY
+        or canonical_patch["source_base_revision"] != SOURCE_BASE_REVISION
+        or SOURCE_REVISION != SOURCE_BASE_REVISION
+        or canonical_patch["source_head_revision"] != SOURCE_HEAD_REVISION
+        or canonical_patch["source_pr_url"] != SOURCE_PR_URL
+        or canonical_patch["source_pr_status"] != SOURCE_PR_STATUS
+        or canonical_patch["transformers_version"] != TRANSFORMERS_VERSION
+    ):
+        die("seven-target compatibility provenance is malformed")
+    try:
+        validate_patch_record(canonical_patch)
+    except CompatibilityPatchError as error:
+        die(f"canonical compatibility evidence is malformed: {error}")
+    stale_patch = dict(canonical_patch)
+    stale_patch["patch_count"] = 4
+    try:
+        validate_patch_record(stale_patch)
+    except CompatibilityPatchError:
+        pass
+    else:
+        die("legacy four-target compatibility evidence was accepted")
     source = Path(__file__).read_text(encoding="utf-8")
     if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source or "verify_patched_source_checkout" not in source:
         die("reference is not using the official local-only wrapper")
