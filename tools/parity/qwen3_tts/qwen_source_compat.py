@@ -34,8 +34,8 @@ PATCH_INIT_ORIGINAL_BYTES = 839
 PATCH_INIT_ORIGINAL_SHA256 = "ea52de59d070fde366467a6902d0edcfc1b0575b8c570a0c71020c41d6a593ed"
 PATCH_INIT_PATCHED_BYTES = 944
 PATCH_INIT_PATCHED_SHA256 = "eb4312049f767f591b24d2d7be06cf2ec19a6759c7382c54fac3bd5d671d32c5"
-PATCH_HELPER_PATCHED_BYTES = 2369
-PATCH_HELPER_PATCHED_SHA256 = "033673335ed7bcb19054cdabc6c8400e443493f4b54340f8f449577d122bf982"
+PATCH_HELPER_PATCHED_BYTES = 4763
+PATCH_HELPER_PATCHED_SHA256 = "a24b2124843f5c76abc8c7023133b8be7503c80d883d0e9a987cdea5ef2319a0"
 PATCH_CORE_25HZ_ORIGINAL_BYTES = 990
 PATCH_CORE_25HZ_ORIGINAL_SHA256 = "1b380d9de843b6d585d938c339d066136567ca7125412674234204af4386679e"
 PATCH_CORE_25HZ_PATCHED_BYTES = 814
@@ -46,8 +46,8 @@ PATCH_CONFIG_PATCHED_BYTES = 26499
 PATCH_CONFIG_PATCHED_SHA256 = "4f50b37285f413c05e5d6e257c9969abf9f31a24cd000473f15e31468dbe8461"
 PATCH_MODEL_ORIGINAL_BYTES = 100211
 PATCH_MODEL_ORIGINAL_SHA256 = "25c42656bcf810f06ef6bc1839bd7083f3c8cfedac3a147c4060b4262b1c96a0"
-PATCH_MODEL_PATCHED_BYTES = 100678
-PATCH_MODEL_PATCHED_SHA256 = "d075627fac2876eb1386ba1429a3d02bf30486689ebe3796077814de953d2a75"
+PATCH_MODEL_PATCHED_BYTES = 100994
+PATCH_MODEL_PATCHED_SHA256 = "78b23efd51dfb92f7deb7ff91b9dd0b7f960376d45d0e6714f365b4ffc691451"
 PATCH_ORIGINAL_BYTES = 40519
 PATCH_ORIGINAL_SHA256 = "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628"
 PATCHED_BYTES = 40366
@@ -61,7 +61,7 @@ PATCH_OPERATION = "apply_qwen3_tts_pr_360_runtime_hunks_and_25hz_v1_removals"
 PATCH_25HZ_OPERATION = "apply_pr_360_runtime_hunks_and_remove_25hz_v1_registration"
 PATCH_CORE_25HZ_OPERATION = "remove_exactly_two_core_25hz_imports"
 PATCH_CONFIG_OPERATION = "apply_pr_360_config_runtime_hunks"
-PATCH_MODEL_OPERATION = "apply_pr_360_model_runtime_hunks"
+PATCH_MODEL_OPERATION = "apply_pr_360_model_and_strict_reload_runtime_hunks"
 PATCH_TOKENIZER_OPERATION = "apply_pr_360_tokenizer_runtime_hunks"
 PATCH_INIT_OPERATION = "apply_pr_360_init_runtime_hunks"
 
@@ -73,6 +73,7 @@ _HELPER_SOURCE = b'''# coding=utf-8
 
 from __future__ import annotations
 
+import os
 import torch
 
 
@@ -132,6 +133,80 @@ def restore_mimi_full_attention(model) -> None:
         config.sliding_window = full_window
         if hasattr(module, "sliding_window"):
             module.sliding_window = full_window
+
+
+def _strict_key_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        return [str(value)]
+    try:
+        return sorted(str(key) for key in value)
+    except TypeError:
+        return [repr(value)]
+
+
+def _strict_regular_file(path):
+    if path is None or os.path.islink(path) or not os.path.isfile(path):
+        raise RuntimeError(f"strict local safetensors checkpoint is missing or symlinked: {path}")
+    return path
+
+
+@torch.no_grad()
+def strict_reload_local_safetensors(
+    model,
+    model_name_or_path,
+    *,
+    cache_dir=None,
+    revision=None,
+    token=None,
+    local_files_only=False,
+):
+    """Reload the complete official checkpoint and reject partial state."""
+    if os.path.isdir(model_name_or_path):
+        checkpoint = os.path.join(model_name_or_path, "model.safetensors")
+    else:
+        if (
+            not isinstance(revision, str)
+            or len(revision) != 40
+            or any(character not in "0123456789abcdef" for character in revision)
+        ):
+            raise RuntimeError("strict safetensors reload requires an immutable repo revision")
+        from transformers.utils.hub import cached_file
+
+        checkpoint = cached_file(
+            model_name_or_path,
+            "model.safetensors",
+            cache_dir=cache_dir,
+            force_download=False,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
+        )
+    checkpoint = _strict_regular_file(checkpoint)
+    try:
+        from safetensors.torch import load_model
+
+        result = load_model(model, checkpoint, strict=True, device="cpu")
+    except Exception as error:
+        raise RuntimeError(f"strict safetensors reload failed: {error}") from error
+    missing = []
+    unexpected = []
+    if isinstance(result, (tuple, list)) and len(result) == 2:
+        missing, unexpected = result
+    missing = _strict_key_list(missing)
+    unexpected = _strict_key_list(unexpected)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"strict safetensors reload returned missing={missing!r} unexpected={unexpected!r}"
+        )
+    return {
+        "status": "STRICT_RELOAD_PASS",
+        "checkpoint": os.path.abspath(checkpoint),
+        "return_type": type(result).__name__,
+        "missing_keys": missing,
+        "unexpected_keys": unexpected,
+    }
 '''
 
 FORBIDDEN_IMPORT_MODULES = ("onnxruntime", "sox")
@@ -304,6 +379,22 @@ def patch_model_source_bytes(original: bytes) -> bytes:
         b"            attn_implementation=requested_attn_implementation,\n            **kwargs,\n        )\n        from ..._transformers_compat import restore_rope_buffers\n\n        restore_rope_buffers(model)\n        if not local_files_only",
         "Qwen3-TTS model RoPE restoration PR #360 hunk",
     )
+    patched = _replace_once(
+        patched,
+        b"        from ..._transformers_compat import restore_rope_buffers\n\n"
+        b"        restore_rope_buffers(model)\n        if not local_files_only",
+        b"        from ..._transformers_compat import restore_rope_buffers, strict_reload_local_safetensors\n\n"
+        b"        model._qwen3_tts_strict_reload = strict_reload_local_safetensors(\n"
+        b"            model,\n"
+        b"            pretrained_model_name_or_path,\n"
+        b"            cache_dir=cache_dir,\n"
+        b"            revision=revision,\n"
+        b"            token=token,\n"
+        b"            local_files_only=local_files_only,\n"
+        b"        )\n\n"
+        b"        restore_rope_buffers(model)\n        if not local_files_only",
+        "Qwen3-TTS strict local safetensors reload hunk",
+    )
     return _identity(patched, PATCH_MODEL_PATCHED_BYTES, PATCH_MODEL_PATCHED_SHA256, "Qwen3-TTS model patched")
 
 
@@ -364,7 +455,7 @@ def _patch_records(originals: dict[str, bytes | None], patched: dict[str, bytes]
         (PATCH_HELPER_TARGET, "create_exact_helper", 1),
         (PATCH_CORE_25HZ_TARGET, PATCH_CORE_25HZ_OPERATION, 2),
         (PATCH_CONFIG_TARGET, PATCH_CONFIG_OPERATION, 5),
-        (PATCH_MODEL_TARGET, PATCH_MODEL_OPERATION, 4),
+        (PATCH_MODEL_TARGET, PATCH_MODEL_OPERATION, 5),
         (PATCH_TARGET, PATCH_TOKENIZER_OPERATION, 3),
         (PATCH_25HZ_TARGET, PATCH_25HZ_OPERATION, 3),
     )
@@ -392,7 +483,7 @@ def _expected_patch_records() -> list[dict[str, Any]]:
         {"status": PATCH_STATUS, "target": PATCH_HELPER_TARGET, "operation": "create_exact_helper", "original_state": "ABSENT", "original_bytes": 0, "original_sha256": None, "patched_bytes": PATCH_HELPER_PATCHED_BYTES, "patched_sha256": PATCH_HELPER_PATCHED_SHA256, "replacement_count": 1},
         {"status": PATCH_STATUS, "target": PATCH_CORE_25HZ_TARGET, "operation": PATCH_CORE_25HZ_OPERATION, "original_state": "PRESENT", "original_bytes": PATCH_CORE_25HZ_ORIGINAL_BYTES, "original_sha256": PATCH_CORE_25HZ_ORIGINAL_SHA256, "patched_bytes": PATCH_CORE_25HZ_PATCHED_BYTES, "patched_sha256": PATCH_CORE_25HZ_PATCHED_SHA256, "replacement_count": 2},
         {"status": PATCH_STATUS, "target": PATCH_CONFIG_TARGET, "operation": PATCH_CONFIG_OPERATION, "original_state": "PRESENT", "original_bytes": PATCH_CONFIG_ORIGINAL_BYTES, "original_sha256": PATCH_CONFIG_ORIGINAL_SHA256, "patched_bytes": PATCH_CONFIG_PATCHED_BYTES, "patched_sha256": PATCH_CONFIG_PATCHED_SHA256, "replacement_count": 5},
-        {"status": PATCH_STATUS, "target": PATCH_MODEL_TARGET, "operation": PATCH_MODEL_OPERATION, "original_state": "PRESENT", "original_bytes": PATCH_MODEL_ORIGINAL_BYTES, "original_sha256": PATCH_MODEL_ORIGINAL_SHA256, "patched_bytes": PATCH_MODEL_PATCHED_BYTES, "patched_sha256": PATCH_MODEL_PATCHED_SHA256, "replacement_count": 4},
+        {"status": PATCH_STATUS, "target": PATCH_MODEL_TARGET, "operation": PATCH_MODEL_OPERATION, "original_state": "PRESENT", "original_bytes": PATCH_MODEL_ORIGINAL_BYTES, "original_sha256": PATCH_MODEL_ORIGINAL_SHA256, "patched_bytes": PATCH_MODEL_PATCHED_BYTES, "patched_sha256": PATCH_MODEL_PATCHED_SHA256, "replacement_count": 5},
         {"status": PATCH_STATUS, "target": PATCH_TARGET, "operation": PATCH_TOKENIZER_OPERATION, "original_state": "PRESENT", "original_bytes": PATCH_ORIGINAL_BYTES, "original_sha256": PATCH_ORIGINAL_SHA256, "patched_bytes": PATCHED_BYTES, "patched_sha256": PATCHED_SHA256, "replacement_count": 3},
         {"status": PATCH_STATUS, "target": PATCH_25HZ_TARGET, "operation": PATCH_25HZ_OPERATION, "original_state": "PRESENT", "original_bytes": PATCH_25HZ_ORIGINAL_BYTES, "original_sha256": PATCH_25HZ_ORIGINAL_SHA256, "patched_bytes": PATCH_25HZ_PATCHED_BYTES, "patched_sha256": PATCH_25HZ_PATCHED_SHA256, "replacement_count": 3},
     ]
@@ -619,6 +710,9 @@ def self_test_filesystem() -> None:
     try:
         _identity = lambda content, size, digest, label: content
         patched = {PATCH_INIT_TARGET: patch_init_source_bytes(init), PATCH_CORE_25HZ_TARGET: patch_core_25hz_source_bytes(core), PATCH_CONFIG_TARGET: patch_config_source_bytes(config), PATCH_MODEL_TARGET: patch_model_source_bytes(model), PATCH_TARGET: patch_source_bytes(tokenizer), PATCH_25HZ_TARGET: patch_25hz_source_bytes(inference), PATCH_HELPER_TARGET: _HELPER_SOURCE}
+        assert b"import os\n" in _HELPER_SOURCE
+        assert b"def strict_reload_local_safetensors(" in _HELPER_SOURCE
+        assert b"strict_reload_local_safetensors" in patched[PATCH_MODEL_TARGET]
         contracts = (("PATCH_INIT", init, patched[PATCH_INIT_TARGET]), ("PATCH_CORE_25HZ", core, patched[PATCH_CORE_25HZ_TARGET]), ("PATCH_CONFIG", config, patched[PATCH_CONFIG_TARGET]), ("PATCH_MODEL", model, patched[PATCH_MODEL_TARGET]), ("PATCH_TOKENIZER", tokenizer, patched[PATCH_TARGET]), ("PATCH_25HZ", inference, patched[PATCH_25HZ_TARGET]))
         for prefix, original, output in contracts:
             if prefix == "PATCH_TOKENIZER":

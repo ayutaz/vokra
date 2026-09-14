@@ -49,7 +49,7 @@ parity runs described below, not by the PR author's environment claim.
 Both API smoke phases import the single shared bounded compatibility adapter
 from `qwen_source_compat.py` and apply exactly seven canonical source
 transforms only inside the disposable clean VAST source checkout. The
-enclosing reference manifest uses schema `vokra-qwen3-tts-reference-v3`; its
+enclosing reference manifest uses schema `vokra-qwen3-tts-reference-v4`; its
 nested compatibility record has operation
 `apply_exactly_seven_source_transforms` and `patch_count=7`, and binds these
 targets: `qwen_tts/__init__.py`, the newly created
@@ -61,6 +61,15 @@ targets: `qwen_tts/__init__.py`, the newly created
 and patched byte/hash identities in the record. The transform status is
 `COMPATIBILITY_PATCH_APPLIED`; it is not raw upstream compatibility, and any
 source, hash, count, or path drift blocks before import.
+
+The patched official `Qwen3TTSForConditionalGeneration.from_pretrained` also
+strictly reloads the local single-file `model.safetensors` immediately after
+the Transformers base load. The reload requires a regular non-symlink file and
+zero missing/unexpected keys; otherwise model loading fails closed instead of
+accepting random initialization. Real-weight API and reference evidence record
+`STRICT_RELOAD_PASS` with empty key lists. Non-local repository identifiers
+are eligible only with an immutable 40-hex revision whose cached checkpoint
+resolves to a regular, non-symlink file.
 
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
 It is VAST/Linux x86_64-only, requires `VOKRA_PUBLISH_ON_VAST=1`, and stages
@@ -78,7 +87,7 @@ real-weight load remains unverified until an authorized VAST run. After those
 gates pass it calls the official
 `Qwen3TTSModel.from_pretrained` wrapper and emits `api-smoke.json` under the
 disposable work directory. The evidence is a
-strict `vokra-qwen3-tts-api-smoke-v3` JSON document containing the exact source,
+strict `vokra-qwen3-tts-api-smoke-v4` JSON document containing the exact source,
 model, decoder, lock, approval-evidence SHA-256 plus the existing license gate
 manifest digest/approval scope/owner sign-offs, Vokra checkout HEAD/clean
 status, package-version, input-hash, and call-checkpoint records; its

@@ -157,6 +157,9 @@ sha256_file() {
 
 verify_reference_hashes() {
   local directory="$1" file key expected actual
+  for required in '"strict_reload": {' '"status": "STRICT_RELOAD_PASS"' '"missing_keys": []' '"unexpected_keys": []'; do
+    grep -Fq -- "$required" "$directory/manifest.json" || die "$directory manifest lacks strict complete safetensors reload evidence: $required"
+  done
   for file in prompt_ids.u32le codes.u32le pcm.f32le environment.json; do
     key="sha256_${file//./_}"
     expected="$(grep -F -- "\"$key\":" "$directory/manifest.json" | sed -E 's/.*"([0-9a-f]{64})".*/\1/')"
@@ -361,6 +364,7 @@ run_self_test() {
     '022e286b98fbec7e1e916cb940cdf532cd9f488e' "$OFFICIAL_SOURCE_PR_URL" "$OFFICIAL_SOURCE_PR_STATUS" "$OFFICIAL_SOURCE_PR_HEAD" "$DECODER_CHECKPOINT_SHA256" \
     'nested_decoder_sha256' 'min_new_tokens' \
     'qwen3-tts-tokenizer-12hz' 'MIN_NEW_TOKENS=2' 'qwen3_tts_real_cpu_matches_official_reference' \
+    'strict_reload' 'STRICT_RELOAD_PASS' 'missing_keys' 'unexpected_keys' '4763' 'a24b2124843f5c76abc8c7023133b8be7503c80d883d0e9a987cdea5ef2319a0' '100994' '78b23efd51dfb92f7deb7ff91b9dd0b7f960376d45d0e6714f365b4ffc691451' \
     'qwen3_tts_real_metal_matches_cpu_and_official_reference' 'single-file checkpoint' '.cache/huggingface' \
     '--ignored --exact --nocapture' 'QWEN3_TTS_PARITY' 'codes_exact=PASS' \
     'pcm=MEASURED_NOT_GATED' 'corrected GGUFs' 'CARGO_BUILD_JOBS' 'license_gate.py' \
@@ -376,7 +380,7 @@ run_self_test() {
     grep -Fq -- "$required" "$script_path" || { log "self-test missing token: $required"; failed=1; }
   done
   for required in \
-    'vokra-qwen3-tts-reference-v3' 'apply_exactly_seven_source_transforms' '"patch_count": 7' \
+    'vokra-qwen3-tts-reference-v4' 'apply_exactly_seven_source_transforms' '"patch_count": 7' 'strict_reload' 'STRICT_RELOAD_PASS' 'missing_keys' 'unexpected_keys' \
     'source_base_revision' 'source_head_revision' 'source_pr_url' 'source_pr_status' \
     'qwen_tts/__init__.py' 'qwen_tts/_transformers_compat.py' \
     'qwen_tts/core/__init__.py' 'qwen_tts/core/models/configuration_qwen3_tts.py' \

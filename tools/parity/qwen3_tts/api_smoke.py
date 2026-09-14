@@ -40,7 +40,7 @@ from qwen_source_compat import (
     CompatibilityPatchError,
 )
 
-SCHEMA = "vokra-qwen3-tts-api-smoke-v3"
+SCHEMA = "vokra-qwen3-tts-api-smoke-v4"
 SOURCE_REPOSITORY = "QwenLM/Qwen3-TTS"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 SOURCE_PACKAGE_VERSION = "0.1.1"
@@ -457,6 +457,8 @@ def require_model(model_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
     safetensors = sorted(model_dir.glob("*.safetensors"))
     if not safetensors or any(path.is_symlink() for path in safetensors):
         raise SmokeError("0.6B model safetensors checkpoint is missing or symlinked")
+    if [path.name for path in safetensors] != ["model.safetensors"]:
+        raise SmokeError("0.6B model snapshot must contain exactly model.safetensors")
     if (model_dir / "model.safetensors.index.json").exists() or list(model_dir.glob("model-*.safetensors")):
         raise SmokeError("sharded 0.6B checkpoint is not accepted by the API smoke")
     files = [config_artifact] + [artifact(path, "model checkpoint") for path in safetensors]
@@ -532,8 +534,16 @@ def validate_evidence_data(data: Any) -> None:
         raise SmokeError("Vokra checkout evidence schema or unknown fields drifted")
     if set(data["environment"]) != {"python", "platform", "machine", "device", "torch_threads"}:
         raise SmokeError("environment evidence schema or unknown fields drifted")
-    if set(data["api"]) != {"method", "local_files_only", "dtype", "device_map", "low_cpu_mem_usage", "model_device", "wrapper", "max_new_tokens", "min_new_tokens", "sample_rate", "samples", "code_packet_frames", "code_packet_codebooks", "forbidden_imports"}:
+    if set(data["api"]) != {"method", "local_files_only", "dtype", "device_map", "low_cpu_mem_usage", "model_device", "wrapper", "max_new_tokens", "min_new_tokens", "sample_rate", "samples", "code_packet_frames", "code_packet_codebooks", "strict_reload", "forbidden_imports"}:
         raise SmokeError("API evidence schema or unknown fields drifted")
+    strict_reload = data["api"]["strict_reload"]
+    if not isinstance(strict_reload, dict) or set(strict_reload) != {"status", "return_type", "missing_keys", "unexpected_keys"}:
+        raise SmokeError("strict safetensors reload evidence is malformed")
+    if strict_reload["status"] not in {"NOT_PERFORMED", "STRICT_RELOAD_PASS"} or not isinstance(strict_reload["return_type"], (str, type(None))):
+        raise SmokeError("strict safetensors reload status is malformed")
+    for key in ("missing_keys", "unexpected_keys"):
+        if not isinstance(strict_reload[key], list) or any(not isinstance(item, str) for item in strict_reload[key]):
+            raise SmokeError("strict safetensors reload key evidence is malformed")
     if set(data["inputs"]) - {"reference_audio"}:
         raise SmokeError("input evidence schema or unknown fields drifted")
     for container in (data["package_versions"], data["inputs"]):
@@ -626,6 +636,8 @@ def validate_evidence_data(data: Any) -> None:
             raise SmokeError("passing evidence package versions are incomplete")
         if data["api"]["method"] != "Qwen3TTSModel.from_pretrained" or data["api"]["local_files_only"] is not True or data["api"]["dtype"] != "float32" or data["api"]["device_map"] is not None or data["api"]["low_cpu_mem_usage"] is not False or data["api"]["wrapper"] != "generate_voice_clone":
             raise SmokeError("passing evidence does not prove the fixed local-only default-CPU API call")
+        if data["api"]["strict_reload"]["status"] != "STRICT_RELOAD_PASS" or data["api"]["strict_reload"]["missing_keys"] or data["api"]["strict_reload"]["unexpected_keys"]:
+            raise SmokeError("passing evidence does not prove strict complete safetensors reload")
         if data["api"]["forbidden_imports"]:
             raise SmokeError("passing evidence loaded forbidden optional modules")
     if data["status"] == "FAIL" and not data["error"]:
@@ -664,7 +676,9 @@ def run_smoke(args: argparse.Namespace) -> int:
         "model_device": None, "wrapper": "generate_voice_clone",
         "max_new_tokens": MAX_NEW_TOKENS, "min_new_tokens": MIN_NEW_TOKENS,
         "sample_rate": None, "samples": None, "code_packet_frames": None,
-        "code_packet_codebooks": None, "forbidden_imports": [],
+        "code_packet_codebooks": None,
+        "strict_reload": {"status": "NOT_PERFORMED", "return_type": None, "missing_keys": [], "unexpected_keys": []},
+        "forbidden_imports": [],
     }
     inputs: dict[str, Any] = {}
     error: str | None = None
@@ -718,6 +732,17 @@ def run_smoke(args: argparse.Namespace) -> int:
         if getattr(tts, "device", None) is None or tts.device.type != "cpu":
             raise SmokeError(f"official model selected {getattr(tts, 'device', None)!r}, expected CPU")
         api["model_device"] = str(tts.device)
+        strict_reload = getattr(tts.model, "_qwen3_tts_strict_reload", None)
+        if not isinstance(strict_reload, dict) or strict_reload.get("status") != "STRICT_RELOAD_PASS":
+            raise SmokeError("patched official loader did not report strict safetensors reload success")
+        if strict_reload.get("missing_keys") != [] or strict_reload.get("unexpected_keys") != []:
+            raise SmokeError(f"strict safetensors reload reported key drift: {strict_reload!r}")
+        api["strict_reload"] = {
+            "status": strict_reload["status"],
+            "return_type": strict_reload.get("return_type"),
+            "missing_keys": list(strict_reload["missing_keys"]),
+            "unexpected_keys": list(strict_reload["unexpected_keys"]),
+        }
         checkpoint_recorder.append("model_loaded_cpu")
 
         prompt = tts.create_voice_clone_prompt(ref_audio=str(args.reference_audio), x_vector_only_mode=True)[0]
@@ -915,7 +940,9 @@ def self_test() -> None:
                 "model_device": None,
                 "wrapper": "generate_voice_clone", "max_new_tokens": 2,
                 "min_new_tokens": 2, "sample_rate": None, "samples": None,
-                "code_packet_frames": None, "code_packet_codebooks": None, "forbidden_imports": [],
+                "code_packet_frames": None, "code_packet_codebooks": None,
+                "strict_reload": {"status": "NOT_PERFORMED", "return_type": None, "missing_keys": [], "unexpected_keys": []},
+                "forbidden_imports": [],
             },
             "error": "SmokeError: host gate",
         }

@@ -126,10 +126,10 @@ require_compatibility_patch_contract() {
     done
   done <<'EOF'
 qwen_tts/__init__.py|839|"ea52de59d070fde366467a6902d0edcfc1b0575b8c570a0c71020c41d6a593ed"|944|eb4312049f767f591b24d2d7be06cf2ec19a6759c7382c54fac3bd5d671d32c5
-qwen_tts/_transformers_compat.py|0|null|2369|033673335ed7bcb19054cdabc6c8400e443493f4b54340f8f449577d122bf982
+qwen_tts/_transformers_compat.py|0|null|4763|a24b2124843f5c76abc8c7023133b8be7503c80d883d0e9a987cdea5ef2319a0
 qwen_tts/core/__init__.py|990|"1b380d9de843b6d585d938c339d066136567ca7125412674234204af4386679e"|814|c3d2f2f28cae7a0ec4d8dd8251470c8871acd2bf143d2fc239fcfbe8f2938497
 qwen_tts/core/models/configuration_qwen3_tts.py|26428|"f52867f14fde06a416dd14864d503ce6d13d0a08d5f5da30191e1c80c13f5d18"|26499|4f50b37285f413c05e5d6e257c9969abf9f31a24cd000473f15e31468dbe8461
-qwen_tts/core/models/modeling_qwen3_tts.py|100211|"25c42656bcf810f06ef6bc1839bd7083f3c8cfedac3a147c4060b4262b1c96a0"|100678|d075627fac2876eb1386ba1429a3d02bf30486689ebe3796077814de953d2a75
+qwen_tts/core/models/modeling_qwen3_tts.py|100211|"25c42656bcf810f06ef6bc1839bd7083f3c8cfedac3a147c4060b4262b1c96a0"|100994|78b23efd51dfb92f7deb7ff91b9dd0b7f960376d45d0e6714f365b4ffc691451
 qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py|40519|"844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628"|40366|55a7e3428a7ca3cbc9a1a8f2275d47dd765e5ffb0258724d471c6d6586c4f573
 qwen_tts/inference/qwen3_tts_tokenizer.py|15699|"ac2d855022a1bd21d33ab7b267ec952eef71f81d3f8d969a306139ff1a929515"|15659|c19a5e795e90f79b0943b7baf0903e0467cabdbc81b5f55d00c974a067d4f421
 EOF
@@ -193,7 +193,7 @@ require_reference() {
   [[ -d "$directory" && ! -L "$directory" ]] || die "$slug reference directory is missing or symlinked: $directory"
   manifest="$directory/manifest.json"; require_file "$slug manifest" "$manifest"
   for required in \
-    '"schema": "vokra-qwen3-tts-reference-v3"' \
+    '"schema": "vokra-qwen3-tts-reference-v4"' \
     "\"upstream_repo\": \"$repo\"" "\"upstream_revision\": \"$revision\"" \
     "\"model_name\": \"qwen3-tts-12hz-$slug\"" \
     '"official_source_repo": "QwenLM/Qwen3-TTS"' \
@@ -202,7 +202,7 @@ require_reference() {
     '"source_head_revision": "00969daa8064e23adc9e5f52cdf20cf247f94159"' \
     '"source_pr_url": "https://github.com/QwenLM/Qwen3-TTS/pull/360"' \
     '"source_pr_status": "OPEN_UNMERGED"' \
-    '"operation": "apply_exactly_seven_source_transforms"' '"patch_count": 7' '"forbidden_imports": []' \
+    '"operation": "apply_exactly_seven_source_transforms"' '"patch_count": 7' '"strict_reload": {' '"status": "STRICT_RELOAD_PASS"' '"missing_keys": []' '"unexpected_keys": []' '"forbidden_imports": []' \
     '"decoder_repo": "Qwen/Qwen3-TTS-Tokenizer-12Hz"' \
     '"decoder_revision": "a87c50897bb00837eb857d0538b29d117541d7f6"' \
     '"decoder_checkpoint_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"' \
@@ -280,7 +280,7 @@ run_self_test() {
     grep -Fq -- "$required" "$script_path" || { log "self-test missing token: $required"; failed=1; }
   done
   for required in \
-    'vokra-qwen3-tts-reference-v3' 'apply_exactly_seven_source_transforms' '"patch_count": 7' \
+    'vokra-qwen3-tts-reference-v4' 'apply_exactly_seven_source_transforms' '"patch_count": 7' \
     'source_base_revision' 'source_head_revision' 'source_pr_url' 'source_pr_status' \
     'qwen_tts/__init__.py' 'qwen_tts/_transformers_compat.py' \
     'qwen_tts/core/__init__.py' 'qwen_tts/core/models/configuration_qwen3_tts.py' \

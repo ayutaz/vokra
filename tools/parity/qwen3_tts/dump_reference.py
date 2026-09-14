@@ -41,7 +41,7 @@ from qwen_source_compat import (
 SOURCE_REPO = "QwenLM/Qwen3-TTS"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 PACKAGE_VERSION = "0.1.1"
-SCHEMA = "vokra-qwen3-tts-reference-v3"
+SCHEMA = "vokra-qwen3-tts-reference-v4"
 CODEBOOKS = 16
 OUTPUT_SAMPLE_RATE = 24_000
 TEXT = "The Vokra parity packet is short and deterministic."
@@ -421,7 +421,7 @@ def run_self_test() -> int:
     else:
         die("legacy four-target compatibility evidence was accepted")
     source = Path(__file__).read_text(encoding="utf-8")
-    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source or "verify_patched_source_checkout" not in source:
+    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "STRICT_RELOAD_PASS" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source or "verify_patched_source_checkout" not in source:
         die("reference is not using the official local-only wrapper")
     if "pickle." + "loads" in source or "weights_only=" + "False" in source:
         die("unsafe pickle loading appeared in the reference dumper")
@@ -492,6 +492,11 @@ def main() -> int:
     )
     if tts.device.type != "cpu":
         die(f"official model selected {tts.device}, expected CPU")
+    strict_reload = getattr(tts.model, "_qwen3_tts_strict_reload", None)
+    if not isinstance(strict_reload, dict) or strict_reload.get("status") != "STRICT_RELOAD_PASS":
+        die("patched official loader did not report strict safetensors reload success")
+    if strict_reload.get("missing_keys") != [] or strict_reload.get("unexpected_keys") != []:
+        die(f"strict safetensors reload reported key drift: {strict_reload!r}")
     input_ids = tts._tokenize_texts([tts._build_assistant_text(TEXT)])[0][0].detach().cpu()
     prompt = None
     if variant.kind == "base":
@@ -536,6 +541,12 @@ def main() -> int:
         "official_source_repo": SOURCE_REPO, "official_source_revision": SOURCE_REVISION,
         "qwen_tts_version": PACKAGE_VERSION, "text": TEXT, "language": LANGUAGE,
         "compatibility_patch": source_patch, "forbidden_imports": forbidden_imports,
+        "strict_reload": {
+            "status": strict_reload["status"],
+            "return_type": strict_reload.get("return_type"),
+            "missing_keys": list(strict_reload["missing_keys"]),
+            "unexpected_keys": list(strict_reload["unexpected_keys"]),
+        },
         "speaker": SPEAKER if variant.kind != "base" else "official_x_vector_only",
         "max_new_tokens": MAX_NEW_TOKENS, "min_new_tokens": MIN_NEW_TOKENS, "sampling": "greedy",
         "sample_rate": OUTPUT_SAMPLE_RATE, "frames": int(codes.shape[0]), "codebooks": CODEBOOKS,

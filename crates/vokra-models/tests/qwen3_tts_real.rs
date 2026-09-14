@@ -227,7 +227,7 @@ fn assert_reference_manifest(reference: &Path, case: Case) -> String {
         _ => unreachable!(),
     };
     for marker in [
-        "\"schema\": \"vokra-qwen3-tts-reference-v3\"",
+        "\"schema\": \"vokra-qwen3-tts-reference-v4\"",
         &format!("\"upstream_repo\": \"{repo}\""),
         &format!("\"upstream_revision\": \"{revision}\""),
         &format!("\"variant\": \"{}\"", case.slug),
@@ -240,6 +240,10 @@ fn assert_reference_manifest(reference: &Path, case: Case) -> String {
         "\"source_pr_status\": \"OPEN_UNMERGED\"",
         "\"operation\": \"apply_exactly_seven_source_transforms\"",
         "\"patch_count\": 7",
+        "\"strict_reload\": {",
+        "\"status\": \"STRICT_RELOAD_PASS\"",
+        "\"missing_keys\": []",
+        "\"unexpected_keys\": []",
         "\"forbidden_imports\": []",
         "\"decoder_repo\": \"Qwen/Qwen3-TTS-Tokenizer-12Hz\"",
         "\"decoder_revision\": \"a87c50897bb00837eb857d0538b29d117541d7f6\"",
