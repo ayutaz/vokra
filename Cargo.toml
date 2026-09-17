@@ -4,7 +4,7 @@
 # Crate layout and the rationale for it are recorded in
 # docs/adr/0001-crate-layout.md (M0-02-T01). Members created in M0:
 # vokra-core / vokra-ops / vokra-backend-cpu / vokra-models /
-# vokra-piper-plus / vokra-capi, plus the test-only parity harness
+# vokra-piper-plus / vokra-capi / vokra-eval, plus the test-only parity harness
 # `vokra-parity` under tests/parity (NFR-QL-01).
 
 [workspace]
@@ -28,9 +28,9 @@ rust-version = "1.85"
 # NFR-LC-01: the whole runtime is Apache-2.0.
 license = "Apache-2.0"
 # crates.io listing metadata (X-07-T09, NFR-DS-03 "Cargo crate"). Inherited by
-# the 18-crate publish set via `<field>.workspace = true` in each crate header;
-# the excluded crates (vokra-eval + the tests/parity / tests/wasm-harness
-# harnesses) do NOT inherit these and stay `publish = false`. `documentation`
+# the 19-crate publish set via `<field>.workspace = true` in each crate header;
+# the excluded crates (tests/parity / tests/wasm-harness harnesses) do NOT
+# inherit these and stay `publish = false`. `documentation`
 # is intentionally left UNSET so crates.io auto-links each crate to its own
 # docs.rs/<crate> page (X-09b) — a single workspace-wide URL would be wrong for
 # a multi-crate workspace; see ADR docs/adr/X-07-release-train.md §crates.io.
@@ -41,7 +41,7 @@ keywords = ["audio", "speech", "inference", "tts", "asr"]
 categories = ["multimedia::audio", "science", "api-bindings"]
 # Default is NOT publishable: the workspace-level `publish = false` guards
 # against accidental publishes of any NEW crate (crates.io is an immutable
-# index — a mistaken publish is unrecoverable). Only the 18 crates in the
+# index — a mistaken publish is unrecoverable). Only the 19 crates in the
 # publish closure override this with an explicit `publish = true`; the closure
 # (topological set) is derived mechanically by
 # tools/release/crates_publish_order.py and fixed in the ADR.
@@ -68,6 +68,7 @@ vokra-piper-plus = { path = "crates/vokra-piper-plus", version = "0.3.0" }
 vokra-capi = { path = "crates/vokra-capi", version = "0.3.0" }
 vokra-mmap = { path = "crates/vokra-mmap", version = "0.3.0" }
 vokra-convert = { path = "crates/vokra-convert", version = "0.3.0" }
+vokra-eval = { path = "crates/vokra-eval", version = "0.3.0" }
 # M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `vokra-models`
 # depends on it (default features) and re-exports it; the Cortex-M55 Tier-3
 # build uses it with `--no-default-features`. First-party `vokra-*` crate with

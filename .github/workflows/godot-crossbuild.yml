@@ -156,6 +156,10 @@ jobs:
       - name: Set up Android SDK / NDK (aarch64-linux-android only)
         if: matrix.target == 'aarch64-linux-android'
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          # setup-android's default also requests the obsolete `tools` package;
+          # platform-tools is the only SDK package needed by this build.
+          packages: platform-tools
 
       - name: Configure NDK linker for aarch64-linux-android
         if: matrix.target == 'aarch64-linux-android'

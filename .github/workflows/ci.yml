@@ -815,9 +815,14 @@ jobs:
           path: artifacts/linux
       - name: Set up Android SDK / NDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          # setup-android's default also requests the obsolete `tools` package;
+          # platform-tools is the only SDK package needed by this build.
+          packages: platform-tools
       - name: Android cross-build (aarch64-linux-android, CPU-only, NDK)
-        # scripts/build-android.sh reads $ANDROID_NDK_HOME (populated by
-        # setup-android@v3), rustup-installs the aarch64-linux-android target,
+        # scripts/build-android.sh reads the runner-provided $ANDROID_NDK_HOME;
+        # setup-android supplies the SDK tools, while the hosted runner supplies
+        # the NDK. The script then rustup-installs the aarch64-linux-android target,
         # builds `-p vokra-capi` release cdylib with no metal/cuda features,
         # and stages the resulting libvokra.so under
         # bindings/unity/com.vokra.unity/Plugins/Android/libs/arm64-v8a/.

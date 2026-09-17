@@ -5,7 +5,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+# This crate is part of the published CLI dependency closure (X-07-T14).
+# Keep this explicit because the workspace default is publish = false.
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # Zero external dependencies (NFR-DS-02): the metrics are original std code — no
 # jiwer / torchmetrics / librosa — reusing the first-party STFT/mel op path from

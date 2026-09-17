@@ -673,3 +673,23 @@ full and 58 public rows remain unresolved. Qwen3-TTS stays before `VAST_READY`
 until its exact dependency/component scope is approved or otherwise
 dispositioned; only an approved scope may proceed to real-weight VAST parity
 and a later Scaleway Apple CPU/Metal/no-fallback packet.
+
+## 2026-09-17 Qwen3-TTS real-weight VAST supersession
+
+The model-free boundary above is historical. PR #109 was merged as
+`2b08b7f738575d46c50dd9e2dbfb8d137b27beae` after its exact clean candidate
+head `772ba5a30d3b793bc79ab7281acdb0823e751244` completed the authorized,
+no-upload VAST workflow. The worker performed a strict official-weight reload,
+converted the four public Qwen3-TTS variants plus their shared 12 Hz decoder,
+and passed independent real-weight CPU parity for all four variants, including
+the exact prompt and code decisions. The recovered batch checksum closure
+passed 38/38 entries. The disposable VAST instance and its storage were
+destroyed after evidence recovery; no model was downloaded or executed on the
+maintainer Mac, and no Hugging Face upload occurred.
+
+This advances the named Qwen3-TTS rows through real-weight VAST conversion and
+CPU parity only. The exact packet must be regenerated from the final clean head
+immediately before Apple execution. Apple CPU/reference, Metal/reference and
+Metal/CPU no-fallback verification remain pending because Scaleway Apple
+Silicon inventory was unavailable, and public artifacts remain unchanged. The
+live inventory therefore remains 136 full and 58 unresolved public rows.

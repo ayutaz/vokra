@@ -15,8 +15,8 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Development status (2026-09-13):** the workspace is `0.3.0` development;
-> the observed `main` baseline for this campaign is `b29cb9d7`. The latest
+> **Development status (2026-09-17):** the workspace is `0.3.0` development;
+> the observed `main` baseline for this campaign is `2b08b7f7`. The latest
 > live, read-only public inventory, evaluated with audit logic through
 > `a4af7800`, reports 194 repositories, 193 GGUF-bearing repositories and 198
 > GGUF files: 136 Mac-CPU-complete, 43 partial, 14 without a runtime binder and
@@ -24,14 +24,19 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 > non-artifact. VibeVoice Realtime-0.5B now has a strict structural
 > `vibevoice_streaming` binder and CLI inspection route, so it is partial;
 > synthesis, the complete weight manifest, independent reference, and CPU
-> parity remain pending. The bounded Apple Silicon batch recorded
+> parity remain pending. Qwen3-TTS PR #109 subsequently completed a clean,
+> no-upload VAST run for all four public variants plus the shared 12 Hz
+> decoder: strict official-weight reload and independent CPU parity passed
+> 4/4, and the recovered batch closed 38/38 checksums. Apple CPU/Metal and
+> no-fallback verification, and any public-artifact replacement, remain
+> pending. The bounded Apple Silicon batch recorded
 > in the [Apple results](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
 > passed only for its named scopes, and four explicitly approved artifacts
-> were subsequently published. There are still 58 unresolved public rows,
-> no Git tags or published releases, and Vokra remains pre-1.0; Rust APIs, the
-> C ABI, GGUF metadata and model coverage may change. Pin an exact commit when
-> evaluating Vokra in another project; switch to an exact tag or release after
-> one is published.
+> were subsequently published. There are still 58 unresolved public rows.
+> Version 0.3.0 is the first GitHub source release; external package registries
+> remain disabled. Vokra remains pre-1.0, so Rust APIs, the C ABI, GGUF metadata
+> and model coverage may change. Pin the exact `v0.3.0` tag when evaluating
+> this release in another project.
 
 ## Why Vokra
 

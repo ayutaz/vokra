@@ -34,7 +34,7 @@ vokra-mmap.workspace = true
 # UTMOS22-strong's independently parity-verified topology lives in
 # `vokra-eval`; this CLI-only adapter routes its learned ops through
 # `vokra-models::Compute` without introducing a reverse eval -> models edge.
-vokra-eval = { path = "../vokra-eval" }
+vokra-eval.workspace = true
 
 # Optional GPU backends for `bench --backend metal|cuda` (RTF on a real GPU).
 # Both are first-party `vokra-*` crates pulled through `vokra-models`, so the

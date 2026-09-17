@@ -20,7 +20,7 @@
 # See docs/tickets/m3/M3-11-godot-gdextension.md for the ticket plan.
 [package]
 name = "vokra-godot"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"

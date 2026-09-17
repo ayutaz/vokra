@@ -12,18 +12,26 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-17
+
 ### Changed
 
-- **2026-09-12 current Apple/public inventory**: at `main` baseline
-  `43d127f1`, the live read-only audit reports 194 public repositories, 193
-  GGUF-bearing repositories and 198 GGUF files. CPU status is `full=133`,
-  `partial=45`, `no-runtime-binder=15`, `not-artifact=1`; Metal status is
-  `full=133`, `blocked-by-cpu=60`, `not-artifact=1`, leaving 61 unresolved
+- **2026-09-17 current Apple/public inventory**: at the pre-release `main` baseline
+  `2b08b7f7`, the live read-only audit reports 194 public repositories, 193
+  GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
+  `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal status is
+  `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved
   public rows. The authorized Scaleway batch passed only for its named Apple
   CPU/reference, Metal/reference and no-fallback scopes; four separately
   approved artifacts were published through the gated workflow. This does
-  not constitute full model-catalog completion or a v1.0 release; no tags or
-  GitHub Releases exist yet.
+  not constitute full model-catalog completion or a v1.0 release.
+
+- **Qwen3-TTS exact real-weight CPU parity**: PR #109 completed a clean,
+  no-upload VAST run for all four public variants and the shared 12 Hz decoder.
+  Strict official-weight reload and independent CPU parity passed 4/4, and the
+  recovered batch closed 38/38 checksums. Apple CPU/reference,
+  Metal/reference and Metal/CPU no-fallback verification remain pending, and
+  no public artifact was replaced.
 
 - **2026-08-31 pre-1.0 Rust API line: 0.2.0 → 0.3.0**: this feature line
   intentionally changes the public Rust API while the project remains before
@@ -1318,3 +1326,6 @@ release.
 - **CI quality gates**: build, test, `rustfmt`, `clippy`, numerical
   parity, license (`cargo deny`), zero-dependency invariant, hot-path
   audit, iOS build, Python wheel build, license audit, GPU backends.
+
+[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ayutaz/vokra/releases/tag/v0.3.0

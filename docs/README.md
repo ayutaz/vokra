@@ -1,8 +1,8 @@
 # Vokra documentation
 
-**Current-state review:** 2026-09-13
+**Current-state review:** 2026-09-17
 
-**Reviewed implementation baseline:** GitHub `main` at `b29cb9d7` (2026-09-13);
+**Reviewed implementation baseline:** GitHub `main` at `2b08b7f7` (2026-09-17);
 the residual source/API and dependency-license closures, VibeVoice/VoxCPM
 runtime-boundary hardening, and parity reconciliation are merged through this
 head; the pre-documentation code
@@ -36,10 +36,13 @@ reference, and CPU parity remain pending. The exact-revision BiCodec
 and SGMSE CLI routes now promote those two published, Apple-verified rows to
 full; that promotion does not extend either route beyond its authenticated
 artifact contract. UTMOS numeric parity remains unclaimed.
-At clean head `b29cb9d7`, the Qwen3-TTS four-variant model-free API smoke also
-passed without a checkpoint load or upload. Its exact 55-package dependency
-closure was collected, but the license gate remains blocked by the recorded
-owner-review boundary, so this evidence does not change the 58-row denominator.
+PR #109 was merged at `2b08b7f7` after its clean no-upload VAST candidate
+completed strict official-weight reload, converted all four public Qwen3-TTS
+variants plus the shared 12 Hz decoder, passed independent real-weight CPU
+parity 4/4, and closed 38/38 recovered packet checksums. Apple CPU/reference,
+Metal/reference and Metal/CPU no-fallback verification remain pending, and no
+public artifact was replaced. This evidence therefore does not change the
+58-row denominator.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -92,11 +95,16 @@ and the publication scripts for release eligibility.
 
 ## Current release posture
 
-The workspace version is `0.3.0` development; no Git tag or published release
-exists yet. Rust APIs, the C ABI, GGUF metadata, and the model roster remain
-pre-1.0 and may change. The C header and Python prototype table are checked for
-exact function-set equality; documentation therefore avoids copying a function
-count that would drift on the next ABI addition.
+Version `0.3.0` is the first GitHub-only source release. External package
+registries remain explicitly disabled. Rust APIs, the C ABI, GGUF metadata,
+and the model roster remain pre-1.0 and may change. The C header and Python
+prototype table are checked for exact function-set equality; documentation
+therefore avoids copying a function count that would drift on the next ABI
+addition.
+
+The exact release scope, GitHub-only channel decision, security-alert triage
+and final gate list are recorded in the
+[2026-09-17 release-preparation record](handoff/release-preparation-0.3.0-2026-09-17.md).
 
 The default runtime keeps the root `Cargo.lock` first-party-only. GPU and NPU
 features are opt-in, and unsupported operations must fail explicitly instead

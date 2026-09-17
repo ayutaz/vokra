@@ -2,8 +2,8 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**2026-09-13 current-state / supersession note:** the observed `main` baseline
-for this campaign is `b29cb9d7`. The latest live, read-only public audit,
+**2026-09-17 current-state / supersession note:** the observed `main` baseline
+for this campaign is `2b08b7f7`. The latest live, read-only public audit,
 evaluated with audit logic through `a4af7800`, reports 194 repositories, 193
 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal status is
@@ -11,14 +11,18 @@ GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 public rows. VibeVoice Realtime-0.5B now has a strict structural
 `vibevoice_streaming` binder and CLI inspection route, so it is partial;
 synthesis, the complete weight manifest, independent reference, and CPU parity
-remain pending. At the same clean head, the Qwen3-TTS four-variant model-free
-API smoke passed without checkpoint loading or upload, while its exact
-55-package dependency closure correctly remained blocked pending owner review.
+remain pending. PR #109 supersedes the earlier Qwen3-TTS model-free note: its
+clean no-upload VAST candidate completed strict official-weight reload,
+converted all four public variants plus the shared 12 Hz decoder, passed
+independent real-weight CPU parity 4/4, and closed 38/38 recovered packet
+checksums. Apple CPU/reference, Metal/reference and Metal/CPU no-fallback
+verification and any public-artifact replacement remain pending.
 The authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback
 batch passed only for its named scopes; four separately approved
 artifacts were subsequently published through the gated workflow. UTMOS
-numeric parity remains unclaimed, and there are 0 release tags and 0 GitHub
-Releases. This checklist is not a GA or ABI-freeze declaration.
+numeric parity remains unclaimed. The GitHub-only `v0.3.0` pre-1.0 source
+release does not close M5, complete the catalog, or freeze the ABI. This
+checklist is not a GA or ABI-freeze declaration.
 
 The current literal Markdown ledger count is **51 checked / 31 unchecked**
 (mechanically counted on 2026-09-12). This is not an exhaustive task count:

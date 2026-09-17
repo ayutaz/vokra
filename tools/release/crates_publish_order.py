@@ -18,13 +18,12 @@ DESIGN (fixed by ADR docs/adr/X-07-release-train.md §crates.io):
 
 * Anything NOT in that closure is deliberately excluded and STAYS
   `publish = false`:
-    - vokra-eval          — evaluation metrics, dev/eval-only (not in closure);
     - vokra-parity        — test-only parity harness (tests/parity);
     - vokra-wasm-harness  — test-only wasm ABI harness (tests/wasm-harness);
     - integrations/*      — excluded workspaces (own Cargo.lock; link
                             NON-`vokra-*` crates — never publishable as vokra).
 
-* The closure computed from the real graph is currently 18 crates (NOT the
+* The closure computed from the real graph is currently 19 crates (NOT the
   "11" the spec intake estimated). The original X-07 correction reached 15
   after adding the 4 GPU/NPU backend crates vulkan/webgpu/coreml/qnn; the live
   runtime graph later pulled in `vokra-math`, `vokra-vad-micro`, and
@@ -54,7 +53,7 @@ ROOTS = ("vokra-capi", "vokra-cli")
 
 # Deliberately excluded from the publish set (kept `publish = false`). Asserted
 # by --verify so a future accidental inclusion is caught.
-EXCLUDED = ("vokra-eval", "vokra-parity", "vokra-wasm-harness")
+EXCLUDED = ("vokra-parity", "vokra-wasm-harness")
 
 
 def fail(msg: str) -> "None":

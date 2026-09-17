@@ -405,11 +405,16 @@ jobs:
 
       - name: Set up Android SDK / NDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          # setup-android's default also requests the obsolete `tools` package;
+          # platform-tools is the only SDK package needed by this build.
+          packages: platform-tools
 
       - name: Build Android arm64-v8a vokra-capi via scripts/build-android.sh
-        # setup-android exports the script's expected ANDROID_NDK_HOME.
-        # Do not override it with the expression-time env context: that context
-        # cannot see variables exported by an earlier step.
+        # The hosted runner provides the NDK through ANDROID_NDK_HOME;
+        # setup-android only provisions the SDK tools. Do not override the NDK
+        # with an expression-time env context: that context cannot see runtime
+        # environment values.
         run: bash scripts/build-android.sh
 
       - name: Build WebGL staticlib via scripts/build-unity-webgl-lib.sh (M4-02)
@@ -1125,7 +1130,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # X-07-T11: crates.io publish dry-run (NFR-DS-03 "Cargo crate", token-free).
   #
-  # Validates that the 18-crate publish set (topological closure of vokra-capi +
+  # Validates that the 19-crate publish set (topological closure of vokra-capi +
   # vokra-cli, derived by tools/release/crates_publish_order.py) packages
   # cleanly, WITHOUT contacting the registry for a real publish. Runs on tag AND
   # workflow_dispatch (no upload, so no gating needed).
@@ -1135,7 +1140,7 @@ jobs:
   # the graph LEAF (vokra-core, no path deps) can fully dry-run before the first
   # real publish — every downstream crate fails with "no matching package named
   # vokra-* found" until its deps are actually on the registry. The pre-publish
-  # package-ability gate for ALL 18 crates is therefore `cargo package --list`
+  # package-ability gate for ALL 19 crates is therefore `cargo package --list`
   # (uses local path deps, no registry); the downstream publish chain is
   # validated end-to-end incrementally by crates-io-publish (owner, T12/T14).
   #
@@ -1199,7 +1204,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # X-07-T12: crates.io real publish (NFR-MT-08 CD auto-publish, NFR-LC-02).
   #
-  # Publishes the 18-crate set in topological order (deps before dependents) on
+  # Publishes the 19-crate set in topological order (deps before dependents) on
   # tag push, gated on vars.CRATES_IO_PUBLISH_ENABLED and
   # secrets.CRATES_IO_TOKEN. The variable must explicitly disable the channel
   # or enable it with a configured token. The GitHub Release assets remain the

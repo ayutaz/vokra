@@ -7,6 +7,15 @@ suffix conventions (`-preview.N` for pre-1.0 iterations).
 
 ## Unreleased
 
+## [0.3.0] — 2026-09-17
+
+### Changed
+
+- Align the UPM package version with the Vokra 0.3.0 workspace and release
+  contract.
+- Keep registry publication owner-gated; the GitHub Release workflow assembles
+  native slices and checksums without implying OpenUPM publication.
+
 ## 0.1.0 — 2026-08-23 (unpublished package baseline)
 
 ### Added
@@ -50,3 +59,5 @@ Initial package scaffold from the M2-11 workstream, included in `0.1.0`.
 - Model weights — fetched per-sample via
   `Samples~/VadAsrTts/scripts/fetch-demo-models.sh`.
 - CUDA runtime — resolved via `dlopen` at runtime per NVIDIA EULA.
+
+[0.3.0]: https://github.com/ayutaz/vokra/releases/tag/v0.3.0
