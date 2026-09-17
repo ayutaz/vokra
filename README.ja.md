@@ -14,20 +14,24 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **開発状況（2026-09-13）:** workspace は `0.3.0` development で、この campaign で
-> 観測した `main` baseline は `b29cb9d7` です。監査実装 `a4af7800` までを使った
+> **開発状況（2026-09-17）:** workspace は `0.3.0` development で、この campaign で
+> 観測した `main` baseline は `2b08b7f7` です。監査実装 `a4af7800` までを使った
 > 最新の読み取り専用公開 inventory は repository 194、GGUF を持つ repository 193、
 > GGUF file 198 です。内訳は Mac CPU complete 136、partial 43、runtime binder なし
 > 14、non-artifact 1、Apple Metal full 136、CPU 起因の block 57、non-artifact 1
 > です。VibeVoice Realtime-0.5B には strict structural `vibevoice_streaming` binder
 > と CLI inspection route が追加されましたが、synthesis、完全な weight manifest、
 > independent reference、CPU parity は未完了なので partial のままです。
+> Qwen3-TTS PR #109 は、公開4 variant と共通12 Hz decoderを対象に、cleanかつ
+> no-uploadのVAST実行を完了しました。strict official-weight reloadと独立CPU parityは
+> 4/4合格し、回収したbatchのchecksumも38/38合格しています。Apple CPU/Metal、
+> no-fallback検証と公開artifactの置換は未完了です。
 > [Apple 検証結果](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)に記録した
 > Apple Silicon batch は named scope のみ合格し、その後、明示的に承認された4件の
-> artifact が公開されました。公開 row はなお58件未解決で、Git tag と公開済み release
-> はなく、Vokra は pre-1.0 のままです。Rust API、C ABI、GGUF metadata、モデル対応範囲は
-> 変更される可能性があります。他プロジェクトで評価するときは正確な commit を固定し、
-> release 公開後は正確な tag または release を固定してください。
+> artifact が公開されました。公開 row はなお58件未解決です。0.3.0は最初のGitHub
+> source releaseで、外部package registryは無効のままです。Vokra は pre-1.0 なので、
+> Rust API、C ABI、GGUF metadata、モデル対応範囲は変更される可能性があります。
+> 他プロジェクトで評価するときは正確な `v0.3.0` tagを固定してください。
 
 ## Vokra の特徴
 
