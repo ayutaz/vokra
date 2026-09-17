@@ -32,10 +32,14 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 RELEASE_YML = os.path.join(ROOT, ".github", "workflows", "release.yml")
 ORDER_TOOL = os.path.join(ROOT, "tools", "release", "crates_publish_order.py")
+EVAL_CARGO = os.path.join(ROOT, "crates", "vokra-eval", "Cargo.toml")
+CLI_CARGO = os.path.join(ROOT, "crates", "vokra-cli", "Cargo.toml")
+MODELS_CARGO = os.path.join(ROOT, "crates", "vokra-models", "Cargo.toml")
 API_SNAPSHOT = os.path.join(ROOT, "docs", "abi", "vokra-rust-public-api.v1.0-rc.list")
 COUNT_CONTRACT_FILES = (
     os.path.join(ROOT, "Cargo.toml"),
@@ -56,6 +60,11 @@ COUNT_PATTERNS = (
 
 _pass = 0
 _fail = 0
+
+
+def load_toml(path: str) -> dict:
+    with open(path, "rb") as handle:
+        return tomllib.load(handle)
 
 
 def ok(msg: str) -> None:
@@ -175,7 +184,7 @@ def main() -> None:
         bad(f"(6) Rust public-API snapshot missing: {API_SNAPSHOT}")
 
     # (7) Every tracked human-facing publish-count claim follows the current
-    # mechanically derived closure. This turns the 15 -> 18 documentation
+    # mechanically derived closure. This turns the 18 -> 19 documentation
     # regression into a failing oracle instead of another manual audit item.
     count_proc = subprocess.run(
         [sys.executable, ORDER_TOOL, "--json"],
@@ -206,6 +215,24 @@ def main() -> None:
                 f"(7) {len(claims)} tracked publish-count claims match "
                 f"the derived {derived_count}-crate closure"
             )
+
+    # (8) vokra-eval is a formal publishable member of the closure. The CLI's
+    # normal dependency must resolve through the version-bearing workspace
+    # entry; the models edge is dev-only but uses the same declaration so it
+    # cannot drift into a path-only dependency later.
+    root_manifest = load_toml(os.path.join(ROOT, "Cargo.toml"))
+    eval_manifest = load_toml(EVAL_CARGO)
+    cli_manifest = load_toml(CLI_CARGO)
+    models_manifest = load_toml(MODELS_CARGO)
+    workspace_eval = root_manifest["workspace"]["dependencies"].get("vokra-eval", {})
+    eval_is_publishable = eval_manifest["package"].get("publish") is True
+    eval_has_version = workspace_eval.get("version") == root_manifest["workspace"]["package"]["version"]
+    cli_uses_workspace = cli_manifest["dependencies"].get("vokra-eval", {}).get("workspace") is True
+    models_uses_workspace = models_manifest["dev-dependencies"].get("vokra-eval", {}).get("workspace") is True
+    if eval_is_publishable and eval_has_version and cli_uses_workspace and models_uses_workspace:
+        ok("(8) vokra-eval is publishable and all path edges use the canonical workspace version")
+    else:
+        bad("(8) vokra-eval publish/version wiring is incomplete")
 
     print()
     print(f"crates-io oracle: {_pass} passed, {_fail} failed")

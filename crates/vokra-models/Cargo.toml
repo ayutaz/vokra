@@ -140,7 +140,7 @@ vokra-convert = { path = "../vokra-convert" }
 # degradation gate (MelLoss + AudioMosMetric G2 branch) from vokra-eval —
 # first-party, acyclic (vokra-eval depends only on core/ops/backend-cpu),
 # root Cargo.lock stays vokra-* only (NFR-DS-02).
-vokra-eval = { path = "../vokra-eval" }
+vokra-eval.workspace = true
 # vokra-mmap moved to [dependencies] (M4 cc-06 — MoshiEngine::from_path mmap
 # wiring); the Voxtral real-GGUF gated test (tests/voxtral_real_gguf.rs) keeps
 # using it from there.
