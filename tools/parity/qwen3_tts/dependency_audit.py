@@ -967,7 +967,8 @@ def self_test() -> int:
         pass
     else:
         raise AssertionError("setuptools dependency reintroduction was accepted")
-    assert gate["status"] == "BLOCKED_UNRESOLVED_REVIEW"
+    expected_gate_status = "REVIEWED" if not gate["unresolved_rows"] else "BLOCKED_UNRESOLVED_REVIEW"
+    assert gate["status"] == expected_gate_status
     assert "accelerate==1.12.0" not in gate["unresolved_rows"]
     assert "psutil==7.2.2" not in gate["unresolved_rows"]
     assert identity("foo_bar", "1.0") == "foo-bar==1.0"

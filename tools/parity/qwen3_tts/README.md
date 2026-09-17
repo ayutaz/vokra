@@ -38,23 +38,38 @@ uses the corresponding `+cpu` lock rows). PyPI torchaudio and CUDA/NVIDIA
 runtime packages are rejected by the lock and smoke gates. The isolated
 reference previously used `transformers==4.57.3`, which is
 affected by `GHSA-xrqw-3rrv-vx5w` (<5.10.0). The reviewed dependency is now
-`transformers==5.10.4`; source/API compatibility remains
-`BLOCKED_UNVERIFIED_API_SMOKE` until an authorized VAST model smoke test is
-completed. This dependency remediation does not claim API parity.
+`transformers==5.10.4`. The official upstream Transformers-5 compatibility
+change is tracked as open and unmerged [QwenLM/Qwen3-TTS PR #360](https://github.com/QwenLM/Qwen3-TTS/pull/360),
+with fixed base `022e286b98fbec7e1e916cb940cdf532cd9f488e` and PR head
+`00969daa8064e23adc9e5f52cdf20cf247f94159`. PR #360 reports validation on
+Transformers `>=5.15.1`; Vokra's reviewed lock intentionally remains on
+`5.10.4`, so compatibility is established only by the bounded VAST smoke and
+parity runs described below, not by the PR author's environment claim.
 
-The pinned upstream source contains one `@check_model_inputs()` decorator,
-while Transformers 5.10.4 exposes `check_model_inputs(func)`. Both API smoke
-phases therefore import the single shared bounded compatibility adapter from
-`qwen_source_compat.py` and apply it only inside the disposable clean VAST
-source checkout: target
-`qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, original
-bytes `40519`, original SHA-256
-`844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628`, exactly
-one replacement of `@check_model_inputs()` with `@check_model_inputs`, yielding
-patched bytes `40517` and patched SHA-256
-`a9da44f2f6b7ff0beb4dd43e8c4c48138e51423e9bcc515a253ea088381d3b9c`. The
-evidence status is `COMPATIBILITY_PATCH_APPLIED`; this is not raw upstream
-compatibility, and any source/hash/count/path drift blocks before import.
+Both API smoke phases import the single shared bounded compatibility adapter
+from `qwen_source_compat.py` and apply exactly seven canonical source
+transforms only inside the disposable clean VAST source checkout. The
+enclosing reference manifest uses schema `vokra-qwen3-tts-reference-v4`; its
+nested compatibility record has operation
+`apply_exactly_seven_source_transforms` and `patch_count=7`, and binds these
+targets: `qwen_tts/__init__.py`, the newly created
+`qwen_tts/_transformers_compat.py`, `qwen_tts/core/__init__.py`,
+`qwen_tts/core/models/configuration_qwen3_tts.py`,
+`qwen_tts/core/models/modeling_qwen3_tts.py`,
+`qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py`, and
+`qwen_tts/inference/qwen3_tts_tokenizer.py`. Every target has fixed original
+and patched byte/hash identities in the record. The transform status is
+`COMPATIBILITY_PATCH_APPLIED`; it is not raw upstream compatibility, and any
+source, hash, count, or path drift blocks before import.
+
+The patched official `Qwen3TTSForConditionalGeneration.from_pretrained` also
+strictly reloads the local single-file `model.safetensors` immediately after
+the Transformers base load. The reload requires a regular non-symlink file and
+zero missing/unexpected keys; otherwise model loading fails closed instead of
+accepting random initialization. Real-weight API and reference evidence record
+`STRICT_RELOAD_PASS` with empty key lists. Non-local repository identifiers
+are eligible only with an immutable 40-hex revision whose cached checkpoint
+resolves to a regular, non-symlink file.
 
 The bounded API smoke is `scripts/publish/vast-ai/run-qwen3-tts-api-smoke.sh`.
 It is VAST/Linux x86_64-only, requires `VOKRA_PUBLISH_ON_VAST=1`, and stages
@@ -67,13 +82,12 @@ so the candidate route uses ordinary CPU `from_pretrained` with
 `low_cpu_mem_usage=False`. The shell and Python gates reject any lock that
 reintroduces Accelerate before synchronization or model download. This is a
 Accelerate-free load design candidate, not a completed reference result: the
-existing owner/license gate remains before dependency synchronization and model
-acquisition, the VAST worker requires at least 60 GB RAM and 100 GB free
-scratch space, and the real-weight load remains unverified until an authorized
-VAST run. After those gates pass it calls the official
+VAST worker requires at least 60 GB RAM and 100 GB free scratch space, and the
+real-weight load remains unverified until an authorized VAST run. After those
+gates pass it calls the official
 `Qwen3TTSModel.from_pretrained` wrapper and emits `api-smoke.json` under the
 disposable work directory. The evidence is a
-strict `vokra-qwen3-tts-api-smoke-v1` JSON document containing the exact source,
+strict `vokra-qwen3-tts-api-smoke-v4` JSON document containing the exact source,
 model, decoder, lock, approval-evidence SHA-256 plus the existing license gate
 manifest digest/approval scope/owner sign-offs, Vokra checkout HEAD/clean
 status, package-version, input-hash, and call-checkpoint records; its
@@ -100,13 +114,10 @@ constructs only config/processor objects, and records `PASS_MODEL_FREE` with
 source/model/operator approval fields still pending. It rejects any checkpoint
 file, never calls `Qwen3TTSModel.from_pretrained`, and is not a parity or
 publication result. Because the reviewed runtime intentionally excludes the
-forbidden `sox` and `onnxruntime` packages, the inspection installs strict
-import-only sentinels for both modules while importing the official source.
-Only inert `__file__` and valid `__spec__` metadata are allowed; functional
-attributes such as `sox.Transformer` and `onnxruntime.InferenceSession` fail
-closed. Successful
-evidence records each module independently under `optional_sentinels`, with
-`accesses=0`, and the original `sys.modules` state is restored.
+forbidden `sox`, `onnxruntime`, and `qwen_tts.core.tokenizer_25hz*` modules,
+the inspection records the actual post-import `sys.modules` set and requires
+`forbidden_imports=[]`. Fake sentinel modules are not used as a success
+condition.
 An import/API incompatibility is emitted as atomic `BLOCKED_INCOMPATIBLE_API`
 evidence with `checkpoint_load=NOT_PERFORMED`, never as an unstructured
 traceback.
@@ -128,23 +139,34 @@ the SHA-256 and byte length of canonical JSON with
 (including sorted sibling filenames). The raw API body is size-bounded before
 parsing but is not retained or hashed as evidence, so ignored API/card fields,
 whitespace, and object ordering cannot create evidence drift.
-README text and arbitrary metadata are never accepted as license evidence. It never acquires weights,
-imports model code, invokes Cargo, or uploads anything. The dependency audit
-evidence is currently `STALE_REQUIRES_VAST_AUDIT` because the security removal
-of `accelerate==1.12.0` (and its `psutil` transitive dependency) invalidated the
-prior installed-payload and native facts; an authorized Linux x86_64 VAST audit
-must rerun before owner approval. This stale marker is intentional and does
-not bypass dependency review.
+README text and arbitrary metadata are never accepted as license evidence. It
+never acquires weights, imports model code, invokes Cargo, or uploads anything.
+The fresh dependency audit at clean exact head
+`27c44dfd40c7fc807ecbf8e17afcfc5f53d9a320` reports
+`full_audit_status=PASS` for 55 active and 4 inactive rows, with 92 publisher
+license files and 253 native files, all with zero unsafe paths. Its committed
+compact evidence SHA-256 is
+`7f80d3c93d928720c390a6f5cbf96ac6e11c7ac07e622fff975343e4c9486d1d`; the
+full VAST report SHA-256 is
+`c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a`.
+The audit environment is Linux x86_64 with Python 3.12.14; model code,
+checkpoints, Cargo and upload were not used. This PASS is factual dependency
+evidence, not real-weight or numerical parity evidence.
 The owner-approval scope intentionally excludes this volatile dependency-audit
 reference to avoid a hash cycle; the compact bytes, full-report SHA-256, input
 hashes, closure/facts, and approval state remain bound separately by the gate.
 Every factual package/component record has a canonical full-fact digest bound
-back to its manifest row; inactive rows remain pending and carry no installed
-license/native claim. The compact evidence records factual installed metadata
-only and is not an owner legal conclusion. Owner approval and checkpoint/full
-API smoke remain blocked until a fresh exact-head VAST audit and legitimate
-dependency/component reviews are recorded; dependency synchronization and
-model-free API smoke are independent and may proceed.
+back to its manifest row. The owner-review transition uses the fixed signer
+handle `yousan` and canonical row/component subjects. The dependency/reference
+package boundary is internal-only: SciPy's GPL-with-GCC-exception/LGPL closure
+and torchaudio's native libsox/libav inventory remain audit facts and are not
+embedded in Vokra runtime or GGUF publication payloads. No model bytes are
+committed or uploaded, and the publication decision remains `NO_UPLOAD`. The
+compact evidence records factual installed metadata only and is not an owner
+legal conclusion. The owner/operator gate is now runnable against this exact
+fresh compact, but the authorized real-weight smoke/parity sequence still
+requires its own execution result. The follow-on Scaleway Apple CPU/Metal
+no-fallback check remains after that VAST gate.
 Run its `--self-test` locally; do not run the production audit on the
 maintainer machine. The production audit can optionally emit the compact
 projection with `--compact-output <absent-path>` when a separately authorized

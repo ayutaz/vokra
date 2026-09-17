@@ -24,10 +24,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from qwen_source_compat import (
+    SOURCE_BASE_REVISION,
+    SOURCE_HEAD_REVISION,
+    SOURCE_PR_STATUS,
+    SOURCE_PR_URL,
+    SOURCE_REPOSITORY,
+    TRANSFORMERS_VERSION,
+    CompatibilityPatchError,
+    compatibility_patch_record,
+    loaded_forbidden_imports,
+    validate_patch_record,
+    verify_patched_source_checkout,
+)
+
 SOURCE_REPO = "QwenLM/Qwen3-TTS"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 PACKAGE_VERSION = "0.1.1"
-SCHEMA = "vokra-qwen3-tts-reference-v1"
+SCHEMA = "vokra-qwen3-tts-reference-v4"
 CODEBOOKS = 16
 OUTPUT_SAMPLE_RATE = 24_000
 TEXT = "The Vokra parity packet is short and deterministic."
@@ -38,7 +52,10 @@ SPEAKER = "Serena"
 DECODER_REPO = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+TRANSFORMERS_COMPATIBILITY_ENV = "TRANSFORMERS_COMPATIBILITY_STATUS"
+TRANSFORMERS_COMPATIBILITY_STATUS = os.environ.get(
+    TRANSFORMERS_COMPATIBILITY_ENV, "BLOCKED_UNVERIFIED_API_SMOKE"
+)
 SNAPSHOT_TOP_LEVEL_ALLOWED = frozenset({
     "LICENSE", "README.md", "config.json", "generation_config.json", "merges.txt",
     "model.safetensors", "preprocessor_config.json", "tokenizer_config.json", "vocab.json",
@@ -136,12 +153,20 @@ def strict_json_loads(text: str) -> Any:
     return json.loads(text, object_pairs_hook=reject_duplicates)
 
 
+def _transformers_compatibility_status() -> str:
+    """Read the runner's exact status, defaulting safely to blocked."""
+    return os.environ.get(
+        TRANSFORMERS_COMPATIBILITY_ENV, "BLOCKED_UNVERIFIED_API_SMOKE"
+    )
+
+
 def require_transformers_api_smoke() -> None:
-    if TRANSFORMERS_COMPATIBILITY_STATUS == "AUTHENTICATED_API_SMOKE":
+    status = _transformers_compatibility_status()
+    if status == "AUTHENTICATED_API_SMOKE":
         return
-    if TRANSFORMERS_COMPATIBILITY_STATUS == "BLOCKED_UNVERIFIED_API_SMOKE":
+    if status == "BLOCKED_UNVERIFIED_API_SMOKE":
         die("Transformers API smoke is not authenticated; refusing official reference imports")
-    die(f"unknown Transformers API smoke status: {TRANSFORMERS_COMPATIBILITY_STATUS}")
+    die(f"unknown Transformers API smoke status: {status}")
 
 
 def sha256_file(path: Path) -> str:
@@ -257,7 +282,7 @@ def require_decoder_snapshot(model_dir: Path, decoder_dir: Path) -> tuple[str, s
     return DECODER_CHECKPOINT_SHA256, nested_sha
 
 
-def require_source_tree(source_dir: Path) -> None:
+def require_source_tree(source_dir: Path) -> dict[str, Any]:
     if not source_dir.is_dir() or not (source_dir / ".git").is_dir():
         die(f"authenticated official source tree is missing: {source_dir}")
     try:
@@ -273,6 +298,15 @@ def require_source_tree(source_dir: Path) -> None:
         die("official source package version drifted")
     if not (source_dir / "qwen_tts" / "__init__.py").is_file():
         die("official qwen_tts package is missing from the authenticated source tree")
+    try:
+        patch = verify_patched_source_checkout(source_dir)
+    except CompatibilityPatchError as error:
+        die(f"official source compatibility patch failed closed: {error}")
+    try:
+        validate_patch_record(patch)
+    except CompatibilityPatchError as error:
+        die(f"official source compatibility evidence is malformed: {error}")
+    return patch
 
 
 def environment() -> dict[str, object]:
@@ -281,19 +315,30 @@ def environment() -> dict[str, object]:
 
 def run_self_test() -> int:
     """Exercise the immutable packet contract without importing torch or weights."""
-    global TRANSFORMERS_COMPATIBILITY_STATUS
-    saved_status = TRANSFORMERS_COMPATIBILITY_STATUS
+    if TRANSFORMERS_COMPATIBILITY_STATUS != _transformers_compatibility_status():
+        die("Transformers API smoke environment was not reflected at startup")
+    had_status = TRANSFORMERS_COMPATIBILITY_ENV in os.environ
+    saved_status = os.environ.get(TRANSFORMERS_COMPATIBILITY_ENV)
     try:
-        TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
+        os.environ.pop(TRANSFORMERS_COMPATIBILITY_ENV, None)
+        try:
+            require_transformers_api_smoke()
+        except SystemExit:
+            pass
+        else:
+            die("unset Transformers API smoke status was accepted")
+        os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = "BLOCKED_UNVERIFIED_API_SMOKE"
         try:
             require_transformers_api_smoke()
         except SystemExit:
             pass
         else:
             die("blocked Transformers API smoke status was accepted")
-        TRANSFORMERS_COMPATIBILITY_STATUS = "AUTHENTICATED_API_SMOKE"
+        os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = "AUTHENTICATED_API_SMOKE"
+        if _transformers_compatibility_status() != "AUTHENTICATED_API_SMOKE":
+            die("authenticated Transformers API smoke status was not read from the environment")
         require_transformers_api_smoke()
-        TRANSFORMERS_COMPATIBILITY_STATUS = "UNKNOWN_STATUS"
+        os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = "UNKNOWN_STATUS"
         try:
             require_transformers_api_smoke()
         except SystemExit:
@@ -301,7 +346,11 @@ def run_self_test() -> int:
         else:
             die("unknown Transformers API smoke status was accepted")
     finally:
-        TRANSFORMERS_COMPATIBILITY_STATUS = saved_status
+        if had_status:
+            assert saved_status is not None
+            os.environ[TRANSFORMERS_COMPATIBILITY_ENV] = saved_status
+        else:
+            os.environ.pop(TRANSFORMERS_COMPATIBILITY_ENV, None)
     try:
         strict_json_loads('{"key": 1, "key": 2}')
     except ValueError:
@@ -346,8 +395,33 @@ def run_self_test() -> int:
         die("fixed packet contract drifted")
     if DECODER_REPO != "Qwen/Qwen3-TTS-Tokenizer-12Hz" or len(DECODER_REVISION) != 40:
         die("decoder identity drifted")
+    canonical_patch = compatibility_patch_record()
+    if (
+        canonical_patch["patch_count"] != 7
+        or canonical_patch["source_repository"] != SOURCE_REPOSITORY
+        or SOURCE_REPO != SOURCE_REPOSITORY
+        or canonical_patch["source_base_revision"] != SOURCE_BASE_REVISION
+        or SOURCE_REVISION != SOURCE_BASE_REVISION
+        or canonical_patch["source_head_revision"] != SOURCE_HEAD_REVISION
+        or canonical_patch["source_pr_url"] != SOURCE_PR_URL
+        or canonical_patch["source_pr_status"] != SOURCE_PR_STATUS
+        or canonical_patch["transformers_version"] != TRANSFORMERS_VERSION
+    ):
+        die("seven-target compatibility provenance is malformed")
+    try:
+        validate_patch_record(canonical_patch)
+    except CompatibilityPatchError as error:
+        die(f"canonical compatibility evidence is malformed: {error}")
+    stale_patch = dict(canonical_patch)
+    stale_patch["patch_count"] = 4
+    try:
+        validate_patch_record(stale_patch)
+    except CompatibilityPatchError:
+        pass
+    else:
+        die("legacy four-target compatibility evidence was accepted")
     source = Path(__file__).read_text(encoding="utf-8")
-    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source:
+    if not source.startswith("#!/usr/bin/env -S uv run") or "from qwen_tts import Qwen3TTSModel" not in source or "local_files_only=True" not in source or "STRICT_RELOAD_PASS" not in source or "nested_decoder_sha256" not in source or "--source-dir" not in source or "verify_patched_source_checkout" not in source:
         die("reference is not using the official local-only wrapper")
     if "pickle." + "loads" in source or "weights_only=" + "False" in source:
         die("unsafe pickle loading appeared in the reference dumper")
@@ -390,7 +464,7 @@ def main() -> int:
     if variant.kind == "base" and (reference_audio is None or not reference_audio.is_file()):
         die("Base variants require --reference-audio")
     source_dir = validate_raw_path(args.source_dir, "official source directory").resolve()
-    require_source_tree(source_dir)
+    source_patch = require_source_tree(source_dir)
     sys.path.insert(0, str(source_dir))
     output = prepare_output(output)
     config = require_snapshot(model_dir, variant)
@@ -418,6 +492,11 @@ def main() -> int:
     )
     if tts.device.type != "cpu":
         die(f"official model selected {tts.device}, expected CPU")
+    strict_reload = getattr(tts.model, "_qwen3_tts_strict_reload", None)
+    if not isinstance(strict_reload, dict) or strict_reload.get("status") != "STRICT_RELOAD_PASS":
+        die("patched official loader did not report strict safetensors reload success")
+    if strict_reload.get("missing_keys") != [] or strict_reload.get("unexpected_keys") != []:
+        die(f"strict safetensors reload reported key drift: {strict_reload!r}")
     input_ids = tts._tokenize_texts([tts._build_assistant_text(TEXT)])[0][0].detach().cpu()
     prompt = None
     if variant.kind == "base":
@@ -448,6 +527,9 @@ def main() -> int:
     pcm = numpy.asarray(wavs[0], dtype=numpy.float32)
     if int(sample_rate) != OUTPUT_SAMPLE_RATE:
         die(f"official decoder sample rate={sample_rate}, expected {OUTPUT_SAMPLE_RATE}")
+    forbidden_imports = loaded_forbidden_imports()
+    if forbidden_imports:
+        die(f"forbidden optional modules remained loaded after generation: {forbidden_imports}")
     write_u32(output / "prompt_ids.u32le", input_ids.numpy(), numpy)
     write_u32(output / "codes.u32le", codes.numpy(), numpy)
     write_f32(output / "pcm.f32le", pcm, numpy)
@@ -458,6 +540,13 @@ def main() -> int:
         "upstream_repo": variant.repo, "upstream_revision": variant.revision,
         "official_source_repo": SOURCE_REPO, "official_source_revision": SOURCE_REVISION,
         "qwen_tts_version": PACKAGE_VERSION, "text": TEXT, "language": LANGUAGE,
+        "compatibility_patch": source_patch, "forbidden_imports": forbidden_imports,
+        "strict_reload": {
+            "status": strict_reload["status"],
+            "return_type": strict_reload.get("return_type"),
+            "missing_keys": list(strict_reload["missing_keys"]),
+            "unexpected_keys": list(strict_reload["unexpected_keys"]),
+        },
         "speaker": SPEAKER if variant.kind != "base" else "official_x_vector_only",
         "max_new_tokens": MAX_NEW_TOKENS, "min_new_tokens": MIN_NEW_TOKENS, "sampling": "greedy",
         "sample_rate": OUTPUT_SAMPLE_RATE, "frames": int(codes.shape[0]), "codebooks": CODEBOOKS,

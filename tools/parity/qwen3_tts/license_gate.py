@@ -4,8 +4,9 @@
 The VAST worker runs this with ``uv run --no-project --offline`` before the
 reference project is synchronized or any snapshot is acquired.  Every locked
 package is represented by an exact version/source/marker/dependency row.  The
-review rows intentionally remain unapproved until an owner records the native
-and bundled closure and an exact sign-off identity/digest.
+reviewed rows carry an exact owner sign-off, but the stale VAST audit still
+blocks evidence supersession and any weight acquisition until a fresh audit
+is recorded at the clean checkout.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any
 GATE_VERSION = 2
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+OWNER_SIGNER = "yousan"
 DEPENDENCY_KEYS = (
     frozenset({"name"}),
     frozenset({"name", "marker"}),
@@ -117,6 +119,29 @@ EXPECTED_MODEL_METADATA = {
 }
 EXPECTED_SOURCE_LICENSE = {"sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655", "size": 11343}
 INACTIVE_ROW_REASON = "resolution marker is false or row is unreachable from the virtual project"
+# Exact factual fields from the primary VAST compact projection for the
+# torchaudio 2.7.1+cpu row.  Review fields are deliberately supplied from the
+# manifest below so this fixture exercises the same future-compact projection
+# used by dependency_audit.compact_digest without depending on /tmp evidence.
+TORCHAUDIO_FUTURE_FACTUAL = {
+    "declared_license": None,
+    "declared_license_bytes": None,
+    "declared_license_sha256": None,
+    "declared_license_truncated": False,
+    "license_classifiers": ["OSI Approved :: BSD License"],
+    "name": "torchaudio",
+    "native_file_count": 10,
+    "native_files_sha256": "03ac8e9bb516f5ea729658e7917567f602542d9759ebe6e606ccc3c6cabd34f9",
+    "native_files_unsafe": [],
+    "owner_review": "PENDING_OWNER_APPROVAL",
+    "publisher_file_count": 1,
+    "publisher_files_sha256": "21c6b1de6ecd0e63cdf1ae9f4d08248d9038328688043337533ef2accbcdcb1d",
+    "publisher_files_unsafe": [],
+    "sdist_license_status": None,
+    "source": {"registry": PYTORCH_CPU_INDEX},
+    "version": "2.7.1+cpu",
+}
+TORCHAUDIO_FUTURE_PAYLOAD_SHA256 = "0d0d46e824df337a8f7e0393951af1ade327dd29df15eb7def921178048f0499"
 EXPECTED_INACTIVE_ROWS = (
     ("colorama", "0.4.6", json.dumps({"registry": "https://pypi.org/simple"}, sort_keys=True), INACTIVE_ROW_REASON),
     ("torch", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
@@ -161,6 +186,20 @@ def digest_bytes(data: bytes) -> str:
 
 def canonical_digest(value: Any) -> str:
     return digest_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def fixed_approval_subject(kind: str, value: dict[str, Any]) -> dict[str, Any]:
+    """Build the canonical, row-bound authorization subject."""
+    return {"kind": kind, **value}
+
+
+def fixed_approval_digest(subject: dict[str, Any]) -> str:
+    return canonical_digest({
+        "schema": "v1",
+        "decision": "APPROVED",
+        "signer": OWNER_SIGNER,
+        "subject": subject,
+    })
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -487,18 +526,23 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
     if not isinstance(compact, dict) or set(compact) != expected_top or compact.get("schema") != COMPACT_SCHEMA or compact.get("status") != "PENDING_OWNER_APPROVAL" or compact.get("full_audit_sha256") != reference["full_audit_sha256"]:
         fail("compact dependency audit schema/status/hash drifted")
     synthetic = reference["full_audit_sha256"] == "e" * 64
+    if not synthetic and compact.get("full_audit_status") != "PASS":
+        fail("real compact dependency audit is not a PASS report")
     expected_inputs = {"pyproject_sha256": manifest.get("pyproject_sha256"), "uv_lock_sha256": manifest.get("lock_sha256"), "package_rows_sha256": manifest.get("package_rows_sha256"), "review_rows_sha256": manifest.get("review_rows_sha256"), "component_rows_sha256": manifest.get("component_rows_sha256"), "approval_scope_sha256": manifest.get("approval_scope_sha256")}
     if compact.get("inputs") != expected_inputs or any(not isinstance(value, str) or not HEX64.fullmatch(value) for value in expected_inputs.values()):
         fail("compact dependency audit is not bound to the manifest inputs")
     repository = compact["repository"]
     if set(repository) != {"head", "clean", "audit_script_sha256"} or repository["clean"] is not True or not HEX40.fullmatch(str(repository["head"])) or not HEX64.fullmatch(str(repository["audit_script_sha256"])):
         fail("compact dependency audit repository identity is malformed")
+    audit_script = path.with_name("dependency_audit.py")
+    if audit_script.is_symlink() or not audit_script.is_file() or digest_bytes(audit_script.read_bytes()) != repository["audit_script_sha256"]:
+        fail("compact dependency audit script bytes drifted")
     environment = compact["environment"]
     expected_environment = {"python": "3.12", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False} if synthetic else {"python": "3.12.14", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False}
     if set(environment) != set(expected_environment) or environment != expected_environment:
         fail("compact dependency audit scope is unsafe or drifted")
     closure = compact["closure"]
-    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 57, "inactive_rows": 4, "expected_count": 57, "installed_count": 57, "missing": [], "unexpected": [], "exact": True}
+    expected_closure = {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True} if synthetic else {"active_rows": 55, "inactive_rows": 4, "expected_count": 55, "installed_count": 55, "missing": [], "unexpected": [], "exact": True}
     if set(closure) != {"active_rows", "inactive_rows", "expected_count", "installed_count", "missing", "unexpected", "exact", "expected_sha256", "installed_sha256"} or any(closure.get(key) != value for key, value in expected_closure.items()):
         fail("compact dependency audit closure counts are not exact")
     if any(not isinstance(closure.get(key), int) or closure[key] < 0 for key in ("active_rows", "inactive_rows", "expected_count", "installed_count")) or any(not isinstance(closure.get(key), str) or not HEX64.fullmatch(closure[key]) for key in ("expected_sha256", "installed_sha256")):
@@ -521,6 +565,9 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
         key = (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), row["reason"])
         if key not in expected_inactive or key in inactive_keys or digest_bytes(json.dumps({k: row[k] for k in row if k != "fact_sha256"}, sort_keys=True, separators=(",", ":")).encode()) != row["fact_sha256"]:
             fail("compact inactive fact identity/reason/hash drifted")
+        review = next((item for item in reviews if (item["name"], item["version"], json.dumps(item["source"], sort_keys=True)) == key[:3]), None)
+        if review is None or review.get("payload_sha256") != row["fact_sha256"]:
+            fail("compact inactive fact is not bound to its reviewed manifest row")
         inactive_keys.add(key)
     active_reviews = {(row["name"], row["version"], json.dumps(row["source"], sort_keys=True)): row for row in reviews if (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), next((item[3] for item in expected_inactive if item[:3] == (row["name"], row["version"], json.dumps(row["source"], sort_keys=True))), None)) not in expected_inactive}
     package_facts = compact["license_facts"].get("packages")
@@ -540,8 +587,8 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
             if fact["declared_license"] is not None or not isinstance(fact["declared_license_bytes"], int) or fact["declared_license_bytes"] <= 256 or not HEX64.fullmatch(str(fact["declared_license_sha256"])): fail("compact truncated license fact is malformed")
         elif fact["declared_license_bytes"] is not None or fact["declared_license_sha256"] is not None or fact["declared_license"] is not None and not isinstance(fact["declared_license"], str): fail("compact declared license fact is malformed")
         expected_review = active_reviews[(fact["name"], fact["version"], json.dumps(fact["source"], sort_keys=True))]
-        if fact["review_license"] != expected_review["license"] or fact["review_native_bundled"] != expected_review["native_bundled"] or expected_review["status"] != "PENDING_OWNER_APPROVAL" or expected_review["approval_signer"] is not None or expected_review["approval_digest"] is not None:
-            fail("compact package fact is not bound to pending manifest review")
+        if fact["review_license"] != expected_review["license"] or fact["review_native_bundled"] != expected_review["native_bundled"] or expected_review["status"] != "REVIEWED" or expected_review["approval_signer"] != OWNER_SIGNER or not HEX64.fullmatch(str(expected_review["approval_digest"])):
+            fail("compact package fact is not bound to reviewed manifest review")
         fact_without_hash = {key: fact[key] for key in fact if key != "fact_sha256"}
         if digest_bytes(json.dumps(fact_without_hash, sort_keys=True, separators=(",", ":")).encode()) != fact["fact_sha256"] or expected_review["payload_sha256"] != fact["fact_sha256"]:
             fail("compact package fact digest is not bound to the manifest row")
@@ -585,7 +632,7 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
     for fact in component_facts:
         if set(fact) != component_fields or fact["owner_review"] != "PENDING_OWNER_APPROVAL" or not HEX64.fullmatch(str(fact["fact_sha256"])): fail("compact component fact schema drifted")
         expected = next(item for item in components if item["component"] == fact["component"])
-        if fact["identity"] != expected["identity"] or fact["review_license"] != expected["license"] or fact["review_native_bundled"] != expected["native_bundled"] or expected["status"] != "PENDING_OWNER_APPROVAL" or expected["approval_signer"] is not None or expected["approval_digest"] is not None: fail("compact component fact is not bound to pending manifest review")
+        if fact["identity"] != expected["identity"] or fact["review_license"] != expected["license"] or fact["review_native_bundled"] != expected["native_bundled"] or expected["status"] != "REVIEWED" or expected["approval_signer"] != OWNER_SIGNER or not HEX64.fullmatch(str(expected["approval_digest"])): fail("compact component fact is not bound to reviewed manifest review")
         if (fact["metadata"] is None) != (fact["component"] == "official_source") or fact["metadata"] is not None and fact["metadata"]["component"] != fact["component"]: fail("compact component metadata binding drifted")
         if fact["license_file"] is None or fact["license_file"]["component"] != fact["component"]: fail("compact component LICENSE binding drifted")
         if digest_bytes(json.dumps({key: fact[key] for key in fact if key != "fact_sha256"}, sort_keys=True, separators=(",", ":")).encode()) != fact["fact_sha256"] or expected["payload_sha256"] != fact["fact_sha256"]: fail("compact component fact digest is not bound to manifest")
@@ -604,18 +651,19 @@ def require_fixed_approval(
     signer: Any,
     approval_digest: Any,
     label: str,
+    subject: dict[str, Any],
 ) -> None:
     if (
         schema != "v1"
-        or not isinstance(signer, str)
-        or not HEX40.fullmatch(signer)
+        or signer != OWNER_SIGNER
         or not isinstance(approval_digest, str)
         or not HEX64.fullmatch(approval_digest)
+        or approval_digest != fixed_approval_digest(subject)
     ):
         fail(f"review row lacks a fixed owner sign-off identity/digest: {label}")
-    if not isinstance(approval, dict) or approval.get("schema") != "v1" or approval.get("decision") != "APPROVED":
+    if not isinstance(approval, dict) or set(approval) != {"schema", "decision", "signer", "signature_sha256", "subject"} or approval.get("schema") != "v1" or approval.get("decision") != "APPROVED":
         fail(f"evidence lacks the required approval schema: {label}")
-    if approval.get("signer") != signer or approval.get("signature_sha256") != approval_digest:
+    if approval.get("signer") != signer or approval.get("signature_sha256") != approval_digest or approval.get("subject") != subject:
         fail(f"evidence approval is not the fixed owner sign-off: {label}")
 
 
@@ -750,6 +798,8 @@ def run(
         evidence = strict_json_loads(evidence_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as error:
         fail(f"operator evidence is unreadable: {error}")
+    if not isinstance(evidence, dict) or set(evidence) != {"review_rows_sha256", "component_rows_sha256", "approval_scope_sha256", "rows", "components"}:
+        fail("operator evidence schema is not exact")
     if evidence.get("review_rows_sha256") != manifest.get("review_rows_sha256"):
         fail("operator evidence is not bound to the reviewed package rows")
     if evidence.get("component_rows_sha256") != manifest.get("component_rows_sha256"):
@@ -773,7 +823,7 @@ def run(
     for review in reviews:
         key = (review["name"], review["version"], json.dumps(review["source"], sort_keys=True))
         row = evidence_by_key.get(key)
-        if not isinstance(row, dict) or row.get("status") != "REVIEWED":
+        if not isinstance(row, dict) or set(row) != {"name", "version", "source", "status", "license", "native_bundled", "payload_sha256", "approval"} or row.get("status") != "REVIEWED":
             fail(f"missing reviewed evidence row: {key!r}")
         if row.get("license") != review["license"] or row.get("native_bundled") != review["native_bundled"]:
             fail(f"license/native/bundled evidence drifted: {key!r}")
@@ -784,7 +834,8 @@ def run(
         signer = review["approval_signer"]
         approval_digest = review["approval_digest"]
         require_fixed_approval(
-            row.get("approval"), review["approval_schema"], signer, approval_digest, repr(key)
+            row.get("approval"), review["approval_schema"], signer, approval_digest, repr(key),
+            fixed_approval_subject("package", {"name": review["name"], "version": review["version"], "source": review["source"], "license": review["license"], "native_bundled": review["native_bundled"], "payload_sha256": review["payload_sha256"]}),
         )
     component_evidence = evidence.get("components")
     if not isinstance(component_evidence, list) or len(component_evidence) != len(components):
@@ -798,7 +849,7 @@ def run(
         fail("operator evidence component rows do not exactly cover fixed identities")
     for component in components:
         row = component_evidence_by_key[component["component"]]
-        if row.get("status") != "REVIEWED":
+        if set(row) != {"component", "status", "license", "native_bundled", "payload_sha256", "approval"} or row.get("status") != "REVIEWED":
             fail(f"missing reviewed component evidence: {component['component']}")
         if row.get("license") != component["license"] or row.get("native_bundled") != component["native_bundled"]:
             fail(f"component license/native evidence drifted: {component['component']}")
@@ -807,7 +858,8 @@ def run(
         signer = component["approval_signer"]
         approval_digest = component["approval_digest"]
         require_fixed_approval(
-            row.get("approval"), component["approval_schema"], signer, approval_digest, component["component"]
+            row.get("approval"), component["approval_schema"], signer, approval_digest, component["component"],
+            fixed_approval_subject("component", {"component": component["component"], "identity": component["identity"], "license": component["license"], "native_bundled": component["native_bundled"], "payload_sha256": component["payload_sha256"]}),
         )
     print("qwen3-tts license gate: PASS")
 
@@ -842,20 +894,46 @@ def self_test() -> None:
     production_rows = package_rows(production_lock)
     production_reviews = review_rows(production_rows, production_manifest)
     production_components = component_rows(production_manifest)
+    torchaudio_review = next(
+        row for row in production_reviews
+        if row["name"] == "torchaudio" and row["version"] == "2.7.1+cpu"
+    )
+    torchaudio_future_payload = {
+        **TORCHAUDIO_FUTURE_FACTUAL,
+        "review_license": torchaudio_review["license"],
+        "review_native_bundled": torchaudio_review["native_bundled"],
+    }
+    assert canonical_digest(torchaudio_future_payload) == TORCHAUDIO_FUTURE_PAYLOAD_SHA256
+    assert torchaudio_review["payload_sha256"] == TORCHAUDIO_FUTURE_PAYLOAD_SHA256
     # Keep the manifest hash cascade covered even when the stale-evidence
     # blocker returns before normal component/approval validation.
     assert production_manifest["package_rows_sha256"] == canonical_digest(production_rows)
     assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
+    for review in production_reviews:
+        subject = fixed_approval_subject("package", {
+            "name": review["name"], "version": review["version"], "source": review["source"],
+            "license": review["license"], "native_bundled": review["native_bundled"],
+            "payload_sha256": review["payload_sha256"],
+        })
+        assert review["approval_signer"] == OWNER_SIGNER
+        assert review["approval_digest"] == fixed_approval_digest(subject)
+    for component in production_components:
+        subject = fixed_approval_subject("component", {
+            "component": component["component"], "identity": component["identity"],
+            "license": component["license"], "native_bundled": component["native_bundled"],
+            "payload_sha256": component["payload_sha256"],
+        })
+        assert component["approval_signer"] == OWNER_SIGNER
+        assert component["approval_digest"] == fixed_approval_digest(subject)
     stable_scope = approval_scope(production_manifest)
     assert production_manifest["approval_scope_sha256"] == canonical_digest(stable_scope)
     assert production_manifest["dependency_audit_evidence"] == {
         "schema": COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "563d70ce7977f83ea56717e10ccb3d2a7f9d444ee2cbd4481ea302aad101a78b",
-        "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
-        "status": "STALE_REQUIRES_VAST_AUDIT",
-        "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before owner approval.",
+        "sha256": "7f80d3c93d928720c390a6f5cbf96ac6e11c7ac07e622fff975343e4c9486d1d",
+        "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
+        "status": "PENDING_OWNER_APPROVAL",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
     assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
@@ -946,11 +1024,17 @@ def self_test() -> None:
                 "native_bundled": review_values[row["name"]][1],
                 "payload_sha256": "0" * 64,
                 "approval_schema": "v1",
-                "approval_signer": "a" * 40,
-                "approval_digest": "b" * 64,
+                "approval_signer": OWNER_SIGNER,
+                "approval_digest": None,
             }
             for row in rows
         ]
+        for row in explicit_reviews:
+            row["approval_digest"] = fixed_approval_digest(fixed_approval_subject("package", {
+                "name": row["name"], "version": row["version"], "source": row["source"],
+                "license": row["license"], "native_bundled": row["native_bundled"],
+                "payload_sha256": row["payload_sha256"],
+            }))
         manifest = {
             "gate_version": GATE_VERSION,
             "lock_sha256": digest_bytes(lock.read_bytes()),
@@ -965,8 +1049,8 @@ def self_test() -> None:
                     "native_bundled": "no native or bundled code",
                     "payload_sha256": "0" * 64,
                     "approval_schema": "v1",
-                    "approval_signer": "a" * 40,
-                    "approval_digest": "b" * 64,
+                    "approval_signer": OWNER_SIGNER,
+                    "approval_digest": None,
                 }
                 for identity in fixed_component_identities()
             ],
@@ -985,6 +1069,13 @@ def self_test() -> None:
         reviews = review_rows(rows, manifest)
         manifest["review_rows_sha256"] = canonical_digest(reviews)
         components = component_rows(manifest)
+        for row in manifest["component_rows"]:
+            row["approval_digest"] = fixed_approval_digest(fixed_approval_subject("component", {
+                "component": row["component"], "identity": row["identity"],
+                "license": row["license"], "native_bundled": row["native_bundled"],
+                "payload_sha256": row["payload_sha256"],
+            }))
+        components = component_rows(manifest)
         manifest["component_rows_sha256"] = canonical_digest(components)
         project = root / "pyproject.toml"
         project.write_text('[project]\nname = "qwen3-tts-self-test"\n', encoding="utf-8")
@@ -993,6 +1084,8 @@ def self_test() -> None:
         manifest["pyproject_sha256"] = digest_bytes(project.read_bytes())
         manifest_path = root / "manifest.json"
         compact_path = root / "dependency_audit_evidence.json"
+        audit_script = root / "dependency_audit.py"
+        audit_script.write_bytes((production_root / "dependency_audit.py").read_bytes())
         compact = {
             "schema": COMPACT_SCHEMA,
             "status": "PENDING_OWNER_APPROVAL",
@@ -1006,7 +1099,7 @@ def self_test() -> None:
                 "component_rows_sha256": manifest["component_rows_sha256"],
                 "approval_scope_sha256": "0" * 64,
             },
-            "repository": {"head": "a" * 40, "clean": True, "audit_script_sha256": "b" * 64},
+            "repository": {"head": "a" * 40, "clean": True, "audit_script_sha256": digest_bytes(audit_script.read_bytes())},
             "environment": {"python": "3.12", "platform": "linux", "machine": "x86_64", "model_code_imported": False, "cargo_invoked": False, "upload_performed": False},
             "closure": {"active_rows": 2, "inactive_rows": 0, "expected_count": 2, "installed_count": 2, "missing": [], "unexpected": [], "exact": True, "expected_sha256": "c" * 64, "installed_sha256": "d" * 64},
             "license_facts": {"package_count": 2, "declared_license_missing": 0, "publisher_file_count": 0, "unsafe_publisher_file_count": 0, "packages": [{"name": row["name"], "version": row["version"], "source": row["source"]} for row in rows], "classification": "self-test"},
@@ -1034,6 +1127,7 @@ def self_test() -> None:
             ("compact closure tamper", lambda value: value["closure"].update(exact=False)),
             ("compact model metadata tamper", lambda value: value["model_facts"]["metadata_records"][0].update(component="tampered")),
             ("compact approval tamper", lambda value: value["approval"].update(signer="a" * 40)),
+            ("compact audit script tamper", lambda value: value["repository"].update(audit_script_sha256="0" * 64)),
         ):
             candidate = json.loads(json.dumps(compact_base))
             mutate(candidate)
@@ -1058,7 +1152,11 @@ def self_test() -> None:
                 "license": review_values[row["name"]][0],
                 "native_bundled": review_values[row["name"]][1],
                 "payload_sha256": "0" * 64,
-                "approval": {"schema": "v1", "decision": "APPROVED", "signer": "a" * 40, "signature_sha256": "b" * 64},
+                "approval": {"schema": "v1", "decision": "APPROVED", "signer": OWNER_SIGNER, "signature_sha256": row["approval_digest"], "subject": fixed_approval_subject("package", {
+                    "name": row["name"], "version": row["version"], "source": row["source"],
+                    "license": row["license"], "native_bundled": row["native_bundled"],
+                    "payload_sha256": row["payload_sha256"],
+                })},
             }
             for row in reviews
         ]
@@ -1072,7 +1170,11 @@ def self_test() -> None:
                 "license": component["license"],
                 "native_bundled": component["native_bundled"],
                 "payload_sha256": component["payload_sha256"],
-                "approval": {"schema": "v1", "decision": "APPROVED", "signer": "a" * 40, "signature_sha256": "b" * 64},
+                "approval": {"schema": "v1", "decision": "APPROVED", "signer": OWNER_SIGNER, "signature_sha256": component["approval_digest"], "subject": fixed_approval_subject("component", {
+                    "component": component["component"], "identity": component["identity"],
+                    "license": component["license"], "native_bundled": component["native_bundled"],
+                    "payload_sha256": component["payload_sha256"],
+                })},
             }
             for component in components
         ]
@@ -1192,6 +1294,8 @@ def self_test() -> None:
         blocked("license tamper", mutate_evidence=lambda value: value["rows"][0].update(license="GPL-3.0-only"))
         blocked("native closure tamper", mutate_evidence=lambda value: value["rows"][0].update(native_bundled="changed"))
         blocked("approval tamper", mutate_evidence=lambda value: value["rows"][0]["approval"].update(signature_sha256="1" * 64))
+        blocked("approval signer tamper", mutate_evidence=lambda value: value["rows"][0]["approval"].update(signer="other-owner"))
+        blocked("approval evidence extra key", mutate_evidence=lambda value: value.update(extra="rejected"))
         blocked(
             "unresolved license row",
             mutate_manifest=lambda value: value["review_rows"][0].update(license="UNRESOLVED"),

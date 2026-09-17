@@ -29,26 +29,29 @@ from pathlib import Path
 from typing import Any
 
 from qwen_source_compat import (
-    PATCH_TARGET as COMPATIBILITY_PATCH_TARGET,
-    PATCHED_BYTES as COMPATIBILITY_PATCHED_BYTES,
-    PATCHED_SHA256 as COMPATIBILITY_PATCHED_SHA256,
+    COMPATIBILITY_PATCH_TARGETS,
+    SOURCE_BASE_REVISION,
+    SOURCE_HEAD_REVISION,
+    SOURCE_PR_STATUS,
+    SOURCE_PR_URL,
+    SOURCE_REPOSITORY as COMPATIBILITY_SOURCE_REPOSITORY,
+    TRANSFORMERS_VERSION as COMPATIBILITY_TRANSFORMERS_VERSION,
+    compatibility_patch_record,
+    loaded_forbidden_imports,
     patch_source_checkout,
     self_test_filesystem,
+    validate_patch_record,
     CompatibilityPatchError,
 )
 
-SCHEMA = "vokra-qwen3-tts-model-free-api-smoke-v1"
+SCHEMA = "vokra-qwen3-tts-model-free-api-smoke-v3"
 SOURCE_REPOSITORY = "QwenLM/Qwen3-TTS"
 SOURCE_URL = "https://github.com/QwenLM/Qwen3-TTS.git"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 SOURCE_PACKAGE_VERSION = "0.1.1"
-SOURCE_FILES = (
-    "qwen_tts/__init__.py",
-    "qwen_tts/core/models/configuration_qwen3_tts.py",
+SOURCE_FILES = tuple(dict.fromkeys((*COMPATIBILITY_PATCH_TARGETS,
     "qwen_tts/core/models/processing_qwen3_tts.py",
-    "qwen_tts/inference/qwen3_tts_model.py",
-    "qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py",
-)
+    "qwen_tts/inference/qwen3_tts_model.py")))
 VARIANTS: dict[str, dict[str, Any]] = {
     "0.6b-base": {
         "repository": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -102,17 +105,17 @@ EXPECTED_PACKAGE_VERSIONS = {
     "transformers": "5.10.4",
 }
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
+FORBIDDEN_OPTIONAL_MODULES = {
+    "sox": "/__vokra_import_only_sox_sentinel__.py",
+    "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
+}
+ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 EXPECTED_TORCH_FAMILY = "2.7.1"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
 CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-FORBIDDEN_OPTIONAL_MODULES = {
-    "sox": "/__vokra_import_only_sox_sentinel__.py",
-    "onnxruntime": "/__vokra_import_only_onnxruntime_sentinel__.py",
-}
-ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
 SOURCE_FILE_SET = set(SOURCE_FILES)
 SOURCE_FILE_CLASS_PATHS = {
     "config": "qwen_tts/core/models/configuration_qwen3_tts.py",
@@ -127,10 +130,9 @@ API_RECORD_KEYS = {
     "imports", "package_versions", "config_class", "processor_class", "wrapper_class",
     "config_from_pretrained", "processor_from_pretrained", "wrapper_from_pretrained",
     "wrapper_signature", "generate_voice_clone_signature", "checkpoint_load",
-    "optional_sentinels", "source_facts",
+    "forbidden_imports", "source_facts",
 }
 API_SOURCE_FACT_KEYS = {"path", "bytes", "sha256"}
-SENTINEL_RECORD_KEYS = {"installed", "allowed_metadata", "sentinel_file", "metadata_reads", "metadata_keys", "accesses"}
 APPROVAL_KEYS = {"source_license", "model_license", "operator", "signer", "scope_sha256"}
 ENVIRONMENT_KEYS = {"python", "platform", "machine"}
 
@@ -139,16 +141,16 @@ class ProbeError(RuntimeError):
     """A fail-closed model-free probe failure."""
 
 
-class ForbiddenOptionalModuleAccessError(ProbeError):
-    """A forbidden optional module was accessed during import."""
-
-
 class ApiProbeFailure(ProbeError):
-    """An official API import/introspection failure with sentinel evidence."""
+    """An official API import/introspection failure with import evidence."""
 
-    def __init__(self, message: str, *, sentinel_records: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, message: str, *, forbidden_imports: list[str]) -> None:
         super().__init__(message)
-        self.sentinel_records = sentinel_records
+        self.forbidden_imports = forbidden_imports
+
+
+class ForbiddenOptionalModuleAccessError(ProbeError):
+    """A self-test sentinel was accessed; never used by production probes."""
 
 
 class _ForbiddenOptionalModuleSentinel(types.ModuleType):
@@ -162,71 +164,57 @@ class _ForbiddenOptionalModuleSentinel(types.ModuleType):
 
     def __getattribute__(self, name: str) -> Any:
         if name == "__file__":
-            reads = object.__getattribute__(self, "_metadata_reads")
-            object.__setattr__(self, "_metadata_reads", reads + 1)
+            object.__setattr__(self, "_metadata_reads", object.__getattribute__(self, "_metadata_reads") + 1)
             object.__getattribute__(self, "_metadata_keys").append(name)
             return object.__getattribute__(self, "_sentinel_file")
         if name == "__spec__":
-            reads = object.__getattribute__(self, "_metadata_reads")
-            object.__setattr__(self, "_metadata_reads", reads + 1)
+            object.__setattr__(self, "_metadata_reads", object.__getattribute__(self, "_metadata_reads") + 1)
             object.__getattribute__(self, "_metadata_keys").append(name)
             return super().__getattribute__(name)
         if name.startswith("__") and name.endswith("__"):
             return super().__getattribute__(name)
-        accesses = object.__getattribute__(self, "_accesses") + 1
-        object.__setattr__(self, "_accesses", accesses)
-        module_name = object.__getattribute__(self, "__name__")
-        raise ForbiddenOptionalModuleAccessError(f"forbidden {module_name} access: {name}")
+        object.__setattr__(self, "_accesses", object.__getattribute__(self, "_accesses") + 1)
+        raise ForbiddenOptionalModuleAccessError(f"forbidden {object.__getattribute__(self, '__name__')} access: {name}")
 
     def __getattr__(self, name: str) -> Any:
-        accesses = object.__getattribute__(self, "_accesses") + 1
-        object.__setattr__(self, "_accesses", accesses)
-        module_name = object.__getattribute__(self, "__name__")
-        raise ForbiddenOptionalModuleAccessError(f"forbidden {module_name} access: {name}")
+        object.__setattr__(self, "_accesses", object.__getattribute__(self, "_accesses") + 1)
+        raise ForbiddenOptionalModuleAccessError(f"forbidden {object.__getattribute__(self, '__name__')} access: {name}")
 
 
 def optional_sentinel_records(sentinels: dict[str, _ForbiddenOptionalModuleSentinel]) -> dict[str, dict[str, Any]]:
-    records: dict[str, dict[str, Any]] = {}
-    for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items():
-        sentinel = sentinels.get(module_name)
-        records[module_name] = {
-            "installed": sentinel is not None,
+    return {
+        module_name: {
+            "installed": (sentinel := sentinels.get(module_name)) is not None,
             "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
             "sentinel_file": sentinel_file,
             "metadata_reads": object.__getattribute__(sentinel, "_metadata_reads") if sentinel is not None else 0,
             "metadata_keys": list(object.__getattribute__(sentinel, "_metadata_keys")) if sentinel is not None else [],
             "accesses": object.__getattribute__(sentinel, "_accesses") if sentinel is not None else 0,
         }
-    return records
+        for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
+    }
 
 
 @contextmanager
 def install_forbidden_optional_sentinels() -> Any:
-    """Provide inert import-only modules and restore ``sys.modules`` exactly."""
-
+    """Self-test-only guard; production uses loaded_forbidden_imports()."""
     for module_name in FORBIDDEN_OPTIONAL_MODULES:
-        if module_name in sys.modules:
+        if module_name in sys.modules or importlib.util.find_spec(module_name) is not None:
             raise ProbeError(f"real or pre-existing {module_name} module is installed")
-        if importlib.util.find_spec(module_name) is not None:
-            raise ProbeError(f"real {module_name} package is installed")
-    sentinels = {
-        module_name: _ForbiddenOptionalModuleSentinel(module_name, sentinel_file)
-        for module_name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
-    }
-    for module_name, sentinel in sentinels.items():
-        sys.modules[module_name] = sentinel
+    sentinels = {name: _ForbiddenOptionalModuleSentinel(name, path) for name, path in FORBIDDEN_OPTIONAL_MODULES.items()}
+    sys.modules.update(sentinels)
     try:
         yield sentinels
     finally:
         overwritten: list[str] = []
-        for module_name, sentinel in sentinels.items():
-            if module_name not in sys.modules:
+        for name, sentinel in sentinels.items():
+            if name not in sys.modules:
                 continue
-            if sys.modules[module_name] is not sentinel:
-                overwritten.append(module_name)
-            del sys.modules[module_name]
+            if sys.modules[name] is not sentinel:
+                overwritten.append(name)
+            del sys.modules[name]
         if overwritten:
-            raise ProbeError(f"optional module sentinels were overwritten during API probe: {overwritten}")
+            raise ProbeError(f"optional module sentinels were overwritten: {overwritten}")
 
 
 def pending_approval() -> dict[str, Any]:
@@ -291,32 +279,27 @@ def validate_source_record(source: dict[str, Any]) -> None:
     for relative, record in files.items():
         if relative not in SOURCE_FILE_SET or not isinstance(record, dict):
             raise ProbeError(f"official source file record is malformed: {relative}")
-        if relative == COMPATIBILITY_PATCH_TARGET:
+        if relative in COMPATIBILITY_PATCH_TARGETS:
             require_exact_keys(record, {"original_bytes", "original_sha256", "bytes", "sha256"}, f"source file {relative}")
-            if record["original_bytes"] != 40519 or record["original_sha256"] != "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628":
-                raise ProbeError(f"official source original identity drifted: {relative}")
         else:
             require_exact_keys(record, {"bytes", "sha256"}, f"source file {relative}")
         if not isinstance(record["bytes"], int) or record["bytes"] <= 0 or not isinstance(record["sha256"], str) or not HEX64.fullmatch(record["sha256"]):
             raise ProbeError(f"official source file identity is malformed: {relative}")
     patch = source["compatibility_patch"]
-    require_exact_keys(patch, {"status", "target", "operation", "original_bytes", "original_sha256", "patched_bytes", "patched_sha256", "replacement_count", "transformers_api"}, "compatibility patch")
-    expected_patch = {
-        "status": "COMPATIBILITY_PATCH_APPLIED",
-        "target": COMPATIBILITY_PATCH_TARGET,
-        "operation": "replace_exactly_one_decorator",
-        "original_bytes": 40519,
-        "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
-        "patched_bytes": COMPATIBILITY_PATCHED_BYTES,
-        "patched_sha256": COMPATIBILITY_PATCHED_SHA256,
-        "replacement_count": 1,
-        "transformers_api": "check_model_inputs(func)",
-    }
-    if patch != expected_patch:
-        raise ProbeError("compatibility patch identity drifted")
-    patch_file = files[COMPATIBILITY_PATCH_TARGET]
-    if patch_file["bytes"] != COMPATIBILITY_PATCHED_BYTES or patch_file["sha256"] != COMPATIBILITY_PATCHED_SHA256:
-        raise ProbeError("patched source file identity drifted")
+    try:
+        validate_patch_record(patch)
+    except CompatibilityPatchError as error:
+        raise ProbeError(f"compatibility patch identity drifted: {error}") from error
+    for row in patch["patches"]:
+        patch_file = files[row["target"]]
+        expected_file = {
+            "original_bytes": row["original_bytes"],
+            "original_sha256": row["original_sha256"],
+            "bytes": row["patched_bytes"],
+            "sha256": row["patched_sha256"],
+        }
+        if patch_file != expected_file:
+            raise ProbeError("patched source file identity drifted")
 
 
 def validate_project_record(project: dict[str, Any]) -> None:
@@ -358,17 +341,6 @@ def validate_variant_record(variant: str, record: dict[str, Any]) -> None:
             raise ProbeError(f"variant metadata identity drifted: {variant}/{name}")
 
 
-def validate_sentinel_records(records: dict[str, Any], label: str) -> None:
-    if not isinstance(records, dict) or set(records) != set(FORBIDDEN_OPTIONAL_MODULES):
-        raise ProbeError(f"{label} optional sentinel set drifted")
-    for module_name, record in records.items():
-        require_exact_keys(record, SENTINEL_RECORD_KEYS, f"{label} sentinel {module_name}")
-        if record["installed"] is not True or record["allowed_metadata"] != ALLOWED_OPTIONAL_METADATA or record["sentinel_file"] != FORBIDDEN_OPTIONAL_MODULES[module_name] or record["accesses"] != 0:
-            raise ProbeError(f"{label} optional sentinel contract drifted: {module_name}")
-        if not isinstance(record["metadata_reads"], int) or record["metadata_reads"] < 0 or not isinstance(record["metadata_keys"], list) or len(record["metadata_keys"]) != record["metadata_reads"] or any(key not in ALLOWED_OPTIONAL_METADATA for key in record["metadata_keys"]):
-            raise ProbeError(f"{label} optional sentinel metadata reads malformed: {module_name}")
-
-
 def validate_api_record(variant: str, api: dict[str, Any], source_files: dict[str, Any]) -> None:
     require_exact_keys(api, API_RECORD_KEYS, f"API {variant}")
     expected_classes = {
@@ -397,7 +369,11 @@ def validate_api_record(variant: str, api: dict[str, Any], source_files: dict[st
         require_exact_keys(fact, API_SOURCE_FACT_KEYS, f"API {variant} source {label}")
         if fact["path"] != relative or fact["bytes"] != source_files[relative]["bytes"] or fact["sha256"] != source_files[relative]["sha256"]:
             raise ProbeError(f"API {variant} source identity drifted: {label}")
-    validate_sentinel_records(api["optional_sentinels"], f"API {variant}")
+    forbidden = api["forbidden_imports"]
+    if not isinstance(forbidden, list) or forbidden != sorted(forbidden) or any(not isinstance(name, str) for name in forbidden):
+        raise ProbeError(f"API {variant} forbidden import evidence is malformed")
+    if forbidden:
+        raise ProbeError(f"API {variant} imported forbidden optional modules: {forbidden}")
 
 
 def validate_approval(approval: dict[str, Any]) -> None:
@@ -413,7 +389,7 @@ def validate_evidence(path: Path, expected_head: str, expected_variant: str) -> 
     if expected_variant not in {*VARIANTS, "all"}:
         raise ProbeError("expected variant scope is invalid")
     evidence = strict_json(path.read_text(encoding="utf-8"))
-    require_exact_keys(evidence, {"schema", "status", "publication", "expected_head", "source", "variants", "project", "api", "optional_sentinels", "checkpoint_load", "approval", "environment"}, "evidence")
+    require_exact_keys(evidence, {"schema", "status", "publication", "expected_head", "source", "variants", "project", "api", "forbidden_imports", "checkpoint_load", "approval", "environment"}, "evidence")
     if evidence["schema"] != SCHEMA or evidence["status"] != "PASS_MODEL_FREE" or evidence["publication"] != "NO_UPLOAD" or evidence["expected_head"] != expected_head or evidence["checkpoint_load"] != "NOT_PERFORMED":
         raise ProbeError("model-free evidence status/HEAD/checkpoint contract drifted")
     validate_source_record(evidence["source"])
@@ -426,7 +402,8 @@ def validate_evidence(path: Path, expected_head: str, expected_variant: str) -> 
     for variant in selected:
         validate_variant_record(variant, variants[variant])
         validate_api_record(variant, api[variant], evidence["source"]["files"])
-    validate_sentinel_records(evidence["optional_sentinels"], "aggregate")
+    if evidence["forbidden_imports"] != []:
+        raise ProbeError("aggregate forbidden import evidence is not empty")
     validate_approval(evidence["approval"])
     require_exact_keys(evidence["environment"], ENVIRONMENT_KEYS, "environment")
     if any(not isinstance(evidence["environment"][key], str) or not evidence["environment"][key] for key in ENVIRONMENT_KEYS):
@@ -546,19 +523,19 @@ def verify_source(source: Path) -> dict[str, Any]:
     files: dict[str, dict[str, Any]] = {}
     for relative in SOURCE_FILES:
         path = source / relative
+        if relative in COMPATIBILITY_PATCH_TARGETS:
+            # The helper target is intentionally absent before patching.  The
+            # patcher validates all compatibility targets atomically and adds
+            # the helper before returning its authenticated record.
+            continue
         require_regular(path, f"official source {relative}")
-        if relative != COMPATIBILITY_PATCH_TARGET:
-            files[relative] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+        files[relative] = {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
     try:
         patch = patch_source_checkout(source)
     except CompatibilityPatchError as error:
         raise ProbeError(str(error)) from error
-    files[COMPATIBILITY_PATCH_TARGET] = {
-        "original_bytes": patch["original_bytes"],
-        "original_sha256": patch["original_sha256"],
-        "bytes": patch["patched_bytes"],
-        "sha256": patch["patched_sha256"],
-    }
+    for row in patch["patches"]:
+        files[row["target"]] = {"original_bytes": row["original_bytes"], "original_sha256": row["original_sha256"], "bytes": row["patched_bytes"], "sha256": row["patched_sha256"]}
     return {"repository": SOURCE_REPOSITORY, "url": SOURCE_URL, "revision": SOURCE_REVISION,
             "package_version": SOURCE_PACKAGE_VERSION, "files": files,
             "compatibility_patch": patch}
@@ -602,56 +579,36 @@ def verify_metadata(snapshot: Path, variant: str) -> dict[str, Any]:
 
 def api_probe(source: Path, snapshot: Path) -> dict[str, Any]:
     sys.path.insert(0, str(source))
-    sentinels: dict[str, _ForbiddenOptionalModuleSentinel] = {}
     try:
-        with install_forbidden_optional_sentinels() as sentinels:
-            import qwen_tts
-            from qwen_tts import Qwen3TTSModel
-            from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSProcessor
-            config = Qwen3TTSConfig.from_pretrained(str(snapshot), local_files_only=True)
-            processor = Qwen3TTSProcessor.from_pretrained(str(snapshot), local_files_only=True)
-            if processor is None or config.model_type != "qwen3_tts":
-                raise ProbeError("official processor/config construction returned an invalid object")
-            package_root = Path(qwen_tts.__file__).resolve().parents[1]
-            if package_root != source.resolve():
-                raise ProbeError(f"qwen_tts imported from unexpected path: {package_root}")
-            versions = {
-                name: importlib.metadata.version(name)
-                for name in ("einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")
-            }
-            if versions["transformers"] != "5.10.4":
-                raise ProbeError(f"Transformers runtime drifted: {versions['transformers']}")
-            sentinel_records = optional_sentinel_records(sentinels)
-            if any(record["accesses"] != 0 for record in sentinel_records.values()):
-                raise ProbeError(f"forbidden optional module access counts: {sentinel_records}")
-            return {
-                "imports": [
-                    "qwen_tts.Qwen3TTSModel",
-                    "qwen_tts.core.models.Qwen3TTSConfig",
-                    "qwen_tts.core.models.Qwen3TTSProcessor",
-                ],
-                "package_versions": versions,
-                "config_class": f"{Qwen3TTSConfig.__module__}.{Qwen3TTSConfig.__name__}",
-                "processor_class": f"{Qwen3TTSProcessor.__module__}.{Qwen3TTSProcessor.__name__}",
-                "wrapper_class": f"{Qwen3TTSModel.__module__}.{Qwen3TTSModel.__name__}",
-                "config_from_pretrained": "CALLED_LOCAL_ONLY",
-                "processor_from_pretrained": "CALLED_LOCAL_ONLY",
-                "wrapper_from_pretrained": "NOT_CALLED",
-                "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)),
-                "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
-                "source_facts": {
-                    "config": source_fact(Qwen3TTSConfig, source),
-                    "processor": source_fact(Qwen3TTSProcessor, source),
-                    "wrapper": source_fact(Qwen3TTSModel, source),
-                },
-                "checkpoint_load": "NOT_PERFORMED",
-                "optional_sentinels": sentinel_records,
-            }
+        import qwen_tts
+        from qwen_tts import Qwen3TTSModel
+        from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSProcessor
+        config = Qwen3TTSConfig.from_pretrained(str(snapshot), local_files_only=True)
+        processor = Qwen3TTSProcessor.from_pretrained(str(snapshot), local_files_only=True)
+        if processor is None or config.model_type != "qwen3_tts":
+            raise ProbeError("official processor/config construction returned an invalid object")
+        forbidden_imports = loaded_forbidden_imports()
+        if forbidden_imports:
+            raise ProbeError(f"forbidden optional modules were imported after config/processor construction: {forbidden_imports}")
+        package_root = Path(qwen_tts.__file__).resolve().parents[1]
+        if package_root != source.resolve():
+            raise ProbeError(f"qwen_tts imported from unexpected path: {package_root}")
+        versions = {name: importlib.metadata.version(name) for name in ("einops", "librosa", "numpy", "soundfile", "torch", "torchaudio", "transformers")}
+        if versions["transformers"] != "5.10.4":
+            raise ProbeError(f"Transformers runtime drifted: {versions['transformers']}")
+        return {
+            "imports": ["qwen_tts.Qwen3TTSModel", "qwen_tts.core.models.Qwen3TTSConfig", "qwen_tts.core.models.Qwen3TTSProcessor"],
+            "package_versions": versions,
+            "config_class": f"{Qwen3TTSConfig.__module__}.{Qwen3TTSConfig.__name__}",
+            "processor_class": f"{Qwen3TTSProcessor.__module__}.{Qwen3TTSProcessor.__name__}",
+            "wrapper_class": f"{Qwen3TTSModel.__module__}.{Qwen3TTSModel.__name__}",
+            "config_from_pretrained": "CALLED_LOCAL_ONLY", "processor_from_pretrained": "CALLED_LOCAL_ONLY", "wrapper_from_pretrained": "NOT_CALLED",
+            "wrapper_signature": str(inspect.signature(Qwen3TTSModel.from_pretrained)), "generate_voice_clone_signature": str(inspect.signature(Qwen3TTSModel.generate_voice_clone)),
+            "source_facts": {"config": source_fact(Qwen3TTSConfig, source), "processor": source_fact(Qwen3TTSProcessor, source), "wrapper": source_fact(Qwen3TTSModel, source)},
+            "checkpoint_load": "NOT_PERFORMED", "forbidden_imports": forbidden_imports,
+        }
     except Exception as exc:  # noqa: BLE001 - API incompatibility is evidence, not a traceback
-        raise ApiProbeFailure(
-            str(exc),
-            sentinel_records=optional_sentinel_records(sentinels),
-        ) from None
+        raise ApiProbeFailure(str(exc), forbidden_imports=loaded_forbidden_imports()) from None
     finally:
         if sys.path and sys.path[0] == str(source):
             sys.path.pop(0)
@@ -695,7 +652,7 @@ def run(args: argparse.Namespace) -> int:
         for variant in variant_names:
             api[variant] = api_probe(source, snapshot_root / variant)
     except Exception as exc:  # noqa: BLE001 - API incompatibility is emitted atomically
-        sentinel_records = getattr(exc, "sentinel_records", optional_sentinel_records({}))
+        forbidden_imports = getattr(exc, "forbidden_imports", loaded_forbidden_imports())
         blocked = {
             "schema": SCHEMA,
             "status": "BLOCKED_INCOMPATIBLE_API",
@@ -707,7 +664,7 @@ def run(args: argparse.Namespace) -> int:
             "api": {
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "optional_sentinels": sentinel_records,
+                "forbidden_imports": forbidden_imports,
             },
             "checkpoint_load": "NOT_PERFORMED",
             "approval": pending_approval(),
@@ -720,7 +677,7 @@ def run(args: argparse.Namespace) -> int:
         write_output(output, blocked)
         print(f"BLOCKED_INCOMPATIBLE_API: {exc}", file=sys.stderr)
         return 2
-    sentinel_records = [record["optional_sentinels"] for record in api.values()]
+    forbidden_imports = sorted({name for record in api.values() for name in record["forbidden_imports"]})
     evidence = {
         "schema": SCHEMA,
         "status": "PASS_MODEL_FREE",
@@ -730,21 +687,7 @@ def run(args: argparse.Namespace) -> int:
         "variants": metadata,
         "project": project_record,
         "api": api,
-        "optional_sentinels": {
-            module_name: {
-                "installed": all(record[module_name]["installed"] for record in sentinel_records),
-                "allowed_metadata": list(ALLOWED_OPTIONAL_METADATA),
-                "sentinel_file": FORBIDDEN_OPTIONAL_MODULES[module_name],
-                "metadata_reads": sum(record[module_name]["metadata_reads"] for record in sentinel_records),
-                "metadata_keys": [
-                    key
-                    for record in sentinel_records
-                    for key in record[module_name]["metadata_keys"]
-                ],
-                "accesses": sum(record[module_name]["accesses"] for record in sentinel_records),
-            }
-            for module_name in FORBIDDEN_OPTIONAL_MODULES
-        },
+        "forbidden_imports": forbidden_imports,
         "checkpoint_load": "NOT_PERFORMED",
         "approval": pending_approval(),
         "environment": {
@@ -763,8 +706,15 @@ def self_test() -> int:
         assert all(HEX40.fullmatch(identity["revision"]) for identity in VARIANTS.values())
         assert all(HEX64.fullmatch(identity["config_sha256"]) for identity in VARIANTS.values())
         assert HEX64.fullmatch(PROJECT_SHA256) and HEX64.fullmatch(LOCK_SHA256)
-        assert COMPATIBILITY_PATCHED_BYTES == 40517
-        assert HEX64.fullmatch(COMPATIBILITY_PATCHED_SHA256)
+        canonical_patch = compatibility_patch_record()
+        assert canonical_patch["patch_count"] == len(COMPATIBILITY_PATCH_TARGETS) == 7
+        assert canonical_patch["source_repository"] == COMPATIBILITY_SOURCE_REPOSITORY
+        assert canonical_patch["source_base_revision"] == SOURCE_BASE_REVISION
+        assert canonical_patch["source_head_revision"] == SOURCE_HEAD_REVISION
+        assert canonical_patch["source_pr_url"] == SOURCE_PR_URL
+        assert canonical_patch["source_pr_status"] == SOURCE_PR_STATUS
+        assert canonical_patch["transformers_version"] == COMPATIBILITY_TRANSFORMERS_VERSION
+        validate_patch_record(canonical_patch)
         self_test_filesystem()
         lock = tomllib.loads((Path(__file__).resolve().parent / "uv.lock").read_text(encoding="utf-8"))
         validate_cpu_torch_closure(lock["package"])
@@ -791,6 +741,12 @@ def self_test() -> int:
                 pass
             else:
                 raise AssertionError("duplicate JSON key accepted")
+            assert loaded_forbidden_imports() == []
+            sys.modules["sox"] = types.ModuleType("sox")
+            try:
+                assert loaded_forbidden_imports() == ["sox"]
+            finally:
+                del sys.modules["sox"]
             if any(importlib.util.find_spec(name) is not None for name in FORBIDDEN_OPTIONAL_MODULES):
                 raise AssertionError("real forbidden optional package is installed")
             with install_forbidden_optional_sentinels() as sentinels:
@@ -839,33 +795,16 @@ def self_test() -> int:
             assert all(name not in sys.modules for name in FORBIDDEN_OPTIONAL_MODULES)
             expected_head = "a" * 40
             generic_hash = "b" * 64
-            source_files = {
-                relative: {"bytes": 1, "sha256": generic_hash}
-                for relative in SOURCE_FILES
-            }
-            source_files[COMPATIBILITY_PATCH_TARGET] = {
-                "original_bytes": 40519,
-                "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
-                "bytes": COMPATIBILITY_PATCHED_BYTES,
-                "sha256": COMPATIBILITY_PATCHED_SHA256,
-            }
+            canonical_patch = compatibility_patch_record()
+            source_files = {relative: {"bytes": 1, "sha256": generic_hash} for relative in SOURCE_FILES}
+            source_files.update({row["target"]: {"original_bytes": row["original_bytes"], "original_sha256": row["original_sha256"], "bytes": row["patched_bytes"], "sha256": row["patched_sha256"]} for row in canonical_patch["patches"]})
             source_record = {
                 "repository": SOURCE_REPOSITORY,
                 "url": SOURCE_URL,
                 "revision": SOURCE_REVISION,
                 "package_version": SOURCE_PACKAGE_VERSION,
                 "files": source_files,
-                "compatibility_patch": {
-                    "status": "COMPATIBILITY_PATCH_APPLIED",
-                    "target": COMPATIBILITY_PATCH_TARGET,
-                    "operation": "replace_exactly_one_decorator",
-                    "original_bytes": 40519,
-                    "original_sha256": "844e8dd8c0182ef9c6463c874631c22ef3c5a4fd1899dd657016164cc5379628",
-                    "patched_bytes": COMPATIBILITY_PATCHED_BYTES,
-                    "patched_sha256": COMPATIBILITY_PATCHED_SHA256,
-                    "replacement_count": 1,
-                    "transformers_api": "check_model_inputs(func)",
-                },
+                "compatibility_patch": canonical_patch,
             }
             source_facts = {
                 label: {"path": relative, "bytes": source_files[relative]["bytes"], "sha256": source_files[relative]["sha256"]}
@@ -896,7 +835,7 @@ def self_test() -> int:
                 "generate_voice_clone_signature": "(text)",
                 "source_facts": source_facts,
                 "checkpoint_load": "NOT_PERFORMED",
-                "optional_sentinels": sentinel_record,
+                "forbidden_imports": [],
             }
             metadata_records = {}
             for variant, identity in VARIANTS.items():
@@ -922,7 +861,7 @@ def self_test() -> int:
                     "packages": verify_project(Path(__file__).resolve().parent)["packages"],
                 },
                 "api": {variant: json.loads(json.dumps(api_record)) for variant in VARIANTS},
-                "optional_sentinels": sentinel_record,
+                "forbidden_imports": [],
                 "checkpoint_load": "NOT_PERFORMED",
                 "approval": pending_approval(),
                 "environment": {"python": "3.12.0", "platform": "Linux", "machine": "x86_64"},
@@ -939,6 +878,8 @@ def self_test() -> int:
                 "api": lambda value: value["api"]["0.6b-base"].update(wrapper_from_pretrained="CALLED"),
                 "package-version": lambda value: value["api"]["0.6b-base"]["package_versions"].update(torch="2.7.1"),
                 "source": lambda value: value["source"]["files"].pop(SOURCE_FILES[0]),
+                "source-original-bytes": lambda value: value["source"]["files"][COMPATIBILITY_PATCH_TARGETS[0]].update(original_bytes=1),
+                "source-original-sha256": lambda value: value["source"]["files"][COMPATIBILITY_PATCH_TARGETS[0]].update(original_sha256="0" * 64),
                 "lock": lambda value: value["project"].update(lock_sha256="0" * 64),
                 "unknown": lambda value: value.update(unexpected=True),
             }
@@ -966,10 +907,7 @@ def self_test() -> int:
                 "publication": "NO_UPLOAD",
                 "checkpoint_load": "NOT_PERFORMED",
                 "api": {
-                    "optional_sentinels": optional_sentinel_records({
-                        name: _ForbiddenOptionalModuleSentinel(name, sentinel_file)
-                        for name, sentinel_file in FORBIDDEN_OPTIONAL_MODULES.items()
-                    }),
+                    "forbidden_imports": ["sox"],
                 },
                 "approval": pending_approval(),
             })
@@ -978,11 +916,7 @@ def self_test() -> int:
             assert blocked["publication"] == "NO_UPLOAD"
             assert blocked["checkpoint_load"] == "NOT_PERFORMED"
             assert blocked["approval"]["source_license"] == "PENDING_OWNER_APPROVAL"
-            assert set(blocked["api"]["optional_sentinels"]) == set(FORBIDDEN_OPTIONAL_MODULES)
-            assert all(
-                record["allowed_metadata"] == ALLOWED_OPTIONAL_METADATA
-                for record in blocked["api"]["optional_sentinels"].values()
-            )
+            assert blocked["api"]["forbidden_imports"] == ["sox"]
             assert not list(Path(directory).glob(".blocked.json.*.tmp"))
         probe_source = inspect.getsource(api_probe)
         assert "Qwen3TTSModel.from_pretrained(" not in probe_source

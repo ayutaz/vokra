@@ -241,7 +241,7 @@ run_self_test() {
   local script_path="${BASH_SOURCE[0]}"
   for required in "$SOURCE_REPOSITORY" "$SOURCE_URL" "$SOURCE_REVISION" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$DECODER_REPOSITORY" "$DECODER_REVISION" "$DECODER_CHECKPOINT_SHA256" "$TRANSFORMERS_VERSION" "$LOCK_SHA256" \
     'VOKRA_PUBLISH_ON_VAST=1' 'platform.system()' 'platform.machine()' 'local_files_only=True' 'dtype=float32' 'low_cpu_mem_usage=False' 'DEFAULT_CPU_NO_DEVICE_MAP' 'Qwen3TTSModel.from_pretrained' \
-    'generate_voice_clone' 'max_new_tokens' 'min_new_tokens' 'NO_UPLOAD' 'strict JSON' 'uv sync' 'download_snapshot' 'download_source' 'require_absent_work_dir' '--project' '--manifest' '--license-gate' '--vokra-root' '--approval-evidence' '--validate-evidence' 'variant_scope=' 'evidence_sha256=' 'clean' 'x86_64'; do
+    'generate_voice_clone' 'max_new_tokens' 'min_new_tokens' 'strict_reload' 'STRICT_RELOAD_PASS' 'model.safetensors' 'missing_keys' 'unexpected_keys' 'apply_pr_360_model_and_strict_reload_runtime_hunks' '4763' 'a24b2124843f5c76abc8c7023133b8be7503c80d883d0e9a987cdea5ef2319a0' '100994' '78b23efd51dfb92f7deb7ff91b9dd0b7f960376d45d0e6714f365b4ffc691451' 'NO_UPLOAD' 'strict JSON' 'uv sync' 'download_snapshot' 'download_source' 'require_absent_work_dir' '--project' '--manifest' '--license-gate' '--vokra-root' '--approval-evidence' '--validate-evidence' 'variant_scope=' 'evidence_sha256=' 'clean' 'x86_64'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing contract token: $required"; failed=1; }
   done
   grep -Fq -- 'MODEL_FREE_SMOKE=' "$script_path" || { log 'self-test missing model-free worker'; failed=1; }

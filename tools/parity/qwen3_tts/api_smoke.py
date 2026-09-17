@@ -25,20 +25,22 @@ from pathlib import Path
 from typing import Any
 
 from qwen_source_compat import (
-    PATCH_TARGET as COMPATIBILITY_PATCH_TARGET,
-    PATCH_ORIGINAL_BYTES as COMPATIBILITY_PATCH_ORIGINAL_BYTES,
-    PATCH_ORIGINAL_SHA256 as COMPATIBILITY_PATCH_ORIGINAL_SHA256,
-    PATCHED_BYTES as COMPATIBILITY_PATCHED_BYTES,
-    PATCHED_SHA256 as COMPATIBILITY_PATCHED_SHA256,
-    PATCH_STATUS as COMPATIBILITY_PATCH_STATUS,
-    PATCH_OPERATION as COMPATIBILITY_PATCH_OPERATION,
-    TRANSFORMERS_API as COMPATIBILITY_TRANSFORMERS_API,
+    COMPATIBILITY_PATCH_TARGETS,
+    SOURCE_BASE_REVISION,
+    SOURCE_HEAD_REVISION,
+    SOURCE_PR_STATUS,
+    SOURCE_PR_URL,
+    SOURCE_REPOSITORY as COMPATIBILITY_SOURCE_REPOSITORY,
+    TRANSFORMERS_VERSION as COMPATIBILITY_TRANSFORMERS_VERSION,
+    compatibility_patch_record,
+    loaded_forbidden_imports,
     patch_source_checkout,
     self_test_filesystem,
+    validate_patch_record,
     CompatibilityPatchError,
 )
 
-SCHEMA = "vokra-qwen3-tts-api-smoke-v1"
+SCHEMA = "vokra-qwen3-tts-api-smoke-v4"
 SOURCE_REPOSITORY = "QwenLM/Qwen3-TTS"
 SOURCE_REVISION = "022e286b98fbec7e1e916cb940cdf532cd9f488e"
 SOURCE_PACKAGE_VERSION = "0.1.1"
@@ -71,18 +73,43 @@ CHECKPOINTS = (
     "execution_host_verified",
     "vokra_checkout_verified",
     "approval_evidence_recorded",
+    "license_gate_verified",
     "source_revision_verified",
     "model_snapshot_verified",
     "decoder_snapshot_verified",
     "lock_verified",
     "official_imports_verified",
+    "forbidden_imports_verified",
     "model_loaded_cpu",
     "official_wrapper_called",
     "official_decoder_completed",
     "output_shape_verified",
+    "forbidden_imports_final_verified",
+)
+# Independent no-model oracle for the production sequence.  The production
+# path records every transition through CheckpointRecorder, so a newly added
+# or reordered append fails at runtime; this catches allow-list drift too.
+EXPECTED_CHECKPOINT_SEQUENCE = (
+    "execution_host_verified",
+    "vokra_checkout_verified",
+    "approval_evidence_recorded",
+    "license_gate_verified",
+    "source_revision_verified",
+    "model_snapshot_verified",
+    "decoder_snapshot_verified",
+    "lock_verified",
+    "official_imports_verified",
+    "forbidden_imports_verified",
+    "model_loaded_cpu",
+    "official_wrapper_called",
+    "official_decoder_completed",
+    "output_shape_verified",
+    "forbidden_imports_final_verified",
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+# Must match the fixed owner identity enforced by license_gate.py.
+OWNER_SIGNER = "yousan"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 EXPECTED_TORCH_FAMILY = "2.7.1"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
@@ -91,6 +118,32 @@ CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 
 class SmokeError(RuntimeError):
     """A fail-closed precondition or API smoke failure."""
+
+
+class CheckpointRecorder:
+    """Record the production sequence against the evidence allow-list."""
+
+    def __init__(self) -> None:
+        self._values: list[str] = []
+
+    @property
+    def values(self) -> list[str]:
+        return list(self._values)
+
+    def append(self, value: str) -> None:
+        if value not in CHECKPOINTS:
+            raise SmokeError(f"API smoke checkpoint is not allow-listed: {value!r}")
+        if value in self._values:
+            raise SmokeError(f"API smoke checkpoint is duplicated: {value!r}")
+        self._values.append(value)
+
+    def extend(self, values: tuple[str, ...]) -> None:
+        for value in values:
+            self.append(value)
+
+    def finish(self) -> None:
+        if self._values != list(CHECKPOINTS):
+            raise SmokeError("API smoke checkpoint sequence is incomplete or out of order")
 
 
 def require_execution_host() -> None:
@@ -314,16 +367,13 @@ def require_source(source_dir: Path) -> dict[str, Any]:
         patch = patch_source_checkout(source_dir)
     except CompatibilityPatchError as error:
         raise SmokeError(str(error)) from error
-    original_bytes = patch["original_bytes"]
-    original_sha256 = patch["original_sha256"]
-    patched_bytes = patch["patched_bytes"]
-    patched_sha256 = patch["patched_sha256"]
+    patch_rows = {row["target"]: row for row in patch["patches"]}
     return {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION,
             "resolved_revision": revision, "package_version": version,
-            "files": {COMPATIBILITY_PATCH_TARGET: {
-                "original_bytes": original_bytes, "original_sha256": original_sha256,
-                "bytes": patched_bytes, "sha256": patched_sha256,
-            }},
+            "files": {target: {
+                "original_bytes": row["original_bytes"], "original_sha256": row["original_sha256"],
+                "bytes": row["patched_bytes"], "sha256": row["patched_sha256"],
+            } for target, row in patch_rows.items()},
             "compatibility_patch": patch}
 
 
@@ -407,6 +457,8 @@ def require_model(model_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]
     safetensors = sorted(model_dir.glob("*.safetensors"))
     if not safetensors or any(path.is_symlink() for path in safetensors):
         raise SmokeError("0.6B model safetensors checkpoint is missing or symlinked")
+    if [path.name for path in safetensors] != ["model.safetensors"]:
+        raise SmokeError("0.6B model snapshot must contain exactly model.safetensors")
     if (model_dir / "model.safetensors.index.json").exists() or list(model_dir.glob("model-*.safetensors")):
         raise SmokeError("sharded 0.6B checkpoint is not accepted by the API smoke")
     files = [config_artifact] + [artifact(path, "model checkpoint") for path in safetensors]
@@ -482,8 +534,16 @@ def validate_evidence_data(data: Any) -> None:
         raise SmokeError("Vokra checkout evidence schema or unknown fields drifted")
     if set(data["environment"]) != {"python", "platform", "machine", "device", "torch_threads"}:
         raise SmokeError("environment evidence schema or unknown fields drifted")
-    if set(data["api"]) != {"method", "local_files_only", "dtype", "device_map", "low_cpu_mem_usage", "model_device", "wrapper", "max_new_tokens", "min_new_tokens", "sample_rate", "samples", "code_packet_frames", "code_packet_codebooks"}:
+    if set(data["api"]) != {"method", "local_files_only", "dtype", "device_map", "low_cpu_mem_usage", "model_device", "wrapper", "max_new_tokens", "min_new_tokens", "sample_rate", "samples", "code_packet_frames", "code_packet_codebooks", "strict_reload", "forbidden_imports"}:
         raise SmokeError("API evidence schema or unknown fields drifted")
+    strict_reload = data["api"]["strict_reload"]
+    if not isinstance(strict_reload, dict) or set(strict_reload) != {"status", "return_type", "missing_keys", "unexpected_keys"}:
+        raise SmokeError("strict safetensors reload evidence is malformed")
+    if strict_reload["status"] not in {"NOT_PERFORMED", "STRICT_RELOAD_PASS"} or not isinstance(strict_reload["return_type"], (str, type(None))):
+        raise SmokeError("strict safetensors reload status is malformed")
+    for key in ("missing_keys", "unexpected_keys"):
+        if not isinstance(strict_reload[key], list) or any(not isinstance(item, str) for item in strict_reload[key]):
+            raise SmokeError("strict safetensors reload key evidence is malformed")
     if set(data["inputs"]) - {"reference_audio"}:
         raise SmokeError("input evidence schema or unknown fields drifted")
     for container in (data["package_versions"], data["inputs"]):
@@ -507,32 +567,23 @@ def validate_evidence_data(data: Any) -> None:
         if data["source"]["repository"] != SOURCE_REPOSITORY or data["source"]["revision"] != SOURCE_REVISION or data["source"]["resolved_revision"] != SOURCE_REVISION or data["source"]["package_version"] != SOURCE_PACKAGE_VERSION:
             raise SmokeError("source identity in evidence drifted")
         files = data["source"]["files"]
-        if not isinstance(files, dict) or set(files) != {COMPATIBILITY_PATCH_TARGET}:
+        if not isinstance(files, dict) or set(files) != set(COMPATIBILITY_PATCH_TARGETS):
             raise SmokeError("authenticated source file inventory drifted")
-        file_record = files[COMPATIBILITY_PATCH_TARGET]
-        if file_record != {
-            "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES,
-            "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256,
-            "bytes": COMPATIBILITY_PATCHED_BYTES,
-            "sha256": COMPATIBILITY_PATCHED_SHA256,
-        }:
-            raise SmokeError("compatibility source file identity is malformed")
         patch = data["source"]["compatibility_patch"]
-        expected_patch = {
-            "status": COMPATIBILITY_PATCH_STATUS,
-            "target": COMPATIBILITY_PATCH_TARGET,
-            "operation": COMPATIBILITY_PATCH_OPERATION,
-            "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES,
-            "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256,
-            "patched_bytes": COMPATIBILITY_PATCHED_BYTES,
-            "patched_sha256": COMPATIBILITY_PATCHED_SHA256,
-            "replacement_count": 1,
-            "transformers_api": COMPATIBILITY_TRANSFORMERS_API,
-        }
-        if not isinstance(patch, dict) or patch != expected_patch:
-            raise SmokeError("compatibility patch evidence is malformed")
-        if file_record["bytes"] != patch["patched_bytes"] or file_record["sha256"] != patch["patched_sha256"]:
-            raise SmokeError("compatibility source file and patch evidence disagree")
+        try:
+            validate_patch_record(patch)
+        except CompatibilityPatchError as error:
+            raise SmokeError(f"compatibility patch evidence is malformed: {error}") from error
+        expected_patches = {row["target"]: row for row in patch["patches"]}
+        if set(expected_patches) != set(COMPATIBILITY_PATCH_TARGETS):
+            raise SmokeError("compatibility patch target inventory drifted")
+        for target, expected_patch in expected_patches.items():
+            file_record = files[target]
+            if file_record != {"original_bytes": expected_patch["original_bytes"], "original_sha256": expected_patch["original_sha256"], "bytes": expected_patch["patched_bytes"], "sha256": expected_patch["patched_sha256"]}:
+                raise SmokeError("compatibility source file and patch evidence disagree")
+    forbidden = data["api"].get("forbidden_imports")
+    if not isinstance(forbidden, list) or forbidden != sorted(forbidden) or any(not isinstance(name, str) for name in forbidden):
+        raise SmokeError("forbidden import evidence is malformed")
     if data["model"]:
         if data["model"].get("repository") != MODEL_REPOSITORY or data["model"].get("revision") != MODEL_REVISION or data["model"].get("config_bytes") != MODEL_CONFIG_BYTES or data["model"].get("config_sha256") != MODEL_CONFIG_SHA256:
             raise SmokeError("model identity in evidence drifted")
@@ -561,7 +612,7 @@ def validate_evidence_data(data: Any) -> None:
         raise SmokeError("license approval scope SHA-256 in evidence is malformed")
     if not isinstance(data["approval"]["owner_signoffs"], list) or any(
         not isinstance(row, dict) or set(row) != {"scope", "signer", "digest"}
-        or not isinstance(row["scope"], str) or not isinstance(row["signer"], str) or not HEX40.fullmatch(row["signer"])
+        or not isinstance(row["scope"], str) or row["signer"] != OWNER_SIGNER
         or not isinstance(row["digest"], str) or not HEX64.fullmatch(row["digest"])
         for row in data["approval"]["owner_signoffs"]
     ):
@@ -585,6 +636,10 @@ def validate_evidence_data(data: Any) -> None:
             raise SmokeError("passing evidence package versions are incomplete")
         if data["api"]["method"] != "Qwen3TTSModel.from_pretrained" or data["api"]["local_files_only"] is not True or data["api"]["dtype"] != "float32" or data["api"]["device_map"] is not None or data["api"]["low_cpu_mem_usage"] is not False or data["api"]["wrapper"] != "generate_voice_clone":
             raise SmokeError("passing evidence does not prove the fixed local-only default-CPU API call")
+        if data["api"]["strict_reload"]["status"] != "STRICT_RELOAD_PASS" or data["api"]["strict_reload"]["missing_keys"] or data["api"]["strict_reload"]["unexpected_keys"]:
+            raise SmokeError("passing evidence does not prove strict complete safetensors reload")
+        if data["api"]["forbidden_imports"]:
+            raise SmokeError("passing evidence loaded forbidden optional modules")
     if data["status"] == "FAIL" and not data["error"]:
         raise SmokeError("failed API smoke evidence lacks an error")
 
@@ -608,7 +663,7 @@ def run_smoke(args: argparse.Namespace) -> int:
          args.manifest, args.license_gate],
     )
     approval = run_license_gate(args, approval)
-    checkpoints: list[str] = []
+    checkpoint_recorder = CheckpointRecorder()
     source: dict[str, Any] = {}
     model: dict[str, Any] = {}
     decoder: dict[str, Any] = {}
@@ -622,21 +677,23 @@ def run_smoke(args: argparse.Namespace) -> int:
         "max_new_tokens": MAX_NEW_TOKENS, "min_new_tokens": MIN_NEW_TOKENS,
         "sample_rate": None, "samples": None, "code_packet_frames": None,
         "code_packet_codebooks": None,
+        "strict_reload": {"status": "NOT_PERFORMED", "return_type": None, "missing_keys": [], "unexpected_keys": []},
+        "forbidden_imports": [],
     }
     inputs: dict[str, Any] = {}
     error: str | None = None
-    checkpoints.extend(("execution_host_verified", "vokra_checkout_verified", "approval_evidence_recorded", "license_gate_verified"))
     try:
+        checkpoint_recorder.extend(("execution_host_verified", "vokra_checkout_verified", "approval_evidence_recorded", "license_gate_verified"))
         source = require_source(args.source_dir)
-        checkpoints.append("source_revision_verified")
+        checkpoint_recorder.append("source_revision_verified")
         model, _ = require_model(args.model_dir)
-        checkpoints.append("model_snapshot_verified")
+        checkpoint_recorder.append("model_snapshot_verified")
         decoder = require_decoder(args.model_dir, args.decoder_dir)
-        checkpoints.append("decoder_snapshot_verified")
+        checkpoint_recorder.append("decoder_snapshot_verified")
         lock = require_lock(args.lock)
         require_cpu_load_contract()
         package_versions = expected_package_versions(lock)
-        checkpoints.append("lock_verified")
+        checkpoint_recorder.append("lock_verified")
         inputs["reference_audio"] = artifact(args.reference_audio, "reference audio")
         if inputs["reference_audio"]["sha256"] != REFERENCE_AUDIO_SHA256:
             raise SmokeError("reference audio SHA-256 drifted")
@@ -658,7 +715,11 @@ def run_smoke(args: argparse.Namespace) -> int:
         imported_root = Path(qwen_tts.__file__).resolve().parents[1]
         if imported_root != args.source_dir.resolve():
             raise SmokeError(f"qwen_tts imported from {imported_root}, not the authenticated source")
-        checkpoints.append("official_imports_verified")
+        checkpoint_recorder.append("official_imports_verified")
+        api["forbidden_imports"] = loaded_forbidden_imports()
+        if api["forbidden_imports"]:
+            raise SmokeError(f"forbidden optional modules were imported: {api['forbidden_imports']}")
+        checkpoint_recorder.append("forbidden_imports_verified")
         torch.set_num_threads(1)
         if hasattr(torch, "set_num_interop_threads"):
             torch.set_num_interop_threads(1)
@@ -671,7 +732,18 @@ def run_smoke(args: argparse.Namespace) -> int:
         if getattr(tts, "device", None) is None or tts.device.type != "cpu":
             raise SmokeError(f"official model selected {getattr(tts, 'device', None)!r}, expected CPU")
         api["model_device"] = str(tts.device)
-        checkpoints.append("model_loaded_cpu")
+        strict_reload = getattr(tts.model, "_qwen3_tts_strict_reload", None)
+        if not isinstance(strict_reload, dict) or strict_reload.get("status") != "STRICT_RELOAD_PASS":
+            raise SmokeError("patched official loader did not report strict safetensors reload success")
+        if strict_reload.get("missing_keys") != [] or strict_reload.get("unexpected_keys") != []:
+            raise SmokeError(f"strict safetensors reload reported key drift: {strict_reload!r}")
+        api["strict_reload"] = {
+            "status": strict_reload["status"],
+            "return_type": strict_reload.get("return_type"),
+            "missing_keys": list(strict_reload["missing_keys"]),
+            "unexpected_keys": list(strict_reload["unexpected_keys"]),
+        }
+        checkpoint_recorder.append("model_loaded_cpu")
 
         prompt = tts.create_voice_clone_prompt(ref_audio=str(args.reference_audio), x_vector_only_mode=True)[0]
         captured: list[Any] = []
@@ -697,7 +769,7 @@ def run_smoke(args: argparse.Namespace) -> int:
             )
         finally:
             decoder_model.decode = original_decode
-        checkpoints.append("official_wrapper_called")
+        checkpoint_recorder.append("official_wrapper_called")
         if len(captured) != 1:
             raise SmokeError(f"official decoder hook captured {len(captured)} packets, expected one")
         codes = captured[0]
@@ -706,13 +778,19 @@ def run_smoke(args: argparse.Namespace) -> int:
         pcm = numpy.asarray(wavs[0], dtype=numpy.float32)
         if int(sample_rate) != OUTPUT_SAMPLE_RATE or pcm.size == 0 or not numpy.isfinite(pcm).all():
             raise SmokeError("official wrapper returned an invalid sample rate or PCM")
-        checkpoints.append("official_decoder_completed")
+        checkpoint_recorder.append("official_decoder_completed")
         api.update({"sample_rate": int(sample_rate), "samples": int(pcm.size),
                     "code_packet_frames": int(codes.shape[0]),
                     "code_packet_codebooks": int(codes.shape[1])})
-        checkpoints.append("output_shape_verified")
+        checkpoint_recorder.append("output_shape_verified")
+        api["forbidden_imports"] = loaded_forbidden_imports()
+        if api["forbidden_imports"]:
+            raise SmokeError(f"forbidden optional modules remained loaded: {api['forbidden_imports']}")
+        checkpoint_recorder.append("forbidden_imports_final_verified")
         package_versions = {**package_versions, "qwen_tts_source": SOURCE_PACKAGE_VERSION}
+        checkpoint_recorder.finish()
     except Exception as caught:  # evidence is retained even for a partial smoke
+        api["forbidden_imports"] = loaded_forbidden_imports()
         error = f"{type(caught).__name__}: {caught}"
 
     data: dict[str, Any] = {
@@ -728,7 +806,7 @@ def run_smoke(args: argparse.Namespace) -> int:
         "package_versions": package_versions,
         "environment": {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine(), "device": "cpu", "torch_threads": 1},
         "inputs": inputs,
-        "call_checkpoints": checkpoints,
+        "call_checkpoints": checkpoint_recorder.values,
         "api": api,
         "error": error,
     }
@@ -742,6 +820,39 @@ def self_test() -> None:
     global LOCK_SHA256
     if "torch" in sys.modules or "transformers" in sys.modules:
         raise SmokeError("self-test imported a model dependency")
+    production_license_gate_path = Path(__file__).resolve().parent / "license_gate.py"
+    spec = importlib.util.spec_from_file_location(
+        "vokra_qwen3_tts_license_gate_self_test", production_license_gate_path,
+    )
+    if spec is None or spec.loader is None:
+        raise SmokeError("production license gate module cannot be loaded")
+    production_license_gate = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(production_license_gate)
+    except Exception as error:
+        raise SmokeError(f"production license gate module is not importable: {error}") from error
+    if getattr(production_license_gate, "OWNER_SIGNER", None) != OWNER_SIGNER:
+        raise SmokeError("API smoke owner signer drifted from license gate OWNER_SIGNER")
+    if tuple(CHECKPOINTS) != EXPECTED_CHECKPOINT_SEQUENCE:
+        raise SmokeError("checkpoint allow-list drifted from the production sequence")
+    production_recorder = CheckpointRecorder()
+    production_recorder.extend(EXPECTED_CHECKPOINT_SEQUENCE)
+    production_recorder.finish()
+    if production_recorder.values != list(CHECKPOINTS):
+        raise SmokeError("production checkpoint recorder changed the allow-list sequence")
+    for values, message in (
+        (("not_allow_listed",), "unknown checkpoint was accepted"),
+        ((CHECKPOINTS[0], CHECKPOINTS[0]), "duplicate checkpoint was accepted"),
+        ((CHECKPOINTS[1], CHECKPOINTS[0]), "out-of-order checkpoint was accepted"),
+    ):
+        recorder = CheckpointRecorder()
+        try:
+            recorder.extend(values)
+            recorder.finish()
+        except SmokeError:
+            pass
+        else:
+            raise SmokeError(message)
     require_cpu_load_contract()
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
         try:
@@ -759,8 +870,20 @@ def self_test() -> None:
         raise SmokeError("decoder revision is not immutable")
     if not HEX64.fullmatch(LOCK_SHA256) or not HEX64.fullmatch(DECODER_CHECKPOINT_SHA256):
         raise SmokeError("fixed SHA-256 identity is malformed")
-    if COMPATIBILITY_PATCHED_BYTES != 40517 or not HEX64.fullmatch(COMPATIBILITY_PATCHED_SHA256):
-        raise SmokeError("compatibility patch output identity is malformed")
+    canonical_patch = compatibility_patch_record()
+    if (
+        canonical_patch["patch_count"] != 7
+        or canonical_patch["source_repository"] != COMPATIBILITY_SOURCE_REPOSITORY
+        or SOURCE_REPOSITORY != COMPATIBILITY_SOURCE_REPOSITORY
+        or canonical_patch["source_base_revision"] != SOURCE_BASE_REVISION
+        or SOURCE_REVISION != SOURCE_BASE_REVISION
+        or canonical_patch["source_head_revision"] != SOURCE_HEAD_REVISION
+        or canonical_patch["source_pr_url"] != SOURCE_PR_URL
+        or canonical_patch["source_pr_status"] != SOURCE_PR_STATUS
+        or canonical_patch["transformers_version"] != COMPATIBILITY_TRANSFORMERS_VERSION
+    ):
+        raise SmokeError("seven-target compatibility provenance is malformed")
+    validate_patch_record(canonical_patch)
     self_test_filesystem()
     safe_rows = [
         {"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
@@ -818,46 +941,61 @@ def self_test() -> None:
                 "wrapper": "generate_voice_clone", "max_new_tokens": 2,
                 "min_new_tokens": 2, "sample_rate": None, "samples": None,
                 "code_packet_frames": None, "code_packet_codebooks": None,
+                "strict_reload": {"status": "NOT_PERFORMED", "return_type": None, "missing_keys": [], "unexpected_keys": []},
+                "forbidden_imports": [],
             },
             "error": "SmokeError: host gate",
         }
         validate_evidence_data(failure)
-        source_evidence = {
-            "repository": SOURCE_REPOSITORY,
-            "revision": SOURCE_REVISION,
-            "resolved_revision": SOURCE_REVISION,
-            "package_version": SOURCE_PACKAGE_VERSION,
-            "files": {COMPATIBILITY_PATCH_TARGET: {
-                "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES,
-                "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256,
-                "bytes": COMPATIBILITY_PATCHED_BYTES,
-                "sha256": COMPATIBILITY_PATCHED_SHA256,
-            }},
-            "compatibility_patch": {
-                "status": COMPATIBILITY_PATCH_STATUS,
-                "target": COMPATIBILITY_PATCH_TARGET,
-                "operation": COMPATIBILITY_PATCH_OPERATION,
-                "original_bytes": COMPATIBILITY_PATCH_ORIGINAL_BYTES,
-                "original_sha256": COMPATIBILITY_PATCH_ORIGINAL_SHA256,
-                "patched_bytes": COMPATIBILITY_PATCHED_BYTES,
-                "patched_sha256": COMPATIBILITY_PATCHED_SHA256,
-                "replacement_count": 1,
-                "transformers_api": COMPATIBILITY_TRANSFORMERS_API,
-            },
-        }
-        failure["source"] = source_evidence
+        failure["approval"]["owner_signoffs"] = [{
+            "scope": "qwen3-tts-package",
+            "signer": OWNER_SIGNER,
+            "digest": "0" * 64,
+        }]
         validate_evidence_data(failure)
-        for tampered in ("patched_bytes", "patched_sha256"):
+        for signer in ("0" * 40, "other-owner"):
             candidate = json.loads(json.dumps(failure))
-            candidate["source"]["compatibility_patch"][tampered] = 1 if tampered == "patched_bytes" else "0" * 64
+            candidate["approval"]["owner_signoffs"][0]["signer"] = signer
             try:
                 validate_evidence_data(candidate)
             except SmokeError:
                 pass
             else:
-                raise SmokeError(f"tampered compatibility patch {tampered} evidence was accepted")
+                raise SmokeError(f"non-fixed owner signer was accepted: {signer!r}")
+        source_rows = {
+            row["target"]: {"original_bytes": row["original_bytes"], "original_sha256": row["original_sha256"], "bytes": row["patched_bytes"], "sha256": row["patched_sha256"]}
+            for row in canonical_patch["patches"]
+        }
+        source_evidence = {
+            "repository": SOURCE_REPOSITORY,
+            "revision": SOURCE_REVISION,
+            "resolved_revision": SOURCE_REVISION,
+            "package_version": SOURCE_PACKAGE_VERSION,
+            "files": source_rows,
+            "compatibility_patch": canonical_patch,
+        }
+        failure["source"] = source_evidence
+        validate_evidence_data(failure)
+        for index, target in enumerate(COMPATIBILITY_PATCH_TARGETS):
+            for field, value in (("patched_bytes", 1), ("patched_sha256", "0" * 64), ("replacement_count", 99), ("target", "tampered")):
+                candidate = json.loads(json.dumps(failure))
+                candidate["source"]["compatibility_patch"]["patches"][index][field] = value
+                try:
+                    validate_evidence_data(candidate)
+                except SmokeError:
+                    pass
+                else:
+                    raise SmokeError(f"tampered compatibility patch {target}/{field} evidence was accepted")
         candidate = json.loads(json.dumps(failure))
-        candidate["source"]["files"][COMPATIBILITY_PATCH_TARGET]["sha256"] = COMPATIBILITY_PATCH_ORIGINAL_SHA256
+        candidate["source"]["compatibility_patch"]["patches"].reverse()
+        try:
+            validate_evidence_data(candidate)
+        except SmokeError:
+            pass
+        else:
+            raise SmokeError("reordered compatibility patch evidence was accepted")
+        candidate = json.loads(json.dumps(failure))
+        candidate["source"]["files"][COMPATIBILITY_PATCH_TARGETS[0]]["sha256"] = candidate["source"]["files"][COMPATIBILITY_PATCH_TARGETS[0]]["original_sha256"]
         try:
             validate_evidence_data(candidate)
         except SmokeError:
