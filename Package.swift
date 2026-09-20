@@ -17,10 +17,7 @@ let package = Package(
     targets: [
         // Local dev / CI: consumes the XCFramework produced by
         // scripts/build-ios.sh into build/ios/Vokra.xcframework.
-        .binaryTarget(
-            name: "Vokra",
-            path: "build/ios/Vokra.xcframework"
-        ),
+        .binaryTarget(name: "Vokra", url: "https://github.com/ayutaz/vokra/releases/download/v0.3.0/Vokra.xcframework.zip", checksum: "fe74aeb45cc44c7fc2a1875bdd61af7d88c4ae87d2966851c88cfa4e9dcbc5a5"),
         // Release path (T12 / CD switches Package.swift to the URL form):
         // .binaryTarget(
         //     name: "Vokra",
