@@ -45,6 +45,18 @@ override remains visible to the dependency audit and does not change the
 audit status (`BLOCKED_UNREVIEWED_TRANSITIVE`) or publication disposition
 (`NO_UPLOAD`).
 
+The compatibility worker is fail-closed for both checkpoint loading and JIT
+compilation: during the authorized model-free/source/API run,
+`torch.jit.load` and `torch.jit.script` are refused with a loud error. The
+generated, hash-bound evidence records this contract as `jit_script_guard`;
+the probe self-test calls `torch.jit.script` directly and requires the refusal,
+so removing the guard fails the self-test. This is a containment measure, not
+a patched dependency, and it does not automatically dismiss Dependabot alert
+#531 (GHSA-rrmf-rvhw-rf47 / CVE-2025-3000). In particular, a mixed
+`torch`/`torchaudio` upgrade such as PR #112 is not accepted: the dedicated
+project requires a synchronized pair and its lock/pyproject contract must be
+updated together after the upstream compatibility and security review.
+
 ## Dependency license closure
 
 `license_gate_manifest.json` records the evidence review for all 34 active
@@ -133,6 +145,19 @@ hashes, package versions, import records, API-contract records, and
 model-access evidence fails closed. A passing compatibility gate authorizes
 only the next Zonos pre-acquisition stage; it does not authorize weights,
 conversion, parity, or publication.
+
+The full reference worker `tools/parity/zonos_dump_reference.py` applies the
+same fail-closed boundary across the entire official source/model execution:
+`torch.jit.script` is refused from before the upstream import through output
+recording, while ordinary checkpoint loading is left unchanged. Its synthetic
+self-test proves normal install/refusal/restore, rejects a missing API, and
+detects an upstream replacement of the guard before restoring the original
+callable. The hash-bound `vokra-zonos-reference-v1` record now requires the
+exact `jit_script_guard` object, and `tools/parity/zonos_inspect.py` rejects
+both missing and modified guard records. The containment is not a patched
+dependency and does not dismiss Dependabot #531 (GHSA-rrmf-rvhw-rf47 /
+CVE-2025-3000): the fixed-source/import-closure evidence and any approved
+dependency replacement remain separate, unfinished security decisions.
 
 ## Dependency approval transition
 

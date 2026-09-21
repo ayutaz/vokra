@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSPECTOR="$ROOT/tools/parity/zonos_inspect.py"
+REFERENCE_DUMPER="$ROOT/tools/parity/zonos_dump_reference.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh"
 DEPENDENCY_APPROVAL_VALIDATOR="$ROOT/tools/parity/zonos_v0_1_reference/dependency_approval.py"
 TRANSFORMERS_COMPATIBILITY_GATE="$ROOT/scripts/publish/vast-ai/check-zonos-transformers-compatibility.sh"
@@ -129,8 +130,8 @@ self_test() {
     'source_semantic_marker_status' 'expected_transformer_config' 'eos_token_id: int = 1024' 'masked_token_id: int = 1025' \
     'self.required_keys = {c.name for c in self.conditioners if c.uncond_vector is None}' \
     'logits[..., 1025:].fill_(-torch.inf)' 'unknown_token = -1' \
-    'DacModel.from_pretrained("descript/dac_44khz")' 'descript/dac_44khz' 'dac_num_codebooks=9' 'dac_sample_rate=44100' 'dac_identity_status=SOURCE_REQUEST_ONLY' 'roll(k + 1)' 'attn_mlp_d_intermediate'; do
-    grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
+    'DacModel.from_pretrained("descript/dac_44khz")' 'descript/dac_44khz' 'dac_num_codebooks=9' 'dac_sample_rate=44100' 'dac_identity_status=SOURCE_REQUEST_ONLY' 'roll(k + 1)' 'attn_mlp_d_intermediate' 'torch.jit.script' 'refuse_jit_script' 'JIT_SCRIPT_GUARD'; do
+    grep -Fq -- "$token" "$INSPECTOR" "$REFERENCE_DUMPER" "$0" || { echo "missing Zonos contract: $token" >&2; failed=1; }
   done
   audit_line="$(awk '/VOKRA_ZONOS_DEPENDENCY_AUDIT=1 bash/{print NR; exit}' "$0")"
   approval_line="$(awk '/--approval \"\$dependency_approval\"/{print NR; exit}' "$0")"
@@ -174,7 +175,7 @@ self_test() {
     echo 'upload/publish command found' >&2
     failed=1
   fi
-  for consumer in "$ROOT/tools/parity/zonos_dump_reference.py" "$ROOT/tools/parity/zonos_inspect.py" "$ROOT/tools/parity/zonos_vast_stage.py" "$0"; do
+  for consumer in "$REFERENCE_DUMPER" "$ROOT/tools/parity/zonos_inspect.py" "$ROOT/tools/parity/zonos_vast_stage.py" "$0"; do
     grep -Fq 'zonos_v0_1_reference' "$consumer" || { echo "dedicated project binding missing: $consumer" >&2; failed=1; }
     generic_project="--project tools/"'parity --'
     if grep -Fq -- "$generic_project" "$consumer"; then
@@ -185,6 +186,8 @@ self_test() {
   bash "$DEPENDENCY_AUDIT_WRAPPER" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
     uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test || failed=1
+  UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
+    uv run --no-project --offline --python 3.12 python "$REFERENCE_DUMPER" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \
     uv run --no-project --offline --python 3.12 python "$ROOT/tools/parity/zonos_vast_stage.py" --self-test || failed=1
   UV_CACHE_DIR="${ZONOS_UV_CACHE_DIR:-/tmp/vokra-zonos-uv-cache}" \

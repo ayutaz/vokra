@@ -23,11 +23,14 @@ import hashlib
 import json
 import math
 import os
+import struct
 import subprocess
 import sys
-import struct
+import types
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from zonos_v0_1_reference import dependency_audit
 from zonos_v0_1_reference.import_policy import install as install_import_policy
@@ -46,6 +49,12 @@ MAX_PHONEMES = 1 << 20
 MAX_PREFIX_VALUES = 1 << 24
 REFERENCE_PROJECT_LOCK_SHA256 = dependency_audit.EXPECTED_LOCK_SHA256
 REFERENCE_PROJECT_PYPROJECT_SHA256 = dependency_audit.EXPECTED_PROJECT_SHA256
+JIT_SCRIPT_GUARD = {
+    "operation": "torch.jit.script",
+    "disposition": "REFUSED",
+    "scope": "full Zonos reference run",
+    "enforcement": "refuse_jit_script",
+}
 
 
 def no_dupes(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -92,6 +101,41 @@ def require_absent_output(path: Path, label: str) -> None:
 def write_bytes_no_clobber(path: Path, value: bytes) -> None:
     with path.open("xb") as handle:
         handle.write(value)
+
+
+@contextmanager
+def refuse_jit_script(torch: Any) -> Iterator[None]:
+    """Refuse the vulnerable JIT compiler while preserving checkpoint loads."""
+    jit = getattr(torch, "jit", None)
+    original = getattr(jit, "script", None)
+    if not callable(original):
+        raise RuntimeError("torch.jit.script API is unavailable; cannot install fail-closed guard")
+
+    def refused(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("torch.jit.script is refused by the Zonos reference safety contract")
+
+    try:
+        jit.script = refused
+    except Exception as error:
+        raise RuntimeError("cannot install the torch.jit.script fail-closed guard") from error
+    try:
+        yield
+    finally:
+        current = getattr(jit, "script", None)
+        jit.script = original
+        if current is not refused:
+            raise RuntimeError("torch.jit.script guard drifted during the reference run")
+
+
+def jit_script_guarded(function: Any) -> Any:
+    @wraps(function)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        import torch
+
+        with refuse_jit_script(torch):
+            return function(*args, **kwargs)
+
+    return guarded
 
 
 def fixed_source(source: Path) -> None:
@@ -285,6 +329,7 @@ def official_prefix(model: Any, packet: dict[str, Any], torch: Any) -> Any:
     return torch.cat((prefix.norm(prefix.project(cond)), prefix.norm(prefix.project(uncond))))
 
 
+@jit_script_guarded
 def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path, max_new_tokens: int, cfg_scale: float, pcm_output: Path | None) -> None:
     if pcm_output is None:
         raise RuntimeError("--pcm-output is required for the authenticated Zonos evidence record")
@@ -399,6 +444,7 @@ def run_reference(source: Path, snapshot: Path, packet_path: Path, output: Path,
             "pcm_sample_rate": DAC_SAMPLE_RATE,
             "runtime_status": "REFERENCE_ONLY_NO_NATIVE_VERDICT",
             "publication": "NO_UPLOAD",
+            "jit_script_guard": dict(JIT_SCRIPT_GUARD),
             "reference_project": project,
         }
         with record_path.open("x", encoding="utf-8") as handle:
@@ -412,6 +458,42 @@ def self_test() -> None:
     assert PACKET_MAGIC == b"ZONOSCP1" and CODEBOOKS == 9 and MASKED == 1025
     assert REFERENCE_PROJECT_LOCK_SHA256 == dependency_audit.EXPECTED_LOCK_SHA256
     assert REFERENCE_PROJECT_PYPROJECT_SHA256 == dependency_audit.EXPECTED_PROJECT_SHA256
+    assert JIT_SCRIPT_GUARD == {
+        "operation": "torch.jit.script",
+        "disposition": "REFUSED",
+        "scope": "full Zonos reference run",
+        "enforcement": "refuse_jit_script",
+    }
+    synthetic_torch = types.SimpleNamespace(
+        jit=types.SimpleNamespace(script=lambda *args, **kwargs: None)
+    )
+    original_script = synthetic_torch.jit.script
+    with refuse_jit_script(synthetic_torch):
+        assert synthetic_torch.jit.script is not original_script
+        try:
+            synthetic_torch.jit.script(lambda: None)
+        except RuntimeError as error:
+            assert "refused" in str(error)
+        else:
+            raise AssertionError("torch.jit.script invocation must be refused")
+    assert synthetic_torch.jit.script is original_script
+    drift_torch = types.SimpleNamespace(
+        jit=types.SimpleNamespace(script=lambda *args, **kwargs: None)
+    )
+    drift_original = drift_torch.jit.script
+    try:
+        with refuse_jit_script(drift_torch):
+            drift_torch.jit.script = lambda *args, **kwargs: None
+    except RuntimeError as error:
+        assert "guard drifted" in str(error)
+    else:
+        raise AssertionError("torch.jit.script guard replacement must fail closed")
+    assert drift_torch.jit.script is drift_original
+    try:
+        with refuse_jit_script(types.SimpleNamespace(jit=types.SimpleNamespace())):
+            raise AssertionError("missing torch.jit.script API must fail closed")
+    except RuntimeError:
+        pass
     try:
         json.loads('{"x":1,"x":2}', object_pairs_hook=no_dupes)
     except ValueError:
