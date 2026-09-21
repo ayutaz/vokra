@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import types
 import typing
 from pathlib import Path
 from typing import Any, Iterator
@@ -66,6 +67,12 @@ EXPECTED_API_PARAMETERS = {
     "zonos.sampling.sample_from_logits": [("logits", "POSITIONAL_OR_KEYWORD", "<class 'inspect._empty'>"), ("temperature", "POSITIONAL_OR_KEYWORD", "1.0"), ("top_p", "POSITIONAL_OR_KEYWORD", "0.0"), ("top_k", "POSITIONAL_OR_KEYWORD", "0"), ("min_p", "POSITIONAL_OR_KEYWORD", "0.0"), ("linear", "POSITIONAL_OR_KEYWORD", "0.0"), ("conf", "POSITIONAL_OR_KEYWORD", "0.0"), ("quad", "POSITIONAL_OR_KEYWORD", "0.0"), ("generated_tokens", "POSITIONAL_OR_KEYWORD", "None"), ("repetition_penalty", "POSITIONAL_OR_KEYWORD", "3.0"), ("repetition_penalty_window", "POSITIONAL_OR_KEYWORD", "2")],
 }
 TRANSFORMERS_IMPORT = {"status": "IMPORTED", "file": "transformers/__init__.py", "distribution": "transformers==5.10.4"}
+JIT_SCRIPT_GUARD = {
+    "operation": "torch.jit.script",
+    "disposition": "REFUSED",
+    "scope": "model-free/source/API compatibility run",
+    "enforcement": "refuse_model_access",
+}
 
 class ProbeError(ValueError):
     """A fail-closed probe or evidence error."""
@@ -188,6 +195,7 @@ def refuse_model_access() -> Iterator[AccessRefusal]:
     old_hf: list[tuple[Any, str, Any]] = []
     old_load: Any = None
     old_jit_load: Any = None
+    old_jit_script: Any = None
     old_safe_open: Any = None
     old_safe_tensor_loaders: list[tuple[Any, str, Any]] = []
     def guarded_open(file: Any, *args: Any, **kwargs: Any) -> Any:
@@ -223,6 +231,10 @@ def refuse_model_access() -> Iterator[AccessRefusal]:
             old_jit_load = getattr(getattr(torch, "jit", None), "load", None)
             if old_jit_load is not None:
                 torch.jit.load = lambda *args, **kwargs: refusal.fail("torch.jit.load")
+            old_jit_script = getattr(getattr(torch, "jit", None), "script", None)
+            if old_jit_script is None:
+                raise ProbeError("torch.jit.script API is unavailable; cannot install fail-closed guard")
+            torch.jit.script = lambda *args, **kwargs: refusal.fail("torch.jit.script")
         except ImportError:
             pass
         try:
@@ -251,6 +263,8 @@ def refuse_model_access() -> Iterator[AccessRefusal]:
             importlib.import_module("torch").load = old_load
         if old_jit_load is not None:
             importlib.import_module("torch").jit.load = old_jit_load
+        if old_jit_script is not None:
+            importlib.import_module("torch").jit.script = old_jit_script
         if old_safe_open is not None:
             importlib.import_module("safetensors").safe_open = old_safe_open
         for module, name, value in old_safe_tensor_loaders:
@@ -533,6 +547,11 @@ def verify_safety(evidence: dict[str, Any]) -> None:
     if evidence["constructor_calls"] != 0 or evidence["model_access_events"] != [] or evidence["publication"] != NO_UPLOAD:
         raise ProbeError("compatibility evidence access/publication contract is not fail-closed")
 
+
+def validate_jit_script_guard(guard: Any) -> None:
+    if guard != JIT_SCRIPT_GUARD:
+        raise ProbeError("torch.jit.script refusal contract is missing or drifted")
+
 def validate_dac_contract(dac: Any) -> None:
     if not isinstance(dac, dict) or set(dac) != {"class_identity", "same_class_object", "from_pretrained", "encode", "decode", "config", "quantizer", "caller_flow"} or dac["class_identity"] != "transformers.models.dac.DacModel" or dac["same_class_object"] is not True:
         raise ProbeError("DAC class identity contract is incomplete")
@@ -614,7 +633,8 @@ def run_probe(args: argparse.Namespace) -> None:
         "environment": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": platform.python_version(), "sys_platform": sys.platform, "python_dont_write_bytecode": True, "package_versions": versions},
                 "imports": contracts["modules"], "api_contract": contracts["callables"], "dac_api_contract": contracts["dac_api_contract"], "source_clean_after_import": True,
                 "python_dont_write_bytecode": True, "model_access": False, "checkpoint_access": False,
-                "hf_token_present": False, "constructor_calls": 0, "model_access_events": [], "publication": NO_UPLOAD}
+                "hf_token_present": False, "constructor_calls": 0, "model_access_events": [], "publication": NO_UPLOAD,
+                "jit_script_guard": dict(JIT_SCRIPT_GUARD)}
     write_evidence(output, evidence)
     print(f"{PASS}: evidence={output} sha256={sha256_file(output)}")
 
@@ -627,9 +647,10 @@ def validate_evidence(args: argparse.Namespace) -> None:
     regular(path, "compatibility evidence")
     verify_bound_hash(path, args.evidence_sha256)
     evidence, _ = strict_json(path)
-    required = {"schema", "status", "expected_head", "caller", "source", "project", "environment", "imports", "api_contract", "dac_api_contract", "source_clean_after_import", "python_dont_write_bytecode", "model_access", "checkpoint_access", "hf_token_present", "constructor_calls", "model_access_events", "publication"}
+    required = {"schema", "status", "expected_head", "caller", "source", "project", "environment", "imports", "api_contract", "dac_api_contract", "source_clean_after_import", "python_dont_write_bytecode", "model_access", "checkpoint_access", "hf_token_present", "constructor_calls", "model_access_events", "publication", "jit_script_guard"}
     if set(evidence) != required or evidence["schema"] != FORMAT or evidence["status"] != PASS or evidence["expected_head"] != args.expected_head:
         raise ProbeError("compatibility evidence schema/status/HEAD is not exact")
+    validate_jit_script_guard(evidence["jit_script_guard"])
     clean_head(root, args.expected_head)
     if evidence["project"] != project_identity(root):
         raise ProbeError("compatibility evidence project identity differs")
@@ -775,9 +796,24 @@ def self_test() -> None:
             "constructor_calls": 0,
             "model_access_events": [],
             "publication": NO_UPLOAD,
+            "jit_script_guard": dict(JIT_SCRIPT_GUARD),
         }
         write_evidence(validation_path, synthetic_evidence)
         validate_evidence(argparse.Namespace(vokra_root=str(project_root), expected_head=expected_head, evidence=str(validation_path), evidence_sha256=sha256_file(validation_path)))
+        missing_guard = dict(synthetic_evidence)
+        missing_guard.pop("jit_script_guard")
+        missing_guard_path = validation_root / "missing-guard.json"
+        write_evidence(missing_guard_path, missing_guard)
+        expect_error(lambda: validate_evidence(argparse.Namespace(vokra_root=str(project_root), expected_head=expected_head, evidence=str(missing_guard_path), evidence_sha256=sha256_file(missing_guard_path))), "missing evidence torch.jit.script guard")
+        expect_error(lambda: validate_jit_script_guard(missing_guard.get("jit_script_guard")), "missing torch.jit.script guard")
+        tampered_guard = dict(JIT_SCRIPT_GUARD)
+        tampered_guard["disposition"] = "ALLOWED"
+        tampered_evidence = dict(synthetic_evidence)
+        tampered_evidence["jit_script_guard"] = tampered_guard
+        tampered_evidence_path = validation_root / "tampered-guard.json"
+        write_evidence(tampered_evidence_path, tampered_evidence)
+        expect_error(lambda: validate_evidence(argparse.Namespace(vokra_root=str(project_root), expected_head=expected_head, evidence=str(tampered_evidence_path), evidence_sha256=sha256_file(tampered_evidence_path))), "tampered evidence torch.jit.script guard")
+        expect_error(lambda: validate_jit_script_guard(tampered_guard), "tampered torch.jit.script guard")
         for field in ("class_identity", "same_class_object", "caller_flow"):
             tampered = dict(dac_safe)
             tampered[field] = "tampered" if field != "same_class_object" else False
@@ -796,25 +832,41 @@ def self_test() -> None:
                 tampered[path[0]][path[1]] = "tampered"
             expect_error(lambda tampered=tampered: validate_dac_contract(tampered), f"tampered DAC {path[0]}.{path[1]}")
         original_path_open, original_io_open = Path.open, io.open
-        with refuse_model_access():
-            expect_error(lambda: Path(root / "synthetic.safetensors").open("rb"), "pathlib model loader")
-            expect_error(lambda: io.open(root / "synthetic.safetensors", "rb"), "io model loader")
-            try:
-                torch_available = importlib.util.find_spec("torch") is not None
-            except ModuleNotFoundError:
-                torch_available = False
-            if torch_available:
-                torch = importlib.import_module("torch")
-                expect_error(lambda: torch.jit.load(root / "synthetic.pt"), "torch.jit model loader")
-            try:
-                safetensors_available = importlib.util.find_spec("safetensors.torch") is not None
-            except ModuleNotFoundError:
-                safetensors_available = False
-            if safetensors_available:
-                safe_torch = importlib.import_module("safetensors.torch")
-                for loader in ("load_file", "load_model"):
-                    if hasattr(safe_torch, loader):
-                        expect_error(lambda loader=loader: getattr(safe_torch, loader)(root / "synthetic.safetensors"), f"safetensors.torch.{loader} model loader")
+        # Keep this self-test model-free even when the dedicated uv project is
+        # not installed locally: the guard only needs the exact torch.jit API
+        # surface, so a no-op module lets us exercise patch/refusal/restore
+        # without importing or executing a real model runtime.
+        synthetic_torch = types.ModuleType("torch")
+        synthetic_torch.load = lambda *args, **kwargs: None
+        synthetic_torch.jit = types.SimpleNamespace(
+            load=lambda *args, **kwargs: None,
+            script=lambda *args, **kwargs: None,
+        )
+        original_torch_module = sys.modules.get("torch")
+        sys.modules["torch"] = synthetic_torch
+        try:
+            original_jit_script = synthetic_torch.jit.script
+            with refuse_model_access():
+                expect_error(lambda: Path(root / "synthetic.safetensors").open("rb"), "pathlib model loader")
+                expect_error(lambda: io.open(root / "synthetic.safetensors", "rb"), "io model loader")
+                expect_error(lambda: synthetic_torch.jit.load(root / "synthetic.pt"), "torch.jit model loader")
+                expect_error(lambda: synthetic_torch.jit.script(lambda: None), "torch.jit.script compiler")
+                assert synthetic_torch.jit.script is not original_jit_script, "torch.jit.script guard was not installed"
+                try:
+                    safetensors_available = importlib.util.find_spec("safetensors.torch") is not None
+                except ModuleNotFoundError:
+                    safetensors_available = False
+                if safetensors_available:
+                    safe_torch = importlib.import_module("safetensors.torch")
+                    for loader in ("load_file", "load_model"):
+                        if hasattr(safe_torch, loader):
+                            expect_error(lambda loader=loader: getattr(safe_torch, loader)(root / "synthetic.safetensors"), f"safetensors.torch.{loader} model loader")
+        finally:
+            assert synthetic_torch.jit.script is original_jit_script, "torch.jit.script guard was not restored"
+            if original_torch_module is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = original_torch_module
         assert Path.open is original_path_open and io.open is original_io_open, "model access guards were not restored"
         environment_safe = {"system": "Linux", "release": "vast-kernel", "machine": "x86_64", "python": "3.12.9", "sys_platform": "linux", "python_dont_write_bytecode": True, "package_versions": {"huggingface-hub": "1.5.0", "numpy": "2.2.2", "safetensors": "0.5.3", "setuptools": "84.0.0", "torch": "2.11.0+cpu", "torchaudio": "2.11.0+cpu", "tqdm": "4.67.1", "transformers": "5.10.4"}}
         validate_environment(environment_safe)
@@ -827,6 +879,7 @@ def self_test() -> None:
     assert HEX40.fullmatch(current)
     expect_error(lambda: clean_head(repository_root(), "0" * 40), "stale HEAD")
     assert FORMAT == "vokra-zonos-transformers-compatibility-v1"
+    validate_jit_script_guard(JIT_SCRIPT_GUARD)
     assert SOURCE_REVISION == "bc40d98e1e1ab54fc65c483be127a90e3c7c0645"
     print("zonos Transformers compatibility probe self-test: PASS")
 

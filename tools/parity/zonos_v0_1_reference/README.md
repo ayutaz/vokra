@@ -45,6 +45,18 @@ override remains visible to the dependency audit and does not change the
 audit status (`BLOCKED_UNREVIEWED_TRANSITIVE`) or publication disposition
 (`NO_UPLOAD`).
 
+The compatibility worker is fail-closed for both checkpoint loading and JIT
+compilation: during the authorized model-free/source/API run,
+`torch.jit.load` and `torch.jit.script` are refused with a loud error. The
+generated, hash-bound evidence records this contract as `jit_script_guard`;
+the probe self-test calls `torch.jit.script` directly and requires the refusal,
+so removing the guard fails the self-test. This is a containment measure, not
+a patched dependency, and it does not automatically dismiss Dependabot alert
+#531 (GHSA-rrmf-rvhw-rf47 / CVE-2025-3000). In particular, a mixed
+`torch`/`torchaudio` upgrade such as PR #112 is not accepted: the dedicated
+project requires a synchronized pair and its lock/pyproject contract must be
+updated together after the upstream compatibility and security review.
+
 ## Dependency license closure
 
 `license_gate_manifest.json` records the evidence review for all 34 active
