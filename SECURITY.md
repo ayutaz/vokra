@@ -27,8 +27,9 @@ respected when requested.
 
 ## Supported versions
 
-The workspace is `0.3.0` development; no Git tag or published release exists
-yet. Security fixes are made on the current development line. Older commits,
+The current supported release is `0.3.0`, published on 2026-09-20 with Git tag
+`v0.3.0` and a GitHub release. External package registries remain disabled.
+Security fixes are made on the current pre-1.0 development line. Older commits,
 private builds, and unreleased snapshots do not receive backports.
 
 ## In scope

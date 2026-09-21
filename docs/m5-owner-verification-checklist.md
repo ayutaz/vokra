@@ -2,8 +2,8 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**2026-09-17 current-state / supersession note:** the observed `main` baseline
-for this campaign is `2b08b7f7`. The latest live, read-only public audit,
+**2026-09-21 current-state / supersession note:** the observed `main` baseline
+for this campaign is `0df21558c0a8f699a4b2b11c108f413ee21fc8c2`. The latest live, read-only public audit,
 evaluated with audit logic through `a4af7800`, reports 194 repositories, 193
 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal status is
@@ -24,8 +24,8 @@ numeric parity remains unclaimed. The GitHub-only `v0.3.0` pre-1.0 source
 release does not close M5, complete the catalog, or freeze the ABI. This
 checklist is not a GA or ABI-freeze declaration.
 
-The current literal Markdown ledger count is **51 checked / 31 unchecked**
-(mechanically counted on 2026-09-12). This is not an exhaustive task count:
+The current literal Markdown ledger count is **53 checked / 29 unchecked**
+(mechanically counted on 2026-09-21). This is not an exhaustive task count:
 prose-only GA gates remain independently tracked.
 
 **2026-09-09 historical audit-start snapshot:** Before this documentation refresh, PR #79
@@ -86,9 +86,9 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (2026-09-12)
+## 0. Live remaining-work index (2026-09-21)
 
-This table is the complete M5 routing index. The 31 unchecked Markdown boxes
+This table is the complete M5 routing index. The 29 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must
 not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
@@ -109,7 +109,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
 | Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. Exact-revision CLI routing then promoted BiCodec and SGMSE. VibeVoice Realtime-0.5B now has a strict structural `vibevoice_streaming` binder and CLI inspection route, so it is partial; synthesis, the complete weight manifest, independent reference and CPU parity remain pending. The live inventory is CPU `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
-| SoTA / parity / publish | Converters and many structural proofs landed | The 31 current literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
+| SoTA / parity / publish | Converters and many structural proofs landed | The 29 current literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
 gaps are tracked outside this file in
@@ -369,7 +369,7 @@ Original SoTA Phase 1-4 seven families:
 - [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): VAST converted pinned Distil-Whisper Large v3.5 (`728a…`, 539 tensors, 3,025,666,272-byte GGUF) and Kotoba-Whisper v2.2 (`9d334…`, 539 tensors, 3,025,666,304-byte GGUF). The old “native loader is absent” boundary is superseded: exact VAST head `216588cb69e62e729e1c25f1f50325125572ab23` ran the native forwards against an independent pinned Transformers reference. Distil encoder/decoder maximum absolute errors were `2.956390381e-5` and `9.155273438e-5`; Kotoba errors were `2.193450928e-5` and `4.196166992e-5`, all inside the preregistered `0.01` bound, with exact greedy-token equality. Keep open only for final Apple CPU/reference, Metal/reference and no-fallback evidence plus repository scheduling; do not repeat the completed VAST CPU implementation/parity work.
 - [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): VAST converted pinned Dia 1.6B (`257bc…`, 343 tensors, 6,444,673,088-byte GGUF) and Zonos v0.1 transformer (`9d833…`, 246 tensors, 3,248,843,808-byte GGUF); both targeted scaffold harnesses passed. Keep open because no reference-stage/output numerical parity ran and native synthesis remains a scaffold; repository scheduling is undecided.
 - [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): VAST converted and passed the current targeted GGUF harness for Chatterbox multilingual (292 tensors, 2,143,980,064 bytes), turbo (299 tensors, 1,915,470,144 bytes), and nano (155 tensors, 869,895,424 bytes), all at pinned revisions. Keep open: reference stage taps were unset, CosyVoice3 still lacks its required torch-to-safetensors sidecar, and repository scheduling is undecided.
-- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): VAST converted the pinned 0.6B release (`5d839924…`) to a 478-tensor, 1,829,328,672-byte GGUF. Its targeted harness passed 12 tests and matched the upstream talker (13 axes) and code-predictor (10 axes) config exactly. Conversion now embeds and authenticates the fixed-revision config, byte-BPE and generation sidecars for all five official main checkpoints. The runtime implements the exact Base/CustomVoice/VoiceDesign prompt boundary, bounded mmap autoregressive talker with KV cache, all fifteen code-predictor rows, frame-major sixteen-codebook generation, and an explicit same-backend main + 12-Hz waveform-decoder API/CLI join on CPU or Metal. The separately released pinned tokenizer has a strict 271-tensor decode-only GGUF contract and complete native mapped waveform graph. Keep open because independent real-weight CPU parity and Apple-hardware Metal parity have not run, and the four historical public main GGUFs plus absent public companion still require separately authorized gated replacement/publication; repository scheduling is also undecided.
+- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): VAST converted the pinned 0.6B release (`5d839924…`) to a 478-tensor, 1,829,328,672-byte GGUF. Its targeted harness passed 12 tests and matched the upstream talker (13 axes) and code-predictor (10 axes) config exactly. Conversion now embeds and authenticates the fixed-revision config, byte-BPE and generation sidecars for all five official main checkpoints. The runtime implements the exact Base/CustomVoice/VoiceDesign prompt boundary, bounded mmap autoregressive talker with KV cache, all fifteen code-predictor rows, frame-major sixteen-codebook generation, and an explicit same-backend main + 12-Hz waveform-decoder API/CLI join on CPU or Metal. The separately released pinned tokenizer has a strict 271-tensor decode-only GGUF contract and complete native mapped waveform graph. PR #109's VAST run completed independent real-weight CPU parity for all four public variants (4/4), with the recovered packet checksums closed. Keep open only for Apple CPU/reference, Metal/reference and Metal/CPU no-fallback verification, plus the separately authorized gated replacement/publication of the four historical public main GGUFs and absent public companion; repository scheduling is also undecided.
 - [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): in addition to the prior VAST VoxCPM2 proof, VAST merged all three pinned VibeVoice-1.5B shards with the fail-loud checkpoint merger (1,204 tensors, 2,704,021,987 parameters, zero dropped/shared tensors), then converted the full model to a 5,408,160,960-byte GGUF and passed the targeted harness. The workflow now mirrors that proven full-shard path instead of selecting only the first shard. Keep open because byte-reference taps/native synthesis remain absent and repository scheduling is undecided.
 - [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): VAST converted pinned Irodori-TTS-500M-v3 (`236c…`) to a 637-tensor, 2,048,247,584-byte GGUF and passed the current targeted harness. Keep open because its byte-reference directory was unset; VITS-JA remains intentionally unfetched and publication-blocked by the JSUT/JVS redistribution terms (§6.8), and repository scheduling is undecided.
 
