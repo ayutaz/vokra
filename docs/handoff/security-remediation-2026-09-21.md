@@ -84,18 +84,19 @@ parity, workflow hygiene, and diff hygiene pass.
 
 ### S1 — disposition the existing Zonos update safely
 
-[Dependabot PR #112](https://github.com/ayutaz/vokra/pull/112) is the first
-bounded update. It changes only:
+[Dependabot PR #112](https://github.com/ayutaz/vokra/pull/112) was the first
+bounded update. It changed only:
 
 - `tools/parity/zonos_v0_1_reference/pyproject.toml`;
 - `tools/parity/zonos_v0_1_reference/uv.lock`.
 
-It updates Torch `2.11.0` to `2.13.0` for a patched advisory, is mergeable,
-and is behind `main`. Its diff leaves Torchaudio at `2.11.0`, however, while
+It updated Torch `2.11.0` to `2.13.0` for a patched advisory and was mergeable
+but behind `main`. Its diff left Torchaudio at `2.11.0`, however, while
 the checked-in Zonos environment deliberately requires a synchronized
 Torch/Torchaudio pair. The old-base CI does not exercise the independent
 reference environment deeply enough to approve that mixed pair. Do not rebase
-or merge PR #112 as written.
+or merge PR #112 as written. It was closed on 2026-09-21 with the synchronized
+pair and remote-evidence requirements recorded in the closing rationale.
 
 The advisory is limited to `torch.jit.script`. The model-free Zonos
 compatibility probe already refuses checkpoint construction and
