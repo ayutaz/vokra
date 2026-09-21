@@ -1,8 +1,9 @@
 # Vokra documentation
 
-**Current-state review:** 2026-09-17
+**Current-state review:** 2026-09-21
 
-**Reviewed implementation baseline:** GitHub `main` at `2b08b7f7` (2026-09-17);
+**Reviewed implementation baseline:** GitHub `main` at
+`0df21558c0a8f699a4b2b11c108f413ee21fc8c2` (2026-09-20);
 the residual source/API and dependency-license closures, VibeVoice/VoxCPM
 runtime-boundary hardening, and parity reconciliation are merged through this
 head; the pre-documentation code
@@ -11,11 +12,14 @@ baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 documentation/evidence checkpoint was
 `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
 
-The current checkout is workspace `0.3.0`. At the 2026-09-09 audit start, PR
-#79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped, and
-0 failed remote checks; the repository has 0 Git tags and 0 published releases.
-The hashes above are dated historical records, not the current version. PR #79
-was subsequently merged as `1787818e702bdaba488d52aa1666fd5f08c5ae16`.
+The current checkout is workspace `0.3.0`; tag `v0.3.0` was published on
+2026-09-20 with 18 GitHub release assets, and its release workflow
+(`35490198908`) succeeded. PR #113 then merged at the reviewed `main` head
+`0df21558c0a8f699a4b2b11c108f413ee21fc8c2`. At the 2026-09-09 audit start,
+PR #79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped,
+and 0 failed remote checks. The hashes above are dated historical records, not
+the current version. PR #79 was subsequently merged as
+`1787818e702bdaba488d52aa1666fd5f08c5ae16`.
 The bounded post-merge VAST and Scaleway execution is recorded in the
 [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md).
 Those accepted hardware verdicts apply only to the rows and exact heads named
@@ -63,6 +67,7 @@ environment they name.
 | Contributor workflow | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | Community conduct | [Code of Conduct](../CODE_OF_CONDUCT.md) / [日本語](../CODE_OF_CONDUCT.ja.md) |
 | Vulnerability reporting | [Security Policy](../SECURITY.md) / [日本語](../SECURITY.ja.md) |
+| Current dependency-security remediation | [2026-09-21 Dependabot and Scorecard plan](handoff/security-remediation-2026-09-21.md) |
 | Model and dependency licensing | [Licence audit](license-audit.md) |
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
