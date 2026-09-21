@@ -146,6 +146,19 @@ model-access evidence fails closed. A passing compatibility gate authorizes
 only the next Zonos pre-acquisition stage; it does not authorize weights,
 conversion, parity, or publication.
 
+The full reference worker `tools/parity/zonos_dump_reference.py` applies the
+same fail-closed boundary across the entire official source/model execution:
+`torch.jit.script` is refused from before the upstream import through output
+recording, while ordinary checkpoint loading is left unchanged. Its synthetic
+self-test proves normal install/refusal/restore, rejects a missing API, and
+detects an upstream replacement of the guard before restoring the original
+callable. The hash-bound `vokra-zonos-reference-v1` record now requires the
+exact `jit_script_guard` object, and `tools/parity/zonos_inspect.py` rejects
+both missing and modified guard records. The containment is not a patched
+dependency and does not dismiss Dependabot #531 (GHSA-rrmf-rvhw-rf47 /
+CVE-2025-3000): the fixed-source/import-closure evidence and any approved
+dependency replacement remain separate, unfinished security decisions.
+
 ## Dependency approval transition
 
 The model-free audit emits `BLOCKED_UNREVIEWED_TRANSITIVE` because dependency

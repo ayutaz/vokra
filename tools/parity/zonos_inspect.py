@@ -98,6 +98,12 @@ SOURCE_MARKERS = {
 }
 REFERENCE_PROJECT_LOCK_SHA256 = dependency_audit.EXPECTED_LOCK_SHA256
 REFERENCE_PROJECT_PYPROJECT_SHA256 = dependency_audit.EXPECTED_PROJECT_SHA256
+JIT_SCRIPT_GUARD = {
+    "operation": "torch.jit.script",
+    "disposition": "REFUSED",
+    "scope": "full Zonos reference run",
+    "enforcement": "refuse_jit_script",
+}
 STATUS_FIELDS = {
     "status": "BLOCKED",
     "evidence_stage": "AUTHENTICATED_ARTIFACT_SOURCE_EVIDENCE",
@@ -571,7 +577,7 @@ def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Pa
             "codes_path", "codes_shape", "codes_sha256", "pcm_path", "pcm_sha256",
             "dac_source_model_id", "dac_num_codebooks", "dac_identity_status",
             "pcm_sample_rate",
-            "runtime_status", "publication",
+            "runtime_status", "publication", "jit_script_guard",
             "reference_project",
         }
         if not isinstance(record, dict) or not required.issubset(record):
@@ -587,6 +593,7 @@ def reference_evidence(path: Path | None, blockers: list[str], evidence_root: Pa
             or record["upstream_revision"] != UPSTREAM_HF_REVISION
             or record["runtime_status"] != "REFERENCE_ONLY_NO_NATIVE_VERDICT"
             or record["publication"] != "NO_UPLOAD"
+            or record["jit_script_guard"] != JIT_SCRIPT_GUARD
             or not isinstance(record["reference_project"], dict)
             or record["reference_project"].get("uv_lock_sha256") != REFERENCE_PROJECT_LOCK_SHA256
             or record["reference_project"].get("pyproject_sha256") != REFERENCE_PROJECT_PYPROJECT_SHA256
@@ -915,6 +922,7 @@ def self_test() -> None:
             "dac_source_model_id": DAC_SOURCE_MODEL_ID,
             "dac_num_codebooks": DAC_NUM_CODEBOOKS,
             "dac_identity_status": "SOURCE_REQUEST_ONLY",
+            "jit_script_guard": dict(JIT_SCRIPT_GUARD),
             "codes_path": codes.name, "codes_shape": [1, DAC_NUM_CODEBOOKS, 1],
             "codes_sha256": sha256(codes),
             "pcm_path": "reference-pcm.f32le", "pcm_sha256": "",
@@ -934,6 +942,16 @@ def self_test() -> None:
         blockers = []
         assert reference_evidence(reference, blockers, root)["status"] == "MEASURED_NOT_GATED"
         record = json.loads(reference.read_text(encoding="utf-8"))
+        record.pop("jit_script_guard")
+        reference.write_text(json.dumps(record), encoding="utf-8")
+        blockers = []
+        assert reference_evidence(reference, blockers, root)["status"] == "BLOCKED_REFERENCE"
+        record["jit_script_guard"] = dict(JIT_SCRIPT_GUARD)
+        record["jit_script_guard"]["disposition"] = "ALLOWED"
+        reference.write_text(json.dumps(record), encoding="utf-8")
+        blockers = []
+        assert reference_evidence(reference, blockers, root)["status"] == "BLOCKED_REFERENCE"
+        record["jit_script_guard"] = dict(JIT_SCRIPT_GUARD)
         record["dac_identity_status"] = "EXACT"
         reference.write_text(json.dumps(record), encoding="utf-8")
         blockers = []

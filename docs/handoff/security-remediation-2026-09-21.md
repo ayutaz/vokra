@@ -98,15 +98,19 @@ reference environment deeply enough to approve that mixed pair. Do not rebase
 or merge PR #112 as written. It was closed on 2026-09-21 with the synchronized
 pair and remote-evidence requirements recorded in the closing rationale.
 
-The advisory is limited to `torch.jit.script`. The model-free Zonos
-compatibility probe already refuses checkpoint construction and
-`torch.jit.load`; first add and test an explicit fail-closed refusal for
-`torch.jit.script`. Keep the alert visible until that containment is merged
-and a security review confirms that the affected API is absent from every
-authorized Zonos worker. Only then may the alert receive a narrowly reasoned
-`vulnerable_code_not_present` disposition. In parallel, test a fully
-compatible Torch/Torchaudio upgrade or the justified removal of Torchaudio on
-a disposable VAST worker; do not manufacture an unsupported mixed install.
+The advisory is limited to `torch.jit.script`. This branch now makes both the
+model-free compatibility probe and the full reference worker refuse that API
+fail closed. The full-worker guard spans official-source import through
+evidence output, detects guard replacement, restores the original callable,
+and emits a hash-bound `jit_script_guard` record that the inspector requires.
+Model-free self-tests cover refusal, restoration, guard drift, missing and
+tampered evidence, the compatibility wrapper, and the complete inspection
+wrapper. Keep the alert visible after this containment merges: a disposable
+VAST worker must still establish source/import closure and test a fully
+compatible Torch/Torchaudio replacement (or justified Torchaudio removal).
+Only after that evidence is reviewed may the alert receive a narrowly reasoned
+`vulnerable_code_not_present` disposition; do not manufacture an unsupported
+mixed install.
 
 Exit gate: PR #112 is replaced or closed rather than merged unchanged; the
 affected API is fail-closed with a regression test; any dependency replacement
