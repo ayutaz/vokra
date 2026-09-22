@@ -323,7 +323,7 @@ VENV_ACTIVATE_RE = re.compile(
     r"[^\s;&|]+/(?:bin|Scripts)/(?:activate|Activate\.ps1)(?=\s|$)"
 )
 HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
-SETUP_UV_PIN = "20cfd1bf945f4377ade1205e4dbc17946fc9a30d"
+SETUP_UV_PIN = "bec219d24cd3e171d82865faccec33120bb574f4"
 SETUP_UV_RE = re.compile(
     r"^\s*(?:-\s+)?uses:\s*astral-sh/setup-uv@([^\s#]+)\s*(?:#.*)?$"
 )
@@ -1013,7 +1013,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: uv run --no-project --python 3.12 python tools/check.py
       - run: env MODE=test uv run --no-project --python 3.12 python tools/check.py
       - run: |
@@ -1073,7 +1073,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+      # - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
       - run: uv run --no-project --python 3.12 python tools/check.py
 YML
     if run_checker "$tmp/commentedsetupuv" check >/dev/null 2>&1; then
@@ -1090,8 +1090,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
       - run: uv run --no-project --python 3.12 python tools/check.py
 YML
     if run_checker "$tmp/duplicatesetupuv" check >/dev/null 2>&1; then
@@ -1108,7 +1108,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
       - run: echo no-python-here
 YML
     if run_checker "$tmp/unusedsetupuv" check >/dev/null 2>&1; then
@@ -1125,7 +1125,7 @@ jobs:
   setup_only:
     runs-on: ubuntu-latest
     steps:
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
       - run: echo setup-only
   execute:
     runs-on: ubuntu-latest
@@ -1147,7 +1147,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: uv run --no-project --python 3.12 python tools/check.py
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
 YML
     if run_checker "$tmp/latesetupuv" check >/dev/null 2>&1; then
         echo "self-test FAILED: setup-uv after its first use should fail" >&2
