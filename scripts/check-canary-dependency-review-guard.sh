@@ -172,15 +172,21 @@ check_tracked_lightning_inventory() {
     echo "tracked Lightning lock inventory does not include the Canary lock" >&2
     return 1
   }
+  snapshot="$(mktemp -d -t vokra-canary-dependency-review.XXXXXX)"
   while IFS= read -r path; do
-    if git -C "$REPO_ROOT" show "$base_sha:$path" | grep -Fqx -- 'name = "lightning"'; then
+    if ! git -C "$REPO_ROOT" show "$base_sha:$path" > "$snapshot/base-inventory.lock"; then
+      rm -rf "$snapshot"
+      echo "cannot read the dependency-review base lock: $path" >&2
+      return 1
+    fi
+    if grep -Fqx -- 'name = "lightning"' "$snapshot/base-inventory.lock"; then
       [[ -f "$REPO_ROOT/$path" && ! -L "$REPO_ROOT/$path" ]] || {
+        rm -rf "$snapshot"
         echo "tracked Lightning lock was removed or symlinked in this review: $path" >&2
         return 1
       }
     fi
   done < <(git -C "$REPO_ROOT" ls-tree -r --name-only "$base_sha" -- '*uv.lock')
-  snapshot="$(mktemp -d -t vokra-canary-dependency-review.XXXXXX)"
   for path in "${lightning_locks[@]}"; do
     if [[ "$path" != "$CANARY_LOCK_RELATIVE" ]]; then
       git -C "$REPO_ROOT" cat-file -e "$base_sha:$path" >/dev/null 2>&1 || {
@@ -189,7 +195,11 @@ check_tracked_lightning_inventory() {
         return 1
       }
       if ! git -C "$REPO_ROOT" diff --quiet "$base_sha" -- "$path"; then
-        git -C "$REPO_ROOT" show "$base_sha:$path" > "$snapshot/base.lock"
+        if ! git -C "$REPO_ROOT" show "$base_sha:$path" > "$snapshot/base.lock"; then
+          rm -rf "$snapshot"
+          echo "cannot read the dependency-review base lock: $path" >&2
+          return 1
+        fi
         check_patched_lightning_update "$snapshot/base.lock" "$REPO_ROOT/$path" "$path" || {
           rm -rf "$snapshot"
           return 1
