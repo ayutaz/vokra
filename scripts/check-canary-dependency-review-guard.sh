@@ -119,8 +119,8 @@ check_patched_lightning_update() {
       package_name=$0; sub(/^name = "/, "", package_name); sub(/"$/, "", package_name)
       next
     }
-    /^version = "/ && package_name != "lightning" && package_name != "pytorch-lightning" { print package_name "|" $0 }
-    /^[[:space:]]*\{ name = "/ && package_name != "lightning" && package_name != "pytorch-lightning" {
+    /^version = "/ && package_name != "" && package_name != "lightning" && package_name != "pytorch-lightning" { print package_name "|" $0 }
+    /^[[:space:]]*\{ name = "/ && package_name != "" && package_name != "lightning" && package_name != "pytorch-lightning" {
       child=$0; sub(/^.*name = "/, "", child); sub(/".*$/, "", child)
       if ((child == "lightning" || child == "pytorch-lightning") && package_name ~ /^vokra-/) next
       print package_name "|" $0
@@ -132,8 +132,8 @@ check_patched_lightning_update() {
       package_name=$0; sub(/^name = "/, "", package_name); sub(/"$/, "", package_name)
       next
     }
-    /^version = "/ && package_name != "lightning" && package_name != "pytorch-lightning" { print package_name "|" $0 }
-    /^[[:space:]]*\{ name = "/ && package_name != "lightning" && package_name != "pytorch-lightning" {
+    /^version = "/ && package_name != "" && package_name != "lightning" && package_name != "pytorch-lightning" { print package_name "|" $0 }
+    /^[[:space:]]*\{ name = "/ && package_name != "" && package_name != "lightning" && package_name != "pytorch-lightning" {
       child=$0; sub(/^.*name = "/, "", child); sub(/".*$/, "", child)
       if ((child == "lightning" || child == "pytorch-lightning") && package_name ~ /^vokra-/) next
       print package_name "|" $0

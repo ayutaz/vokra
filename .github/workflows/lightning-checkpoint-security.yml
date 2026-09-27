@@ -9,7 +9,13 @@ on:
       - "tools/parity/pyannote_diarization/uv.lock"
       - "tools/parity/pyannote_segmentation/pyproject.toml"
       - "tools/parity/pyannote_segmentation/uv.lock"
+      - "tools/parity/nanocodec/pyproject.toml"
+      - "tools/parity/nanocodec/uv.lock"
   workflow_dispatch:
+
+concurrency:
+  group: lightning-checkpoint-security-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -25,6 +31,7 @@ jobs:
         project:
           - tools/parity/pyannote_diarization
           - tools/parity/pyannote_segmentation
+          - tools/parity/nanocodec
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
