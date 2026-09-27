@@ -62,6 +62,18 @@ completed successfully on `main` at `107a49a9`. The same five code-scanning
 findings remain open (`CIIBestPracticesID`, `MaintainedID`, `CodeReviewID`,
 `SASTID`, and `VulnerabilitiesID`); none was dismissed to improve the score.
 
+A later clean-main [Scorecard rerun
+#36333491104](https://github.com/ayutaz/vokra/actions/runs/36333491104), after
+the corresponding CodeQL run completed, reports SAST coverage on 29 of the 30
+reviewed changesets. The remaining miss is not a failed or absent CodeQL run:
+PR #114 head `1bb61c0d` has a successful GitHub Advanced Security CodeQL check,
+but Scorecard v5.5.0 requests only the first 30 check suites and that CodeQL
+suite is the 33rd suite for the commit. Its squash commit `cb51b7e6` was the
+eighth of the 30 mainline changesets in this snapshot, so the finding will age
+out only after 23 subsequent meaningful commits. Do not create empty commits,
+rerun an already successful check, or dismiss the finding to change the score.
+The other four finding classes remain unchanged.
+
 ## Baseline and current inventory
 
 The reviewed source baseline is clean public `main`
