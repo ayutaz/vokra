@@ -33,12 +33,18 @@ UPSTREAM_REVISION = "f826b80d28226b62986cc218e5cec390b1096902"
 UPSTREAM_MODEL_SHA256 = (
     "ae0c1e2ad4e1381d851fa9bf298ba13ebc9c5a914cdee2dbe427a6583869924d"
 )
-TRANSFORMERS_VERSION = "5.5.0"
+TRANSFORMERS_VERSION = "5.10.4"
+# These pins were computed from the official PyPI wheel named by uv.lock:
+# transformers-5.10.4-py3-none-any.whl (sha256
+# 8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e).
+TRANSFORMERS_WHEEL_SHA256 = (
+    "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
+)
 FEATURE_SOURCE_SHA256 = (
     "ab4957749b5113067413dcd662dc212952b9a610d297e8b4515e2cab1ff1fce4"
 )
 MODELING_SOURCE_SHA256 = (
-    "7e0e7b1766999fe0dc4e7b730d676b3d4a7bc26d216b20c38e8163516191d5b4"
+    "5ef9fe1c7847400453095c158c76191913226788eaa1f4ba6afbb378b9e70547"
 )
 PUBLIC_GGUF_REPO = "vokra/ast-finetuned-audioset"
 PUBLIC_GGUF_REVISION = "b23eb8b8fdc5514b911afd18077fe00618932b13"
@@ -49,6 +55,8 @@ INPUT_WAV_SHA256 = (
     "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
 )
 SAMPLE_RATE = 16_000
+TORCH_VERSION = "2.13.0"
+TORCHAUDIO_VERSION = "2.11.0"
 MAX_LENGTH = 1_024
 NUM_MELS = 128
 NUM_LABELS = 527
@@ -170,8 +178,21 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    if importlib.metadata.version("transformers") != TRANSFORMERS_VERSION:
-        raise RuntimeError("installed Transformers version is not pinned")
+    installed_versions = {
+        "torch": importlib.metadata.version("torch"),
+        "torchaudio": importlib.metadata.version("torchaudio"),
+        "transformers": importlib.metadata.version("transformers"),
+    }
+    expected_versions = {
+        "torch": TORCH_VERSION,
+        "torchaudio": TORCHAUDIO_VERSION,
+        "transformers": TRANSFORMERS_VERSION,
+    }
+    if installed_versions != expected_versions:
+        raise RuntimeError(
+            f"installed oracle versions {installed_versions} != "
+            f"pinned {expected_versions}"
+        )
     feature_path = require_source(
         feature_source, FEATURE_SOURCE_SHA256, "AST feature extractor"
     )
@@ -250,6 +271,7 @@ def main() -> int:
         "oracle": {
             "library": "transformers",
             "version": TRANSFORMERS_VERSION,
+            "wheel_sha256": TRANSFORMERS_WHEEL_SHA256,
             "feature_source": str(feature_path),
             "feature_source_sha256": FEATURE_SOURCE_SHA256,
             "modeling_source": str(modeling_path),
@@ -287,8 +309,8 @@ def main() -> int:
         "top10": top10,
         "environment": {
             "platform": platform.platform(),
-            "torch": str(torch.__version__),
-            "torchaudio": importlib.metadata.version("torchaudio"),
+            "torch": installed_versions["torch"],
+            "torchaudio": installed_versions["torchaudio"],
             "numpy": str(np.__version__),
             "threads": torch.get_num_threads(),
         },
