@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Dump an independent Transformers deepfake-classifier reference.
 
-The oracle imports ``Wav2Vec2ForSequenceClassification`` from the upstream
-recorded Transformers 4.41.2 release and strictly loads the immutable
+The oracle imports ``Wav2Vec2ForSequenceClassification`` from the locked
+Transformers 5.10.4 release and strictly loads the immutable
 ``MelodyMachine/Deepfake-audio-detection-V2`` safetensors checkpoint. It does
 not mirror the Rust graph. A deterministic raw-PCM fixture exercises the
 official feature extractor, encoder, projector, mean pool, classifier and
@@ -37,7 +37,7 @@ PREPROCESSOR_BYTES = 215
 PREPROCESSOR_SHA256 = (
     "8cdfd65ff4115423185a1512bdae100e2e0cd744f5b322417429944aaafd0827"
 )
-TRANSFORMERS_VERSION = "5.5.0"
+TRANSFORMERS_VERSION = "5.10.4"
 SAMPLE_RATE = 16_000
 SAMPLES = 16_000
 LABELS = ["fake", "real"]
@@ -264,7 +264,11 @@ def self_test() -> None:
         raise AssertionError(f"signal bytes={len(payload)}, expected {SAMPLES * 4}")
     if actual != SIGNAL_SHA256:
         raise AssertionError(f"signal SHA-256 {actual}, expected {SIGNAL_SHA256}")
-    if LABELS != ["fake", "real"] or len(UPSTREAM_REVISION) != 40:
+    if (
+        TRANSFORMERS_VERSION != "5.10.4"
+        or LABELS != ["fake", "real"]
+        or len(UPSTREAM_REVISION) != 40
+    ):
         raise AssertionError("pinned immutable classifier contract drifted")
     print(f"deepfake_detection_dump_reference: self-test PASS sha256={actual}")
 

@@ -30,6 +30,7 @@ PREPROCESSOR_FILE="preprocessor_config.json"
 PREPROCESSOR_BYTES=215
 PREPROCESSOR_SHA256="8cdfd65ff4115423185a1512bdae100e2e0cd744f5b322417429944aaafd0827"
 SIGNAL_SHA256="b95320de8c0182cc0a916dbbfe03fa8a1103e5a2ab71cb56e217f8e712f51585"
+TRANSFORMERS_VERSION="5.10.4"
 
 MIN_VAST_MEM_KIB=30000000
 MIN_FREE_DISK_KIB=12000000
@@ -45,7 +46,7 @@ usage: run-deepfake-detection-parity.sh [--work-dir <empty-dir>]
 
 VAST-only real-weight CPU measurement worker. It downloads the exact public
 Vokra GGUF and immutable upstream checkpoint/config/preprocessor, generates a
-reference by directly importing Transformers 4.41.2, compiles vokra-models and
+reference by directly importing Transformers 5.10.4, compiles vokra-models and
 vokra-cli on VAST, and runs the ignored native CPU measurement. Numeric bounds
 remain unset until this output and a real Apple CPU/Metal observation have been
 reviewed.
@@ -142,7 +143,8 @@ record_environment() {
     cargo --version
     uv --version
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
-      'import platform, torch, transformers; print(f"python={platform.python_version()}"); print(f"torch={torch.__version__}"); print(f"transformers={transformers.__version__}")'
+      'import platform, sys, torch, transformers; expected = sys.argv[1]; actual = transformers.__version__; sys.exit(f"Transformers {actual} loaded, expected {expected}") if actual != expected else None; print(f"python={platform.python_version()}"); print(f"torch={torch.__version__}"); print(f"transformers={actual}")' \
+      "$TRANSFORMERS_VERSION"
   } | tee "$output"
 }
 
@@ -176,7 +178,7 @@ run_self_test() {
   script_path="${BASH_SOURCE[0]}"
   for required in "$PUBLIC_REVISION" "$UPSTREAM_REVISION" "$CHECKPOINT_SHA256" \
     "$CONFIG_SHA256" "$PREPROCESSOR_SHA256" "$SIGNAL_SHA256" \
-    "deepfake_detection_dump_reference.py" \
+    "deepfake_detection_dump_reference.py" "TRANSFORMERS_VERSION=\"5.10.4\"" \
     "deepfake_detection::tests::measure_official_cpu_against_transformers" \
     "--frozen --python 3.12" "--ignored --exact --nocapture"; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -299,7 +301,7 @@ main() {
     echo "public_sha256=$PUBLIC_SHA256"
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "checkpoint_sha256=$CHECKPOINT_SHA256"
-    echo "transformers_version=4.41.2"
+    echo "transformers_version=$TRANSFORMERS_VERSION"
     echo "signal_sha256=$SIGNAL_SHA256"
     echo "reference_manifest_sha256=$(sha256_file "$reference/manifest.json")"
     grep -F "DEEPFAKE_MEASUREMENT" "$cpu_log"
