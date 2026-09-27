@@ -21,17 +21,17 @@ CANARY_FLASH_WORKER="$REPO_ROOT/scripts/publish/vast-ai/run-canary-1b-flash-vali
 CANARY_V2_WORKER="$REPO_ROOT/scripts/publish/vast-ai/run-canary-1b-v2-validation.sh"
 CANARY_LOCK_RELATIVE="tools/parity/canary_1b_reference/uv.lock"
 
-check_lightning_lock() {
-  local lock_path="$1" summary
+check_package_lock_version() {
+  local lock_path="$1" package_name="$2" expected="$3" summary
   [[ -f "$lock_path" && ! -L "$lock_path" ]] || {
     echo "lock is missing or symlinked: $lock_path" >&2
     return 1
   }
-  summary="$(awk '
+  summary="$(awk -v package_name="$package_name" -v expected="$expected" '
     function finish() {
-      if (name == "lightning") {
+      if (name == package_name) {
         entries++
-        if (version == "2.6.6") exact++
+        if (version == expected) exact++
       }
     }
     /^\[\[package\]\]$/ {
@@ -56,9 +56,90 @@ check_lightning_lock() {
     }
   ' "$lock_path")"
   [[ "$summary" == "entries=1 exact=1" ]] || {
-    echo "Canary lock must contain exactly one lightning==2.6.6 package ($summary)" >&2
+    echo "lock must contain exactly one $package_name==$expected package ($summary)" >&2
     return 1
   }
+}
+
+check_lightning_lock() {
+  check_package_lock_version "$1" lightning 2.6.6
+}
+
+check_package_lock_before_target() {
+  local lock_path="$1" package_name="$2" summary
+  summary="$(awk -v package_name="$package_name" '
+    function finish() {
+      if (name == package_name) {
+        entries++
+        split(version, parts, ".")
+        if (version ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ &&
+            ((parts[1] + 0) < 2 ||
+             ((parts[1] + 0) == 2 && (parts[2] + 0) < 6) ||
+             ((parts[1] + 0) == 2 && (parts[2] + 0) == 6 && (parts[3] + 0) < 6))) older++
+      }
+    }
+    /^\[\[package\]\]$/ { finish(); name=""; version=""; next }
+    /^name = "/ { name=$0; sub(/^name = "/, "", name); sub(/"$/, "", name) }
+    /^version = "/ { version=$0; sub(/^version = "/, "", version); sub(/"$/, "", version) }
+    END { finish(); printf "entries=%d older=%d\n", entries + 0, older + 0 }
+  ' "$lock_path")"
+  [[ "$summary" == "entries=1 older=1" ]]
+}
+
+check_patched_lightning_update() {
+  local base_lock="$1" new_lock="$2" path="$3" tmp lock_file
+  for lock_file in "$base_lock" "$new_lock"; do
+    [[ -f "$lock_file" && ! -L "$lock_file" ]] || {
+      echo "Lightning lock is missing or symlinked: $lock_file" >&2
+      return 1
+    }
+  done
+  if ! check_package_lock_before_target "$base_lock" lightning; then
+    echo "non-Canary Lightning update must start at one release before 2.6.6 ($path)" >&2
+    return 1
+  fi
+  if ! check_package_lock_before_target "$base_lock" pytorch-lightning; then
+    echo "non-Canary pytorch-lightning update must start at one release before 2.6.6 ($path)" >&2
+    return 1
+  fi
+  check_package_lock_version "$new_lock" pytorch-lightning 2.6.6 || return 1
+  check_lightning_lock "$new_lock" || return 1
+
+  # A patched-only update may refresh resolver markers, but it must not add,
+  # remove, or change any other locked package or dependency edge.
+  tmp="$(mktemp -d -t vokra-canary-dependency-review.XXXXXX)"
+  awk '
+    /^\[\[package\]\]$/ { package_name=""; next }
+    /^name = "/ {
+      package_name=$0; sub(/^name = "/, "", package_name); sub(/"$/, "", package_name)
+      next
+    }
+    /^version = "/ && package_name != "lightning" && package_name != "pytorch-lightning" { print package_name "|" $0 }
+    /^[[:space:]]*\{ name = "/ && package_name != "lightning" && package_name != "pytorch-lightning" {
+      child=$0; sub(/^.*name = "/, "", child); sub(/".*$/, "", child)
+      if ((child == "lightning" || child == "pytorch-lightning") && package_name ~ /^vokra-/) next
+      print package_name "|" $0
+    }
+  ' "$base_lock" | sed -E 's/, marker = "[^"]*"//' | LC_ALL=C sort > "$tmp/base.inventory"
+  awk '
+    /^\[\[package\]\]$/ { package_name=""; next }
+    /^name = "/ {
+      package_name=$0; sub(/^name = "/, "", package_name); sub(/"$/, "", package_name)
+      next
+    }
+    /^version = "/ && package_name != "lightning" && package_name != "pytorch-lightning" { print package_name "|" $0 }
+    /^[[:space:]]*\{ name = "/ && package_name != "lightning" && package_name != "pytorch-lightning" {
+      child=$0; sub(/^.*name = "/, "", child); sub(/".*$/, "", child)
+      if ((child == "lightning" || child == "pytorch-lightning") && package_name ~ /^vokra-/) next
+      print package_name "|" $0
+    }
+  ' "$new_lock" | sed -E 's/, marker = "[^"]*"//' | LC_ALL=C sort > "$tmp/new.inventory"
+  if ! cmp -s "$tmp/base.inventory" "$tmp/new.inventory"; then
+    rm -rf "$tmp"
+    echo "unrelated locked package or dependency changed in this review: $path" >&2
+    return 1
+  fi
+  rm -rf "$tmp"
 }
 
 check_pyproject_override() {
@@ -71,8 +152,12 @@ check_pyproject_override() {
 }
 
 check_tracked_lightning_inventory() {
-  local base_sha="${BASE_SHA:-HEAD^}" path
+  local base_sha="${BASE_SHA:-HEAD^}" path snapshot
   local -a lightning_locks=()
+  git -C "$REPO_ROOT" cat-file -e "$base_sha^{commit}" >/dev/null 2>&1 || {
+    echo "cannot establish the dependency-review base commit: $base_sha" >&2
+    return 1
+  }
   while IFS= read -r path; do
     if grep -Fqx -- 'name = "lightning"' "$REPO_ROOT/$path"; then
       lightning_locks+=("$path")
@@ -82,18 +167,32 @@ check_tracked_lightning_inventory() {
     echo "tracked Lightning lock inventory does not include the Canary lock" >&2
     return 1
   }
+  while IFS= read -r path; do
+    if git -C "$REPO_ROOT" show "$base_sha:$path" | grep -Fqx -- 'name = "lightning"'; then
+      [[ -f "$REPO_ROOT/$path" && ! -L "$REPO_ROOT/$path" ]] || {
+        echo "tracked Lightning lock was removed or symlinked in this review: $path" >&2
+        return 1
+      }
+    fi
+  done < <(git -C "$REPO_ROOT" ls-tree -r --name-only "$base_sha" -- '*uv.lock')
+  snapshot="$(mktemp -d -t vokra-canary-dependency-review.XXXXXX)"
   for path in "${lightning_locks[@]}"; do
     if [[ "$path" != "$CANARY_LOCK_RELATIVE" ]]; then
-      git -C "$REPO_ROOT" cat-file -e "$base_sha^{commit}" >/dev/null 2>&1 || {
-        echo "cannot establish the dependency-review base commit: $base_sha" >&2
+      git -C "$REPO_ROOT" cat-file -e "$base_sha:$path" >/dev/null 2>&1 || {
+        rm -rf "$snapshot"
+        echo "non-Canary Lightning lock was added without a reviewed base: $path" >&2
         return 1
       }
       if ! git -C "$REPO_ROOT" diff --quiet "$base_sha" -- "$path"; then
-        echo "non-Canary tracked Lightning lock changed in this review: $path" >&2
-        return 1
+        git -C "$REPO_ROOT" show "$base_sha:$path" > "$snapshot/base.lock"
+        check_patched_lightning_update "$snapshot/base.lock" "$REPO_ROOT/$path" "$path" || {
+          rm -rf "$snapshot"
+          return 1
+        }
       fi
     fi
   done
+  rm -rf "$snapshot"
 }
 
 check_compatibility_contract() {
@@ -141,7 +240,7 @@ run_guard() {
 }
 
 run_self_test() {
-  local tmp old_lock duplicate_lock
+  local tmp old_lock duplicate_lock newer_lock patched_lock paired_base paired_new partial_new duplicate_pt unrelated_base unrelated_new unrelated_edge_new
   for path in "$WORKFLOW" "$CANARY_LOCK" "$CANARY_PYPROJECT" "$CANARY_GATE" "$CANARY_FLASH_WORKER" "$CANARY_V2_WORKER"; do
     [[ -f "$path" && ! -L "$path" ]] || die "self-test contract file is missing or symlinked: $path"
   done
@@ -152,14 +251,48 @@ run_self_test() {
   trap "rm -rf '$tmp'" EXIT
   old_lock="$tmp/old.lock"
   duplicate_lock="$tmp/duplicate.lock"
+  newer_lock="$tmp/newer.lock"
+  patched_lock="$tmp/patched.lock"
+  paired_base="$tmp/paired-base.lock"
+  paired_new="$tmp/paired-new.lock"
+  partial_new="$tmp/partial-new.lock"
+  duplicate_pt="$tmp/duplicate-pt.lock"
+  unrelated_base="$tmp/unrelated-base.lock"
+  unrelated_new="$tmp/unrelated-new.lock"
+  unrelated_edge_new="$tmp/unrelated-edge-new.lock"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.5"' > "$old_lock"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' > "$duplicate_lock"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.7"' > "$newer_lock"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' > "$patched_lock"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.5"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.5"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' > "$paired_base"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' > "$paired_new"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.5"' > "$partial_new"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' > "$duplicate_pt"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.5"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.5"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' 'dependencies = [' '    { name = "base-dependency" },' ']' > "$unrelated_base"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "2.0.0"' 'dependencies = [' '    { name = "base-dependency" },' ']' > "$unrelated_new"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' 'dependencies = [' '    { name = "unrelated-dependency" },' ']' > "$unrelated_edge_new"
   check_lightning_lock "$CANARY_LOCK" || die "self-test rejected the tracked exact lock"
   if check_lightning_lock "$old_lock" >/dev/null 2>&1; then
     die "self-test accepted a vulnerable Lightning lock"
   fi
   if check_lightning_lock "$duplicate_lock" >/dev/null 2>&1; then
     die "self-test accepted duplicate Lightning lock entries"
+  fi
+  if check_patched_lightning_update "$newer_lock" "$patched_lock" self-test >/dev/null 2>&1; then
+    die "self-test accepted a Lightning downgrade"
+  fi
+  check_patched_lightning_update "$paired_base" "$paired_new" self-test || die "self-test rejected the paired patched update"
+  if check_patched_lightning_update "$paired_base" "$partial_new" self-test >/dev/null 2>&1; then
+    die "self-test accepted a partially patched Lightning closure"
+  fi
+  if check_patched_lightning_update "$paired_base" "$duplicate_pt" self-test >/dev/null 2>&1; then
+    die "self-test accepted duplicate pytorch-lightning entries"
+  fi
+  if check_patched_lightning_update "$unrelated_base" "$unrelated_new" self-test >/dev/null 2>&1; then
+    die "self-test accepted an unrelated package update"
+  fi
+  if check_patched_lightning_update "$unrelated_base" "$unrelated_edge_new" self-test >/dev/null 2>&1; then
+    die "self-test accepted an unrelated dependency edge"
   fi
   echo "check-canary-dependency-review-guard self-test: PASS"
 }
