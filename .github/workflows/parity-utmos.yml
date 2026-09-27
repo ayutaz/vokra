@@ -55,6 +55,8 @@ on:
       - "tools/parity/utmos_dump_reference.py"
       - "tools/parity/utmos_env_probe.sh"
       - "tools/parity/utmos_prepare_checkpoint.py"
+      - "tools/parity/utmos/pyproject.toml"
+      - "tools/parity/utmos/uv.lock"
 
 permissions:
   contents: read
