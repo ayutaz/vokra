@@ -58,6 +58,10 @@ titanet = [
 override-dependencies = [
     "hydra-core>=1.3.4",
     "text-unidecode ; python_version < '0'",
+    # Keep the root parity environments on the security-fixed Lightning pair;
+    # the packages must stay synchronized to avoid incompatible releases.
+    "lightning==2.6.6",
+    "pytorch-lightning==2.6.6",
 ]
 
 [tool.uv.workspace]
