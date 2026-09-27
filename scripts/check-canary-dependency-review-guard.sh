@@ -94,12 +94,17 @@ check_patched_lightning_update() {
       return 1
     }
   done
-  if ! check_package_lock_before_target "$base_lock" lightning; then
-    echo "non-Canary Lightning update must start at one release before 2.6.6 ($path)" >&2
-    return 1
+  if check_package_lock_version "$base_lock" lightning 2.6.6 >/dev/null 2>&1 &&
+    check_package_lock_version "$base_lock" pytorch-lightning 2.6.6 >/dev/null 2>&1; then
+    # Once both packages are securely patched, later lock refreshes may move
+    # unrelated packages.  Keep the patched pair exact and unique.
+    check_package_lock_version "$new_lock" pytorch-lightning 2.6.6 || return 1
+    check_lightning_lock "$new_lock" || return 1
+    return 0
   fi
-  if ! check_package_lock_before_target "$base_lock" pytorch-lightning; then
-    echo "non-Canary pytorch-lightning update must start at one release before 2.6.6 ($path)" >&2
+  if ! check_package_lock_before_target "$base_lock" lightning ||
+    ! check_package_lock_before_target "$base_lock" pytorch-lightning; then
+    echo "non-Canary Lightning base must contain one pre-2.6.6 entry for each package ($path)" >&2
     return 1
   fi
   check_package_lock_version "$new_lock" pytorch-lightning 2.6.6 || return 1
@@ -240,7 +245,7 @@ run_guard() {
 }
 
 run_self_test() {
-  local tmp old_lock duplicate_lock newer_lock patched_lock paired_base paired_new partial_new duplicate_pt unrelated_base unrelated_new unrelated_edge_new
+  local tmp old_lock duplicate_lock newer_lock patched_lock paired_base paired_new partial_new duplicate_pt unrelated_base unrelated_new unrelated_edge_new secure_base secure_new secure_downgrade secure_duplicate
   for path in "$WORKFLOW" "$CANARY_LOCK" "$CANARY_PYPROJECT" "$CANARY_GATE" "$CANARY_FLASH_WORKER" "$CANARY_V2_WORKER"; do
     [[ -f "$path" && ! -L "$path" ]] || die "self-test contract file is missing or symlinked: $path"
   done
@@ -260,6 +265,10 @@ run_self_test() {
   unrelated_base="$tmp/unrelated-base.lock"
   unrelated_new="$tmp/unrelated-new.lock"
   unrelated_edge_new="$tmp/unrelated-edge-new.lock"
+  secure_base="$tmp/secure-base.lock"
+  secure_new="$tmp/secure-new.lock"
+  secure_downgrade="$tmp/secure-downgrade.lock"
+  secure_duplicate="$tmp/secure-duplicate.lock"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.5"' > "$old_lock"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' > "$duplicate_lock"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.7"' > "$newer_lock"
@@ -271,6 +280,10 @@ run_self_test() {
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.5"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.5"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' 'dependencies = [' '    { name = "base-dependency" },' ']' > "$unrelated_base"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "2.0.0"' 'dependencies = [' '    { name = "base-dependency" },' ']' > "$unrelated_new"
   printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' 'dependencies = [' '    { name = "unrelated-dependency" },' ']' > "$unrelated_edge_new"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "1.0.0"' 'dependencies = [' '    { name = "base-dependency" },' ']' > "$secure_base"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "safe-package"' 'version = "9.9.9"' 'dependencies = [' '    { name = "later-dependency" },' ']' > "$secure_new"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.5"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' > "$secure_downgrade"
+  printf '%s\n' '[[package]]' 'name = "lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' '[[package]]' 'name = "pytorch-lightning"' 'version = "2.6.6"' > "$secure_duplicate"
   check_lightning_lock "$CANARY_LOCK" || die "self-test rejected the tracked exact lock"
   if check_lightning_lock "$old_lock" >/dev/null 2>&1; then
     die "self-test accepted a vulnerable Lightning lock"
@@ -293,6 +306,13 @@ run_self_test() {
   fi
   if check_patched_lightning_update "$unrelated_base" "$unrelated_edge_new" self-test >/dev/null 2>&1; then
     die "self-test accepted an unrelated dependency edge"
+  fi
+  check_patched_lightning_update "$secure_base" "$secure_new" self-test || die "self-test rejected a safe post-patch lock refresh"
+  if check_patched_lightning_update "$secure_base" "$secure_downgrade" self-test >/dev/null 2>&1; then
+    die "self-test accepted a post-patch downgrade"
+  fi
+  if check_patched_lightning_update "$secure_base" "$secure_duplicate" self-test >/dev/null 2>&1; then
+    die "self-test accepted a post-patch duplicate"
   fi
   echo "check-canary-dependency-review-guard self-test: PASS"
 }
