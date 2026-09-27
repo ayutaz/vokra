@@ -70,7 +70,7 @@ branch/operation history remains in
 **2026-08-31 historical count note**: the earlier **94 unchecked boxes** and the
 2026-08-18 **42 checked / 36 unchecked** are historical owner ledgers, not
 current counts of missing implementations. The 2026-08-31 literal ledger was
-**49 checked / 33 unchecked**. The current 2026-09-12 literal ledger is
+**49 checked / 33 unchecked**. The then-current 2026-09-12 literal ledger was
 **51 checked / 31 unchecked**. These counts are not an exhaustive task count:
 the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose
 rather than Markdown boxes. The live index below includes both sets. A box can
