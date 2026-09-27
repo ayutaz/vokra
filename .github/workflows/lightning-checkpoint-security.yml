@@ -1,0 +1,46 @@
+name: Lightning checkpoint security
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/lightning-checkpoint-security.yml"
+      - "scripts/check-lightning-checkpoint-security.py"
+      - "tools/parity/pyannote_diarization/pyproject.toml"
+      - "tools/parity/pyannote_diarization/uv.lock"
+      - "tools/parity/pyannote_segmentation/pyproject.toml"
+      - "tools/parity/pyannote_segmentation/uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checkpoint-regression:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - tools/parity/pyannote_diarization
+          - tools/parity/pyannote_segmentation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Sync locked ${{ matrix.project }} environment
+        run: uv sync --project "${{ matrix.project }}" --frozen --python 3.12
+
+      - name: Run static security regression self-test
+        run: uv run --project "${{ matrix.project }}" --frozen python scripts/check-lightning-checkpoint-security.py --self-test
+
+      - name: Run checkpoint _instantiator regression
+        run: uv run --project "${{ matrix.project }}" --frozen python scripts/check-lightning-checkpoint-security.py
