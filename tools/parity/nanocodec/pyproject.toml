@@ -27,4 +27,9 @@ override-dependencies = [
     # incompatible Lightning package releases.
     "lightning==2.6.6",
     "pytorch-lightning==2.6.6",
+    # The pinned NeMo TTS extra still points at an old NLTK git revision.
+    # Override only that transitive package with a registry release that fixes
+    # the older patched advisories; the newer unpatched NLTK advisory remains
+    # tracked separately, and the oracle code/upstream commit stay unchanged.
+    "nltk==3.10.3",
 ]
