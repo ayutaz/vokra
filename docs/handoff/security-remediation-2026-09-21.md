@@ -5,6 +5,25 @@ OpenSSF Scorecard findings after the `v0.3.0` GitHub release. It records the
 current routing boundary; it is not evidence that an alert is fixed, and it
 does not authorize model publication or a weaker numerical oracle.
 
+## 2026-09-22 execution update
+
+PR #115 was squash-merged as
+`1d9fd7de7f12762c543d8e478787b359ecc49917`, completing S0 and merging the
+S1 JIT-containment layer. Dependabot alert #531 intentionally remains open
+until the separate VAST source/import-closure and synchronized dependency
+replacement evidence exists. A fresh read-only API snapshot still reports
+275 open Dependabot alerts with the same severity and patched/unpatched totals
+below.
+
+[OpenSSF Scorecard run
+#35670001603](https://github.com/ayutaz/vokra/actions/runs/35670001603)
+re-evaluated clean `main` at that commit and uploaded SARIF successfully. The
+overall score is 6.4 and the same five tracked findings remain open. The run
+still reports 0/23 approved changesets, repository age below 90 days, no
+OpenSSF Best Practices registration, CodeQL coverage on 26/30 recent commits,
+and 76 distinct existing OSV vulnerability IDs. These are current evidence,
+not a reason to dismiss or weaken any finding.
+
 ## Baseline and current inventory
 
 The reviewed source baseline is clean public `main`

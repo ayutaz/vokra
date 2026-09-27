@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
         # windows-latest checks out with core.autocrlf=true, so any hashed
         # fixture without an explicit .gitattributes eol pin arrives with
@@ -110,7 +110,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Codex hooks (schema, syntax, targets, self-tests, production)
         run: bash scripts/check-codex-hooks.sh
       - name: Agent contracts (negative control, then production)
@@ -176,7 +176,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: HF Mac coverage offline unit suite
         run: uv run --no-project --python 3.12 python -m unittest -v tools/audit/test_hf_mac_coverage.py
 
@@ -194,7 +194,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Live HF Mac coverage (public API/README only)
         run: uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 
@@ -365,7 +365,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Self-test the extractor and checkers
         # Bidirectional fixtures: cargo selectors and doc-local helpers must
         # stay GREEN, injected drift must go RED, and the Python tutorial's WAV
@@ -495,7 +495,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Create isolated venv and install declared audit requirements
         # Do not install the vokra wheel here: production wheels intentionally
         # fail to build without a staged native library. The extractor reads the
@@ -791,7 +791,7 @@ jobs:
       - name: Install cargo-audit
         # Same install path as ci.yml `license` job — keeps the toolchain
         # identical so a regression in one leg reproduces in the other.
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
         with:
           tool: cargo-audit
       - name: cargo audit (root workspace, zero-dep tripwire)
@@ -946,7 +946,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Create isolated venv and install pytest
         # Zero-dep envelope: pytest and its transitive deps live ONLY inside
         # /tmp/vokra-py-parity; nothing in the Vokra runtime graph gains a
@@ -1073,7 +1073,7 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Run each script's --self-test (collect ALL failures, do not fail-fast)
         # No `set -e` on the loop: we want every failure surfaced in one run,
         # not just the first, so a reviewer sees the full drift picture on a

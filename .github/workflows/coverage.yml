@@ -84,7 +84,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
         with:
           tool: cargo-llvm-cov
       - name: Verify root Cargo.lock unchanged after tool install
@@ -123,7 +123,7 @@ jobs:
         # pass it here via secrets.
         # fail_ci_if_error: false — a Codecov CDN blip must not turn this
         # advisory job red; the local llvm-cov step is the ground truth.
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4
         with:
           files: lcov.info
           disable_search: true
