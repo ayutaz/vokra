@@ -24,6 +24,44 @@ OpenSSF Best Practices registration, CodeQL coverage on 26/30 recent commits,
 and 76 distinct existing OSV vulnerability IDs. These are current evidence,
 not a reason to dismiss or weaken any finding.
 
+## 2026-09-28 execution update
+
+Three bounded security updates were squash-merged after the 2026-09-22
+snapshot:
+
+- PR #118, `f87f55c4c688457891526a174d835d1fc7ac00e7`, synchronized
+  `lightning` and `pytorch-lightning` at exact 2.6.6 in the nanocodec,
+  pyannote-diarization, and pyannote-segmentation reference environments.
+  The three remote checkpoint-regression jobs and the required PR checks
+  passed. Dependabot alerts #532, #534, and #535 are fixed.
+- PR #119, `bcd7de4a69969fe7ed644c4faf5a6f90d1bf15d7`, updated the UTMOS
+  safe-state-dict environment to Torch 2.13.0 and made dependency-only changes
+  trigger `parity-utmos`. The current-base model-free self-tests passed. The
+  numeric job remained an explicit skip because authenticated tensor-only
+  inputs were absent; no UTMOS numeric parity is claimed.
+- PR #121, `107a49a923c3e32b8a3a2bed45c16fe29e5a6cbc`, synchronized the root
+  `tools/parity` Lightning pair at exact 2.6.6. The fail-closed inventory guard
+  rejected unrelated package/version/dependency-edge changes, dependency
+  review and all required checks passed, and Dependabot alert #533 is fixed.
+
+PR #120 tested the proposed nanocodec NLTK 3.10.3 replacement but was closed
+without merging. Dependency review correctly rejected 3.10.3 because
+GHSA-8mgp-746c-j5xp affects NLTK `<= 3.10.3` and no fixed release is
+published. No allow-list entry or dismissal was added, the remote branch was
+deleted, and the unpatched NLTK and Accelerate alerts remain visible.
+
+After GitHub's configured dependency-graph update completed, the read-only API
+snapshot contains 270 open alerts: 6 critical, 48 high, 101 medium, and 115
+low. 238 name a first patched version and 32 still have none. The decrease from
+the dated 275-alert baseline is recorded here rather than rewriting that
+historical snapshot.
+
+[OpenSSF Scorecard run
+#36329299240](https://github.com/ayutaz/vokra/actions/runs/36329299240)
+completed successfully on `main` at `107a49a9`. The same five code-scanning
+findings remain open (`CIIBestPracticesID`, `MaintainedID`, `CodeReviewID`,
+`SASTID`, and `VulnerabilitiesID`); none was dismissed to improve the score.
+
 ## Baseline and current inventory
 
 The reviewed source baseline is clean public `main`
