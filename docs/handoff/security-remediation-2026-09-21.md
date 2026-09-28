@@ -74,6 +74,43 @@ out only after 23 subsequent meaningful commits. Do not create empty commits,
 rerun an already successful check, or dismiss the finding to change the score.
 The other four finding classes remain unchanged.
 
+### Later 2026-09-28 execution update
+
+Five more bounded updates are merged on current `main`:
+
+- PR #125, `ff14d1b65f1ec4731932120ec60b48dc924fcba3`, updated the
+  production GitHub Actions group. The repository workflow-hygiene guard and
+  its fixtures now require the same immutable `setup-uv` v10.2.0 commit used
+  by the workflows.
+- PR #126, `af188a42b88d011385d6bb34c3c789cdad6c2d07`, updated the AST
+  reference environment to Torch 2.13.0 and Transformers 5.10.4. Exact-head
+  VAST replay passed the existing real-GGUF CPU parity bounds and closed
+  alerts #101-#104 and #174-#175. The disposable worker and storage were
+  destroyed after evidence recovery.
+- PR #127, `850ffbe370f29dd29233ba55bf6df31c22ad4ed7`, updated the
+  Deepfake reference environment to Transformers 5.10.4. Exact-head VAST
+  real-weight measurement passed without inventing a numerical gate and
+  closed alerts #180 and #181. The disposable worker and storage were
+  destroyed after evidence recovery.
+- PR #128, `d70c8587367417f03c731f65408b43f88d425f73`, updated the T5
+  encoder and MusicGen reference route to Transformers 5.10.4. Exact-head VAST
+  CPU parity, delay-pattern checks, native T5 tests, and the Apple-target
+  Metal-feature cross-check passed, closing alert #195. No artifact was
+  published, and every temporary worker and volume was destroyed.
+- PR #129, `a1a769c71d4b78482e204a3624cbff1108b36a83`, updated the
+  Whisper-Medusa oracle to Transformers 5.10.4. Exact-head VAST parity passed
+  at the unchanged `atol=5e-4`, the greedy token matched exactly, the
+  Apple-target Metal-feature cross-check passed, and the disposable worker
+  was destroyed. No artifact was uploaded. GitHub still reports lock alert
+  #199 as open with `fixed_at=null`; keep it visible until the dependency graph
+  rescans the 5.10.4 lock rather than dismissing it manually.
+
+The read-only Dependabot API snapshot after these merges contains 261 open
+alerts: 6 critical, 43 high, 101 medium, and 111 low. 229 name a patched
+version and the same 32 still have no published fix, across 49 manifest files.
+This is a new current snapshot; the 275- and 270-alert dated snapshots below
+remain unchanged as historical evidence.
+
 ## Baseline and current inventory
 
 The reviewed source baseline is clean public `main`
