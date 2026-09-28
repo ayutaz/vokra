@@ -21,7 +21,7 @@ Linux/x86_64 host.  The audit uses --no-sync and never imports model code,
 downloads weights, invokes Cargo, converts, publishes, or uploads anything.
 It records locked artifact identities, installed package license/EULA bytes,
 native ELF hashes/NEEDED facts, and explicitly rejects CUDA/NVIDIA/Triton
-payloads; the only accepted Torch identity is 2.7.1+cpu from the official CPU
+payloads; the only accepted Torch identity is 2.13.0+cpu from the official CPU
 index.
 The report remains BLOCKED while owner review rows are unresolved.
 EOF
@@ -77,7 +77,7 @@ check_environment() {
 
 self_test() {
   local temp temp_root
-  for token in VOKRA_PUBLISH_ON_VAST --no-sync --frozen --project --expected-head readelf dependency_audit.py CPU CUDA NVIDIA Triton '2.7.1+cpu' 'download.pytorch.org/whl/cpu' weights Cargo; do
+  for token in VOKRA_PUBLISH_ON_VAST --no-sync --frozen --project --expected-head readelf dependency_audit.py CPU CUDA NVIDIA Triton '2.13.0+cpu' 'download.pytorch.org/whl/cpu' weights Cargo; do
     grep -Fq -- "$token" "$0" || { die "wrapper contract missing: $token"; return 1; }
   done
   if grep -En '(^|[;&|][[:space:]])(python|python3|pip)([[:space:]]|$)' "$0" >/dev/null; then
