@@ -2,8 +2,19 @@
 
 This directory is a VAST-only independent oracle for the public `vokra/bark`
 and `vokra/bark-small` GGUFs. It imports the released `BarkModel` directly from
-locked Transformers 5.5.0 and loads the exact immutable Suno checkpoint. It
+locked Transformers 5.10.4 and loads the exact immutable Suno checkpoint. It
 does not import Vokra or reproduce Vokra's Rust graph in Python.
+
+The locked official API can be checked without acquiring a checkpoint or
+running generation:
+
+```sh
+uv run --frozen --no-sync --python 3.12 python dump_reference.py --api-smoke
+```
+
+This smoke only imports the pinned Transformers Bark classes, checks the
+generation/codec method signatures, and instantiates the small generation
+configuration objects. It does not download weights or execute a model.
 
 The no-upload worker is:
 
