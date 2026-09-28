@@ -167,7 +167,9 @@ full VAST report SHA-256 is
 `bbcd8ddaedde72b7c227ed0621ea31f9a4743bfb497a2f599a26b18693b4c730`.
 The report is intentionally `full_audit_status=BLOCKED` because the updated
 Torch 2.13.0/TorchAudio 2.11.0 license/native evidence remains unresolved;
-no owner approval or legal conclusion is inferred.
+the four corresponding manifest rows are `BLOCKED_UNRESOLVED_REVIEW`. The
+inventory is factual evidence only; no owner approval or legal conclusion is
+inferred.
 The owner-approval scope intentionally excludes this volatile dependency-audit
 reference to avoid a hash cycle; the compact bytes, full-report SHA-256, input
 hashes, closure/facts, and approval state remain bound separately by the gate.

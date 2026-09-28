@@ -878,7 +878,7 @@ def self_test() -> None:
         row for row in production_reviews
         if row["name"] == "torchaudio" and row["version"] == "2.11.0+cpu"
     )
-    assert torchaudio_review["status"] == "PENDING_VAST_AUDIT"
+    assert torchaudio_review["status"] == "BLOCKED_UNRESOLVED_REVIEW"
     assert torchaudio_review["license"] == "UNRESOLVED"
     assert torchaudio_review["native_bundled"] == "UNRESOLVED"
     assert torchaudio_review["payload_sha256"] is None
@@ -888,7 +888,7 @@ def self_test() -> None:
     assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
     for review in production_reviews:
-        if review["status"] == "PENDING_VAST_AUDIT":
+        if review["status"] == "BLOCKED_UNRESOLVED_REVIEW":
             assert review["license"] == "UNRESOLVED"
             assert review["native_bundled"] == "UNRESOLVED"
             assert review["payload_sha256"] is None
