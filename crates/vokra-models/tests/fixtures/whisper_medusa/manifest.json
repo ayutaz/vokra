@@ -16,18 +16,24 @@
     50257
   ],
   "max_new_tokens": 8,
-  "device": "cuda",
+  "device": "cpu",
   "reference_import": "whisper_medusa.models.WhisperMedusaModel",
   "model_source": "whisper_medusa/models/model.py",
   "config_source": "whisper_medusa/utils/config_and_args.py",
   "training_utils_init": "bypassed; model/config modules are exact upstream files",
+  "transformers_expected": "5.10.4",
+  "transformers_compat": [
+    "restore unused 4.49 NEED_SETUP_CACHE_CLASSES_MAPPING re-export",
+    "nested Whisper from_pretrained uses the former eager CPU boundary",
+    "outer wrapper declares canonical tied proj_out/token embedding mapping"
+  ],
   "python": "3.12.14",
-  "torch": "2.2.2+cu121",
-  "transformers": "4.49.0",
+  "torch": "2.13.0+cu130",
+  "transformers": "5.10.4",
   "cpu": "x86_64",
   "cpu_count": 32,
-  "cuda": "12.1",
-  "gpu": "NVIDIA GeForce GTX 1070 Ti",
+  "cuda": "13.0",
+  "gpu": null,
   "text": "",
   "max_abs_bound": 0.0005
 }

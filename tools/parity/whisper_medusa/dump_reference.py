@@ -20,10 +20,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import transformers
 from transformers import WhisperProcessor
 
 HF_REVISION = "6ea7c2f47658cfc7f9c8d1c158a9fbdb33458462"
 SOURCE_REVISION = "19819c37ab15db6e68826e406614a2c86fbb946e"
+EXPECTED_TRANSFORMERS_VERSION = "5.10.4"
 PREFIX = [50258, 50259, 50359, 50363]
 EOT = 50257
 
@@ -67,6 +69,46 @@ def write_f32(path: Path, tensor: torch.Tensor) -> None:
     tensor.detach().float().cpu().contiguous().numpy().astype("<f4").tofile(path)
 
 
+def assert_canonical_output_tie(model: torch.nn.Module) -> None:
+    """Fail closed unless the official Whisper output projection is tied.
+
+    The checkpoint omits ``proj_out.weight`` because Whisper's canonical
+    output projection shares storage with decoder token embeddings.  A
+    successful load report is not sufficient evidence: Transformers may leave
+    a missing parameter uninitialized while still returning a model.  Check
+    parameter identity or, for wrappers that expose distinct Parameter
+    objects, exact storage aliasing plus the view metadata without comparing
+    the full 51k x 1280 tensor.
+    """
+
+    try:
+        output_weight = model.whisper_model.proj_out.weight
+        embedding_weight = model.whisper_model.model.decoder.embed_tokens.weight
+    except AttributeError as exc:
+        raise RuntimeError(
+            "Whisper-Medusa canonical output tie paths are missing"
+        ) from exc
+
+    same_parameter = output_weight is embedding_weight
+    output_storage = output_weight.untyped_storage()
+    embedding_storage = embedding_weight.untyped_storage()
+    same_storage_view = (
+        output_storage.data_ptr() == embedding_storage.data_ptr()
+        and output_weight.data_ptr() == embedding_weight.data_ptr()
+        and output_weight.storage_offset() == embedding_weight.storage_offset()
+        and output_weight.shape == embedding_weight.shape
+        and output_weight.stride() == embedding_weight.stride()
+        and output_weight.dtype == embedding_weight.dtype
+        and output_weight.device == embedding_weight.device
+    )
+    if not (same_parameter or same_storage_view):
+        raise RuntimeError(
+            "Whisper-Medusa canonical output tie is not established: "
+            "whisper_model.proj_out.weight does not alias "
+            "whisper_model.model.decoder.embed_tokens.weight"
+        )
+
+
 def deterministic_pcm() -> np.ndarray:
     sample_rate = 16_000
     time = np.arange(sample_rate, dtype=np.float32) / sample_rate
@@ -86,6 +128,13 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
+
+    if transformers.__version__ != EXPECTED_TRANSFORMERS_VERSION:
+        parser.error(
+            "Whisper-Medusa oracle requires "
+            f"transformers=={EXPECTED_TRANSFORMERS_VERSION}, "
+            f"got {transformers.__version__}"
+        )
 
     package = args.source_parent / "whisper_medusa"
     if not package.is_dir():
@@ -151,6 +200,7 @@ def main() -> None:
         args.model_dir,
         local_files_only=True,
     ).eval().to(device)
+    assert_canonical_output_tie(model)
     processor = WhisperProcessor.from_pretrained(args.model_dir, local_files_only=True)
     pcm = deterministic_pcm()
     features = processor(
@@ -205,6 +255,7 @@ def main() -> None:
         "model_source": str(model_source.relative_to(args.source_parent.resolve())),
         "config_source": str(config_source.relative_to(args.source_parent.resolve())),
         "training_utils_init": "bypassed; model/config modules are exact upstream files",
+        "transformers_expected": EXPECTED_TRANSFORMERS_VERSION,
         "transformers_compat": [
             "restore unused 4.49 NEED_SETUP_CACHE_CLASSES_MAPPING re-export",
             "nested Whisper from_pretrained uses the former eager CPU boundary",
@@ -212,7 +263,7 @@ def main() -> None:
         ],
         "python": platform.python_version(),
         "torch": torch.__version__,
-        "transformers": __import__("transformers").__version__,
+        "transformers": transformers.__version__,
         "cpu": platform.processor() or platform.machine(),
         "cpu_count": os.cpu_count(),
         "cuda": torch.version.cuda,

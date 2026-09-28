@@ -11,10 +11,22 @@ Pinned inputs:
   `6ea7c2f47658cfc7f9c8d1c158a9fbdb33458462`
 - upstream source: `aiola-lab/whisper-medusa` at
   `19819c37ab15db6e68826e406614a2c86fbb946e`
-- environment: Python 3.12.14, PyTorch 2.2.2+cu121,
-  Transformers 4.49.0, NVIDIA GeForce GTX 1070 Ti
+- environment: Python 3.12.14, PyTorch distribution 2.13.0
+  (runtime 2.13.0+cu130), Transformers 5.10.4, x86_64 VAST CPU
+- reference device: CPU; CUDA was not used for fixture generation
 - input: one second of deterministic, low-amplitude 220/440/880 Hz tones at
   16 kHz; it has no dataset or recording licence dependency
+
+VAST evidence for the current fixture:
+
+- native CPU parity: `max_abs=5.722045898e-5` at vocabulary index `33684`,
+  within the pre-existing `5e-4` bound
+- greedy token: `50257` (EOT), exact
+- Apple route: `aarch64-apple-darwin` with the Metal feature cross-compiled
+  successfully
+- converted GGUF: `6245932960` bytes,
+  SHA-256 `1e7dc41c545853aba1b56c5375ce7a6fc88e8720c4eafd296a93d5eeec983fa3`
+- publication: NO_UPLOAD; no upload was performed
 
 The pinned upstream `utils/__init__.py` eagerly imports training, metrics, and
 `wandb` code even though its `requirements.txt` does not declare `wandb`.
@@ -31,24 +43,23 @@ uv sync --frozen --directory tools/parity/whisper_medusa
 uv run --frozen --directory tools/parity/whisper_medusa python \
   tools/parity/whisper_medusa/dump_reference.py \
   --model-dir /path/to/pinned-hf-snapshot \
-  --source-parent /path/to/pinned-upstream-parent \
+  --source-parent /path/to/pinned-upstream-repository \
   --output-dir /tmp/whisper-medusa-reference \
-  --max-new-tokens 8 --device cuda
+  --max-new-tokens 8 --device cpu
 ```
 
 Run the Rust consumer with
 `VOKRA_WHISPER_MEDUSA_GGUF=/path/to/model.gguf cargo test --release -p
 vokra-models --test parity_whisper_medusa_real -- --nocapture`.  The FP32
-logits gate is `max_abs <= 5e-4`; the measured VAST result was
-`1.182556152e-4` at vocabulary index 14525, and the greedy token matched
-exactly (`50257`, EOT).  The bound was selected before the measurement and was
-not relaxed.
+logits gate is `max_abs <= 5e-4`; the measured VAST result above is within the
+pre-existing bound, and the greedy token matched exactly (`50257`, EOT).  The
+bound was selected before the measurement and was not relaxed.
 
 SHA-256:
 
 ```text
+7dc06b4f5de6b5803df950f7aa79997992806875dc00b2028245d41e20398d19  manifest.json
+36eb8143d598ded217fd9e235fa26292cfe40a570a52c6eda9e8edeadf11aced  pcm.f32
+9a01033601202c8330c67d866505e5a44d190cd2b6497d2cf89aa1ac417ff4e8  prefix_logits.f32
 a1d3acb03d768e3e6a5defac18d83c2732a8afc11854828a24a697802e927573  greedy_tokens.u32
-f96031445b3c848b15c5c13027b0b014055db0cdaa0d7283e770d0bc9e51191e  manifest.json
-08e3b320f36969a972bb3b7edba3c53a2a64fb7f6f9579699c46be05d711c3e3  pcm.f32
-d15ae4b67f4c7e0c166bca932145974c1d82ceeab7758e14468e65e24810f51d  prefix_logits.f32
 ```
