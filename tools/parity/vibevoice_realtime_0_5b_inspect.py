@@ -80,6 +80,7 @@ TOKENIZER_ROLE_CONTRACT = {
 PACKET_FILES = frozenset({
     "snapshot-inventory.json",
     "tensor-inventory.json",
+    "parsed-json.json",
     "companion-inventory.json",
     "source-inventory.json",
     "streaming-contract.json",
