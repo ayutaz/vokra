@@ -21,13 +21,13 @@ import sysconfig
 import tempfile
 from pathlib import Path
 
-from torch_compat import install_float8_import_compat
+from torch_compat import require_native_float8_dtype
 
 
 COMPACT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
-FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
-TORCH_GOMP = "torch/lib/libgomp-a34b3233.so.1"
-TORCH_GOMP_SHA256 = "570455c2902d6cc2a7f367703c06dac07495dd7f8a1ed2c8fc4cea628c881b13"
+FULL_AUDIT_SHA256 = "bcd5c811713a23f0373db17039d3c3844968c75936388ef55d445c7643443082"
+TORCH_GOMP = "torch/lib/libgomp.so.1"
+TORCH_GOMP_SHA256 = "78511033caddec6ccae8f4d62b94d56135f377c4cee33120e6d7df2ef499f69f"
 BUILD_ONLY = {"cython", "meson-python", "meson", "pyproject-metadata", "ninja", "patchelf"}
 EXPECTED = {
     "anyio": "4.14.2",
@@ -72,12 +72,14 @@ SYSTEM_NEEDED = {
     "ld-linux-x86-64.so.2",
 }
 TORCH_NEEDED = SYSTEM_NEEDED | {
+    "libbackend_with_compiler.so",
     "libc10.so",
+    "libgomp.so.1",
+    "libjitbackend_test.so",
     "libshm.so",
     "libtorch.so",
     "libtorch_cpu.so",
     "libtorch_python.so",
-    "libgomp-a34b3233.so.1",
 }
 NEEDED_RE = re.compile(r"Shared library: \[([^]]+)\]")
 
@@ -163,27 +165,27 @@ def unreviewed_needed(relative: str, needed: list[str]) -> list[str]:
     return sorted(set(needed) - needed_allowlist(relative))
 
 
-def require_import_shim_order(source: str) -> None:
-    """Keep the torch compatibility shim before every Transformers import."""
+def require_native_dtype_order(source: str) -> None:
+    """Keep the native Torch dtype check before every Transformers import."""
     if "def run(" in source:
         source = source.split("def run(", 1)[1]
     markers = (
         'torch = importlib.import_module("torch")',
-        "float8_import_compat = install_float8_import_compat(torch)",
+        "float8_import_compat = require_native_float8_dtype(torch)",
         'transformers = importlib.import_module("transformers")',
     )
     positions = [source.find(marker) for marker in markers]
     if any(position < 0 for position in positions) or positions != sorted(positions):
-        fail("post-sync audit must apply the torch compatibility shim before Transformers import")
+        fail("post-sync audit must check the native Torch dtype before Transformers import")
 
 
 def self_test() -> int:
-    require_import_shim_order(Path(__file__).read_text(encoding="utf-8"))
+    require_native_dtype_order(Path(__file__).read_text(encoding="utf-8"))
     try:
-        require_import_shim_order(
+        require_native_dtype_order(
             'torch = importlib.import_module("torch")\n'
             'transformers = importlib.import_module("transformers")\n'
-            'float8_import_compat = install_float8_import_compat(torch)\n'
+            'float8_import_compat = require_native_float8_dtype(torch)\n'
         )
     except RuntimeError:
         pass
@@ -249,12 +251,12 @@ def run(compact_path: Path, output_path: Path) -> int:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     importlib.import_module("numpy")
     torch = importlib.import_module("torch")
-    float8_import_compat = install_float8_import_compat(torch)
+    float8_import_compat = require_native_float8_dtype(torch)
     transformers = importlib.import_module("transformers")
     if not hasattr(transformers, "SpeechT5ForTextToSpeech"):
         fail("locked Transformers package does not expose SpeechT5ForTextToSpeech")
-    if float8_import_compat not in {"native", "shimmed"}:
-        fail(f"unexpected torch compatibility status: {float8_import_compat}")
+    if float8_import_compat != "native":
+        fail(f"unexpected native Torch dtype status: {float8_import_compat}")
     result = {
         "schema": "vokra-speecht5-post-sync-audit-v1",
         "full_audit_sha256": compact["full_audit_sha256"],

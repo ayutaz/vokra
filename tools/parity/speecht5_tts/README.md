@@ -18,8 +18,8 @@ visible in the audit. The active closure intentionally has no TorchAudio
 dependency: the official SpeechT5 path uses Transformers' TTS API and does not
 require a TorchAudio package. Transformers 5.10.4's optional FP8 integration
 still names `torch.float8_e8m0fnu`; the compatibility module first verifies the
-exact Torch/Transformers identities and accepts the native Torch 2.13 dtype,
-retaining only a narrow import-only fallback if the reviewed wheel lacks it.
+exact Torch/Transformers identities and requires the native Torch 2.13 dtype.
+A missing dtype is a hard ABI/API failure; no compatibility alias is installed.
 The pinned SpeechT5 configuration rejects every quantization or fine-grained
 FP8 route, and the model-free VAST compatibility smoke must pass before any
 checkpoint is acquired.
@@ -36,7 +36,10 @@ closed if either the lock or installed environment reintroduces it.
 The checked-in compact `dependency_audit_evidence.json` is fresh model-free
 VAST evidence for the active 28-package runtime closure. Its exact lock and
 project inputs match the active contract, and the evidence records that
-`setuptools` is absent. `patchelf` is GPL build-only and is not installed in or
+`setuptools` is absent. The fresh exact-head evidence is pending protected-file
+handoff, and the current checked-in evidence/manifest binding therefore stays
+fail-closed until that evidence and a new owner/operator approval are supplied
+for this exact closure. `patchelf` is GPL build-only and is not installed in or
 redistributed with the final environment; its operator approval remains an
 explicit gate.
 

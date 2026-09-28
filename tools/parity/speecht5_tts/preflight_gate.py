@@ -21,7 +21,7 @@ GATE_VERSION = 2
 # active bytes, while the separate owner and operator gates remain fail-closed.
 LOCK_SHA256 = "36d0f01df62e4d9f90f80d4c7d15bfa9df612b5a4f99ad4716c1c62458a6864b"
 PYPROJECT_SHA256 = "a6f51a2e3300ba0b8750dca6050c6fc2d645e657c8a507dcfc334c291d9e0bff"
-FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
+FULL_AUDIT_SHA256 = "bcd5c811713a23f0373db17039d3c3844968c75936388ef55d445c7643443082"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
     "Cython==3.0.12",

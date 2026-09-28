@@ -540,8 +540,8 @@
   "dependency_audit_evidence": {
     "schema": "vokra-speecht5-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "dea09a072b095126dcb9e2dbd4acc03b7d9af2ab9a6c42654632f81d3a17a039",
-    "full_audit_sha256": "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
+    "sha256": "2ce6275c59c9dcf9731438f355484360bc1ee7ab36268a4caac17d872f71a434",
+    "full_audit_sha256": "bcd5c811713a23f0373db17039d3c3844968c75936388ef55d445c7643443082"
   },
   "build_dependency_reviews_sha256": "fb96fc36ad72378e301961762868ddc57b285ab4d2f74baa87064c0e5abb81d6"
 }
