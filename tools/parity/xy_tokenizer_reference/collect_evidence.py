@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import tarfile
@@ -30,7 +31,7 @@ MAX_METADATA_BYTES = 1 << 20
 # file.  2 GiB accommodates large CPU Torch extensions while bounding a
 # malformed archive before it can consume unbounded local resources.
 MAX_NATIVE_BYTES = 2 << 30
-PRIMARY_LICENSE_NAMES = ("license", "copying")
+PRIMARY_LICENSE_NAMES = ("license", "licence", "copying")
 NATIVE_SUFFIXES = (".so", ".dylib", ".dll", ".pyd")
 SPDX_ALIASES = {
     "apache software license": "Apache-2.0",
@@ -103,7 +104,13 @@ def _license_rank(name: str, kind: str) -> tuple[int, int, int, str]:
         parts = parts[1:]
     lowered = tuple(part.lower() for part in parts)
     base = lowered[-1]
-    basename_rank = 0 if base == "license" else 1 if base.startswith("license.") or base.startswith("license-") else 2
+    basename_rank = (
+        0
+        if base in {"license", "licence"}
+        else 1
+        if base.startswith(("license.", "license-", "licence.", "licence-"))
+        else 2
+    )
     for index, part in enumerate(lowered[:-1]):
         if part.endswith(".dist-info") and index + 1 < len(lowered) and lowered[index + 1] == "licenses":
             return (0, len(lowered) - index - 2, basename_rank, name.lower())
@@ -312,7 +319,10 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
     primary_rank = _license_rank(license_entries[primary_index][0], kind)
     if primary_rank[0] == 3:
         raise ValueError(f"{path.name} has no distribution-owned primary license location")
-    primary_entries = [item for item in ranked if _license_rank(item[1][0], kind) == primary_rank]
+    # The final rank component is only a deterministic tie-breaker.  Exclude
+    # it from the ambiguity check so LICENSE and LICENCE at the same
+    # distribution-owned location cannot silently select one another.
+    primary_entries = [item for item in ranked if _license_rank(item[1][0], kind)[:3] == primary_rank[:3]]
     if len(primary_entries) > 1 and any(item[1][1] != primary_entries[0][1] for item in primary_entries[1:]):
         raise ValueError(f"{path.name} has conflicting license files")
     license_bytes = license_entries[primary_index][1]
@@ -478,6 +488,45 @@ def self_test() -> None:
         license_bytes, spdx, native, bundled = inspect_archive(wheel, "wheel")
         assert license_bytes == b"MIT License\n" and spdx == "MIT" and native[0]["name"] == "demo/native.so"
         assert {entry["path"] for entry in bundled} == {"demo-1.0.dist-info/COPYING", "demo/vendor/LICENSE"}
+        licence_wheel = root / "licence-dist-info.whl"
+        with zipfile.ZipFile(licence_wheel, "w") as archive:
+            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nLicense: MIT\n")
+            archive.writestr("demo-1.0.dist-info/licenses/LICENCE", b"MIT License from dist-info\n")
+        licence_bytes, licence_spdx, _, _ = inspect_archive(licence_wheel, "wheel")
+        assert licence_bytes == b"MIT License from dist-info\n" and licence_spdx == "MIT"
+        licence_sdist = root / "licence-root.tar.gz"
+        with tarfile.open(licence_sdist, "w:gz") as archive:
+            metadata = tarfile.TarInfo("demo-1.0/PKG-INFO")
+            metadata_bytes = b"Metadata-Version: 2.1\nLicense: MIT\n"
+            metadata.size = len(metadata_bytes)
+            archive.addfile(metadata, io.BytesIO(metadata_bytes))
+            licence = tarfile.TarInfo("demo-1.0/LICENCE")
+            licence_bytes = b"MIT License from sdist root\n"
+            licence.size = len(licence_bytes)
+            archive.addfile(licence, io.BytesIO(licence_bytes))
+        sdist_licence_bytes, sdist_licence_spdx, _, _ = inspect_archive(licence_sdist, "sdist")
+        assert sdist_licence_bytes == b"MIT License from sdist root\n" and sdist_licence_spdx == "MIT"
+        vendored_only = root / "vendored-only.whl"
+        with zipfile.ZipFile(vendored_only, "w") as archive:
+            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nLicense: MIT\n")
+            archive.writestr("demo/vendor/LICENCE", b"Bundled component license only\n")
+        try:
+            inspect_archive(vendored_only, "wheel")
+        except ValueError as error:
+            assert "distribution-owned" in str(error)
+        else:
+            raise AssertionError("vendored-only LICENCE was accepted")
+        ambiguous_licence = root / "ambiguous-licence.whl"
+        with zipfile.ZipFile(ambiguous_licence, "w") as archive:
+            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nLicense: MIT\n")
+            archive.writestr("demo-1.0.dist-info/licenses/LICENCE", b"one\n")
+            archive.writestr("demo-1.0.dist-info/licenses/LICENSE", b"two\n")
+        try:
+            inspect_archive(ambiguous_licence, "wheel")
+        except ValueError as error:
+            assert "conflicting" in str(error)
+        else:
+            raise AssertionError("same-priority LICENCE/LICENSE ambiguity accepted")
         assert _metadata_license(b"License-Expression: BSD-3-Clause\n") == "BSD-3-Clause"
         assert _metadata_license(b"License-Expression: MIT AND MPL-2.0 OR PSF-2.0\n") == "MIT AND MPL-2.0 OR PSF-2.0"
         assert _metadata_license(b"License-Expression: Apache-2.0 WITH LLVM-exception\n") == "Apache-2.0 WITH LLVM-exception"
