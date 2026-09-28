@@ -1032,8 +1032,8 @@
   "dependency_audit_evidence": {
     "schema": "vokra-qwen3-tts-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "full_audit_sha256": "bbcd8ddaedde72b7c227ed0621ea31f9a4743bfb497a2f599a26b18693b4c730",
+    "full_audit_sha256": "6b194745067461faaa110e23cf693502a71a95ff3d0ed3ef3c405c5600641265",
     "status": "PENDING_OWNER_APPROVAL",
-    "sha256": "f85783c0ccec4b9b8b98c209cce30ffc3803469b1be9e2cfde943824fd53e3e4"
+    "sha256": "2188b52ddac10170d4fddd99002806085c1306cbd173769ea5ae11f0896c576f"
   }
 }

@@ -157,14 +157,14 @@ checkpoints, Cargo and upload were not used. This historical PASS is factual
 dependency evidence for that former closure, not real-weight or numerical
 parity evidence for the current lock.
 The authorized fresh audit for this lock ran on disposable Linux x86_64 VAST
-at exact repository head `1b53e03f369a7e43c8349edb50a2519b0ba343be` with
+at exact repository head `895d6e38340c31b83c7e82aaadd73a11fccb6573` with
 Python 3.12.14. It found an exact closure of 55 active and 4 inactive rows,
 no missing or unexpected packages, 188 publisher files, 244 native files and
 zero unsafe paths. No model code or model files were acquired. The compact
 evidence SHA-256 is
-`f85783c0ccec4b9b8b98c209cce30ffc3803469b1be9e2cfde943824fd53e3e4`; the
+`2188b52ddac10170d4fddd99002806085c1306cbd173769ea5ae11f0896c576f`; the
 full VAST report SHA-256 is
-`bbcd8ddaedde72b7c227ed0621ea31f9a4743bfb497a2f599a26b18693b4c730`.
+`6b194745067461faaa110e23cf693502a71a95ff3d0ed3ef3c405c5600641265`.
 The report is intentionally `full_audit_status=BLOCKED` because the updated
 Torch 2.13.0/TorchAudio 2.11.0 license/native evidence remains unresolved;
 the four corresponding manifest rows are `BLOCKED_UNRESOLVED_REVIEW`. The
