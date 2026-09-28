@@ -48,6 +48,26 @@ confirm that the package import can proceed, but it exits 2 with
 or model-execution claim. It never downloads weights, instantiates a model, or
 contacts the Hub.
 
+## SpeechBrain 1.1.1 candidate review (not adopted)
+
+SpeechBrain's official `v1.1.1` backend implementation checks whether
+`torchaudio.list_audio_backends` exists and otherwise defers audio loading to
+TorchCodec. A disposable VAST model-free probe confirmed that the official
+`speechbrain==1.1.1`, `torch==2.13.0+cpu`, and `torchaudio==2.11.0+cpu` imports
+complete without a shim, with Hub offline and no model instantiated. Sources:
+the [v1.1.1 backend implementation](https://github.com/speechbrain/speechbrain/blob/v1.1.1/speechbrain/utils/torch_audio_backend.py)
+and the [official PyPI 1.1.1 release](https://pypi.org/project/speechbrain/1.1.1/).
+
+That candidate is not accepted as a drop-in oracle upgrade. The same official
+release changes `speechbrain.dataio.dataio`: `read_audio` and
+`read_audio_info` move from `torchaudio.load/info` to the new `soundfile`
+wrapper, and related checkpoint/model code also changed between the official
+`v1.0.3` and `v1.1.1` tags. Those are material input and execution semantics
+for the VoxLingua107 reference. Therefore this project remains pinned to
+SpeechBrain 1.0.3; the lock, license manifest, and current fail-closed probe
+are not silently rewritten to 1.1.1. The probe explicitly blocks an unexpected
+SpeechBrain version with `BLOCKED_UNEXPECTED_SPEECHBRAIN`.
+
 All real conversion and measurements are VAST-only and no-upload. Numeric
 bounds remain unset; evidence is measurement-only until CPU and Metal results
 are independently reviewed.

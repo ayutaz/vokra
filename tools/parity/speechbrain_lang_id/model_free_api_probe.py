@@ -10,6 +10,7 @@ the production result remains blocked whenever the shim is required.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 import platform
@@ -20,6 +21,7 @@ from typing import Any, MutableMapping
 
 EXPECTED_TORCH_PREFIX = "2.13.0"
 EXPECTED_TORCHAUDIO_PREFIX = "2.11.0"
+EXPECTED_SPEECHBRAIN_VERSION = "1.0.3"
 SCHEMA = "vokra-speechbrain-lang-id-model-free-api-probe-v1"
 
 
@@ -82,6 +84,14 @@ def probe() -> tuple[int, dict[str, Any]]:
 
     result["torch"] = torch.__version__
     result["torchaudio"] = torchaudio.__version__
+    try:
+        result["speechbrain"] = importlib.metadata.version("speechbrain")
+    except importlib.metadata.PackageNotFoundError:
+        result["status"] = "BLOCKED_MISSING_SPEECHBRAIN"
+        return 2, result
+    if result["speechbrain"] != EXPECTED_SPEECHBRAIN_VERSION:
+        result["status"] = "BLOCKED_UNEXPECTED_SPEECHBRAIN"
+        return 2, result
     if not torch.__version__.startswith(EXPECTED_TORCH_PREFIX):
         result["status"] = "BLOCKED_UNEXPECTED_TORCH"
         return 2, result
