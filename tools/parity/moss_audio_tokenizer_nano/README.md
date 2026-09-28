@@ -4,16 +4,20 @@ This is a dedicated Python 3.12, Linux/x86_64 VAST oracle project for
 `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` at revision
 `6aa02b01e445cc585582cf0ba480bc3ea6c8dd68`. It is separate from the general
 parity environment and contains a resolver-generated 35-lock-row closure for
-Linux/x86_64 Python 3.12: Torch 2.7.1+cpu from the official PyTorch CPU
+Linux/x86_64 Python 3.12: Torch 2.13.0+cpu from the official PyTorch CPU
 index and the isolated security pin Transformers 5.10.4 from PyPI. CUDA,
 NVIDIA, and Triton distributions are explicitly rejected. The prior
-5.5.0 pin is previous isolated-reference provenance only; real-weight/API
-runtime compatibility is not claimed.
+2.7.1+cpu Torch pin and 5.5.0 Transformers pin are previous
+isolated-reference provenance only; real-weight/API runtime compatibility is
+not claimed. The four open Nano Dependabot alerts require Torch 2.8.0,
+2.9.1, 2.10.0, and 2.13.0 respectively; the current 2.13.0+cpu pin meets
+the highest patched minimum.
 The 35 lock rows comprise 34 active installed distributions plus one virtual
 project row; the virtual row is not an installed package.
-Every non-virtual lock row carries resolver URL and SHA-256 metadata. The
-official PyTorch CPU simple index omits the Torch wheel's size field; that
-single unresolved byte fact remains owner-review evidence for the VAST audit.
+Every non-virtual lock row carries resolver URL, SHA-256, and positive size
+metadata. The official PyTorch CPU simple index omitted the Torch wheel's
+size field; the exact 191817609-byte size was recorded from an HTTP HEAD of
+the locked URL. No wheel or model was downloaded on the maintainer Mac.
 No package sync is performed by the local gate.
 
 The exact upstream payload contract at the fixed revision is eight files: the

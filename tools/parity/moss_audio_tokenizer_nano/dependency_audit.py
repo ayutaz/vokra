@@ -4,8 +4,9 @@
 The audit reads the checked-in lock/manifest and the installed distribution
 metadata only.  It never imports torch, Transformers, custom model code, or
 weights.  Locked artifacts are reported by their resolver URL/hash and
-resolver-supplied size; the official PyTorch CPU wheel index omits the Torch
-wheel size, which remains unresolved rather than being invented. When a wheel
+resolver-supplied size; the official PyTorch CPU wheel index omitted the Torch
+wheel size, so the exact locked URL's HTTP HEAD size is recorded rather than
+being invented. When a wheel
 does not carry publisher license files, the exact locked PyPI sdist
 is the only permitted fallback.  Native ELF payloads (including CUDA/NVIDIA
 and Triton payloads) are hashed and inspected with ``readelf`` where present.
@@ -54,7 +55,7 @@ LICENSE_NAMES = {
 }
 NATIVE_FAMILIES = ("nvidia-", "torch", "triton")
 CPU_TORCH_SOURCE = {"registry": "https://download.pytorch.org/whl/cpu"}
-CPU_TORCH_VERSION = "2.7.1+cpu"
+CPU_TORCH_VERSION = "2.13.0+cpu"
 MAX_LICENSE_BYTES = 2 * 1024 * 1024
 MAX_SDIST_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 8 * 1024 * 1024
@@ -760,13 +761,13 @@ def self_test() -> int:
         raise SystemExit("self-test expected 34 active distributions plus one virtual project row")
     torch_row = next((row for row in rows if norm_name(row["name"]) == "torch"), None)
     if torch_row is None or torch_row["version"] != CPU_TORCH_VERSION or torch_row["source"] != CPU_TORCH_SOURCE:
-        raise SystemExit("self-test lost the locked torch 2.7.1+cpu identity")
+        raise SystemExit("self-test lost the locked torch 2.13.0+cpu identity")
     if any(forbidden_accelerator_row(row) for row in rows):
         raise SystemExit("self-test found a forbidden CUDA/NVIDIA/Triton lock row")
     for forbidden in ("nvidia-cublas-cu12", "triton"):
         if forbidden_accelerator_row({"name": forbidden, "version": "1", "source": {"registry": "https://pypi.org/simple"}}) is None:
             raise SystemExit(f"self-test accepted forbidden distribution: {forbidden}")
-    if forbidden_accelerator_row({"name": "torch", "version": "2.7.1+cu126", "source": {"registry": "https://download.pytorch.org/whl/cu126"}}) is None:
+    if forbidden_accelerator_row({"name": "torch", "version": "2.13.0+cu126", "source": {"registry": "https://download.pytorch.org/whl/cu126"}}) is None:
         raise SystemExit("self-test accepted CUDA torch identity")
     audit_source = {"registry": "https://pypi.org/simple"}
     audit_canonical = [{"name": "tokenizers", "version": "0.22.2", "source": audit_source,
