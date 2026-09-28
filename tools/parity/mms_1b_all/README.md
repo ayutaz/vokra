@@ -6,6 +6,16 @@ project.  It contains a dedicated Python 3.12/Linux x86_64 CPU-only
 `uv lock --refresh`.  The lock is restricted to the PyPI and official
 PyTorch CPU indexes; CUDA, NVIDIA, and Triton dependencies are forbidden.
 
+The pinned Torch closure is now `torch==2.13.0` / `2.13.0+cpu`.  GitHub
+Dependabot alerts #396--#399 reported patched floors 2.8.0, 2.9.1, 2.10.0,
+and 2.13.0 respectively (`GHSA-887c-mr87-cxwp`, `GHSA-vgrw-7cvw-pwgx`,
+`GHSA-qfhq-4f3w-5fph`, and `GHSA-rrmf-rvhw-rf47`); the highest floor is
+therefore selected.  This environment has no TorchAudio dependency, so the
+official TorchAudio stable-ABI guidance is not applicable to this closure.
+The new lock has not yet received a VAST dependency audit, model-free API
+rerun, owner sign-off, real-weight parity, or publication decision; all of
+those gates remain fail-closed.
+
 `dependency_audit_evidence.json` is the model-free VAST inventory for the
 exact lock.  It records every lock artifact URL/hash/size tuple, publisher
 license metadata, bundled license-file hashes, native payload hashes, and
