@@ -22,10 +22,13 @@ CONFIG_SHA256="16346762b14c116eeda12b48f20e2281b327a11b516f8b004ce065fcb1450186"
 INDEX_SHA256="0b80666c06d5054aa425a07d9f2f4ecabf9e6d7b8333f0dc5d85d4f79c9ff449"
 SHARD_1_SHA256="b09e03326f4a9e3cd9bac17a55e17c60a3463e720a1cf0a51b8ba246a2b70b67"
 SHARD_2_SHA256="6c496a29e2d131f999bbec815e4bd7a38b2ca436ce0d902237fdbd2971b35b74"
+SHARD_1_BYTES=4992720328
+SHARD_2_BYTES=1252815184
 EXPECTED_SHARD_TOTAL_BYTES=6245535512
 EXPECTED_TENSORS=1281
 EXPECTED_MEDUSA_TENSORS=22
 EXPECTED_TRANSFORMERS_VERSION="5.10.4"
+EXPECTED_TORCH_VERSION="2.13.0"
 LOGITS_ATOL="5e-4"
 
 MIN_VAST_MEM_KIB=60000000
@@ -85,6 +88,20 @@ verify_file() {
   log "identity OK: $path bytes=$actual_bytes sha256=$actual_hash"
 }
 
+verify_hash_only() {
+  local path="$1" expected_hash="$2" actual_hash
+  if [[ ! -f "$path" ]]; then
+    die "missing pinned input: $path"
+    return 2
+  fi
+  actual_hash="$(sha256_file "$path")"
+  if [[ "$actual_hash" != "$expected_hash" ]]; then
+    die "SHA-256 mismatch for $path: got $actual_hash, expected $expected_hash"
+    return 2
+  fi
+  log "identity OK: $path sha256=$actual_hash"
+}
+
 stop_log_tee() {
   local tee_status=0
   if [[ -n "${tee_pid:-}" ]]; then
@@ -125,10 +142,10 @@ download_snapshot() {
 verify_snapshot() {
   local source_dir="$1" shard_1="$source_dir/model-00001-of-00002.safetensors" \
     shard_2="$source_dir/model-00002-of-00002.safetensors" total
-  verify_file "$source_dir/config.json" "$(wc -c < "$source_dir/config.json" | tr -d '[:space:]')" "$CONFIG_SHA256"
-  verify_file "$source_dir/model.safetensors.index.json" "$(wc -c < "$source_dir/model.safetensors.index.json" | tr -d '[:space:]')" "$INDEX_SHA256"
-  verify_file "$shard_1" "$(wc -c < "$shard_1" | tr -d '[:space:]')" "$SHARD_1_SHA256"
-  verify_file "$shard_2" "$(wc -c < "$shard_2" | tr -d '[:space:]')" "$SHARD_2_SHA256"
+  verify_hash_only "$source_dir/config.json" "$CONFIG_SHA256"
+  verify_hash_only "$source_dir/model.safetensors.index.json" "$INDEX_SHA256"
+  verify_file "$shard_1" "$SHARD_1_BYTES" "$SHARD_1_SHA256"
+  verify_file "$shard_2" "$SHARD_2_BYTES" "$SHARD_2_SHA256"
   total=$(( $(wc -c < "$shard_1") + $(wc -c < "$shard_2") ))
   [[ "$total" == "$EXPECTED_SHARD_TOTAL_BYTES" ]] \
     || die "shard total bytes=$total, expected $EXPECTED_SHARD_TOTAL_BYTES"
@@ -152,15 +169,15 @@ record_environment() {
     cargo --version
     uv --version
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
-      'import platform,sys,transformers; expected=sys.argv[1]; actual=transformers.__version__; assert actual == expected, (actual, expected); print(f"python={platform.python_version()}"); print(f"transformers={actual}")' \
-      "$EXPECTED_TRANSFORMERS_VERSION"
+      'import platform,sys,torch,transformers; expected_transformers=sys.argv[1]; expected_torch=sys.argv[2]; actual_transformers=transformers.__version__; actual_torch=torch.__version__; assert actual_transformers == expected_transformers, (actual_transformers, expected_transformers); assert actual_torch == expected_torch, (actual_torch, expected_torch); print(f"python={platform.python_version()}"); print(f"transformers={actual_transformers}"); print(f"torch={actual_torch}")' \
+      "$EXPECTED_TRANSFORMERS_VERSION" "$EXPECTED_TORCH_VERSION"
   } | tee "$output"
 }
 
 verify_reference_manifest() {
   local reference="$1" source_parent="$2"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
-    'import hashlib,json,pathlib,sys
+    'import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); source_parent=pathlib.Path(sys.argv[2]); expected_transformers=sys.argv[3]
 m=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
 assert m["hf_repo"] == "aiola/whisper-medusa-v1"
@@ -173,11 +190,6 @@ assert abs(float(m["max_abs_bound"]) - 5e-4) < 1e-12
 assert m["device"] == "cpu"
 assert (source_parent/m["model_source"]).is_file()
 assert (source_parent/m["config_source"]).is_file()
-def digest(path):
- d=hashlib.sha256(); n=0
- with path.open("rb") as f:
-  while block := f.read(1024*1024): n += len(block); d.update(block)
- return n,d.hexdigest()
 for name in ("manifest.json","pcm.f32","prefix_logits.f32","greedy_tokens.u32"):
  assert (root/name).is_file(), name
 print(f"reference manifest OK: transformers={expected_transformers}")' \
@@ -234,10 +246,11 @@ run_self_test() {
   cases=$((cases + 1))
   script_path="${BASH_SOURCE[0]}"
   for required in "$HF_REVISION" "$SOURCE_REVISION" "$SHARD_1_SHA256" "$SHARD_2_SHA256" \
-    "EXPECTED_TRANSFORMERS_VERSION=\"5.10.4\"" "$EXPECTED_SHARD_TOTAL_BYTES" \
+    "EXPECTED_TRANSFORMERS_VERSION=\"5.10.4\"" "EXPECTED_TORCH_VERSION=\"2.13.0\"" "$EXPECTED_SHARD_TOTAL_BYTES" \
     "whisper_medusa_prepare_checkpoint.py" "parity_whisper_medusa_real" \
     "aarch64-apple-darwin" "VOKRA_NO_UPLOAD" "SHA256SUMS" \
-    "--frozen --python 3.12" "--config"; do
+    "--frozen --python 3.12" "--config" "$SHARD_1_BYTES" "$SHARD_2_BYTES" \
+    "no_upload=ENFORCED" "upload=NOT_PERFORMED" "publication=NO_UPLOAD"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"; fail=1
     fi
@@ -388,7 +401,9 @@ main() {
   step "Finalize NO_UPLOAD evidence and checksums"
   {
     echo "execution_status=PASS"
-    echo "no_upload=DISABLED"
+    echo "no_upload=ENFORCED"
+    echo "upload=NOT_PERFORMED"
+    echo "publication=NO_UPLOAD"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "hf_repo=$HF_REPO"
     echo "hf_revision=$HF_REVISION"
