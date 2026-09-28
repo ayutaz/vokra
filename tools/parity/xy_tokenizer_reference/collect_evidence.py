@@ -211,7 +211,7 @@ def _metadata_license(metadata: bytes, label: str = "METADATA", primary_license:
                     continue
                 if lowered not in LEGACY_SPDX_EXPRESSIONS:
                     raise ValueError(f"{label} has an unrecognized legacy license declaration ({summary})")
-                parsed_legacy.append(LEGACY_SPDX_EXPRESSIONS[lowered])
+                parsed_legacy.append(_spdx_expression(LEGACY_SPDX_EXPRESSIONS[lowered]))
                 generic_legacy = False
                 continue
             generic_legacy = False
