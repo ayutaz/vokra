@@ -91,8 +91,10 @@ stop_log_tee() {
 
 cleanup_log_tee() {
   if [[ -n "${tee_pid:-}" ]]; then
+    # Close the FIFO writer first, then let tee observe EOF and drain.  Do not
+    # kill tee here: a signal at this point can discard the last log line that
+    # the failure summary is meant to preserve.
     exec 1>&3 2>&4
-    kill "$tee_pid" 2>/dev/null || true
     wait "$tee_pid" 2>/dev/null || true
     tee_pid=""
   fi
@@ -291,6 +293,30 @@ run_self_test() {
       fail=1
     fi
   done
+
+  cases=$((cases + 1))
+  if ! (
+    finalization_dir="$tmp/finalization"
+    finalization_log="$finalization_dir/run.log"
+    mkdir -p "$finalization_dir"
+    run_log_fifo="$finalization_dir/.run.log.pipe"
+    exec 3>&1 4>&2
+    mkfifo "$run_log_fifo"
+    tee -a "$finalization_log" < "$run_log_fifo" >/dev/null &
+    tee_pid=$!
+    exec > "$run_log_fifo" 2>&1
+    printf 't5-finalization-self-test-marker\n'
+    stop_log_tee
+    (
+      cd "$finalization_dir"
+      sha256sum run.log > SHA256SUMS
+      sha256sum -c SHA256SUMS >/dev/null
+    )
+    grep -Fxq 't5-finalization-self-test-marker' "$finalization_log"
+  ); then
+    log "self-test FAIL: FIFO tee finalization did not preserve/hash run.log"
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
