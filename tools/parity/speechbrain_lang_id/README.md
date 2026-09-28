@@ -22,8 +22,11 @@ conversion, Cargo, or CUDA. Owner signoff cannot override an identity or
 closure gate.
 
 The checked-in lock is a genuine `uv lock` resolution for Linux/x86_64 Python
-3.12, with 38 package rows and resolver-emitted artifact URL/hash/size rows.
-It uses the official CPU Torch index (`torch==2.13.0+cpu` and
+3.12, with 38 package rows and resolver-emitted artifact URL/hash rows. The
+current CPU Torch and TorchAudio wheel rows also carry resolver upload-time
+metadata but omit artifact sizes; the fail-closed preflight therefore rejects
+the closure until those rows are regenerated with complete URL/hash/size
+metadata. It uses the official CPU Torch index (`torch==2.13.0+cpu` and
 `torchaudio==2.11.0+cpu`). GitHub Dependabot's four open Torch alerts for this
 manifest report patched floors through 2.13.0 (alerts #434--#437). TorchAudio's
 official installation documentation states that 2.11 is built against the
@@ -36,6 +39,14 @@ The fixed local fixture is `tests/fixtures/audio/jfk-30s.wav` (352078 bytes,
 SHA-256 `58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f`).
 No unsafe pickle loading is
 allowed: the official SpeechBrain loader remains the only checkpoint reader.
+
+`model_free_api_probe.py` is an import-only probe. SpeechBrain 1.0.3 still
+expects `torchaudio.list_audio_backends`, which is absent from TorchAudio
+2.11.0+cpu. The probe may install an in-memory compatibility shim solely to
+confirm that the package import can proceed, but it exits 2 with
+`BLOCKED_COMPATIBILITY_SHIM_REQUIRED`; that result is not an API-compatibility
+or model-execution claim. It never downloads weights, instantiates a model, or
+contacts the Hub.
 
 All real conversion and measurements are VAST-only and no-upload. Numeric
 bounds remain unset; evidence is measurement-only until CPU and Metal results
