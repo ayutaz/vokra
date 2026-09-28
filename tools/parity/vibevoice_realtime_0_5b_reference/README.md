@@ -42,7 +42,8 @@ and redistribution decision remain `SEPARATE_REVIEW_REQUIRED`.
 The upstream text tokenizer defines slow and fast Qwen2 variants and adds
 `<|vision_start|>`, `<|vision_end|>`, and `<|vision_pad|>` as additional
 special tokens. The pinned source records their Realtime speech boundaries as
-IDs `151652`, `151653`, and `151654`, respectively. The Rust
+token strings; the exact pinned tokenizer sidecars authenticate their IDs as
+`151652`, `151653`, and `151654`, respectively. The Rust
 `vokra_models::vibevoice_streaming::tokenizer::VibeVoiceRealtimeTokenizer`
 primitive accepts only the four byte-authenticated sidecars below and reuses
 the first-party byte-level BPE implementation; any size, hash, JSON role, or
@@ -57,8 +58,8 @@ GGUF metadata drift fails closed:
 
 The primitive's `streaming_text_ids` applies the upstream streaming boundary
 (`text.strip()` followed by one newline and no added special tokens). A
-model-free remote test has exercised the exact sidecar binding and boundary
-IDs; independent token-by-token parity against the upstream tokenizer for
+The primitive's exact-sidecar binding and Rust compilation are pending remote
+verification at this revision; independent token-by-token parity against the upstream tokenizer for
 non-ASCII, whitespace, and special-token inputs remains a separate evidence
 item and does not follow from reusing the first-party BPE implementation.
 
