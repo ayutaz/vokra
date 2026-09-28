@@ -33,7 +33,7 @@ the recursive server walk is still authenticated in full:
 | `tokenizer_config.json` | Qwen2 tokenizer configuration with a positive `model_max_length` |
 | `tokenizer.json` | Fast-tokenizer JSON whose model is a non-empty BPE vocabulary and merge table |
 | `vocab.json` | Non-empty token-string to non-negative integer map |
-| `merges.txt` | UTF-8 BPE pairs with an exact `#version: 0.2` header and no duplicates |
+| `merges.txt` | UTF-8 BPE pairs with no duplicates; the fixed snapshot is headerless, while an optional `#version: 0.2` line is tolerated |
 | `LICENSE` | Non-empty text retained for a separate license review |
 
 Tokenizer model weights are not selected or downloaded. The tokenizer license

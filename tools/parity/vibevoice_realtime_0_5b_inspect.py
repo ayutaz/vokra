@@ -75,7 +75,7 @@ TOKENIZER_ROLE_CONTRACT = {
     "tokenizer_config.json": "Qwen2 tokenizer configuration",
     "tokenizer.json": "fast-tokenizer JSON graph with a BPE model",
     "vocab.json": "Qwen BPE vocabulary mapping token strings to integer ids",
-    "merges.txt": "Qwen BPE merge table with a #version: 0.2 header",
+    "merges.txt": "Qwen BPE merge table of non-duplicate two-token pairs",
 }
 PACKET_FILES = frozenset({
     "snapshot-inventory.json",
@@ -619,9 +619,9 @@ def validate_tokenizer_files(root: Path, names: set[str]) -> dict[str, Any]:
         lines = merges_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
         raise RuntimeError(f"merges.txt is not valid UTF-8: {error}") from error
-    if not lines or lines[0] != "#version: 0.2":
-        raise RuntimeError("merges.txt is missing the exact #version: 0.2 header")
-    pairs = [line for line in lines[1:] if line]
+    if lines and lines[0] == "#version: 0.2":
+        lines = lines[1:]
+    pairs = [line for line in lines if line]
     if not pairs or any(len(line.split()) != 2 for line in pairs) or len(set(pairs)) != len(pairs):
         raise RuntimeError("merges.txt contains an invalid or duplicate BPE pair")
     records["merges.txt"] = {"role": TOKENIZER_ROLE_CONTRACT["merges.txt"], "sha256": sha256(merges_path), "entries": len(pairs)}
@@ -1027,6 +1027,8 @@ def self_test() -> None:
         else:
             raise AssertionError("duplicate tokenizer merge accepted")
         (tokenizer_fixture / "merges.txt").write_text("#version: 0.2\na b\n", encoding="utf-8")
+        (tokenizer_fixture / "merges.txt").write_text("a b\n", encoding="utf-8")
+        assert validate_tokenizer_files(tokenizer_fixture, TOKENIZER_SELECTED)["status"] == "AUTHENTICATED_STRUCTURE_ONLY"
         try:
             inspect_safetensors(huge)
         except RuntimeError:
