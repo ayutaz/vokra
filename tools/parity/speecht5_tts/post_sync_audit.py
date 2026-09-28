@@ -53,7 +53,7 @@ EXPECTED = {
     "sentencepiece": "0.2.2",
     "sympy": "1.14.0",
     "tokenizers": "0.22.2",
-    "torch": "2.4.1+cpu",
+    "torch": "2.13.0+cpu",
     "tqdm": "4.70.0",
     "transformers": "5.10.4",
     "typer": "0.9.0",

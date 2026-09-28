@@ -185,9 +185,9 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
                     allowed_missing_size = (
                         registry == "https://download.pytorch.org/whl/cpu"
                         and package["name"] == "torch"
-                        and package["version"] == "2.4.1+cpu"
-                        and artifact["url"] == "https://download-r2.pytorch.org/whl/cpu/torch-2.4.1%2Bcpu-cp312-cp312-linux_x86_64.whl"
-                        and artifact["hash"] == "sha256:8800deef0026011d502c0c256cc4b67d002347f63c3a38cd8e45f1f445c61364"
+                        and package["version"] == "2.13.0+cpu"
+                        and artifact["url"] == "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl"
+                        and artifact["hash"] == "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2"
                     )
                     if not allowed_missing_size:
                         raise ValueError("uv.lock artifact size is missing outside the reviewed PyTorch CPU identity")

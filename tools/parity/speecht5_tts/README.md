@@ -10,12 +10,19 @@ The lock and project bytes, all canonical dependency rows, fixed TTS and
 HiFi-GAN revisions/artifact hashes, and the historical public GGUF identity
 are bound by `license_gate_manifest.json`.
 
-The exact PyPI closure supports `torch>=2.4`; the pinned Transformers 5.10.4
-optional FP8 integration nevertheless names a newer dtype at import time. A
-narrow, identity-checked alias is therefore installed only for this exact
-closure and only to unlock that import. The pinned SpeechT5 configuration
-rejects every quantization or fine-grained FP8 route, and the model-free VAST
-compatibility smoke must pass before any checkpoint is acquired.
+The exact PyPI closure supports `torch>=2.4`; this revision pins the official
+CPU `torch==2.13.0+cpu` wheel, which meets the highest patched floor among the
+six fixable Torch alerts (#438, #439, #440, #444, #445, #446). The three
+remaining alerts (#441, #442, #443) have no published patched version and stay
+visible in the audit. The active closure intentionally has no TorchAudio
+dependency: the official SpeechT5 path uses Transformers' TTS API and does not
+require a TorchAudio package. Transformers 5.10.4's optional FP8 integration
+still names `torch.float8_e8m0fnu`; the compatibility module first verifies the
+exact Torch/Transformers identities and accepts the native Torch 2.13 dtype,
+retaining only a narrow import-only fallback if the reviewed wheel lacks it.
+The pinned SpeechT5 configuration rejects every quantization or fine-grained
+FP8 route, and the model-free VAST compatibility smoke must pass before any
+checkpoint is acquired.
 
 `preflight_gate.py` is standard-library-only and runs with
 `uv run --no-project --offline` before scratch creation, synchronization,

@@ -1,10 +1,11 @@
 """Fail-closed compatibility checks for the pinned SpeechT5 oracle.
 
 Transformers 5.10.4 imports an unrelated FP8 module that names
-``torch.float8_e8m0fnu``.  The exact approved torch 2.4.1+cpu wheel does not
-export that name.  This module installs a narrow alias only after verifying
-both installed distribution identities; it never changes model configuration
-or selects an FP8/quantized execution route.
+``torch.float8_e8m0fnu``.  The exact approved torch 2.13.0+cpu wheel is
+expected to export that native dtype; this module keeps the same identity
+check and accepts the native symbol.  A narrow import-only alias remains a
+fail-closed compatibility path if the reviewed wheel lacks it, and never
+changes model configuration or selects an FP8/quantized execution route.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SUPPORTED_TORCH = "2.4.1+cpu"
+SUPPORTED_TORCH = "2.13.0+cpu"
 SUPPORTED_TRANSFORMERS = "5.10.4"
 MISSING = object()
 COMPATIBILITY_SMOKE_SENTINEL = (

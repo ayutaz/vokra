@@ -8,7 +8,7 @@ dependencies = [
     "numpy==1.26.4",
     "safetensors==0.8.0",
     "sentencepiece==0.2.2",
-    "torch==2.4.1",
+    "torch==2.13.0",
     "transformers==5.10.4",
     "typer==0.9.0",
 ]
@@ -45,9 +45,11 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.speecht5_tts]
-# 5.5.0 is retained only as the prior isolated reference pin; no upstream
-# requirement is asserted. Compatibility of the security-remediated pin with
-# the source route remains unverified until an authorized VAST model smoke run.
+# Torch 2.13.0 is the highest patched floor required by the current Torch
+# Dependabot closure. The active route intentionally has no TorchAudio
+# dependency; SpeechT5 uses Transformers' official TTS API only. Compatibility
+# of the security-remediated pin with the source route remains unverified until
+# an authorized VAST API smoke run.
 previous_isolated_transformers_pin = "transformers==5.5.0"
 transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
 transformers_security_patched_minimum = "5.10.0"
