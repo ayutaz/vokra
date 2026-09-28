@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PARITY="$ROOT/tools/parity"
 REFERENCE="$PARITY/csm_1b_dump_reference.py"
 REFERENCE_PROJECT="$PARITY/csm_1b_reference"
-REFERENCE_LOCK_SHA256="62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+REFERENCE_LOCK_SHA256="a6761aee26522ee65fdc6dd5493e4584b11d028dd010ccb19a5a3d06c48b9683"
 GATE="$ROOT/tools/parity/csm_1b_gate.py"
 UV=(uv run --no-sync --frozen --project "$REFERENCE_PROJECT" --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
@@ -45,7 +45,7 @@ self_test() {
     echo 'self-test sync must follow the affirmative gate and precede reference execution' >&2; fail=1
   fi
   UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --self-test || fail=1
-  UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-sync --frozen --project "$root/tools/parity" --python 3.12 "$py" "$root/tools/parity/csm_1b_dump_reference.py" --self-test || fail=1
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-sync --frozen --project "$root/tools/parity/csm_1b_reference" --python 3.12 "$py" "$root/tools/parity/csm_1b_dump_reference.py" --self-test || fail=1
   if bash "$0" --self-test --self-test >/dev/null 2>&1; then echo 'self-test duplicate --self-test accepted' >&2; fail=1; fi
   if bash "$0" --expected-head "$(printf '%040d' 0)" --expected-head "$(printf '%040d' 0)" --approval-evidence /missing --approval-sha256 "$(printf '%064d' 0)" >/dev/null 2>&1; then echo 'self-test duplicate --expected-head accepted' >&2; fail=1; fi
   (( fail == 0 )) && echo 'run-csm-1b-validation.sh self-test: OK' || return 1

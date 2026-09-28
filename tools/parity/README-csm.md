@@ -7,6 +7,14 @@ Offline recipe for the Sesame CSM-1B staged reference evidence. CI never runs
 Python; the real dump is a **VAST owner step** and remains evidence-only until
 the native CSM+Mimi composite binder and CPU parity are accepted.
 
+The dedicated Python 3.12 lock currently uses the official PyTorch CPU index
+with `torch==2.13.0` (Linux resolves `2.13.0+cpu`); Dependabot alerts #358-365
+are therefore above their highest patched floor (`2.13.0`). This dependency
+refresh invalidates prior package/native review evidence. The project remains
+fail-closed: `license_status` is still `BLOCKED_LICENSE_METADATA_REVIEW`, the
+Torch 2.13 CPU wheel native/license inventory is unresolved, and no prior API,
+reference, or numerical parity result is reused.
+
 ## Committed today
 
 - `tests/parity/csm/self-test/` — a synthetic fixture written by

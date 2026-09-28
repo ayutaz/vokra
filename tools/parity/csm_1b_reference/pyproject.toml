@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy==2.2.6",
-    "torch==2.7.1",
+    "torch==2.13.0",
     "transformers==5.10.4",
     # The source route declares Transformers 4.52.1 with huggingface-hub
     # >=0.30,<1.0; the isolated secure pin below follows Transformers 5.10.4's
@@ -22,11 +22,11 @@ transformers_security_patched_minimum = "5.10.0"
 isolated_transformers_pin = "5.10.4"
 isolated_huggingface_hub_pin = "1.5.0"
 transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
-lock_sha256 = "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+lock_sha256 = "a6761aee26522ee65fdc6dd5493e4584b11d028dd010ccb19a5a3d06c48b9683"
 selection_note = "Python 3.12 reference selection; torch/numpy/audio versions are adapted review pins, not upstream Sesame requirements."
 license_status = "BLOCKED_LICENSE_METADATA_REVIEW"
-license_evidence_lock_sha256 = "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
-license_blocker = "The caller-owned PCM16 WAV decoder uses Python stdlib wave and NumPy only; soundfile/libsndfile and the forbidden librosa/soxr closure are excluded. The explicit PyTorch CPU index avoids NVIDIA/triton packages. The lock audit still has owner-policy blockers: certifi MPL-2.0, tqdm MPL-2.0 AND MIT, typing-extensions PSF-2.0, and NumPy bundled runtime notices (including GPL/LGPL components); every locked package row and source/marker identity must remain bound to the lock before installation or VAST execution."
+license_evidence_lock_sha256 = "a6761aee26522ee65fdc6dd5493e4584b11d028dd010ccb19a5a3d06c48b9683"
+license_blocker = "The caller-owned PCM16 WAV decoder uses Python stdlib wave and NumPy only; soundfile/libsndfile and the forbidden librosa/soxr closure are excluded. The explicit PyTorch CPU index avoids NVIDIA/triton packages. The lock audit remains blocked on owner-policy review of certifi MPL-2.0, tqdm MPL-2.0 AND MIT, typing-extensions PSF-2.0, NumPy bundled runtime notices (including GPL/LGPL components), and the Torch 2.13.0 CPU wheel's bundled native payload/license inventory; every locked package row, source/marker identity, and native review must remain bound to this exact lock before installation or VAST execution."
 
 # uv.lock is required and its SHA is bound above. The license gate remains
 # fail-closed until the transitive package notices are reviewed.
