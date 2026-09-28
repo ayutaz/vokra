@@ -50,6 +50,10 @@ SPDX_ALIASES = {
     "python software foundation license": "PSF-2.0",
     "python-2.0": "Python-2.0",
 }
+# tqdm 4.70.0 uses this exact compound value in the legacy ``License:``
+# field.  Keep the compatibility map deliberately narrow; arbitrary compound
+# legacy declarations remain rejected and must use ``License-Expression``.
+LEGACY_SPDX_EXPRESSIONS = {"mpl-2.0 and mit": "MPL-2.0 AND MIT"}
 CLASSIFIER_ALIASES = {
     "License :: OSI Approved :: Apache Software License": "Apache-2.0",
     "License :: OSI Approved :: CNRI Python License": "CNRI-Python",
@@ -203,9 +207,12 @@ def _metadata_license(metadata: bytes, label: str = "METADATA", primary_license:
         for value in legacy:
             lowered = value.lower().strip()
             if lowered not in SPDX_ALIASES:
-                if lowered not in GENERIC_BSD_LEGACY:
+                if lowered in GENERIC_BSD_LEGACY:
+                    continue
+                if lowered not in LEGACY_SPDX_EXPRESSIONS:
                     raise ValueError(f"{label} has an unrecognized legacy license declaration ({summary})")
-                generic_legacy = generic_legacy and True
+                parsed_legacy.append(LEGACY_SPDX_EXPRESSIONS[lowered])
+                generic_legacy = False
                 continue
             generic_legacy = False
             parsed_legacy.append(SPDX_ALIASES[lowered])
@@ -532,6 +539,7 @@ def self_test() -> None:
         assert _metadata_license(b"License-Expression: Apache-2.0 WITH LLVM-exception\n") == "Apache-2.0 WITH LLVM-exception"
         assert _metadata_license(b"License-Expression: MIT-0\n") == "MIT-0"
         assert _metadata_license(b"License-Expression: CC0-1.0 OR BSL-1.0\n") == "CC0-1.0 OR BSL-1.0"
+        assert _metadata_license(b"License: MPL-2.0 AND MIT\n") == "MPL-2.0 AND MIT"
         assert _metadata_license(b"License: mpl-2.0\n") == "MPL-2.0"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: CNRI Python License\n") == "CNRI-Python"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: ISC License (ISCL)\n") == "ISC"
@@ -547,6 +555,9 @@ def self_test() -> None:
             b"Classifier: License :: OSI Approved :: BSD License\n",
             b"License-Expression: GPL-3.0\n",
             b"License-Expression: LGPL-2.1-or-later\n",
+            b"License: MPL-2.0 AND GPL-3.0\n",
+            b"License: MIT AND MPL-2.0\n",
+            b"License: MPL-2.0 AND MIT OR (BSD-3-Clause)\n",
             b"License-Expression: Apache-2.0 WITH MIT-exception\n",
             b"License-Expression: MIT WITH LLVM-exception\n",
             b"License-Expression: Apache-2.0 (MIT)\n",
