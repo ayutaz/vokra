@@ -20,8 +20,8 @@ The gate binds all evidence to these immutable revisions:
 The VibeVoice source checkout is authenticated by exact Git blob identities
 for the streaming processor, acoustic tokenizer processor, text tokenizer,
 and acoustic tokenizer implementation. The gate additionally checks source
-markers for the streaming API so a role file cannot be replaced by a
-same-shaped placeholder while retaining a superficially valid inventory.
+markers to document and enforce the expected streaming API surface; the exact
+Git blob identities remain the source of file identity and provenance.
 
 ## Tokenizer roles
 

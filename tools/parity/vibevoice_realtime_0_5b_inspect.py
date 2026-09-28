@@ -77,6 +77,13 @@ TOKENIZER_ROLE_CONTRACT = {
     "vocab.json": "Qwen BPE vocabulary mapping token strings to integer ids",
     "merges.txt": "Qwen BPE merge table with a #version: 0.2 header",
 }
+PACKET_FILES = frozenset({
+    "snapshot-inventory.json",
+    "tensor-inventory.json",
+    "companion-inventory.json",
+    "source-inventory.json",
+    "streaming-contract.json",
+})
 MODEL_FILES = {
     ".gitattributes": (1_572, "e685d20cb7927ac8016dadb2514ec1221b1c2a8f", None),
     "README.md": (10_160, "8c2ea6fc74deb70c8d6164d06a12e584498b4379", None),
@@ -638,6 +645,14 @@ def validate_streaming_source_contract(source: Path) -> dict[str, Any]:
     return {"status": "AUTHENTICATED_STRUCTURE_ONLY", "source_revision": SOURCE_REVISION, "roles": files, "runtime_status": "NOT_RUN"}
 
 
+def packet_hashes(output: Path) -> dict[str, dict[str, Any]]:
+    """Hash every authenticated evidence packet, including the streaming contract."""
+    missing = sorted(name for name in PACKET_FILES if not (output / name).is_file() or (output / name).is_symlink())
+    if missing:
+        raise RuntimeError(f"authenticated evidence packet missing: {missing}")
+    return {name: {"bytes": (output / name).stat().st_size, "sha256": sha256(output / name)} for name in sorted(PACKET_FILES)}
+
+
 def source_inventory(
     source: Path,
     transformers: Path,
@@ -824,7 +839,7 @@ def _inspect_body(snapshot: Path, companion: Path, source: Path, transformers: P
     for name, value in evidence.items():
         with (output / name).open("x", encoding="utf-8") as stream:
             stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
-    packets = {path.name: {"bytes": path.stat().st_size, "sha256": sha256(path)} for path in output.glob("*-inventory.json")}
+    packets = packet_hashes(output)
     blocked(output, RuntimeError("streaming state, diffusion/CFG, acoustic decoder, tokenizer policy, and dataset provenance remain unauthenticated"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", allow_existing=True, model_license=model_license, policy=policy, config=config_evidence, preprocessor=preprocessor_evidence, tensors=tensor_evidence, companion_tokenizer={"repository": TOKENIZER_REPOSITORY, "revision": TOKENIZER_REVISION, "model_weights": "NOT_DOWNLOADED", "files": tokenizer_files, "contract": tokenizer_contract}, official_source=sources, streaming_contract=streaming_contract, license_evidence=manifest_license_evidence(model_license, sources), dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
     return 2
 
@@ -981,6 +996,19 @@ def self_test() -> None:
             raise AssertionError(f"obsolete config key accepted: {section}.{old_key}")
     with tempfile.TemporaryDirectory(prefix="vokra-vibevoice-realtime-") as directory:
         root = Path(directory); huge = root / "huge.safetensors"; huge.write_bytes((MAX_HEADER_BYTES + 1).to_bytes(8, "little"))
+        packet_fixture = root / "packet-fixture"
+        packet_fixture.mkdir()
+        for packet_name in PACKET_FILES:
+            (packet_fixture / packet_name).write_text(packet_name + "\n", encoding="utf-8")
+        packet_evidence = packet_hashes(packet_fixture)
+        assert set(packet_evidence) == PACKET_FILES and "streaming-contract.json" in packet_evidence
+        (packet_fixture / "streaming-contract.json").unlink()
+        try:
+            packet_hashes(packet_fixture)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("streaming contract packet was not required")
         tokenizer_fixture = root / "tokenizer-fixture"
         tokenizer_fixture.mkdir()
         (tokenizer_fixture / "LICENSE").write_text("Qwen tokenizer license text\n", encoding="utf-8")
