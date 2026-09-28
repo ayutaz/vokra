@@ -19,8 +19,8 @@ from urllib.parse import urlparse
 GATE_VERSION = 2
 # These are the exact active closure inputs. The dependency audit binds these
 # active bytes, while the separate owner and operator gates remain fail-closed.
-LOCK_SHA256 = "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
-PYPROJECT_SHA256 = "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
+LOCK_SHA256 = "36d0f01df62e4d9f90f80d4c7d15bfa9df612b5a4f99ad4716c1c62458a6864b"
+PYPROJECT_SHA256 = "a6f51a2e3300ba0b8750dca6050c6fc2d645e657c8a507dcfc334c291d9e0bff"
 FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
