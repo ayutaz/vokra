@@ -366,7 +366,11 @@ def main(argv: list[str] | None = None) -> int:
         local_files_only=True,
         trust_remote_code=False,
         dtype=torch.float32,
-        low_cpu_mem_usage=True,
+        # Keep the official Transformers loader on its torch-only path.  The
+        # Accelerate dependency is intentionally absent because its open
+        # advisory has no patched release; this route must not silently
+        # reintroduce it through low_cpu_mem_usage.
+        low_cpu_mem_usage=False,
     )
     model.eval()
     if model.device.type != "cpu" or model.dtype != torch.float32:

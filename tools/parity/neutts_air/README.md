@@ -54,8 +54,15 @@ the same audit immediately after its frozen sync and before model download or
 Cargo. Missing publisher evidence or unresolved fixed LICENSE facts remains a
 blocker; no license class is inferred from raw bytes.
 
+The reference route does not declare Accelerate. The official Transformers
+`from_pretrained` call uses `low_cpu_mem_usage=False`, keeping loading on the
+torch-only path and avoiding the open Accelerate advisory (#249, vulnerable
+through 1.14.0 with no patched release). This is dependency/API-scope only;
+it does not authorize model acquisition, execution, parity, or license
+approval.
+
 The VAST worker is fail-closed behind the standard-library-only
-`preflight_gate.py`. Its 39-row lock (36 active Linux x86_64 distributions,
+`preflight_gate.py`. Its 37-row lock (34 active Linux x86_64 distributions,
 the inactive Win32-only `colorama`, the Darwin Torch row, and the virtual root), public GGUF/companion identities,
 official source identity and the gated upstream's seven-file contract are all
 bound into the approval scope. The gated upstream license and payload hashes
