@@ -73,6 +73,7 @@ environment they name.
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
+| Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).
