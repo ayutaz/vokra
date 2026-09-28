@@ -22,11 +22,11 @@ conversion, Cargo, or CUDA. Owner signoff cannot override an identity or
 closure gate.
 
 The checked-in lock is a genuine `uv lock` resolution for Linux/x86_64 Python
-3.12, with 38 package rows and resolver-emitted artifact URL/hash rows. The
-current CPU Torch and TorchAudio wheel rows also carry resolver upload-time
-metadata but omit artifact sizes; the fail-closed preflight therefore rejects
-the closure until those rows are regenerated with complete URL/hash/size
-metadata. It uses the official CPU Torch index (`torch==2.13.0+cpu` and
+3.12, with 38 package rows and resolver-emitted artifact URL/hash/size rows.
+The official CPU Torch index reports Content-Length 191817609 for the pinned
+Torch 2.13.0+cpu wheel and 341338 for the pinned TorchAudio 2.11.0+cpu wheel;
+those values are bound into the lock and checked by the fail-closed preflight.
+It uses the official CPU Torch index (`torch==2.13.0+cpu` and
 `torchaudio==2.11.0+cpu`). GitHub Dependabot's four open Torch alerts for this
 manifest report patched floors through 2.13.0 (alerts #434--#437). TorchAudio's
 official installation documentation states that 2.11 is built against the
