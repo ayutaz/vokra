@@ -15,7 +15,7 @@ import os
 import platform
 import sys
 from types import ModuleType
-from typing import Any
+from typing import Any, MutableMapping
 
 
 EXPECTED_TORCH_PREFIX = "2.13.0"
@@ -37,6 +37,12 @@ def _exception_record(error: BaseException) -> dict[str, str]:
     return {"type": type(error).__name__, "message": str(error)}
 
 
+def force_offline_environment(environment: MutableMapping[str, str]) -> None:
+    """Force every Hub client used by this import-only probe offline."""
+    environment["HF_HUB_OFFLINE"] = "1"
+    environment["TRANSFORMERS_OFFLINE"] = "1"
+
+
 def self_test() -> None:
     native = ModuleType("native")
     native.list_audio_backends = lambda: []  # type: ignore[attr-defined]
@@ -44,11 +50,15 @@ def self_test() -> None:
     missing = ModuleType("missing")
     assert install_audio_backend_compat(missing) == "shimmed"
     assert missing.list_audio_backends() == []  # type: ignore[attr-defined]
+    offline = {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}
+    force_offline_environment(offline)
+    assert offline == {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
     print("model_free_api_probe.py self-test: PASS")
 
 
 def probe() -> tuple[int, dict[str, Any]]:
     """Import only pinned packages and report an explicit fail-closed result."""
+    force_offline_environment(os.environ)
     result: dict[str, Any] = {
         "schema": SCHEMA,
         "status": "BLOCKED",
@@ -57,9 +67,11 @@ def probe() -> tuple[int, dict[str, Any]]:
         "model_executed": False,
         "hub_contacted": False,
         "platform": f"{platform.system()}-{platform.machine()}",
+        "offline_environment": {
+            "HF_HUB_OFFLINE": os.environ["HF_HUB_OFFLINE"],
+            "TRANSFORMERS_OFFLINE": os.environ["TRANSFORMERS_OFFLINE"],
+        },
     }
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     try:
         import torch
         import torchaudio
