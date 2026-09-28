@@ -24,6 +24,7 @@ T5_REVISION="a9723ea7f1b39c1eae772870f3b547bf6ef7e6c1"
 T5_WEIGHT_FILE="model.safetensors"
 T5_WEIGHT_BYTES=891646390
 T5_WEIGHT_SHA256="a90903540cc02cbeb7ff9f823f1a80eb778c7e22426a0e620b01c77a5ec8f5b4"
+EXPECTED_TRANSFORMERS_VERSION="5.10.4"
 
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
@@ -83,7 +84,7 @@ verify_reference_manifest() {
   local reference="$1" checkpoint="$2"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import hashlib,json,pathlib,sys
-root=pathlib.Path(sys.argv[1]); checkpoint=pathlib.Path(sys.argv[2]); repo=sys.argv[3]; revision=sys.argv[4]
+root=pathlib.Path(sys.argv[1]); checkpoint=pathlib.Path(sys.argv[2]); repo=sys.argv[3]; revision=sys.argv[4]; expected_version=sys.argv[5]
 manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
 def file_identity(path):
     digest=hashlib.sha256(); size=0
@@ -95,6 +96,7 @@ assert manifest["format"] == "vokra-t5-encoder-reference-v1"
 assert manifest["oracle"] == "transformers.T5EncoderModel.forward"
 assert manifest["source_repo"] == repo
 assert manifest["source_revision"] == revision
+assert manifest["transformers_version"] == expected_version
 for name, expected in manifest["fixtures"].items():
     size, sha256=file_identity(root/name)
     assert size == expected["bytes"], (name, "bytes")
@@ -103,15 +105,15 @@ for name, expected in manifest["checkpoint_files"].items():
     size, sha256=file_identity(checkpoint/name)
     assert size == expected["bytes"], (name, "bytes")
     assert sha256 == expected["sha256"], (name, "sha256")
-print(f"reference manifest OK: {repo}@{revision}")' \
-    "$reference" "$checkpoint" "$T5_REPO" "$T5_REVISION"
+print(f"reference manifest OK: {repo}@{revision} transformers={expected_version}")' \
+    "$reference" "$checkpoint" "$T5_REPO" "$T5_REVISION" "$EXPECTED_TRANSFORMERS_VERSION"
 }
 
 verify_delay_reference_manifest() {
   local reference="$1"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import hashlib,json,pathlib,sys
-root=pathlib.Path(sys.argv[1]); manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
+root=pathlib.Path(sys.argv[1]); expected_version=sys.argv[2]; manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
 def file_identity(path):
     digest=hashlib.sha256(); size=0
     with path.open("rb") as handle:
@@ -120,14 +122,15 @@ def file_identity(path):
     return size, digest.hexdigest()
 assert manifest["format"] == "vokra-musicgen-delay-pattern-reference-v1"
 assert manifest["oracle"] == "transformers.MusicgenForCausalLM.build_delay_pattern_mask+apply_delay_pattern_mask"
-assert manifest["transformers_version"] == "4.45.2"
+assert manifest["transformers_version"] == expected_version
+assert manifest["source"].endswith(f"/v{expected_version}/src/transformers/models/musicgen/modeling_musicgen.py")
 assert len(manifest["cases"]) == 4
 for name, expected in manifest["fixtures"].items():
     size, sha256=file_identity(root/name)
     assert size == expected["bytes"], (name, "bytes")
     assert sha256 == expected["sha256"], (name, "sha256")
-print("MusicGen delay reference manifest OK")' \
-    "$reference"
+print(f"MusicGen delay reference manifest OK: transformers={expected_version}")' \
+    "$reference" "$EXPECTED_TRANSFORMERS_VERSION"
 }
 
 download_hf_file() {
@@ -226,7 +229,8 @@ run_self_test() {
   cases=$((cases + 1))
   script_path="${BASH_SOURCE[0]}"
   for required in "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$T5_REVISION" \
-    "$T5_WEIGHT_SHA256" "t5_encoder_dump_reference.py" \
+    "$T5_WEIGHT_SHA256" "5.10.4" "EXPECTED_TRANSFORMERS_VERSION" \
+    "t5_encoder_dump_reference.py" \
     "musicgen_delay_pattern_dump_reference.py" \
     "parity_t5_base_official_hidden_states_cpu_and_metal" \
     "musicgen_delay_pattern_matches_official_transformers" \
