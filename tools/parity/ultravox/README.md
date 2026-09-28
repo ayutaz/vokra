@@ -20,8 +20,8 @@ test compares every FP32 tensor at `atol=0.01` and greedy IDs exactly. Every
 reference artifact and both downloaded source closures are authenticated by
 SHA-256 manifests. The Rust test requires all three paths and the companion
 GGUF hash; it never treats a missing input as a passing skip. The official
-reference environment is pinned to `transformers==5.5.0` (the 4.x-to-5.x
-upgrade requires a fresh VAST rerun before parity can be claimed).
+reference environment is pinned to `transformers==5.10.4` (the 5.5.0-to-5.10.4
+security update requires a fresh VAST rerun before parity can be claimed).
 
 Run only on a provisioned VAST host:
 
@@ -72,18 +72,15 @@ That script performs no download, upload, conversion, publication, or model
 deletion. It runs the same real-weight gate on Apple CPU and Metal, recording
 unsupported operations as failures rather than using a CPU fallback.
 
-The tracked `dependency_audit_evidence.json` is a compact, model-free VAST
-proof for the exact clean audit head. It binds all 37 active Linux rows and
-three inactive/virtual lock rows, declared licenses/classifiers, publisher and
-native counts/canonical hashes/unsafe lists, the locked-sdist
-`tokenizers-0.22.2/tokenizers/LICENSE` fallback, and the exact closure. Fixie
-metadata is authenticated at its exact HF revision; the gated Meta companion
-records `LICENSE.txt` existence and
-`401` for its raw license request, without claiming that its bytes were
-reviewed. The proof also records the public model LICENSE bytes and the
-Fixie/Meta `404`/`401` fallback facts, and explicitly records no model import,
-no Cargo, and `NO_UPLOAD`. It is evidence, not owner sign-off: package/license
-rows and signer/digest remain pending, and publication stays blocked until the
-owner reviews the bound scope. The evidence proof is independent of numerical
+The tracked `dependency_audit_evidence.json` remains the compact, model-free
+proof for the pre-5.10.4 lock and is intentionally not rewritten locally: its
+lock/package-row hashes are bound to that earlier audit head. A fresh VAST
+dependency audit on the exact 5.10.4 head must produce the replacement audit
+JSON and the corresponding lock/project/package-row hashes before the license
+gate can be rebound. Fixie metadata is authenticated at its exact HF revision;
+the gated Meta companion records `LICENSE.txt` existence and `401` for its raw
+license request, without claiming that its bytes were reviewed. The existing
+proof records no model import, no Cargo, and `NO_UPLOAD`; owner/legal sign-off
+and publication remain pending. The evidence proof is independent of numerical
 model parity; the parity result and Apple CPU/Metal result must come from their
 respective VAST/Apple runs.

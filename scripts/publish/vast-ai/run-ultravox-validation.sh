@@ -42,6 +42,7 @@ COMPANION_SNAPSHOT_FILES=(config.json model.safetensors)
 MIN_VAST_MEM_KIB=64000000
 MIN_FREE_DISK_KIB=30000000
 FP32_ATOL="0.01"
+TRANSFORMERS_VERSION="5.10.4"
 TEST_NAME="ultravox_public_cpu_or_metal_matches_official_reference"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
@@ -215,6 +216,12 @@ require_tooling() {
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "Ultravox parity uv.lock is missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
+  grep -Fq -- "transformers==${TRANSFORMERS_VERSION}" "$PARITY_PROJECT/pyproject.toml" \
+    || die "Ultravox pyproject is not pinned to transformers==${TRANSFORMERS_VERSION}"
+  grep -Fq -- 'name = "transformers"' "$PARITY_PROJECT/uv.lock" \
+    || die "Ultravox uv.lock has no transformers package row"
+  grep -Fq -- "version = \"${TRANSFORMERS_VERSION}\"" "$PARITY_PROJECT/uv.lock" \
+    || die "Ultravox uv.lock is not resolved to transformers==${TRANSFORMERS_VERSION}"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names one exact commit"
   fi
@@ -358,12 +365,14 @@ run_self_test() {
   [[ "$PUBLIC_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$UPSTREAM_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$COMPANION_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
+  [[ "$TRANSFORMERS_VERSION" == "5.10.4" ]] || failed=1
   [[ "$PUBLIC_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$MODEL_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$PROCESSOR_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$CONFIG_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$UPSTREAM_MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   grep -Fq -- 'audit-ultravox-dependencies.sh' "$0" || failed=1
+  grep -Fq -- 'transformers==${TRANSFORMERS_VERSION}' "$0" || failed=1
   sync_line="$(grep -n '^  uv sync --project' "$0" | head -1 | cut -d: -f1)"
   audit_line="$(grep -n '^[[:space:]]*"[$]DEPENDENCY_AUDIT_WRAPPER" --output' "$0" | head -1 | cut -d: -f1)"
   download_line="$(grep -n '^  download_hf_file ' "$0" | head -1 | cut -d: -f1)"
@@ -628,6 +637,7 @@ main() {
     echo "upstream_revision=$UPSTREAM_REVISION"
     echo "companion_repo=$COMPANION_REPO"
     echo "companion_revision=$COMPANION_REVISION"
+    echo "transformers_version=$TRANSFORMERS_VERSION"
     echo "companion_gguf_sha256=$(sha256_file "$companion_gguf")"
     echo "reference_manifest_sha256=$(sha256_file "$reference_dir/manifest.txt")"
     echo "frontend_atol=$FP32_ATOL"
