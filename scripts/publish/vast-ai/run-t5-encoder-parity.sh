@@ -29,6 +29,13 @@ EXPECTED_TRANSFORMERS_VERSION="5.10.4"
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
 
+# These are intentionally shell-global: an EXIT trap runs after `main` has
+# unwound its local scope, so cleanup state must remain visible to it.
+run_log_fifo=""
+tee_pid=""
+finalization_complete=0
+summary_file=""
+
 log() { printf '[t5-encoder-vast] %s\n' "$*" >&2; }
 step() { printf '\n[t5-encoder-vast] ==== %s ====\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -62,6 +69,38 @@ sha256_file() {
   else
     die "neither sha256sum nor shasum is available"
   fi
+}
+
+stop_log_tee() {
+  local tee_status=0
+  if [[ -n "${tee_pid:-}" ]]; then
+    # Replacing the FIFO-backed stdout/stderr closes the writer.  Waiting for
+    # tee after that close makes all buffered run.log data durable before the
+    # evidence checksum is generated.
+    exec 1>&3 2>&4
+    wait "$tee_pid" || tee_status=$?
+    tee_pid=""
+  fi
+  if [[ -n "${run_log_fifo:-}" ]]; then
+    rm -f "$run_log_fifo"
+    run_log_fifo=""
+  fi
+  exec 3>&- 4>&-
+  return "$tee_status"
+}
+
+cleanup_log_tee() {
+  if [[ -n "${tee_pid:-}" ]]; then
+    exec 1>&3 2>&4
+    kill "$tee_pid" 2>/dev/null || true
+    wait "$tee_pid" 2>/dev/null || true
+    tee_pid=""
+  fi
+  if [[ -n "${run_log_fifo:-}" ]]; then
+    rm -f "$run_log_fifo"
+    run_log_fifo=""
+  fi
+  exec 3>&- 4>&-
 }
 
 verify_file() {
@@ -174,7 +213,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup awk grep find tee wc tr; do
+  for tool in uv cargo rustc rustup awk grep find mkfifo tee wc tr; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -244,6 +283,16 @@ run_self_test() {
   done
 
   cases=$((cases + 1))
+  for required in 'mkfifo "$run_log_fifo"' 'tee -a "$run_log"' \
+    'wait "$tee_pid"' 'finalization_complete=1' \
+    'find logs reference musicgen-delay-reference'; do
+    if ! grep -Fq -- "$required" "$script_path"; then
+      log "self-test FAIL: evidence finalization contract lost token: $required"
+      fail=1
+    fi
+  done
+
+  cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: direct Python/pip command found"
     fail=1
@@ -270,7 +319,7 @@ run_self_test() {
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir inputs_dir logs_dir
   local public_dir t5_dir reference delay_reference gguf
-  local run_log env_log ops_log delay_log models_log cross_log cpu_log summary_file
+  local run_log env_log ops_log delay_log models_log cross_log cpu_log
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -311,9 +360,14 @@ main() {
   cross_log="$logs_dir/apple-metal-cross-check.log"
   cpu_log="$logs_dir/official-cpu.log"
   summary_file="$logs_dir/summary.txt"
-  exec > >(tee -a "$run_log") 2>&1
+  exec 3>&1 4>&2
+  run_log_fifo="$logs_dir/.run.log.pipe"
+  mkfifo "$run_log_fifo"
+  tee -a "$run_log" < "$run_log_fifo" &
+  tee_pid=$!
+  exec > "$run_log_fifo" 2>&1
   # shellcheck disable=SC2154
-  trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT
+  trap 'rc=$?; if [[ "${finalization_complete:-0}" != "1" && -n "${summary_file:-}" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; cleanup_log_tee; exit "$rc"' EXIT
 
   step "Sync dedicated locked Python 3.12 CPU environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
@@ -392,13 +446,15 @@ main() {
     echo "metal_runtime=NOT_RUN_LINUX_VAST"
     echo "metal_cross_compile=PASS"
   } | tee "$summary_file"
+  log "PASS evidence: $logs_dir and $reference"
+  stop_log_tee
   (
     cd "$work_dir"
     find logs reference musicgen-delay-reference -type f ! -name SHA256SUMS -print0 \
       | sort -z \
       | xargs -0 sha256sum > logs/SHA256SUMS
   )
-  log "PASS evidence: $logs_dir and $reference"
+  finalization_complete=1
 }
 
 main "$@"
