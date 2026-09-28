@@ -57,7 +57,7 @@ GGUF metadata drift fails closed:
 | `tokenizer.json` | 7,031,645 | `c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539` |
 
 The primitive's `streaming_text_ids` applies the upstream streaming boundary
-(`text.strip()` followed by one newline and no added special tokens). A
+(`text.strip()` followed by one newline and no added special tokens).
 The primitive's exact-sidecar binding and Rust compilation are pending remote
 verification at this revision; independent token-by-token parity against the upstream tokenizer for
 non-ASCII, whitespace, and special-token inputs remains a separate evidence
