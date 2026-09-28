@@ -24,9 +24,17 @@ T5_REVISION="a9723ea7f1b39c1eae772870f3b547bf6ef7e6c1"
 T5_WEIGHT_FILE="model.safetensors"
 T5_WEIGHT_BYTES=891646390
 T5_WEIGHT_SHA256="a90903540cc02cbeb7ff9f823f1a80eb778c7e22426a0e620b01c77a5ec8f5b4"
+EXPECTED_TRANSFORMERS_VERSION="5.10.4"
 
 MIN_VAST_MEM_KIB=60000000
 MIN_FREE_DISK_KIB=100000000
+
+# These are intentionally shell-global: an EXIT trap runs after `main` has
+# unwound its local scope, so cleanup state must remain visible to it.
+run_log_fifo=""
+tee_pid=""
+finalization_complete=0
+summary_file=""
 
 log() { printf '[t5-encoder-vast] %s\n' "$*" >&2; }
 step() { printf '\n[t5-encoder-vast] ==== %s ====\n' "$*" >&2; }
@@ -63,6 +71,40 @@ sha256_file() {
   fi
 }
 
+stop_log_tee() {
+  local tee_status=0
+  if [[ -n "${tee_pid:-}" ]]; then
+    # Replacing the FIFO-backed stdout/stderr closes the writer.  Waiting for
+    # tee after that close makes all buffered run.log data durable before the
+    # evidence checksum is generated.
+    exec 1>&3 2>&4
+    wait "$tee_pid" || tee_status=$?
+    tee_pid=""
+  fi
+  if [[ -n "${run_log_fifo:-}" ]]; then
+    rm -f "$run_log_fifo"
+    run_log_fifo=""
+  fi
+  exec 3>&- 4>&-
+  return "$tee_status"
+}
+
+cleanup_log_tee() {
+  if [[ -n "${tee_pid:-}" ]]; then
+    # Close the FIFO writer first, then let tee observe EOF and drain.  Do not
+    # kill tee here: a signal at this point can discard the last log line that
+    # the failure summary is meant to preserve.
+    exec 1>&3 2>&4
+    wait "$tee_pid" 2>/dev/null || true
+    tee_pid=""
+  fi
+  if [[ -n "${run_log_fifo:-}" ]]; then
+    rm -f "$run_log_fifo"
+    run_log_fifo=""
+  fi
+  exec 3>&- 4>&-
+}
+
 verify_file() {
   local path="$1" expected_bytes="$2" expected_hash="$3" actual_bytes actual_hash
   [[ -f "$path" ]] || die "missing pinned input: $path"
@@ -83,7 +125,7 @@ verify_reference_manifest() {
   local reference="$1" checkpoint="$2"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import hashlib,json,pathlib,sys
-root=pathlib.Path(sys.argv[1]); checkpoint=pathlib.Path(sys.argv[2]); repo=sys.argv[3]; revision=sys.argv[4]
+root=pathlib.Path(sys.argv[1]); checkpoint=pathlib.Path(sys.argv[2]); repo=sys.argv[3]; revision=sys.argv[4]; expected_version=sys.argv[5]
 manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
 def file_identity(path):
     digest=hashlib.sha256(); size=0
@@ -95,6 +137,7 @@ assert manifest["format"] == "vokra-t5-encoder-reference-v1"
 assert manifest["oracle"] == "transformers.T5EncoderModel.forward"
 assert manifest["source_repo"] == repo
 assert manifest["source_revision"] == revision
+assert manifest["transformers_version"] == expected_version
 for name, expected in manifest["fixtures"].items():
     size, sha256=file_identity(root/name)
     assert size == expected["bytes"], (name, "bytes")
@@ -103,15 +146,15 @@ for name, expected in manifest["checkpoint_files"].items():
     size, sha256=file_identity(checkpoint/name)
     assert size == expected["bytes"], (name, "bytes")
     assert sha256 == expected["sha256"], (name, "sha256")
-print(f"reference manifest OK: {repo}@{revision}")' \
-    "$reference" "$checkpoint" "$T5_REPO" "$T5_REVISION"
+print(f"reference manifest OK: {repo}@{revision} transformers={expected_version}")' \
+    "$reference" "$checkpoint" "$T5_REPO" "$T5_REVISION" "$EXPECTED_TRANSFORMERS_VERSION"
 }
 
 verify_delay_reference_manifest() {
   local reference="$1"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
     'import hashlib,json,pathlib,sys
-root=pathlib.Path(sys.argv[1]); manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
+root=pathlib.Path(sys.argv[1]); expected_version=sys.argv[2]; manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
 def file_identity(path):
     digest=hashlib.sha256(); size=0
     with path.open("rb") as handle:
@@ -120,14 +163,15 @@ def file_identity(path):
     return size, digest.hexdigest()
 assert manifest["format"] == "vokra-musicgen-delay-pattern-reference-v1"
 assert manifest["oracle"] == "transformers.MusicgenForCausalLM.build_delay_pattern_mask+apply_delay_pattern_mask"
-assert manifest["transformers_version"] == "4.45.2"
+assert manifest["transformers_version"] == expected_version
+assert manifest["source"].endswith(f"/v{expected_version}/src/transformers/models/musicgen/modeling_musicgen.py")
 assert len(manifest["cases"]) == 4
 for name, expected in manifest["fixtures"].items():
     size, sha256=file_identity(root/name)
     assert size == expected["bytes"], (name, "bytes")
     assert sha256 == expected["sha256"], (name, "sha256")
-print("MusicGen delay reference manifest OK")' \
-    "$reference"
+print(f"MusicGen delay reference manifest OK: transformers={expected_version}")' \
+    "$reference" "$EXPECTED_TRANSFORMERS_VERSION"
 }
 
 download_hf_file() {
@@ -171,7 +215,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup awk grep find tee wc tr; do
+  for tool in uv cargo rustc rustup awk grep find mkfifo tee wc tr; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -226,7 +270,8 @@ run_self_test() {
   cases=$((cases + 1))
   script_path="${BASH_SOURCE[0]}"
   for required in "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$T5_REVISION" \
-    "$T5_WEIGHT_SHA256" "t5_encoder_dump_reference.py" \
+    "$T5_WEIGHT_SHA256" "5.10.4" "EXPECTED_TRANSFORMERS_VERSION" \
+    "t5_encoder_dump_reference.py" \
     "musicgen_delay_pattern_dump_reference.py" \
     "parity_t5_base_official_hidden_states_cpu_and_metal" \
     "musicgen_delay_pattern_matches_official_transformers" \
@@ -238,6 +283,40 @@ run_self_test() {
       fail=1
     fi
   done
+
+  cases=$((cases + 1))
+  for required in 'mkfifo "$run_log_fifo"' 'tee -a "$run_log"' \
+    'wait "$tee_pid"' 'finalization_complete=1' \
+    'find logs reference musicgen-delay-reference'; do
+    if ! grep -Fq -- "$required" "$script_path"; then
+      log "self-test FAIL: evidence finalization contract lost token: $required"
+      fail=1
+    fi
+  done
+
+  cases=$((cases + 1))
+  if ! (
+    finalization_dir="$tmp/finalization"
+    finalization_log="$finalization_dir/run.log"
+    mkdir -p "$finalization_dir"
+    run_log_fifo="$finalization_dir/.run.log.pipe"
+    exec 3>&1 4>&2
+    mkfifo "$run_log_fifo"
+    tee -a "$finalization_log" < "$run_log_fifo" >/dev/null &
+    tee_pid=$!
+    exec > "$run_log_fifo" 2>&1
+    printf 't5-finalization-self-test-marker\n'
+    stop_log_tee
+    (
+      cd "$finalization_dir"
+      sha256sum run.log > SHA256SUMS
+      sha256sum -c SHA256SUMS >/dev/null
+    )
+    grep -Fxq 't5-finalization-self-test-marker' "$finalization_log"
+  ); then
+    log "self-test FAIL: FIFO tee finalization did not preserve/hash run.log"
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
@@ -266,7 +345,7 @@ run_self_test() {
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir inputs_dir logs_dir
   local public_dir t5_dir reference delay_reference gguf
-  local run_log env_log ops_log delay_log models_log cross_log cpu_log summary_file
+  local run_log env_log ops_log delay_log models_log cross_log cpu_log
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -307,9 +386,14 @@ main() {
   cross_log="$logs_dir/apple-metal-cross-check.log"
   cpu_log="$logs_dir/official-cpu.log"
   summary_file="$logs_dir/summary.txt"
-  exec > >(tee -a "$run_log") 2>&1
+  exec 3>&1 4>&2
+  run_log_fifo="$logs_dir/.run.log.pipe"
+  mkfifo "$run_log_fifo"
+  tee -a "$run_log" < "$run_log_fifo" &
+  tee_pid=$!
+  exec > "$run_log_fifo" 2>&1
   # shellcheck disable=SC2154
-  trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT
+  trap 'rc=$?; if [[ "${finalization_complete:-0}" != "1" && -n "${summary_file:-}" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; cleanup_log_tee; exit "$rc"' EXIT
 
   step "Sync dedicated locked Python 3.12 CPU environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
@@ -388,13 +472,15 @@ main() {
     echo "metal_runtime=NOT_RUN_LINUX_VAST"
     echo "metal_cross_compile=PASS"
   } | tee "$summary_file"
+  log "PASS evidence: $logs_dir and $reference"
+  stop_log_tee
   (
     cd "$work_dir"
     find logs reference musicgen-delay-reference -type f ! -name SHA256SUMS -print0 \
       | sort -z \
       | xargs -0 sha256sum > logs/SHA256SUMS
   )
-  log "PASS evidence: $logs_dir and $reference"
+  finalization_complete=1
 }
 
 main "$@"

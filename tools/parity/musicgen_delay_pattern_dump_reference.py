@@ -30,7 +30,7 @@ import transformers
 from transformers import MusicgenForCausalLM
 
 
-EXPECTED_TRANSFORMERS_VERSION = "4.45.2"
+EXPECTED_TRANSFORMERS_VERSION = "5.10.4"
 PAD_TOKEN_ID = 2_048
 
 CASES: tuple[dict[str, Any], ...] = (
@@ -199,7 +199,7 @@ def main() -> int:
             "apply_delay_pattern_mask"
         ),
         "source": (
-            "github.com/huggingface/transformers/blob/v4.45.2/"
+            "github.com/huggingface/transformers/blob/v5.10.4/"
             "src/transformers/models/musicgen/modeling_musicgen.py"
         ),
         "transformers_version": transformers.__version__,

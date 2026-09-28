@@ -7,12 +7,12 @@ dependencies = [
     # The pre-0.30 hub pin was the VAST xet-token/mirror mitigation. The AST
     # oracle moved past it on 2026-08-27 and `provision.sh` removes the stock
     # image's shim, so this tree now tracks the same current hub as the other
-    # Transformers 5.5.0 oracles.
+    # Transformers 5.10.4 oracles.
     "huggingface-hub==1.27.0",
     "numpy==2.5.2",
     "safetensors==0.8.0",
     "torch==2.13.0",
-    "transformers==5.5.0",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]

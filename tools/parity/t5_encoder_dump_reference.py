@@ -34,6 +34,7 @@ import transformers
 from transformers import T5EncoderModel
 
 
+EXPECTED_TRANSFORMERS_VERSION = "5.10.4"
 TOKEN_IDS = np.asarray([71, 1234, 5, 0, 42, 9, 1], dtype="<u4")
 ATTENTION_MASK = np.asarray([1, 1, 1, 0, 1, 1, 1], dtype="u1")
 
@@ -113,6 +114,13 @@ def main() -> int:
     parser.add_argument("--source-repo", default="google-t5/t5-base")
     parser.add_argument("--source-revision", required=True)
     args = parser.parse_args()
+
+    if transformers.__version__ != EXPECTED_TRANSFORMERS_VERSION:
+        parser.error(
+            "official T5 encoder oracle requires "
+            f"transformers=={EXPECTED_TRANSFORMERS_VERSION}, "
+            f"got {transformers.__version__}"
+        )
 
     checkpoint = args.checkpoint.resolve()
     if not checkpoint.is_dir():
