@@ -69,6 +69,46 @@ def write_f32(path: Path, tensor: torch.Tensor) -> None:
     tensor.detach().float().cpu().contiguous().numpy().astype("<f4").tofile(path)
 
 
+def assert_canonical_output_tie(model: torch.nn.Module) -> None:
+    """Fail closed unless the official Whisper output projection is tied.
+
+    The checkpoint omits ``proj_out.weight`` because Whisper's canonical
+    output projection shares storage with decoder token embeddings.  A
+    successful load report is not sufficient evidence: Transformers may leave
+    a missing parameter uninitialized while still returning a model.  Check
+    parameter identity or, for wrappers that expose distinct Parameter
+    objects, exact storage aliasing plus the view metadata without comparing
+    the full 51k x 1280 tensor.
+    """
+
+    try:
+        output_weight = model.whisper_model.proj_out.weight
+        embedding_weight = model.whisper_model.model.decoder.embed_tokens.weight
+    except AttributeError as exc:
+        raise RuntimeError(
+            "Whisper-Medusa canonical output tie paths are missing"
+        ) from exc
+
+    same_parameter = output_weight is embedding_weight
+    output_storage = output_weight.untyped_storage()
+    embedding_storage = embedding_weight.untyped_storage()
+    same_storage_view = (
+        output_storage.data_ptr() == embedding_storage.data_ptr()
+        and output_weight.data_ptr() == embedding_weight.data_ptr()
+        and output_weight.storage_offset() == embedding_weight.storage_offset()
+        and output_weight.shape == embedding_weight.shape
+        and output_weight.stride() == embedding_weight.stride()
+        and output_weight.dtype == embedding_weight.dtype
+        and output_weight.device == embedding_weight.device
+    )
+    if not (same_parameter or same_storage_view):
+        raise RuntimeError(
+            "Whisper-Medusa canonical output tie is not established: "
+            "whisper_model.proj_out.weight does not alias "
+            "whisper_model.model.decoder.embed_tokens.weight"
+        )
+
+
 def deterministic_pcm() -> np.ndarray:
     sample_rate = 16_000
     time = np.arange(sample_rate, dtype=np.float32) / sample_rate
@@ -160,6 +200,7 @@ def main() -> None:
         args.model_dir,
         local_files_only=True,
     ).eval().to(device)
+    assert_canonical_output_tie(model)
     processor = WhisperProcessor.from_pretrained(args.model_dir, local_files_only=True)
     pcm = deterministic_pcm()
     features = processor(
