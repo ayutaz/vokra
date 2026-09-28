@@ -140,8 +140,9 @@ download_snapshot() {
 }
 
 verify_snapshot() {
-  local source_dir="$1" shard_1="$source_dir/model-00001-of-00002.safetensors" \
-    shard_2="$source_dir/model-00002-of-00002.safetensors" total
+  local source_dir="$1" shard_1 shard_2 total
+  shard_1="$source_dir/model-00001-of-00002.safetensors"
+  shard_2="$source_dir/model-00002-of-00002.safetensors"
   verify_hash_only "$source_dir/config.json" "$CONFIG_SHA256"
   verify_hash_only "$source_dir/model.safetensors.index.json" "$INDEX_SHA256"
   verify_file "$shard_1" "$SHARD_1_BYTES" "$SHARD_1_SHA256"
@@ -229,7 +230,9 @@ require_tooling() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0
+  local tmp payload actual script_path cases=0 fail=0 fixture_dir
+  local saved_config_sha256 saved_index_sha256 saved_shard_1_sha256 saved_shard_2_sha256
+  local saved_shard_1_bytes saved_shard_2_bytes saved_shard_total_bytes
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -287,6 +290,37 @@ run_self_test() {
   ); then
     log "self-test FAIL: evidence finalization did not preserve/hash run.log"; fail=1
   fi
+  cases=$((cases + 1))
+  fixture_dir="$tmp/snapshot"
+  mkdir -p "$fixture_dir"
+  printf 'config-fixture\n' > "$fixture_dir/config.json"
+  printf 'index-fixture\n' > "$fixture_dir/model.safetensors.index.json"
+  printf 'shard-one-fixture\n' > "$fixture_dir/model-00001-of-00002.safetensors"
+  printf 'shard-two-fixture\n' > "$fixture_dir/model-00002-of-00002.safetensors"
+  saved_config_sha256="$CONFIG_SHA256"
+  saved_index_sha256="$INDEX_SHA256"
+  saved_shard_1_sha256="$SHARD_1_SHA256"
+  saved_shard_2_sha256="$SHARD_2_SHA256"
+  saved_shard_1_bytes="$SHARD_1_BYTES"
+  saved_shard_2_bytes="$SHARD_2_BYTES"
+  saved_shard_total_bytes="$EXPECTED_SHARD_TOTAL_BYTES"
+  CONFIG_SHA256="$(sha256_file "$fixture_dir/config.json")"
+  INDEX_SHA256="$(sha256_file "$fixture_dir/model.safetensors.index.json")"
+  SHARD_1_SHA256="$(sha256_file "$fixture_dir/model-00001-of-00002.safetensors")"
+  SHARD_2_SHA256="$(sha256_file "$fixture_dir/model-00002-of-00002.safetensors")"
+  SHARD_1_BYTES="$(wc -c < "$fixture_dir/model-00001-of-00002.safetensors" | tr -d '[:space:]')"
+  SHARD_2_BYTES="$(wc -c < "$fixture_dir/model-00002-of-00002.safetensors" | tr -d '[:space:]')"
+  EXPECTED_SHARD_TOTAL_BYTES=$((SHARD_1_BYTES + SHARD_2_BYTES))
+  if ! verify_snapshot "$fixture_dir" >/dev/null 2>&1; then
+    log "self-test FAIL: verify_snapshot nounset/identity regression"; fail=1
+  fi
+  CONFIG_SHA256="$saved_config_sha256"
+  INDEX_SHA256="$saved_index_sha256"
+  SHARD_1_SHA256="$saved_shard_1_sha256"
+  SHARD_2_SHA256="$saved_shard_2_sha256"
+  SHARD_1_BYTES="$saved_shard_1_bytes"
+  SHARD_2_BYTES="$saved_shard_2_bytes"
+  EXPECTED_SHARD_TOTAL_BYTES="$saved_shard_total_bytes"
   rm -rf "$tmp"
   trap - EXIT
   if [[ $fail -eq 0 ]]; then
