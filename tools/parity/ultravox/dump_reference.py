@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -455,11 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         local_files_only=True,
         trust_remote_code=True,
         torch_dtype=torch.float32,
-        # Keep the official Transformers loader on its torch-only path.  The
-        # Accelerate dependency is intentionally absent because its open
-        # advisory has no patched release; this route must not silently
-        # reintroduce it through low_cpu_mem_usage.
-        low_cpu_mem_usage=False,
+        low_cpu_mem_usage=True,
     ).eval()
     model.to("cpu")
     if int(model.config.text_config.vocab_size) != VOCAB_SIZE:
@@ -594,6 +591,8 @@ def main(argv: list[str] | None = None) -> int:
         "numpy": numpy.__version__,
         "torch": torch.__version__,
         "transformers": transformers.__version__,
+        "accelerate": importlib.metadata.version("accelerate"),
+        "peft": importlib.metadata.version("peft"),
         "torch_cpu_capability": (
             torch.backends.cpu.get_cpu_capability()
             if hasattr(torch.backends.cpu, "get_cpu_capability")

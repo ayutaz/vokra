@@ -1123,7 +1123,7 @@ def self_test() -> int:
     project_root = Path(__file__).resolve().parent
     _, checked_lock, checked_manifest, _, _ = _contract(project_root)
     active_rows, inactive_rows = classify_rows(checked_lock)
-    assert len(checked_lock["package"]) == 37 and len(active_rows) == 34 and len(inactive_rows) == 3
+    assert len(checked_lock["package"]) == 40 and len(active_rows) == 37 and len(inactive_rows) == 3
     colorama_rows = [row for row in inactive_rows if row["name"] == "colorama"]
     assert len(colorama_rows) == 1 and colorama_rows[0]["status"] == "INACTIVE_UNREACHABLE_DEPENDENCY" and "win32" in colorama_rows[0]["reason"]
     assert any(row["name"] == "torch" and row["version"] == "2.13.0" and row["status"] == "INACTIVE_MARKER_ALTERNATIVE" for row in inactive_rows)

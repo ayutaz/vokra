@@ -22,11 +22,11 @@ SHA-256 manifests. The Rust test requires all three paths and the companion
 GGUF hash; it never treats a missing input as a passing skip. The official
 reference environment is pinned to `transformers==5.10.4` (the 5.5.0-to-5.10.4
 security update requires a fresh VAST rerun before parity can be claimed).
-The direct `accelerate` dependency was removed because GitHub advisory #257 is
-open with no patched release. The unused `peft` dependency was removed with it
-so that it cannot reintroduce `accelerate` transitively. The official loader is
-therefore exercised with `low_cpu_mem_usage=False`; this is a dependency-only
-hardening change, not a claim that the gated Ultravox checkpoint has been run.
+The official fixed-revision `ultravox_model.py` imports both `peft` and
+`accelerate` and uses `peft.PeftModel`/LoRA helpers. They therefore cannot be
+removed without changing the official reference route. Accelerate advisory
+#257 has no patched release, so this remains a documented no-fix blocker; the
+loader keeps `low_cpu_mem_usage=True` and the dependency gate remains closed.
 
 Run only on a provisioned VAST host:
 
@@ -78,7 +78,7 @@ deletion. It runs the same real-weight gate on Apple CPU and Metal, recording
 unsupported operations as failures rather than using a CPU fallback.
 
 The tracked `dependency_audit_evidence.json` remains the compact, model-free
-proof for the pre-Accelerate-removal closure and is intentionally not rewritten
+proof for the earlier reviewed closure and is intentionally not rewritten
 locally: its lock/package-row hashes are bound to an earlier audit head. A
 fresh VAST dependency audit on the exact current head must produce a separate
 replacement audit JSON and the corresponding lock/project/package-row hashes
