@@ -79,21 +79,28 @@ def probe() -> tuple[int, dict[str, Any]]:
 
     native_api = hasattr(torchaudio, "list_audio_backends")
     result["torchaudio_list_audio_backends"] = "native" if native_api else "missing"
-    try:
-        import speechbrain  # noqa: F401
-    except Exception as error:  # noqa: BLE001 - record official import failure
-        result["native_speechbrain_import"] = "BLOCKED"
-        result["native_import_error"] = _exception_record(error)
-    else:
-        result["native_speechbrain_import"] = "PASS"
-
     if native_api:
+        try:
+            import speechbrain  # noqa: F401
+        except Exception as error:  # noqa: BLE001 - record official import failure
+            result["native_speechbrain_import"] = "BLOCKED"
+            result["native_import_error"] = _exception_record(error)
+        else:
+            result["native_speechbrain_import"] = "PASS"
         if result["native_speechbrain_import"] != "PASS":
             result["status"] = "BLOCKED_SPEECHBRAIN_IMPORT"
             return 2, result
         result["status"] = "MODEL_FREE_API_VALIDATED"
         return 0, result
 
+    # Do not import SpeechBrain before installing the shim: a failed import
+    # leaves partially initialized submodules in sys.modules and would make a
+    # later compatibility-only retry report a false circular-import failure.
+    result["native_speechbrain_import"] = "NOT_ATTEMPTED_MISSING_API"
+    result["native_import_error"] = {
+        "type": "MissingTorchaudioAPI",
+        "message": "torchaudio.list_audio_backends is absent",
+    }
     shim = install_audio_backend_compat(torchaudio)
     result["compatibility_shim"] = shim
     try:
