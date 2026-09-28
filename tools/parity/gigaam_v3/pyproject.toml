@@ -22,8 +22,11 @@ dependencies = [
     "safetensors",
     "sentencepiece",
     "soundfile",
-    "torch==2.10.*",
-    "torchaudio==2.10.*",
+    # Torch 2.13.0 contains the GHSA-rrmf-rvhw-rf47 fix.  Torchaudio 2.11.0
+    # is the official stable-ABI line for PyTorch 2.11 and newer:
+    # https://docs.pytorch.org/audio/main/installation.html
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
     "tqdm",
     "transformers==5.*",
 ]
@@ -31,3 +34,12 @@ dependencies = [
 [tool.uv]
 package = false
 environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
