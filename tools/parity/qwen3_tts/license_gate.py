@@ -40,17 +40,19 @@ REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "wheels"}), frozenset({"name", "version", "source", "dependencies"}),
     frozenset({"name", "version", "source", "dependencies", "sdist"}), frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "wheels"}),
+    frozenset({"name", "version", "source", "resolution-markers", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "resolution-markers", "wheels"}),
 )
 REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "extras"}), frozenset({"name", "specifier", "marker"}), frozenset({"name", "specifier", "extras", "marker"}), frozenset({"name", "specifier", "index"}), frozenset({"name", "git"}))
-LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
-PYPROJECT_SHA256 = "d59ac7d5e6b07be957907c785e58a62b2e88da1a2b26531742a5fc45f8d3d645"
+LOCK_SHA256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
+PYPROJECT_SHA256 = "277ac9a2f414a6a41fa473c956c71bb6d7680c83c011afc53cff08276d102711"
 # setuptools is forbidden in this reference closure: torch declares it as a
 # transitive runtime dependency, but the fixed route never imports it and the
 # package bundles the LGPLv3 autocommand payload.
 FORBIDDEN_PACKAGES = ("gradio", "onnxruntime", "protobuf", "setuptools", "sox")
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-EXPECTED_TORCH_FAMILY = "2.7.1"
+EXPECTED_TORCH_FAMILY = "2.13.0"
+EXPECTED_TORCHAUDIO_FAMILY = "2.11.0"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
 CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 PLACEHOLDER_SENTINELS = {"UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED"}
@@ -119,33 +121,10 @@ EXPECTED_MODEL_METADATA = {
 }
 EXPECTED_SOURCE_LICENSE = {"sha256": "a44a6081c73ad75f0255bb2bb5cab74ef1829565a895a24e53a4f11290ab7655", "size": 11343}
 INACTIVE_ROW_REASON = "resolution marker is false or row is unreachable from the virtual project"
-# Exact factual fields from the primary VAST compact projection for the
-# torchaudio 2.7.1+cpu row.  Review fields are deliberately supplied from the
-# manifest below so this fixture exercises the same future-compact projection
-# used by dependency_audit.compact_digest without depending on /tmp evidence.
-TORCHAUDIO_FUTURE_FACTUAL = {
-    "declared_license": None,
-    "declared_license_bytes": None,
-    "declared_license_sha256": None,
-    "declared_license_truncated": False,
-    "license_classifiers": ["OSI Approved :: BSD License"],
-    "name": "torchaudio",
-    "native_file_count": 10,
-    "native_files_sha256": "03ac8e9bb516f5ea729658e7917567f602542d9759ebe6e606ccc3c6cabd34f9",
-    "native_files_unsafe": [],
-    "owner_review": "PENDING_OWNER_APPROVAL",
-    "publisher_file_count": 1,
-    "publisher_files_sha256": "21c6b1de6ecd0e63cdf1ae9f4d08248d9038328688043337533ef2accbcdcb1d",
-    "publisher_files_unsafe": [],
-    "sdist_license_status": None,
-    "source": {"registry": PYTORCH_CPU_INDEX},
-    "version": "2.7.1+cpu",
-}
-TORCHAUDIO_FUTURE_PAYLOAD_SHA256 = "0d0d46e824df337a8f7e0393951af1ade327dd29df15eb7def921178048f0499"
 EXPECTED_INACTIVE_ROWS = (
     ("colorama", "0.4.6", json.dumps({"registry": "https://pypi.org/simple"}, sort_keys=True), INACTIVE_ROW_REASON),
-    ("torch", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
-    ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
+    ("torch", "2.13.0", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
+    ("torchaudio", "2.11.0", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON),
     ("vokra-qwen3-tts-parity", "0.1.0", json.dumps({"virtual": "."}, sort_keys=True), "virtual project row; no installed distribution is expected"),
 )
 
@@ -348,8 +327,9 @@ def validate_cpu_torch_closure(packages: list[dict[str, Any]]) -> None:
     for package in selected:
         if package.get("source") != {"registry": PYTORCH_CPU_INDEX}:
             raise ValueError(f"{package.get('name')} is not resolved from the explicit CPU index")
-        if str(package.get("version", "")).split("+", 1)[0] != EXPECTED_TORCH_FAMILY:
-            raise ValueError("torch/torchaudio version family is not 2.7.1")
+        expected_family = EXPECTED_TORCH_FAMILY if package["name"] == "torch" else EXPECTED_TORCHAUDIO_FAMILY
+        if str(package.get("version", "")).split("+", 1)[0] != expected_family:
+            raise ValueError(f"{package['name']} version family is not {expected_family}")
     if {package["name"] for package in selected} != {"torch", "torchaudio"}:
         raise ValueError("torch and torchaudio closure is incomplete")
 
@@ -874,15 +854,15 @@ def self_test() -> None:
     production_project = tomllib.loads((production_root / "pyproject.toml").read_text(encoding="utf-8"))
     _validate_lock_shape(production_lock, production_project)
     safe_torch_rows = [
-        {"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
-        {"name": "torch", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
-        {"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
-        {"name": "torchaudio", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torch", "version": "2.13.0", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torch", "version": "2.13.0+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.11.0", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.11.0+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
     ]
     validate_cpu_torch_closure(safe_torch_rows)
     for unsafe_torch_rows in (
         [{**row, "source": {"registry": "https://pypi.org/simple"}} for row in safe_torch_rows],
-        [*safe_torch_rows[:2], {**safe_torch_rows[2], "version": "2.11.0"}, safe_torch_rows[3]],
+        [*safe_torch_rows[:2], {**safe_torch_rows[2], "version": "2.7.1"}, safe_torch_rows[3]],
         [*safe_torch_rows, {"name": "nvidia-cuda-runtime", "version": "12", "source": {"registry": "https://pypi.org/simple"}}],
     ):
         try:
@@ -896,21 +876,26 @@ def self_test() -> None:
     production_components = component_rows(production_manifest)
     torchaudio_review = next(
         row for row in production_reviews
-        if row["name"] == "torchaudio" and row["version"] == "2.7.1+cpu"
+        if row["name"] == "torchaudio" and row["version"] == "2.11.0+cpu"
     )
-    torchaudio_future_payload = {
-        **TORCHAUDIO_FUTURE_FACTUAL,
-        "review_license": torchaudio_review["license"],
-        "review_native_bundled": torchaudio_review["native_bundled"],
-    }
-    assert canonical_digest(torchaudio_future_payload) == TORCHAUDIO_FUTURE_PAYLOAD_SHA256
-    assert torchaudio_review["payload_sha256"] == TORCHAUDIO_FUTURE_PAYLOAD_SHA256
+    assert torchaudio_review["status"] == "PENDING_VAST_AUDIT"
+    assert torchaudio_review["license"] == "UNRESOLVED"
+    assert torchaudio_review["native_bundled"] == "UNRESOLVED"
+    assert torchaudio_review["payload_sha256"] is None
     # Keep the manifest hash cascade covered even when the stale-evidence
     # blocker returns before normal component/approval validation.
     assert production_manifest["package_rows_sha256"] == canonical_digest(production_rows)
     assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
     for review in production_reviews:
+        if review["status"] == "PENDING_VAST_AUDIT":
+            assert review["license"] == "UNRESOLVED"
+            assert review["native_bundled"] == "UNRESOLVED"
+            assert review["payload_sha256"] is None
+            assert review["approval_schema"] is None
+            assert review["approval_signer"] is None
+            assert review["approval_digest"] is None
+            continue
         subject = fixed_approval_subject("package", {
             "name": review["name"], "version": review["version"], "source": review["source"],
             "license": review["license"], "native_bundled": review["native_bundled"],
@@ -931,12 +916,13 @@ def self_test() -> None:
     assert production_manifest["dependency_audit_evidence"] == {
         "schema": COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "7f80d3c93d928720c390a6f5cbf96ac6e11c7ac07e622fff975343e4c9486d1d",
+        "sha256": "c486978a0f0f3ae5ac3588765edb2fd51044493c7595befbbe710816078cfee8",
         "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
-        "status": "PENDING_OWNER_APPROVAL",
+        "status": "STALE_REQUIRES_VAST_AUDIT",
+        "stale_reason": "The reviewed closure changed from torch==2.7.1/torchaudio==2.7.1 to torch==2.13.0/torchaudio==2.11.0; rerun the authorized Linux x86_64 VAST audit before owner approval or API/parity use.",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
-    assert ("torchaudio", "2.7.1", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
+    assert ("torchaudio", "2.11.0", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
     for volatile_key, volatile_value in (
         ("sha256", "1" * 64),
         ("full_audit_sha256", "2" * 64),
@@ -959,9 +945,9 @@ def self_test() -> None:
         assert production_compact == {
             "schema": COMPACT_SCHEMA,
             "path": "dependency_audit_evidence.json",
-            "full_audit_sha256": "692c618f8e41f01831e35abb0f7bddc0bf7791ab624e35765624e057508740b6",
+            "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
             "status": "STALE_REQUIRES_VAST_AUDIT",
-            "stale_reason": "The reviewed closure changed after removing accelerate==1.12.0 and its psutil transitive dependency; rerun the authorized Linux x86_64 VAST audit before owner approval.",
+            "stale_reason": "The reviewed closure changed from torch==2.7.1/torchaudio==2.7.1 to torch==2.13.0/torchaudio==2.11.0; rerun the authorized Linux x86_64 VAST audit before owner approval or API/parity use.",
         }
         try:
             validate_dependency_audit_evidence(

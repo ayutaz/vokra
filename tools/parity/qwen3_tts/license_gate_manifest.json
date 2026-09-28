@@ -1,11 +1,11 @@
 {
   "gate_version": 2,
-  "pyproject_sha256": "d59ac7d5e6b07be957907c785e58a62b2e88da1a2b26531742a5fc45f8d3d645",
-  "lock_sha256": "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8",
-  "package_rows_sha256": "97ae69be24437d9b64846bef5b12f1765112a661302eff711bb95d8da214ad27",
-  "review_rows_sha256": "cf1510901d42ab0a6f7d9039673ab139af8bdabd1de46caec322984f387b98ba",
+  "pyproject_sha256": "277ac9a2f414a6a41fa473c956c71bb6d7680c83c011afc53cff08276d102711",
+  "lock_sha256": "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857",
+  "package_rows_sha256": "c0214b3a32c61deb333ed8e4d067fd1573b7aa3fbc41358557913d7d1e5c2a87",
+  "review_rows_sha256": "b03c738a5b572e7cc4682fc5bfe6c9c3c584e7938b2e1aad5a11a215d288e82a",
   "component_rows_sha256": "33512712582ad711143922ece10da99a335d094a2bebf2e0bc8ff0563631d4fb",
-  "approval_scope_sha256": "a28b5d9014f1dc311c8600ad229d99eea27a062b0c4cadbd575946f7b2fadb6b",
+  "approval_scope_sha256": "735dacd287660f164c19893cedc149de689291236bb19cedb1b61f13d4e5f985",
   "identities": {
     "official_source_repo": "QwenLM/Qwen3-TTS",
     "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
@@ -775,59 +775,59 @@
     },
     {
       "name": "torch",
-      "version": "2.7.1",
+      "version": "2.13.0",
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
-      "status": "REVIEWED",
-      "license": "BSD-3-Clause",
-      "native_bundled": "no installed distribution because inactive",
-      "payload_sha256": "aeb295181df905e256d80bc797e1f11dd435ff3e54df1354654446f4a797f4c6",
-      "approval_schema": "v1",
-      "approval_signer": "yousan",
-      "approval_digest": "d5055333a65b06283b176f12b762e7b64f8e6e4c949d643e59a518d188085215"
+      "status": "PENDING_VAST_AUDIT",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": null,
+      "approval_signer": null,
+      "approval_digest": null
     },
     {
       "name": "torch",
-      "version": "2.7.1+cpu",
+      "version": "2.13.0+cpu",
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
-      "status": "REVIEWED",
-      "license": "BSD-3-Clause",
-      "native_bundled": "installed distribution contains 13 bundled native file(s); exact inventory/hash is in compact VAST evidence",
-      "payload_sha256": "536078cc66f949b629dec57ea5290bf45ca530c9d84c0ed82c4fa9dba995bbcd",
-      "approval_schema": "v1",
-      "approval_signer": "yousan",
-      "approval_digest": "d0ccca933cce0fc238b61037e26ada847b2cdb94e885ef63fd0cebbd4d7e058a"
+      "status": "PENDING_VAST_AUDIT",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": null,
+      "approval_signer": null,
+      "approval_digest": null
     },
     {
       "name": "torchaudio",
-      "version": "2.7.1",
+      "version": "2.11.0",
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
-      "status": "REVIEWED",
-      "license": "BSD-2-Clause",
-      "native_bundled": "no installed distribution because inactive",
-      "payload_sha256": "6b898a55c2f290730c0ad53819bba3e19f3da2c3be97a2147911abcb8650ea7e",
-      "approval_schema": "v1",
-      "approval_signer": "yousan",
-      "approval_digest": "ff99721aa225b97651ad00f6b46d84381da99efd2e68c1e50321264525a04b6e"
+      "status": "PENDING_VAST_AUDIT",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": null,
+      "approval_signer": null,
+      "approval_digest": null
     },
     {
       "name": "torchaudio",
-      "version": "2.7.1+cpu",
+      "version": "2.11.0+cpu",
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
-      "status": "REVIEWED",
-      "license": "BSD-2-Clause",
-      "native_bundled": "installed distribution contains 10 bundled native file(s); ELF NEEDED includes libsox.so and FFmpeg libavcodec/libavdevice/libavfilter/libavformat/libavutil SONAME groups (4/5/6); exact inventory/hash is in compact VAST evidence; dynamic NEEDED entries are runtime linkage facts, not bundled license conclusions",
-      "payload_sha256": "0d0d46e824df337a8f7e0393951af1ade327dd29df15eb7def921178048f0499",
-      "approval_schema": "v1",
-      "approval_signer": "yousan",
-      "approval_digest": "ae9cfb4a8eab4b8fd899dc696d88717c4c4837ad3106f154a9123f6bb847c203"
+      "status": "PENDING_VAST_AUDIT",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": null,
+      "approval_signer": null,
+      "approval_digest": null
     },
     {
       "name": "tqdm",
@@ -1032,8 +1032,9 @@
   "dependency_audit_evidence": {
     "schema": "vokra-qwen3-tts-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "7f80d3c93d928720c390a6f5cbf96ac6e11c7ac07e622fff975343e4c9486d1d",
     "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
-    "status": "PENDING_OWNER_APPROVAL"
+    "status": "STALE_REQUIRES_VAST_AUDIT",
+    "stale_reason": "The reviewed closure changed from torch==2.7.1/torchaudio==2.7.1 to torch==2.13.0/torchaudio==2.11.0; rerun the authorized Linux x86_64 VAST audit before owner approval or API/parity use.",
+    "sha256": "c486978a0f0f3ae5ac3588765edb2fd51044493c7595befbbe710816078cfee8"
   }
 }
