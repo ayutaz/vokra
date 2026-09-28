@@ -4,17 +4,16 @@
   "publication": "NO_UPLOAD",
   "project_sha256": "3a03b5297505dfabf1ad72a6827fa76d765fab5e5c008bf20bb759ba307f9baf",
   "lock_sha256": "2552c24935775517139f1235325ffb590a4b04982b79d4efdbc6c042f5d9397a",
-  "evidence_source_head": "cb510404c6be556ec386d82291811393b2a1fce5",
-  "dependency_audit_sha256": null,
-  "dependency_audit_status": "BLOCKED_REQUIRES_RERUN_AFTER_TORCH_UPDATE",
-  "api_model_free_evidence_sha256": null,
-  "api_model_free_evidence_status": "BLOCKED_REQUIRES_RERUN_AFTER_TORCH_UPDATE",
+  "evidence_source_head": "de5684a759e84e39aa824ec3ed2cdab620ba4f28",
+  "dependency_audit_sha256": "0d31779dc8bd76cd764538d058dc0a2e8306ac31ecc5ada36360b3902e3f0030",
+  "dependency_audit_status": "BLOCKED_PENDING_OWNER_REVIEW",
+  "api_model_free_evidence_sha256": "6c6252b9d58288373037c3ca831fdb29b5654957783d65bc77ff05d3d71846fb",
+  "api_model_free_evidence_status": "MODEL_FREE_API_VALIDATED",
   "model_evidence_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST",
   "owner_review": "PENDING_OWNER_APPROVAL",
   "blockers": [
-    "Python publisher license and bundled/native payload rows require owner approval",
+    "publisher license metadata and bundled/native payloads require owner review",
     "the PyTorch CPU wheel lock record omits size; VAST archive bytes are recovered but lock provenance remains pending",
-    "Torch 2.13.0 lock update invalidates prior model-free/API and dependency evidence; rerun both on VAST before owner review or parity",
     "no MMS backbone or language adapter weights were acquired, imported, executed, or uploaded",
     "full backbone plus one explicit language adapter evidence and approval are still required before CPU/Metal runtime work"
   ]

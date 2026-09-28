@@ -12,9 +12,10 @@ and 2.13.0 respectively (`GHSA-887c-mr87-cxwp`, `GHSA-vgrw-7cvw-pwgx`,
 `GHSA-qfhq-4f3w-5fph`, and `GHSA-rrmf-rvhw-rf47`); the highest floor is
 therefore selected.  This environment has no TorchAudio dependency, so the
 official TorchAudio stable-ABI guidance is not applicable to this closure.
-The new lock has not yet received a VAST dependency audit, model-free API
-rerun, owner sign-off, real-weight parity, or publication decision; all of
-those gates remain fail-closed.
+The new lock has now received a clean exact-HEAD VAST dependency audit and
+model-free API rerun.  The audit remains `BLOCKED` pending owner review, and
+the API report is evidence only; owner sign-off, real-weight parity, and a
+publication decision remain fail-closed.
 
 `dependency_audit_evidence.json` is the model-free VAST inventory for the
 exact lock.  It records every lock artifact URL/hash/size tuple, publisher
