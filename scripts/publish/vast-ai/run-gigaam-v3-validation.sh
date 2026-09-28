@@ -97,7 +97,11 @@ if [[ "${1:-}" == --self-test ]]; then
   done
   rg -n -- 'AUTHENTICATED_PREPARED_SHA256|GIT_COMMIT=|git_commit|--exact --ignored --nocapture --test-threads=1|PENDING_APPLE|GigaAM-v3' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" >/dev/null || die "phase/commit contract missing"
   rg -n -- '^    "pyannote-core==6\.0\.\*",$' "$ROOT/tools/parity/gigaam_v3/pyproject.toml" >/dev/null || die "pyannote-core dependency pin missing"
+  rg -n -- '^    "torch==2\.13\.0",$' "$ROOT/tools/parity/gigaam_v3/pyproject.toml" >/dev/null || die "Torch 2.13.0 dependency pin missing"
+  rg -n -- '^    "torchaudio==2\.11\.0",$' "$ROOT/tools/parity/gigaam_v3/pyproject.toml" >/dev/null || die "Torchaudio 2.11.0 stable-ABI dependency pin missing"
   rg -n -- '^name = "pyannote-core"$' "$ROOT/tools/parity/gigaam_v3/uv.lock" >/dev/null || die "pyannote-core lock entry missing"
+  rg -n -- '^version = "2\.13\.0\+cpu"$' "$ROOT/tools/parity/gigaam_v3/uv.lock" >/dev/null || die "Torch 2.13.0 CPU lock entry missing"
+  rg -n -- '^version = "2\.11\.0\+cpu"$' "$ROOT/tools/parity/gigaam_v3/uv.lock" >/dev/null || die "Torchaudio 2.11.0 CPU lock entry missing"
   if rg -n -- '^name = "(pyannote-audio|lightning|torchcodec)"$' "$ROOT/tools/parity/gigaam_v3/uv.lock" >/dev/null; then
     die "optional pyannote.audio/Lightning/torchcodec closure leaked into the lock"
   fi
