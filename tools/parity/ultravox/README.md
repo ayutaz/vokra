@@ -22,6 +22,11 @@ SHA-256 manifests. The Rust test requires all three paths and the companion
 GGUF hash; it never treats a missing input as a passing skip. The official
 reference environment is pinned to `transformers==5.10.4` (the 5.5.0-to-5.10.4
 security update requires a fresh VAST rerun before parity can be claimed).
+The direct `accelerate` dependency was removed because GitHub advisory #257 is
+open with no patched release. The unused `peft` dependency was removed with it
+so that it cannot reintroduce `accelerate` transitively. The official loader is
+therefore exercised with `low_cpu_mem_usage=False`; this is a dependency-only
+hardening change, not a claim that the gated Ultravox checkpoint has been run.
 
 Run only on a provisioned VAST host:
 
@@ -73,11 +78,12 @@ deletion. It runs the same real-weight gate on Apple CPU and Metal, recording
 unsupported operations as failures rather than using a CPU fallback.
 
 The tracked `dependency_audit_evidence.json` remains the compact, model-free
-proof for the pre-5.10.4 lock and is intentionally not rewritten locally: its
-lock/package-row hashes are bound to that earlier audit head. A fresh VAST
-dependency audit on the exact 5.10.4 head must produce the replacement audit
-JSON and the corresponding lock/project/package-row hashes before the license
-gate can be rebound. Fixie metadata is authenticated at its exact HF revision;
+proof for the pre-Accelerate-removal closure and is intentionally not rewritten
+locally: its lock/package-row hashes are bound to an earlier audit head. A
+fresh VAST dependency audit on the exact current head must produce a separate
+replacement audit JSON and the corresponding lock/project/package-row hashes
+before the license gate can be rebound. Until that evidence is collected, the
+gate remains fail-closed. Fixie metadata is authenticated at its exact HF revision;
 the gated Meta companion records `LICENSE.txt` existence and `401` for its raw
 license request, without claiming that its bytes were reviewed. The existing
 proof records no model import, no Cargo, and `NO_UPLOAD`; owner/legal sign-off
