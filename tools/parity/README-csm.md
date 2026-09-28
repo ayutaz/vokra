@@ -15,6 +15,11 @@ fail-closed: `license_status` is still `BLOCKED_LICENSE_METADATA_REVIEW`, the
 Torch 2.13 CPU wheel native/license inventory is unresolved, and no prior API,
 reference, or numerical parity result is reused.
 
+The unresolved license gate blocks model/weight execution, official reference
+generation, and publication. A disposable VAST `uv sync --frozen` plus
+model-free package/native inventory is permitted only as dependency evidence;
+it does not constitute license approval or an execution/parity result.
+
 ## Committed today
 
 - `tests/parity/csm/self-test/` — a synthetic fixture written by
