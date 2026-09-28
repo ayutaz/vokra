@@ -218,6 +218,8 @@ require_tooling() {
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
   grep -Fq -- "transformers==${TRANSFORMERS_VERSION}" "$PARITY_PROJECT/pyproject.toml" \
     || die "Ultravox pyproject is not pinned to transformers==${TRANSFORMERS_VERSION}"
+  grep -Fq -- "TRANSFORMERS_VERSION = \"${TRANSFORMERS_VERSION}\"" "$REFERENCE_DUMPER" \
+    || die "Ultravox reference dumper is not pinned to transformers==${TRANSFORMERS_VERSION}"
   grep -Fq -- 'name = "transformers"' "$PARITY_PROJECT/uv.lock" \
     || die "Ultravox uv.lock has no transformers package row"
   grep -Fq -- "version = \"${TRANSFORMERS_VERSION}\"" "$PARITY_PROJECT/uv.lock" \
@@ -373,6 +375,7 @@ run_self_test() {
   [[ "$UPSTREAM_MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   grep -Fq -- 'audit-ultravox-dependencies.sh' "$0" || failed=1
   grep -Fq -- 'transformers==${TRANSFORMERS_VERSION}' "$0" || failed=1
+  grep -Fq -- 'TRANSFORMERS_VERSION = "${TRANSFORMERS_VERSION}"' "$0" || failed=1
   sync_line="$(grep -n '^  uv sync --project' "$0" | head -1 | cut -d: -f1)"
   audit_line="$(grep -n '^[[:space:]]*"[$]DEPENDENCY_AUDIT_WRAPPER" --output' "$0" | head -1 | cut -d: -f1)"
   download_line="$(grep -n '^  download_hf_file ' "$0" | head -1 | cut -d: -f1)"
