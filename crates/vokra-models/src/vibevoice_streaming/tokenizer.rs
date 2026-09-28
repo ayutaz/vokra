@@ -248,8 +248,9 @@ fn validate_tokenizer_config(bytes: &[u8]) -> Result<()> {
         (SPEECH_PAD_ID, "<|vision_pad|>"),
     ] {
         let record = decoder
-            .get(&id.to_string())
-            .and_then(|value| value.as_object())
+            .iter()
+            .find(|(key, _)| key == &id.to_string())
+            .and_then(|(_, value)| value.as_object())
             .ok_or_else(|| {
                 VokraError::ModelLoad(format!(
                     "vibevoice-realtime tokenizer_config.json is missing added token id {id}"
@@ -437,6 +438,7 @@ mod tests {
     #[ignore = "requires exact VAST-recovered Qwen sidecars; no local tokenizer execution"]
     fn fixed_sidecars_bind_and_encode_on_remote_evidence() {
         let root = std::env::var_os("VOKRA_VIBEVOICE_TOKENIZER_DIR")
+            .as_deref()
             .map(Path::new)
             .expect("VOKRA_VIBEVOICE_TOKENIZER_DIR must point to exact sidecars");
         let tokenizer = VibeVoiceRealtimeTokenizer::from_files(root).unwrap();
