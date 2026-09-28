@@ -42,8 +42,12 @@ only; it does not authorize checkpoint loading or parity.
 exact project/lock, requires a clean checkout at the supplied 40-character
 HEAD, binds its own SHA-256, and writes evidence without replacement.
 `dependency_audit.py` applies the same clean-HEAD and self-hash binding to its
-VAST package inventory.  Existing evidence in this tree is provisional until
-both generators are rerun after the first clean implementation commit.
+VAST package inventory.  The committed reports were regenerated on VAST at
+the clean source HEAD recorded in their `expected_head` fields and are bound
+by the pending manifest.  They are therefore factual model-free evidence for
+that source revision, not provisional reruns; they remain fail-closed pending
+the separate owner/native-package review and must not be treated as runtime or
+real-weight parity evidence.
 Run both generators with output paths outside the checkout (or in a separate
 clean worktree): the generated evidence itself must not make the checkout
 dirty before the second generator runs.  Only after both outputs are
