@@ -256,8 +256,8 @@ fn validate_tokenizer_config(bytes: &[u8]) -> Result<()> {
                     "vibevoice-realtime tokenizer_config.json is missing added token id {id}"
                 ))
             })?;
-        if record.get("content").and_then(|value| value.as_str()) != Some(token)
-            || !record.get("special").is_some_and(is_json_true)
+        if object_get(record, "content").and_then(|value| value.as_str()) != Some(token)
+            || !object_get(record, "special").is_some_and(is_json_true)
         {
             return Err(VokraError::ModelLoad(format!(
                 "vibevoice-realtime tokenizer_config.json added token id {id} does not match {token:?}"
@@ -320,9 +320,11 @@ fn validate_tokenizer_json(bytes: &[u8]) -> Result<()> {
         (SPEECH_PAD_ID, "<|vision_pad|>"),
     ] {
         let found = added.iter().any(|record| {
-            record.get("id").and_then(|value| value.as_u64()) == Some(u64::from(id))
-                && record.get("content").and_then(|value| value.as_str()) == Some(token)
-                && record.get("special").is_some_and(is_json_true)
+            record.as_object().is_some_and(|object| {
+                object_get(object, "id").and_then(|value| value.as_u64()) == Some(u64::from(id))
+                    && object_get(object, "content").and_then(|value| value.as_str()) == Some(token)
+                    && object_get(object, "special").is_some_and(is_json_true)
+            })
         });
         if !found {
             return Err(VokraError::ModelLoad(format!(
@@ -335,6 +337,16 @@ fn validate_tokenizer_json(bytes: &[u8]) -> Result<()> {
 
 fn is_json_true(value: &vokra_core::json::JsonValue) -> bool {
     matches!(value, vokra_core::json::JsonValue::Bool(true))
+}
+
+fn object_get<'a>(
+    object: &'a [(String, vokra_core::json::JsonValue)],
+    key: &str,
+) -> Option<&'a vokra_core::json::JsonValue> {
+    object
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value)
 }
 
 fn validate_text_ids(ids: &[u32]) -> Result<()> {
@@ -437,7 +449,8 @@ mod tests {
     #[test]
     #[ignore = "requires exact VAST-recovered Qwen sidecars; no local tokenizer execution"]
     fn fixed_sidecars_bind_and_encode_on_remote_evidence() {
-        let root = std::env::var_os("VOKRA_VIBEVOICE_TOKENIZER_DIR")
+        let root_var = std::env::var_os("VOKRA_VIBEVOICE_TOKENIZER_DIR");
+        let root = root_var
             .as_deref()
             .map(Path::new)
             .expect("VOKRA_VIBEVOICE_TOKENIZER_DIR must point to exact sidecars");
