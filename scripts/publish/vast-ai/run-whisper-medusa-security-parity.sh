@@ -153,6 +153,15 @@ verify_snapshot() {
   log "pinned shard total OK: bytes=$total tensors=$EXPECTED_TENSORS medusa_tensors=$EXPECTED_MEDUSA_TENSORS"
 }
 
+verify_source_layout() {
+  local source_root="$1"
+  [[ -f "$source_root/whisper_medusa/models/model.py" ]] \
+    || die "official source model module is missing"
+  [[ -f "$source_root/whisper_medusa/utils/config_and_args.py" ]] \
+    || die "official source config module is missing"
+  log "official source layout OK: $source_root/whisper_medusa"
+}
+
 record_environment() {
   local output="$1" cpu_model cpu_flags
   cpu_model="$(awk -F ':' '$1 ~ /model name/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
@@ -230,7 +239,7 @@ require_tooling() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0 fixture_dir
+  local tmp payload actual script_path cases=0 fail=0 fixture_dir source_fixture
   local saved_config_sha256 saved_index_sha256 saved_shard_1_sha256 saved_shard_2_sha256
   local saved_shard_1_bytes saved_shard_2_bytes saved_shard_total_bytes
   tmp="$(mktemp -d)"
@@ -315,6 +324,14 @@ run_self_test() {
     log "self-test FAIL: verify_snapshot nounset/identity regression"; fail=1
   fi
   cases=$((cases + 1))
+  source_fixture="$tmp/source"
+  mkdir -p "$source_fixture/whisper_medusa/models" "$source_fixture/whisper_medusa/utils"
+  printf '# model fixture\n' > "$source_fixture/whisper_medusa/models/model.py"
+  printf '# config fixture\n' > "$source_fixture/whisper_medusa/utils/config_and_args.py"
+  if ! verify_source_layout "$source_fixture" >/dev/null 2>&1; then
+    log "self-test FAIL: official source layout regression"; fail=1
+  fi
+  cases=$((cases + 1))
   if ! uv run --no-project --python 3.12 python -c \
     'import sys; expected,distribution,runtime=sys.argv[1:]; assert distribution == expected, (distribution, expected); assert runtime == expected or runtime.startswith(expected + "+"), (runtime, expected)' \
     "$EXPECTED_TORCH_VERSION" "2.13.0" "2.13.0+cu130"; then
@@ -366,12 +383,12 @@ main() {
   inputs_dir="$work_dir/inputs"
   logs_dir="$work_dir/logs"
   upstream_dir="$inputs_dir/hf-snapshot"
-  source_parent="$inputs_dir/source-parent"
-  source_checkout="$source_parent/whisper_medusa"
+  source_parent="$inputs_dir/source"
+  source_checkout="$source_parent"
   merged="$work_dir/whisper-medusa-v1-merged.safetensors"
   gguf="$work_dir/whisper-medusa-v1.gguf"
   reference="$work_dir/reference"
-  mkdir -p "$logs_dir" "$upstream_dir" "$source_parent"
+  mkdir -p "$logs_dir" "$upstream_dir"
   export UV_CACHE_DIR="$VOKRA_SCRATCH/uv-cache-whisper-medusa"
   run_log="$logs_dir/run.log"
   env_log="$logs_dir/environment.txt"
@@ -401,6 +418,7 @@ main() {
   git -C "$source_checkout" checkout --quiet --detach "$SOURCE_REVISION"
   [[ "$(git -C "$source_checkout" rev-parse HEAD)" == "$SOURCE_REVISION" ]] \
     || die "official source revision verification failed"
+  verify_source_layout "$source_parent"
   printf 'source_repo=%s\nsource_revision=%s\n' "$SOURCE_REPO" "$SOURCE_REVISION" | tee "$source_log"
 
   step "Record VAST environment"
