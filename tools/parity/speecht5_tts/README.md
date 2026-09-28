@@ -38,9 +38,9 @@ The fresh model-free VAST compact artifact
 runtime closure has exact lock and project inputs matching the active contract,
 and records that `setuptools` is absent. The dependency evidence is now bound
 to the manifest, while owner/operator approval remains pending and the gate
-stays fail-closed for this exact closure. `patchelf` is GPL build-only and is not installed in or
-redistributed with the final environment; its operator approval remains an
-explicit gate.
+stays fail-closed for this exact closure. `patchelf` is GPL build-only and is
+not installed in or redistributed with the final environment; its operator
+approval remains an explicit gate.
 
 `post_sync_audit.py` runs immediately after `uv sync` and before any source or
 model acquisition. It independently checks the synchronized package closure,

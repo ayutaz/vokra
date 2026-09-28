@@ -441,9 +441,18 @@ def self_test() -> int:
     if manifest_data.get("approval_scope_sha256") != canonical(expected_scope):
         print("speecht5 preflight gate: manifest scope is stale", file=sys.stderr)
         return 1
+    production_decision = manifest_data.get("operator_approval", {}).get("decision")
     ok, reason = validate(project, manifest)
-    if ok or reason != "operator approval is pending or invalid":
-        print(f"speecht5 preflight gate: expected pending production gate, got {reason}", file=sys.stderr)
+    if production_decision == "PENDING_REVIEW":
+        if ok or reason != "operator approval is pending or invalid":
+            print(f"speecht5 preflight gate: expected pending production gate, got {reason}", file=sys.stderr)
+            return 1
+    elif production_decision == "APPROVED":
+        if not ok:
+            print(f"speecht5 preflight gate: approved production baseline failed: {reason}", file=sys.stderr)
+            return 1
+    else:
+        print(f"speecht5 preflight gate: unsupported production approval state: {production_decision!r}", file=sys.stderr)
         return 1
     with tempfile.TemporaryDirectory(prefix="speecht5-gate-") as directory:
         root = Path(directory); test_project = root / "project"; test_project.mkdir()
