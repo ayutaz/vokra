@@ -23,9 +23,14 @@ closure gate.
 
 The checked-in lock is a genuine `uv lock` resolution for Linux/x86_64 Python
 3.12, with 38 package rows and resolver-emitted artifact URL/hash/size rows.
-It uses the official CPU Torch index (`torch==2.7.1+cpu` and
-`torchaudio==2.7.1+cpu`). The complete dependency/license review remains
-unresolved, so the production gate still exits 2.
+It uses the official CPU Torch index (`torch==2.13.0+cpu` and
+`torchaudio==2.11.0+cpu`). GitHub Dependabot's four open Torch alerts for this
+manifest report patched floors through 2.13.0 (alerts #434--#437). TorchAudio's
+official installation documentation states that 2.11 is built against the
+stable ABI and supports PyTorch 2.11 and every later release, including 2.13
+(<https://docs.pytorch.org/audio/main/installation.html>). The complete
+dependency/license review remains unresolved, so the production gate still
+exits 2.
 
 The fixed local fixture is `tests/fixtures/audio/jfk-30s.wav` (352078 bytes,
 SHA-256 `58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f`).

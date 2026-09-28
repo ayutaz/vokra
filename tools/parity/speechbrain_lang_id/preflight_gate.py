@@ -14,8 +14,8 @@ import tomllib
 GATE_VERSION = 1
 REPO = "speechbrain/lang-id-voxlingua107-ecapa"
 REVISION = "0253049ae131d6a4be1c4f0d8b0ff483a0f8c8e9"
-LOCK_SHA256 = "1f16fbbfc147274bc9791332b023122a049a3b68db197d0ce2a04002640673fc"
-PROJECT_SHA256 = "c11018b1a1a51f786c2036ff40c6a8b519f73db6309cd82d69a6ee989593608d"
+LOCK_SHA256 = "d0af16b0407ade0c8b7d80ad5af592f03f0beae3541ae68780874ca0c6703485"
+PROJECT_SHA256 = "192b140e3fdacd50f75d95ff5050117614e846df89557338f95f405af37d368b"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PAYLOAD_FILES = ("embedding_model.ckpt", "classifier.ckpt", "label_encoder.txt")
 SOURCE_IDENTITIES = (
