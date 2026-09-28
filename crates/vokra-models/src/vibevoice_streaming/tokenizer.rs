@@ -462,5 +462,24 @@ mod tests {
             ids.iter()
                 .all(|&id| !VibeVoiceRealtimeTokenizer::is_speech_boundary(id))
         );
+        // These sequences were obtained independently from the pinned
+        // Transformers Qwen2TokenizerFast on the same four sidecars.  Keep
+        // them here so first-party BPE changes cannot silently drift.
+        for (text, expected) in [
+            ("hello", &[14_990, 198][..]),
+            ("  hello  ", &[14_990, 198][..]),
+            (
+                "日本語の音声",
+                &[101_059, 102_819, 15_767, 78_685, 70_074, 198][..],
+            ),
+            ("café — test\n", &[924, 58_858, 1_959, 1_273, 198][..]),
+            ("hello, world!", &[14_990, 11, 1_879, 4_894][..]),
+        ] {
+            assert_eq!(
+                tokenizer.streaming_text_ids(text).unwrap(),
+                expected,
+                "{text:?}"
+            );
+        }
     }
 }
