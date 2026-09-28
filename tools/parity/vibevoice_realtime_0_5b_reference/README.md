@@ -58,10 +58,13 @@ GGUF metadata drift fails closed:
 
 The primitive's `streaming_text_ids` applies the upstream streaming boundary
 (`text.strip()` followed by one newline and no added special tokens).
-The primitive's exact-sidecar binding and Rust compilation are pending remote
-verification at this revision; independent token-by-token parity against the upstream tokenizer for
-non-ASCII, whitespace, and special-token inputs remains a separate evidence
-item and does not follow from reusing the first-party BPE implementation.
+At exact implementation HEAD `89a211738705f603a88b6996d4151cea689ae6db`, a
+disposable VAST run compiled the Rust package, bound the exact sidecars, and
+matched independently obtained pinned Transformers Qwen2TokenizerFast IDs for
+representative ASCII, Unicode, whitespace, and punctuation inputs. Reserved
+speech-boundary literals are rejected by policy; their official IDs are
+checked separately against the authenticated sidecar records. This remains a
+model-free tokenizer result, not model execution, synthesis, or full parity.
 
 ## Streaming input/output contract
 
