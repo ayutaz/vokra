@@ -170,7 +170,7 @@ record_environment() {
     cargo --version
     uv --version
     uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
-      'import platform,sys,torch,transformers; expected_transformers=sys.argv[1]; expected_torch=sys.argv[2]; actual_transformers=transformers.__version__; actual_torch=torch.__version__; assert actual_transformers == expected_transformers, (actual_transformers, expected_transformers); assert actual_torch == expected_torch, (actual_torch, expected_torch); print(f"python={platform.python_version()}"); print(f"transformers={actual_transformers}"); print(f"torch={actual_torch}")' \
+      'import importlib.metadata,platform,sys,torch,transformers; expected_transformers=sys.argv[1]; expected_torch=sys.argv[2]; actual_transformers=transformers.__version__; torch_distribution=importlib.metadata.version("torch"); torch_runtime=torch.__version__; assert actual_transformers == expected_transformers, (actual_transformers, expected_transformers); assert torch_distribution == expected_torch, (torch_distribution, expected_torch); assert torch_runtime == expected_torch or torch_runtime.startswith(expected_torch + "+"), (torch_runtime, expected_torch); print(f"python={platform.python_version()}"); print(f"transformers={actual_transformers}"); print(f"torch_distribution={torch_distribution}"); print(f"torch_runtime={torch_runtime}")' \
       "$EXPECTED_TRANSFORMERS_VERSION" "$EXPECTED_TORCH_VERSION"
   } | tee "$output"
 }
@@ -313,6 +313,18 @@ run_self_test() {
   EXPECTED_SHARD_TOTAL_BYTES=$((SHARD_1_BYTES + SHARD_2_BYTES))
   if ! verify_snapshot "$fixture_dir" >/dev/null 2>&1; then
     log "self-test FAIL: verify_snapshot nounset/identity regression"; fail=1
+  fi
+  cases=$((cases + 1))
+  if ! uv run --no-project --python 3.12 python -c \
+    'import sys; expected,distribution,runtime=sys.argv[1:]; assert distribution == expected, (distribution, expected); assert runtime == expected or runtime.startswith(expected + "+"), (runtime, expected)' \
+    "$EXPECTED_TORCH_VERSION" "2.13.0" "2.13.0+cu130"; then
+    log "self-test FAIL: torch local runtime suffix was rejected"; fail=1
+  fi
+  cases=$((cases + 1))
+  if uv run --no-project --python 3.12 python -c \
+    'import sys; expected,distribution,runtime=sys.argv[1:]; assert distribution == expected, (distribution, expected); assert runtime == expected or runtime.startswith(expected + "+"), (runtime, expected)' \
+    "$EXPECTED_TORCH_VERSION" "2.13.0" "2.13.1+cu130" 2>/dev/null; then
+    log "self-test FAIL: mismatched torch runtime base was accepted"; fail=1
   fi
   CONFIG_SHA256="$saved_config_sha256"
   INDEX_SHA256="$saved_index_sha256"
