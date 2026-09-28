@@ -33,7 +33,9 @@ closure or parity. The manifest binds authenticated non-weight
 byte/SHA-256 and canonical Git-blob SHA-1 identities, while the shard remains
 server-identity-only with `content_not_downloaded=true`, server size 87922568,
 LFS payload SHA-256, and LFS pointer Git-blob SHA-1. Transformers 5.10.4 is above the GHSA-xrqw-3rrv-vx5w
-patched minimum of 5.10.0. The VAST evidence binds an authenticated
+patched minimum of 5.10.0. Security remediation is complete for this pin;
+the route remains `BLOCKED_UNVERIFIED_API_SMOKE` until authorized VAST API
+and real-weight validation completes. The VAST evidence binds an authenticated
 model-free API/meta-device route using `AutoConfig.from_pretrained` and
 `AutoModel.from_config`; no weight was loaded or executed. The meta-device
 inspection authenticated quantizer shape `1x768x2` and nine decoder taps
@@ -45,9 +47,9 @@ MossAudioTokenizerModel`. The dependency-free audit checks this mapping and
 the shape-bearing decoder layout. The model construction probe now uses
 PyTorch's native `torch.device("meta")` context and does not import a
 third-party meta-device helper. It remains a model-free shape probe only; the
-inspector's output is still `BLOCKED` for runtime/parity approval until the
-route is actually run on VAST and reviewed. The official model methods remain
-part of the recorded contract.
+inspector's output is still `BLOCKED_UNVERIFIED_API_SMOKE` for runtime/API and
+parity approval until the route is actually run on VAST and reviewed. The
+official model methods remain part of the recorded contract.
 Its ordered meta taps are `quantizer 1x768x2`, `decoder_0 1x192x8`,
 `decoder_1 1x768x8`, `decoder_2 1x384x16`, `decoder_3 1x768x16`,
 `decoder_4 1x384x32`, `decoder_5 1x768x32`, `decoder_6 1x384x64`,

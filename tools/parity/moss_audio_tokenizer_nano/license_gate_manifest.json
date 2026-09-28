@@ -1028,13 +1028,13 @@
   },
   "license_file_present": false,
   "reference_route": {
-    "status": "BLOCKED_SECURITY_ADVISORY",
+    "status": "BLOCKED_UNVERIFIED_API_SMOKE",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "BLOCKED_SECURITY_ADVISORY",
+    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
     "previous_isolated_torch_pin": "2.7.1+cpu",
     "isolated_torch_pin": "torch==2.13.0",
     "torch_security_advisories": [
@@ -1045,7 +1045,7 @@
     ],
     "torch_security_patched_minimum": "2.13.0",
     "torch_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
-    "reason": "official AutoModel meta construction requires VAST revalidation without the former vulnerable helper; source and weight access remain blocked",
+    "reason": "official AutoModel meta construction and real-weight API compatibility require authorized VAST revalidation; source and weight access remain blocked",
     "api_path": {
       "config": "transformers.AutoConfig.from_pretrained",
       "model": "transformers.AutoModel.from_config",
