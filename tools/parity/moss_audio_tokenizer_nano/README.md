@@ -101,7 +101,12 @@ tracked manifest still cannot be self-approved because the 35 package-review
 rows, real-weight runtime, and parity gates remain unresolved. The authenticated
 model-free route is evidence only and does not grant execution approval.
 
-The dependency/native-payload audit is a separate no-model VAST phase.  After
+The dependency/native-payload audit is a separate no-model VAST phase.  The
+exact Torch 2.13.0+cpu closure was audited at exact Vokra HEAD
+`94c7f63ddd3d5e773a5b8df23a3ac29c7f6caf09`; the canonical report is
+`BLOCKED` with all 35 package-review rows unresolved and is bound by SHA-256
+`c50199aa53c8659e6ac234ccf1e1af2da56e5be579457df1598ef45619d48eac`.
+This records the completed audit attempt, not owner approval. After
 the exact project has been synced on the disposable Linux/x86_64 host, run:
 
 ```text
