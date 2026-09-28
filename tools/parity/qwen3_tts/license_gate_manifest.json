@@ -1032,9 +1032,8 @@
   "dependency_audit_evidence": {
     "schema": "vokra-qwen3-tts-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
-    "status": "STALE_REQUIRES_VAST_AUDIT",
-    "stale_reason": "The reviewed closure changed from torch==2.7.1/torchaudio==2.7.1 to torch==2.13.0/torchaudio==2.11.0; rerun the authorized Linux x86_64 VAST audit before owner approval or API/parity use.",
-    "sha256": "c486978a0f0f3ae5ac3588765edb2fd51044493c7595befbbe710816078cfee8"
+    "full_audit_sha256": "bbcd8ddaedde72b7c227ed0621ea31f9a4743bfb497a2f599a26b18693b4c730",
+    "status": "PENDING_OWNER_APPROVAL",
+    "sha256": "f85783c0ccec4b9b8b98c209cce30ffc3803469b1be9e2cfde943824fd53e3e4"
   }
 }

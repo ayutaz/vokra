@@ -156,11 +156,18 @@ The audit environment was Linux x86_64 with Python 3.12.14; model code,
 checkpoints, Cargo and upload were not used. This historical PASS is factual
 dependency evidence for that former closure, not real-weight or numerical
 parity evidence for the current lock.
-Because the lock now uses torch==2.13.0 and torchaudio==2.11.0,
-`dependency_audit_evidence.json` is intentionally
-`STALE_REQUIRES_VAST_AUDIT`; its old PASS is not reused. A fresh authorized
-Linux x86_64 VAST audit must record the new package/native/license facts before
-owner approval or API/parity use.
+The authorized fresh audit for this lock ran on disposable Linux x86_64 VAST
+at exact repository head `1b53e03f369a7e43c8349edb50a2519b0ba343be` with
+Python 3.12.14. It found an exact closure of 55 active and 4 inactive rows,
+no missing or unexpected packages, 188 publisher files, 244 native files and
+zero unsafe paths. No model code or model files were acquired. The compact
+evidence SHA-256 is
+`f85783c0ccec4b9b8b98c209cce30ffc3803469b1be9e2cfde943824fd53e3e4`; the
+full VAST report SHA-256 is
+`bbcd8ddaedde72b7c227ed0621ea31f9a4743bfb497a2f599a26b18693b4c730`.
+The report is intentionally `full_audit_status=BLOCKED` because the updated
+Torch 2.13.0/TorchAudio 2.11.0 license/native evidence remains unresolved;
+no owner approval or legal conclusion is inferred.
 The owner-approval scope intentionally excludes this volatile dependency-audit
 reference to avoid a hash cycle; the compact bytes, full-report SHA-256, input
 hashes, closure/facts, and approval state remain bound separately by the gate.
@@ -172,10 +179,10 @@ and torchaudio's native libsox/libav inventory remain audit facts and are not
 embedded in Vokra runtime or GGUF publication payloads. No model bytes are
 committed or uploaded, and the publication decision remains `NO_UPLOAD`. The
 compact evidence records factual installed metadata only and is not an owner
-legal conclusion. The owner/operator gate remains blocked by the stale audit
-until that fresh VAST evidence exists; the authorized real-weight smoke/parity
-sequence then requires its own execution result. The follow-on Scaleway Apple
-CPU/Metal no-fallback check remains after that VAST gate.
+legal conclusion. The owner/operator gate remains blocked by the VAST audit's
+factual license/native blocker; the authorized real-weight smoke/parity
+sequence additionally requires its own execution result. The follow-on
+Scaleway Apple CPU/Metal no-fallback check remains after those VAST gates.
 PR #109's historical 4/4 real-weight parity result was produced with the
 former TorchAudio/PyTorch dependency lock. It is not evidence for this
 `torch==2.13.0` / `torchaudio==2.11.0` lock and must not be reused; the new

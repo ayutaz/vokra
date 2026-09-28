@@ -916,10 +916,9 @@ def self_test() -> None:
     assert production_manifest["dependency_audit_evidence"] == {
         "schema": COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "c486978a0f0f3ae5ac3588765edb2fd51044493c7595befbbe710816078cfee8",
-        "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
-        "status": "STALE_REQUIRES_VAST_AUDIT",
-        "stale_reason": "The reviewed closure changed from torch==2.7.1/torchaudio==2.7.1 to torch==2.13.0/torchaudio==2.11.0; rerun the authorized Linux x86_64 VAST audit before owner approval or API/parity use.",
+        "sha256": "f85783c0ccec4b9b8b98c209cce30ffc3803469b1be9e2cfde943824fd53e3e4",
+        "full_audit_sha256": "bbcd8ddaedde72b7c227ed0621ea31f9a4743bfb497a2f599a26b18693b4c730",
+        "status": "PENDING_OWNER_APPROVAL",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
     assert ("torchaudio", "2.11.0", json.dumps({"registry": PYTORCH_CPU_INDEX}, sort_keys=True), INACTIVE_ROW_REASON) in set(EXPECTED_INACTIVE_ROWS)
@@ -927,7 +926,6 @@ def self_test() -> None:
         ("sha256", "1" * 64),
         ("full_audit_sha256", "2" * 64),
         ("status", "PENDING_OWNER_APPROVAL"),
-        ("stale_reason", "fresh audit pending"),
     ):
         candidate = json.loads(json.dumps(production_manifest))
         candidate["dependency_audit_evidence"][volatile_key] = volatile_value
@@ -941,14 +939,18 @@ def self_test() -> None:
         mutate(candidate)
         assert approval_scope(candidate) != stable_scope, fixed_key
     production_compact = strict_json_loads((production_root / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
+    assert production_compact["schema"] == COMPACT_SCHEMA
+    assert production_compact["status"] == "PENDING_OWNER_APPROVAL"
+    assert production_compact["full_audit_status"] == "BLOCKED"
+    assert production_compact["repository"]["head"] == "1b53e03f369a7e43c8349edb50a2519b0ba343be"
+    assert production_compact["environment"]["model_code_imported"] is False
+    assert production_compact["model_facts"]["metadata_fallback_count"] == 5
+    assert production_compact["closure"]["exact"] is True
+    assert production_compact["closure"]["missing"] == []
+    assert production_compact["closure"]["unexpected"] == []
     if production_manifest["dependency_audit_evidence"]["status"] == "STALE_REQUIRES_VAST_AUDIT":
-        assert production_compact == {
-            "schema": COMPACT_SCHEMA,
-            "path": "dependency_audit_evidence.json",
-            "full_audit_sha256": "c5f835c05b8618a4e607e803745064a400bac1aec4b47ad41682f8fc9d89513a",
-            "status": "STALE_REQUIRES_VAST_AUDIT",
-            "stale_reason": "The reviewed closure changed from torch==2.7.1/torchaudio==2.7.1 to torch==2.13.0/torchaudio==2.11.0; rerun the authorized Linux x86_64 VAST audit before owner approval or API/parity use.",
-        }
+        raise SystemExit("qwen3-tts gate self-test retained stale dependency status")
+    else:
         try:
             validate_dependency_audit_evidence(
                 production_root / "dependency_audit_evidence.json",
@@ -960,8 +962,7 @@ def self_test() -> None:
         except SystemExit as error:
             assert error.code == 2
         else:
-            raise SystemExit("qwen3-tts gate self-test accepted stale dependency evidence")
-    else:
+            raise SystemExit("qwen3-tts gate self-test accepted blocked dependency evidence")
         with tempfile.TemporaryDirectory(prefix="qwen3-tts-compact-tamper-") as directory:
             compact_path = Path(directory) / "dependency_audit_evidence.json"
             compact_base = json.loads(json.dumps(production_compact))
