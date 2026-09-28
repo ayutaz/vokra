@@ -58,13 +58,17 @@ GGUF metadata drift fails closed:
 
 The primitive's `streaming_text_ids` applies the upstream streaming boundary
 (`text.strip()` followed by one newline and no added special tokens).
-At exact implementation HEAD `89a211738705f603a88b6996d4151cea689ae6db`, a
+Historical tokenizer evidence at exact implementation HEAD
+`89a211738705f603a88b6996d4151cea689ae6db` is bound only to that commit and
+must not be reused as proof for a later rebased or integration HEAD. That
 disposable VAST run compiled the Rust package, bound the exact sidecars, and
 matched independently obtained pinned Transformers Qwen2TokenizerFast IDs for
 representative ASCII, Unicode, whitespace, and punctuation inputs. Reserved
 speech-boundary literals are rejected by policy; their official IDs are
-checked separately against the authenticated sidecar records. This remains a
-model-free tokenizer result, not model execution, synthesis, or full parity.
+checked separately against the authenticated sidecar records. A fresh
+integration-HEAD receipt is required for the branch that carries this
+contract. These are model-free tokenizer results, not model execution,
+synthesis, or full parity.
 
 ## Streaming input/output contract
 
