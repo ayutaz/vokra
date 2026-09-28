@@ -33,13 +33,12 @@ requirement is overridden with the impossible marker `python_version < '0'`,
 so the frozen runtime closure contains no `setuptools` or its forbidden
 LGPLv3-vendored `autocommand` payload. The preflight and post-sync audits fail
 closed if either the lock or installed environment reintroduces it.
-The checked-in compact `dependency_audit_evidence.json` is fresh model-free
-VAST evidence for the active 28-package runtime closure. Its exact lock and
-project inputs match the active contract, and the evidence records that
-`setuptools` is absent. The fresh exact-head evidence is pending protected-file
-handoff, and the current checked-in evidence/manifest binding therefore stays
-fail-closed until that evidence and a new owner/operator approval are supplied
-for this exact closure. `patchelf` is GPL build-only and is not installed in or
+The fresh model-free VAST compact artifact for the active 28-package runtime
+closure has exact lock and project inputs matching the active contract, and
+records that `setuptools` is absent. It is pending checked-in evidence handoff;
+the current checked-in evidence/manifest binding therefore stays fail-closed
+until that artifact and a new owner/operator approval are supplied for this
+exact closure. `patchelf` is GPL build-only and is not installed in or
 redistributed with the final environment; its operator approval remains an
 explicit gate.
 
