@@ -26,7 +26,7 @@ PROJECT = Path(__file__).resolve().parent
 CANDIDATE = PROJECT / "owner_review_candidate.json"
 LICENSE_AUDIT_DOCUMENT = PROJECT.parents[2] / "docs" / "license-audit.md"
 LICENSE_ROW_PREFIX = b"| **CLAP HTSAT-fused** (`laion/clap-htsat-fused`)"
-SCHEMA = "vokra-clap-htsat-fused-owner-review-candidate-v1"
+SCHEMA = "vokra-clap-htsat-fused-owner-review-candidate-v2"
 CANONICALIZATION = "json-sort-keys-utf8-no-whitespace-v1"
 REPOSITORY = "laion/clap-htsat-fused"
 SOURCE_REPOSITORY = "https://huggingface.co/laion/clap-htsat-fused"
@@ -49,6 +49,8 @@ DEPENDENCY_INVENTORY_SHA256 = (
 SUMMARY_SHA256 = (
     "d6c449e2d933702c6a516f460b73e91138b039d70de714d423f2703de477b3f6"
 )
+PREVIOUS_LOCK_SHA256 = "84c8f2fb375dd1532570d4de2dcd6a416e19847cdc511816f8db86387ec1974c"
+CURRENT_LOCK_SHA256 = "a42cc43f4b3ba12cb40755e41ed8f73360866c4fc60716b9d19f20d45c91e3ec"
 
 
 def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -149,6 +151,7 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
             "candidate_status",
             "upstream",
             "evidence",
+            "refresh",
             "license_signoff",
             "disposition",
             "approval",
@@ -158,8 +161,8 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
     )
     if root["schema"] != SCHEMA:
         raise ValueError("candidate schema drifted")
-    if root["candidate_status"] != "PENDING_OWNER_REVIEW":
-        raise ValueError("candidate status is not PENDING_OWNER_REVIEW")
+    if root["candidate_status"] != "PENDING_VAST_REGENERATION":
+        raise ValueError("candidate status is not PENDING_VAST_REGENERATION")
 
     upstream = require_exact_keys(
         root["upstream"], {"repository", "source_repository", "revision"}, "upstream"
@@ -173,9 +176,11 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
 
     evidence = require_exact_keys(
         root["evidence"],
-        {"model_free_audit_sha256", "dependency_inventory_sha256", "summary_sha256"},
+        {"model_free_audit_sha256", "dependency_inventory_sha256", "summary_sha256", "status"},
         "evidence",
     )
+    if evidence["status"] != "STALE_AFTER_LOCK_REFRESH":
+        raise ValueError("candidate evidence is not marked stale after lock refresh")
     expected_evidence = {
         "model_free_audit_sha256": MODEL_FREE_AUDIT_SHA256,
         "dependency_inventory_sha256": DEPENDENCY_INVENTORY_SHA256,
@@ -185,6 +190,32 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
         require_hex(evidence[key], 64, f"evidence.{key}")
         if evidence[key] != expected:
             raise ValueError(f"evidence.{key} does not match the VAST record")
+
+    refresh = require_exact_keys(
+        root["refresh"],
+        {
+            "reason",
+            "previous_torch_version",
+            "current_torch_version",
+            "previous_lock_sha256",
+            "current_lock_sha256",
+            "status",
+        },
+        "refresh",
+    )
+    expected_refresh = {
+        "reason": "TORCH_SECURITY_REFRESH",
+        "previous_torch_version": "2.7.1+cpu",
+        "current_torch_version": "2.13.0+cpu",
+        "previous_lock_sha256": PREVIOUS_LOCK_SHA256,
+        "current_lock_sha256": CURRENT_LOCK_SHA256,
+        "status": "INVALIDATED_PENDING_VAST_REGENERATION",
+    }
+    if refresh != expected_refresh:
+        raise ValueError("candidate dependency refresh disposition drifted")
+    current_lock = hashlib.sha256((PROJECT / "uv.lock").read_bytes()).hexdigest()
+    if current_lock != CURRENT_LOCK_SHA256:
+        raise ValueError("current CLAP uv.lock does not match refresh binding")
 
     if root["license_signoff"] != LICENSE_SIGNOFF:
         raise ValueError("model license sign-off citation drifted")
@@ -206,7 +237,7 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
     )
     expected_disposition = {
         "model_license_status": "SIGNED_COMMERCIAL",
-        "dependency_status": "PENDING_OWNER_REVIEW",
+        "dependency_status": "PENDING_VAST_REGENERATION",
         "runtime_status": "BLOCKED",
         "publication": "NO_UPLOAD",
         "weights": "NOT_ACQUIRED",
@@ -247,6 +278,15 @@ def self_test() -> None:
         assert "summary_sha256" in str(exc)
     else:
         raise AssertionError("evidence hash tampering was accepted")
+
+    tampered = json.loads(json.dumps(candidate))
+    tampered["refresh"]["current_lock_sha256"] = "0" * 64
+    try:
+        validate_document(tampered)
+    except ValueError as exc:
+        assert "refresh" in str(exc) or "lock" in str(exc)
+    else:
+        raise AssertionError("stale lock refresh tampering was accepted")
 
     tampered = json.loads(json.dumps(candidate))
     tampered["schema"] = "vokra-clap-htsat-fused-owner-review-candidate-v0"
@@ -339,7 +379,7 @@ def self_test() -> None:
         check=False,
     )
     assert normal.returncode == 2, normal
-    assert "PENDING_OWNER_REVIEW" in normal.stdout
+    assert "PENDING_VAST_REGENERATION" in normal.stdout
 
 
 def main() -> int:
@@ -358,7 +398,7 @@ def main() -> int:
     except ValueError as exc:
         print(f"CLAP_OWNER_REVIEW_CANDIDATE BLOCKED: {exc}", file=sys.stderr)
         return 2
-    print(f"CLAP_OWNER_REVIEW_CANDIDATE PENDING_OWNER_REVIEW: {args.candidate}")
+    print(f"CLAP_OWNER_REVIEW_CANDIDATE PENDING_VAST_REGENERATION: {args.candidate}")
     # A valid candidate is still a blocked disposition. Exit 2 prevents
     # callers from treating owner-review evidence as execution approval.
     return 2

@@ -10,9 +10,11 @@ does not approve Python dependencies, native payloads, execution, parity, or
 publication. No upload is permitted.
 
 The pinned environment is Python 3.12 on Linux x86_64 with CPU-only Torch
-(`torch==2.7.1` from the explicit PyTorch CPU index) and
+(`torch==2.13.0` from the explicit PyTorch CPU index) and
 `transformers==5.10.4`. The lock is a dependency record only; it is not a
 permission to synchronize or acquire a checkpoint locally.
+The locked Linux CPU Torch wheel is SHA-256
+`4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2`.
 The locked Transformers wheel is SHA-256
 `8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e`.
 
@@ -90,8 +92,9 @@ bounded in-memory archive inspection hashes only safe LICENSE/COPYING/NOTICE
 members and writes no archive payloads. Missing PEP-639
 `License-Expression` is an owner-review flag when legacy metadata, classifiers,
 or license bytes exist; it is not treated as a factual collection failure.
-Dependency/native-payload disposition remains `PENDING_OWNER_REVIEW` and
-publication remains `NO_UPLOAD`. Its evidence explicitly says
+Dependency/native-payload disposition remains `PENDING_VAST_REGENERATION` after
+the Torch security pin changes; the previous model-free packet is marked stale
+and publication remains `NO_UPLOAD`. Its evidence explicitly says
 `weights=NOT_ACQUIRED`, `model_load=NOT_PERFORMED`, and
 `publication=NO_UPLOAD`. The real-weight path remains approval-gated and
 cannot be authorized by model-free evidence.
@@ -100,10 +103,10 @@ The exact model-free VAST result is tracked as an owner-review candidate in
 `owner_review_candidate.json`. Its `owner_review_candidate.py` validator uses
 only the Python standard library and binds the three immutable VAST SHA-256
 values (model-free audit, dependency inventory, and summary), the pinned
-upstream revision, and the fail-closed disposition. The candidate's own
+upstream revision, the lock-refresh invalidation, and the fail-closed disposition. The candidate's own
 canonical payload digest is checked as well, so schema, evidence hashes, or
 status changes are rejected. It deliberately contains no approval digest:
-`candidate_status=PENDING_OWNER_REVIEW`, `runtime_status=BLOCKED`,
+`candidate_status=PENDING_VAST_REGENERATION`, `runtime_status=BLOCKED`,
 `weights=NOT_ACQUIRED`, `model_load=NOT_PERFORMED`, and `publication=NO_UPLOAD`
 remain required. Validating this file is evidence packaging only; it does
 not approve a real-weight inspection, native execution, parity, or upload.
