@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 from collections import Counter
+import fnmatch
 import hashlib
 import importlib.metadata as metadata
 import io
@@ -56,6 +58,19 @@ LICENSE_NAMES = {
 NATIVE_FAMILIES = ("nvidia-", "torch", "triton")
 CPU_TORCH_SOURCE = {"registry": "https://download.pytorch.org/whl/cpu"}
 CPU_TORCH_VERSION = "2.13.0+cpu"
+NUMPY_VERSION = "2.3.5"
+NUMPY_SOURCE_BUILD_ARGS = ["-Dallow-noblas=true", "-Dblas=none", "-Dlapack=none"]
+FORBIDDEN_NUMPY_NATIVE_NAMES = (
+    "libgfortran*",
+    "libquadmath*",
+    "libopenblas*",
+    "libscipy_openblas*",
+    "liblapack*",
+    "libblas*",
+    "libgomp*",
+    "libflexiblas*",
+    "libblis*",
+)
 MAX_LICENSE_BYTES = 2 * 1024 * 1024
 MAX_SDIST_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 8 * 1024 * 1024
@@ -172,6 +187,67 @@ def validate_cpu_closure(rows: list[dict[str, Any]]) -> None:
         raise AuditError("; ".join(blockers))
 
 
+def validate_numpy_source_build_project(project_data: dict[str, Any]) -> None:
+    project = project_data.get("project")
+    tool = project_data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    config_root = uv.get("config-settings-package") if isinstance(uv, dict) else None
+    config = config_root.get("numpy") if isinstance(config_root, dict) else None
+    dependencies = project.get("dependencies") if isinstance(project, dict) else None
+    if not isinstance(dependencies, list) or f"numpy=={NUMPY_VERSION}" not in dependencies:
+        raise AuditError(f"Nano project must pin numpy=={NUMPY_VERSION}")
+    if not isinstance(uv, dict) or uv.get("no-binary-package") != ["numpy"]:
+        raise AuditError("Nano project must force a source-built NumPy package")
+    if not isinstance(config, dict) or config.get("setup-args") != NUMPY_SOURCE_BUILD_ARGS:
+        raise AuditError("Nano project must request NumPy's no-BLAS source build")
+
+
+def forbidden_numpy_native_basename(value: str) -> bool:
+    basename = Path(value).name.casefold()
+    return any(fnmatch.fnmatchcase(basename, pattern) for pattern in FORBIDDEN_NUMPY_NATIVE_NAMES)
+
+
+def forbidden_numpy_native_needed(value: str) -> bool:
+    name = value.casefold()
+    return any(token.rstrip("*") in name for token in FORBIDDEN_NUMPY_NATIVE_NAMES)
+
+
+def audit_numpy_native_payload(dist: metadata.Distribution) -> tuple[dict[str, Any], list[str]]:
+    """Audit installed NumPy for the no-BLAS source-build closure."""
+
+    root = Path(dist.locate_file(""))
+    numpy_package = root / "numpy"
+    numpy_libs = root / "numpy.libs"
+    native, native_errors = native_files(dist)
+    evidence: dict[str, Any] = {
+        "status": "NUMPY_SOURCE_NO_BLAS_NATIVE_AUDITED",
+        "package": dist.metadata.get("Name"),
+        "version": dist.version,
+        "numpy_package": str(numpy_package),
+        "bundled_numpy_libs": {"path": str(numpy_libs), "present": numpy_libs.exists()},
+        "native_payload": native,
+        "native_errors": native_errors,
+    }
+    failures: list[str] = []
+    if norm_name(dist.metadata.get("Name", "")) != "numpy" or dist.version != NUMPY_VERSION:
+        failures.append(f"NumPy native audit received unexpected distribution: {dist.metadata.get('Name')}=={dist.version}")
+    if not numpy_package.is_dir() or numpy_package.is_symlink():
+        failures.append("installed NumPy package directory is missing or symlinked")
+    if numpy_libs.exists() or numpy_libs.is_symlink():
+        failures.append("NumPy bundled native payload directory is present; source build was not authenticated")
+    if not native:
+        failures.append("installed NumPy contains no native extensions to audit")
+    failures.extend(f"NumPy native inspection failed: {item['path']}" for item in native_errors)
+    for item in native:
+        path = item.get("path", "")
+        if forbidden_numpy_native_basename(path):
+            failures.append(f"forbidden NumPy native payload basename: {path}")
+        for needed in item.get("elf", {}).get("needed", []):
+            if forbidden_numpy_native_needed(needed):
+                failures.append(f"forbidden NumPy native runtime link: {path} -> {needed}")
+    return evidence, failures
+
+
 def contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]], bytes, bytes]:
     validate_project_path(project)
     project_path, lock_path, manifest_path = (project / name for name in ("pyproject.toml", "uv.lock", "license_gate_manifest.json"))
@@ -194,6 +270,7 @@ def contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, A
         if license_gate.artifact_error(lock_data):
             raise AuditError(license_gate.artifact_error(lock_data) or "malformed resolver artifact")
         validate_cpu_closure(rows)
+        validate_numpy_source_build_project(project_data)
         license_gate.project_identity(project_bytes)
     except (SystemExit, ValueError) as exc:
         raise AuditError(f"closure schema is invalid: {exc}") from exc
@@ -570,6 +647,10 @@ def inspect_package(row: dict[str, Any], record: dict[str, Any] | None, review: 
     native_scope = "cuda/nvidia" if native_family.startswith("nvidia-") else "torch" if native_family == "torch" else "triton" if native_family == "triton" else "other"
     native_status = "NATIVE_PAYLOAD_SCANNED" if native else "NO_NATIVE_PAYLOAD"
     eula_files = [item for item in publisher if license_candidate(item["path"])]
+    numpy_source_build = None
+    numpy_source_failures: list[str] = []
+    if norm_name(row["name"]) == "numpy":
+        numpy_source_build, numpy_source_failures = audit_numpy_native_payload(dist)
     installed = {
         "name": dist.metadata.get("Name"), "version": dist.version, "normalized_identity": record["identity"],
         **fields,
@@ -578,6 +659,7 @@ def inspect_package(row: dict[str, Any], record: dict[str, Any] | None, review: 
         "sdist_license_evidence": sdist,
         "native_payload": {"scope": native_scope, "status": native_status, "files": native, "errors": native_errors,
                            "eula_status": "PRESENT_IN_PACKAGE" if eula_files or (sdist and sdist.get("license_files")) else "ABSENT_PUBLISHER_AND_SDIST"},
+        "numpy_source_build": numpy_source_build,
     }
     failures: list[str] = []
     has_license = bool(fields["license"] or fields["license_expression"] or fields["license_classifiers"])
@@ -590,6 +672,7 @@ def inspect_package(row: dict[str, Any], record: dict[str, Any] | None, review: 
             failures.append(f"{sdist['status']}: {record['identity']}")
     failures.extend(f"unsafe publisher path: {record['identity']}:{path}" for path in unsafe)
     failures.extend(f"native candidate inspection failed: {record['identity']}:{error['path']}" for error in native_errors)
+    failures.extend(numpy_source_failures)
     failures.extend(f"ELF NEEDED inspection failed: {record['identity']}" for item in native if item["elf"].get("inspection") == "error")
     # Native CUDA/NVIDIA/Triton payloads must expose a license/EULA fact.  A
     # blocked package row is intentional until an owner reviews this evidence.
@@ -697,14 +780,16 @@ def audit_environment(project: Path, expected_head: str,
                         "weights_imported": False, "weights_executed": False, "cargo_invoked": False},
         "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"],
                     "pyproject_bytes": len(project_bytes), "pyproject_sha256": sha256_bytes(project_bytes),
-                    "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)},
+                    "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes),
+                    "numpy_source_build": {"version": NUMPY_VERSION, "setup_args": NUMPY_SOURCE_BUILD_ARGS,
+                                            "no_blas_native_policy": "no numpy.libs, forbidden basenames, or forbidden ELF NEEDED links"}},
         "git": git_identity(project, expected_head), "locked_rows": sorted(lock["package"], key=lambda row: (norm_name(row["name"]), row["version"])),
         "active_lock_rows": active_rows, "inactive_rows": inactive_rows,
         "closure": closure, "packages": packages, "approval_state": approval_state(manifest),
         "source_license_contract": {"status": "AUTHENTICATED_MODEL_CARD_LICENSE_NO_REPO_LICENSE_FILE", "repo": license_gate.REPO, "revision": license_gate.REVISION, "file": None},
         "model_acquisition": {"policy": "no model files requested", "requested_files": [], "non_license_files": [], "proof": "dependency audit does not import or acquire model weights"},
         "dependency_acquisition": {"scope": "exact lock artifact metadata and publisher/locked-sdist license-EULA evidence", "model_files": [], "non_license_files": [],
-                                   "native_payload_scope": ["CUDA/NVIDIA", "Torch", "Triton"]},
+                                   "native_payload_scope": ["NumPy source-built no-BLAS", "CUDA/NVIDIA", "Torch", "Triton"]},
         "failures": sorted(set(failures)),
     }
 
@@ -762,11 +847,28 @@ def self_test() -> int:
     torch_row = next((row for row in rows if norm_name(row["name"]) == "torch"), None)
     if torch_row is None or torch_row["version"] != CPU_TORCH_VERSION or torch_row["source"] != CPU_TORCH_SOURCE:
         raise SystemExit("self-test lost the locked torch 2.13.0+cpu identity")
+    project_data = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    validate_numpy_source_build_project(project_data)
+    tampered_project = copy.deepcopy(project_data)
+    tampered_project["tool"]["uv"]["config-settings-package"]["numpy"]["setup-args"] = ["-Dblas=none"]
+    try:
+        validate_numpy_source_build_project(tampered_project)
+    except AuditError:
+        pass
+    else:
+        raise SystemExit("self-test accepted a tampered NumPy source-build contract")
     if any(forbidden_accelerator_row(row) for row in rows):
         raise SystemExit("self-test found a forbidden CUDA/NVIDIA/Triton lock row")
     for forbidden in ("nvidia-cublas-cu12", "triton"):
         if forbidden_accelerator_row({"name": forbidden, "version": "1", "source": {"registry": "https://pypi.org/simple"}}) is None:
             raise SystemExit(f"self-test accepted forbidden distribution: {forbidden}")
+    for forbidden in ("libgfortran.so.5", "libquadmath.so.0", "libopenblas.so.0", "libscipy_openblas.so"):
+        if not forbidden_numpy_native_basename(forbidden):
+            raise SystemExit(f"self-test accepted forbidden NumPy native basename: {forbidden}")
+    if forbidden_numpy_native_basename("libm.so.6"):
+        raise SystemExit("self-test rejected an allowed NumPy native basename")
+    if not forbidden_numpy_native_needed("libgfortran.so.5") or forbidden_numpy_native_needed("libm.so.6"):
+        raise SystemExit("self-test lost NumPy native runtime-link blocker")
     if forbidden_accelerator_row({"name": "torch", "version": "2.13.0+cu126", "source": {"registry": "https://download.pytorch.org/whl/cu126"}}) is None:
         raise SystemExit("self-test accepted CUDA torch identity")
     audit_source = {"registry": "https://pypi.org/simple"}

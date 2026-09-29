@@ -19,6 +19,14 @@ metadata. The official PyTorch CPU simple index omitted the Torch wheel's
 size field; the exact 191817609-byte size was recorded from an HTTP HEAD of
 the locked URL. No wheel or model was downloaded on the maintainer Mac.
 No package sync is performed by the local gate.
+NumPy 2.3.5 is deliberately excluded from the wheel closure: the project
+forces a source build with `-Dallow-noblas=true`, `-Dblas=none`, and
+`-Dlapack=none`. This removes the wheel's bundled BLAS/libgfortran/
+libquadmath payload from the intended Linux route, but it is not yet an
+audited result. A fresh VAST sync must prove that `numpy.libs` is absent and
+that every installed NumPy native extension has no forbidden basename or ELF
+`NEEDED` dependency. This change does not approve NumPy or any other package;
+all 35 owner-review rows remain fail-closed.
 
 The exact upstream payload contract at the fixed revision is eight files: the
 seven non-weight files `.gitattributes`, `README.md`, `__init__.py`,
@@ -103,13 +111,15 @@ tracked manifest still cannot be self-approved because the 35 package-review
 rows, real-weight runtime, and parity gates remain unresolved. The authenticated
 model-free route is evidence only and does not grant execution approval.
 
-The dependency/native-payload audit is a separate no-model VAST phase.  The
-exact Torch 2.13.0+cpu closure was audited at exact Vokra HEAD
+The dependency/native-payload audit is a separate no-model VAST phase. The
+previous exact Torch 2.13.0+cpu wheel closure was audited at exact Vokra HEAD
 `94c7f63ddd3d5e773a5b8df23a3ac29c7f6caf09`; the canonical report is
 `BLOCKED` with all 35 package-review rows unresolved and is bound by SHA-256
 `c50199aa53c8659e6ac234ccf1e1af2da56e5be579457df1598ef45619d48eac`.
-This records the completed audit attempt, not owner approval. After
-the exact project has been synced on the disposable Linux/x86_64 host, run:
+That historical report is superseded by the source-build project contract and
+does not establish a result for NumPy 2.3.5. It records an audit attempt, not
+owner approval. After the exact updated project has been synced on the
+disposable Linux/x86_64 host, run:
 
 ```text
 scripts/publish/vast-ai/audit-moss-audio-tokenizer-nano-dependencies.sh \
@@ -119,7 +129,10 @@ scripts/publish/vast-ai/audit-moss-audio-tokenizer-nano-dependencies.sh \
 
 It uses `--no-sync` and records every locked artifact URL/hash/size, installed
 package license/EULA bytes, and hashes plus ELF `NEEDED` facts for native
-payloads. CUDA/NVIDIA and Triton distributions are explicitly rejected.
+payloads. CUDA/NVIDIA and Triton distributions are explicitly rejected. The
+NumPy row additionally requires the source-build/no-BLAS configuration and
+audits the installed package for the absence of `numpy.libs`, forbidden native
+basenames, and forbidden ELF `NEEDED` links.
 It never requests model files, imports model code, invokes Cargo, converts, or
 publishes.  A blocked report is expected until the owner reviews the package
 and native-payload rows; it is not a real-weight/API runtime/parity approval.  The

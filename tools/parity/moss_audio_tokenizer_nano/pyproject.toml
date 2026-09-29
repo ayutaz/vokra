@@ -13,9 +13,16 @@ dependencies = [
 
 [tool.uv]
 package = false
+# Avoid the Linux NumPy wheel's bundled libgfortran/libquadmath and BLAS
+# payloads. The resulting source-built native payload must be audited on VAST;
+# this setting does not grant package or owner approval.
+no-binary-package = ["numpy"]
 environments = [
     "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
+
+[tool.uv.config-settings-package.numpy]
+setup-args = ["-Dallow-noblas=true", "-Dblas=none", "-Dlapack=none"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

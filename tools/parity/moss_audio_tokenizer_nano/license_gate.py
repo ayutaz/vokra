@@ -16,7 +16,7 @@ REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 # These are code-bound after the staged files are finalized; a byte drift blocks.
 LOCK_SHA256 = "106975f55b96cb1a003acb055fb59680d12f417b72404aca4c4524a3eb54c6ee"
-PROJECT_SHA256 = "bee96ca668e0c36b82f3390ddc5920bcf1beddf275aa0b42c47c7b4164f840d3"
+PROJECT_SHA256 = "9e5e594359dfa73c1a37c39207a6ef7825125e2a0bda9d6c32175823a231470d"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PAYLOAD_FILES = (
     ".gitattributes", "README.md", "__init__.py", "config.json", "configuration_moss_audio_tokenizer.py",
