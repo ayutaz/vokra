@@ -51,6 +51,8 @@ pub const SPEECH_PAD_ID: u32 = 151_654;
 const SPEECH_START_TOKEN: &str = "<|vision_start|>";
 const SPEECH_END_TOKEN: &str = "<|vision_end|>";
 const SPEECH_PAD_TOKEN: &str = "<|vision_pad|>";
+/// The pinned VibeVoice fast tokenizer's `pad_id` source token.
+const STREAMING_PAD_TOKEN: &str = "<|image_pad|>";
 
 const VOCAB_BYTES: usize = 2_776_833;
 const VOCAB_SHA256: &str = "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910";
@@ -66,6 +68,7 @@ const TOKENIZER_JSON_SHA256: &str =
 #[derive(Debug, Clone)]
 pub struct VibeVoiceRealtimeTokenizer {
     bpe: CosyVoice2Tokenizer,
+    streaming_pad_id: u32,
 }
 
 impl VibeVoiceRealtimeTokenizer {
@@ -94,8 +97,8 @@ impl VibeVoiceRealtimeTokenizer {
             TOKENIZER_JSON_BYTES,
             TOKENIZER_JSON_SHA256,
         )?;
-        validate_tokenizer_config(tokenizer_config_json)?;
-        validate_tokenizer_json(tokenizer_json)?;
+        let streaming_pad_id = validate_tokenizer_config(tokenizer_config_json)?;
+        validate_tokenizer_json(tokenizer_json, streaming_pad_id)?;
         let bpe = CosyVoice2Tokenizer::from_parts(vocab_json, merges_txt).map_err(|error| {
             VokraError::ModelLoad(format!(
                 "vibevoice-realtime tokenizer: fixed Qwen vocab/merges failed to parse: {error}"
@@ -107,7 +110,10 @@ impl VibeVoiceRealtimeTokenizer {
                 bpe.vocab_size()
             )));
         }
-        Ok(Self { bpe })
+        Ok(Self {
+            bpe,
+            streaming_pad_id,
+        })
     }
 
     /// Loads exact tokenizer sidecars embedded as U8 GGUF metadata arrays.
@@ -162,18 +168,32 @@ impl VibeVoiceRealtimeTokenizer {
 
     /// Encodes raw text with the authenticated Qwen2 byte-level BPE.
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        reject_speech_boundary_literals(text)?;
+        reject_reserved_control_literals(text)?;
         let ids = self.bpe.encode(text)?;
-        validate_text_ids(&ids)?;
+        validate_text_ids(&ids, self.streaming_pad_id)?;
         Ok(ids)
     }
 
-    /// Applies the fixed streaming processor boundary: stripped text plus a
-    /// terminal newline, with no added special tokens.
+    /// Applies the fixed streaming processor boundary: Python-compatible
+    /// stripped text plus a terminal newline, with no added special tokens.
     pub fn streaming_text_ids(&self, text: &str) -> Result<Vec<u32>> {
-        let mut normalized = text.trim().to_owned();
+        let mut normalized = python_strip(text);
         normalized.push('\n');
         self.encode(&normalized)
+    }
+
+    /// Returns the VibeVoice Fast-tokenizer `pad_id` authenticated from the
+    /// fixed Qwen sidecars.
+    ///
+    /// The streaming processor uses this ID to construct the pseudo LM and
+    /// TTS-LM inputs around a cached prompt. It is deliberately not a
+    /// hard-coded Qwen vocabulary value: sidecar drift must be rejected by
+    /// [`Self::from_parts`] before state construction can proceed. The pinned
+    /// source contract is `convert_tokens_to_ids("<|image_pad|>")`; the
+    /// ordinary Qwen `pad_token` is not this streaming input ID.
+    #[must_use]
+    pub const fn streaming_pad_id(&self) -> u32 {
+        self.streaming_pad_id
     }
 
     /// Returns the upstream speech-start boundary id.
@@ -222,7 +242,7 @@ fn require_exact_asset(
     Ok(())
 }
 
-fn validate_tokenizer_config(bytes: &[u8]) -> Result<()> {
+fn validate_tokenizer_config(bytes: &[u8]) -> Result<u32> {
     let root = vokra_core::json::parse(bytes).map_err(|error| {
         VokraError::ModelLoad(format!(
             "vibevoice-realtime tokenizer_config.json is invalid: {error}"
@@ -264,10 +284,31 @@ fn validate_tokenizer_config(bytes: &[u8]) -> Result<()> {
             )));
         }
     }
-    Ok(())
+    let streaming_pad_id = decoder
+        .iter()
+        .find(|(_, value)| {
+            value
+                .as_object()
+                .and_then(|record| object_get(record, "content"))
+                .and_then(|value| value.as_str())
+                == Some(STREAMING_PAD_TOKEN)
+                && value
+                    .as_object()
+                    .and_then(|record| object_get(record, "special"))
+                    .is_some_and(is_json_true)
+        })
+        .and_then(|(id, _)| id.parse::<u32>().ok())
+        .filter(|&value| value < VOCAB_SIZE as u32)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(
+                "vibevoice-realtime tokenizer_config.json has no valid VibeVoice image_pad entry"
+                    .into(),
+            )
+        })?;
+    Ok(streaming_pad_id)
 }
 
-fn validate_tokenizer_json(bytes: &[u8]) -> Result<()> {
+fn validate_tokenizer_json(bytes: &[u8], streaming_pad_id: u32) -> Result<()> {
     let root = vokra_core::json::parse(bytes).map_err(|error| {
         VokraError::ModelLoad(format!(
             "vibevoice-realtime tokenizer.json is invalid: {error}"
@@ -332,6 +373,20 @@ fn validate_tokenizer_json(bytes: &[u8]) -> Result<()> {
             )));
         }
     }
+    let image_pad_found = added.iter().any(|record| {
+        record.as_object().is_some_and(|object| {
+            object_get(object, "id").and_then(|value| value.as_u64())
+                == Some(u64::from(streaming_pad_id))
+                && object_get(object, "content").and_then(|value| value.as_str())
+                    == Some(STREAMING_PAD_TOKEN)
+                && object_get(object, "special").is_some_and(is_json_true)
+        })
+    });
+    if !image_pad_found {
+        return Err(VokraError::ModelLoad(format!(
+            "vibevoice-realtime tokenizer.json is missing special token {STREAMING_PAD_TOKEN:?} at id {streaming_pad_id}"
+        )));
+    }
     Ok(())
 }
 
@@ -349,7 +404,7 @@ fn object_get<'a>(
         .map(|(_, value)| value)
 }
 
-fn validate_text_ids(ids: &[u32]) -> Result<()> {
+fn validate_text_ids(ids: &[u32], streaming_pad_id: u32) -> Result<()> {
     if ids.iter().any(|&id| id >= VOCAB_SIZE as u32) {
         return Err(VokraError::InvalidArgument(
             "vibevoice-realtime tokenizer produced an id outside the authenticated vocabulary"
@@ -365,18 +420,39 @@ fn validate_text_ids(ids: &[u32]) -> Result<()> {
                 .into(),
         ));
     }
+    if ids.contains(&streaming_pad_id) {
+        return Err(VokraError::InvalidArgument(
+            "vibevoice-realtime tokenizer text unexpectedly contains the reserved <|image_pad|> token"
+                .into(),
+        ));
+    }
     Ok(())
 }
 
-fn reject_speech_boundary_literals(text: &str) -> Result<()> {
-    for token in [SPEECH_START_TOKEN, SPEECH_END_TOKEN, SPEECH_PAD_TOKEN] {
+fn reject_reserved_control_literals(text: &str) -> Result<()> {
+    for token in [
+        SPEECH_START_TOKEN,
+        SPEECH_END_TOKEN,
+        SPEECH_PAD_TOKEN,
+        STREAMING_PAD_TOKEN,
+    ] {
         if text.contains(token) {
             return Err(VokraError::InvalidArgument(format!(
-                "vibevoice-realtime tokenizer text must not contain reserved speech boundary {token:?}"
+                "vibevoice-realtime tokenizer text must not contain reserved tokenizer control token {token:?}"
             )));
         }
     }
     Ok(())
+}
+
+/// Matches Python `str.strip()` for the Unicode scalar values relevant to
+/// this boundary. Rust's `char::is_whitespace` follows Unicode `White_Space`
+/// and omits the four C0 record-separator characters that Python also strips.
+fn python_strip(text: &str) -> String {
+    text.trim_matches(|character: char| {
+        character.is_whitespace() || ('\u{001c}'..='\u{001f}').contains(&character)
+    })
+    .to_owned()
 }
 
 fn read_u8_array(file: &GgufFile, key: &str, name: &str) -> Result<Vec<u8>> {
@@ -441,9 +517,23 @@ mod tests {
     }
 
     #[test]
-    fn reserved_speech_boundary_literals_are_rejected() {
-        let error = reject_speech_boundary_literals("hello <|vision_start|>").unwrap_err();
-        assert!(error.to_string().contains("reserved speech boundary"));
+    fn reserved_tokenizer_control_literals_are_rejected() {
+        let error = reject_reserved_control_literals("hello <|vision_start|>").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reserved tokenizer control token")
+        );
+        let error = reject_reserved_control_literals("hello <|image_pad|>").unwrap_err();
+        assert!(error.to_string().contains("<|image_pad|>"));
+    }
+
+    #[test]
+    fn python_strip_removes_c0_record_separators() {
+        for separator in ['\u{001c}', '\u{001d}', '\u{001e}', '\u{001f}'] {
+            let text = format!("{separator}hello{separator}");
+            assert_eq!(python_strip(&text), "hello");
+        }
     }
 
     #[test]

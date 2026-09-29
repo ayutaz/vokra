@@ -20,6 +20,8 @@ use std::collections::BTreeSet;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{Result, VokraError};
 
+/// Cached-prompt input and bookkeeping state for the staged streaming path.
+pub mod state;
 /// Exact sidecar-backed Qwen text-tokenizer primitive for Realtime streaming.
 pub mod tokenizer;
 

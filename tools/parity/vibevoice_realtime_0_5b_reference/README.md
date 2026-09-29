@@ -84,8 +84,18 @@ The acoustic processor requires audio, uses the upstream 24 kHz configuration,
 normalizes to the configured target, and returns its processor field as
 `audio`. The realtime preprocessor declares a speech compression ratio of
 3200; speech mask lengths are therefore derived from the upstream ceiling
-operation. Sampling-rate conversion, cached-prompt construction, staged model
-execution, and output numerical parity are not implemented by this gate.
+operation. The pinned `process_input_with_cached_prompt` path itself sets
+`speech_inputs` to `None`; the native
+`vokra_models::vibevoice_streaming::state` module therefore binds only its
+model-free cached-prompt text boundary. It takes the two authenticated
+hidden-state lengths, authenticates the VibeVoice Fast tokenizer's
+`<|image_pad|>`-based `pad_id` from the exact sidecars (this intentionally
+differs from the ordinary Qwen `pad_token` field), emits pad-filled pseudo
+LM/TTS-LM IDs, and tracks newline-terminated text steps without owning a KV
+cache. Audio preparation, sampling-rate conversion,
+staged model execution, EOS/diffusion/acoustic decoding, and output numerical
+parity are not implemented by this gate. The state module must not be read as
+evidence that synthesis or real-weight parity is complete.
 
 ## Verification boundary
 
