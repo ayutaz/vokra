@@ -11,10 +11,15 @@ dependencies = [
     "torchao==0.5.0",
     "torchaudio==2.5.0",
     "torchtune==0.3.1",
-    "transformers==4.45.2",
+    "transformers==5.10.4",
     "vector-quantize-pytorch==1.17.8",
     "xcodec2==0.1.5",
 ]
 
 [tool.uv]
 package = false
+# The reference path is intentionally decoder-only: it imports the official
+# xcodec2.vq.codec_decoder_vocos module and never imports xcodec2's full
+# Transformers model wrapper. Keep this unused upstream edge impossible so
+# uv cannot silently reintroduce the incompatible full-model dependency.
+override-dependencies = ["transformers ; python_version < '0'"]
