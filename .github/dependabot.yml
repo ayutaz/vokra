@@ -154,6 +154,7 @@ updates:
       - "/tools/parity/ultravox"
       - "/tools/parity/utmos"
       - "/tools/parity/vibevoice_1_5b_reference"
+      - "/tools/parity/vibevoice_realtime_0_5b_reference"
       - "/tools/parity/wespeaker"
       - "/tools/parity/whisper_extras"
       - "/tools/parity/whisper_medusa"

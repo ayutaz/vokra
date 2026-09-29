@@ -152,6 +152,12 @@ pub struct VibeVoiceAcousticDecoderStream {
     caches: Vec<Vec<f32>>,
 }
 
+/// The authenticated Realtime checkpoint has exactly this many tensors in
+/// `model.acoustic_tokenizer.decoder.*`.  Keep this separate from the
+/// 1.5B checkpoint manifest: the two model identities must never be
+/// interchangeable merely because their decoder topology is compatible.
+pub(crate) const REALTIME_DECODER_TENSOR_COUNT: usize = 276;
+
 impl VibeVoiceTokenizerEncoder {
     /// Loads the authenticated acoustic tokenizer encoder.
     pub fn acoustic_from_gguf(file: &GgufFile, backend: BackendKind) -> Result<Self> {
@@ -377,6 +383,27 @@ impl VibeVoiceAcousticDecoder {
     /// Loads the strict acoustic decoder from an authenticated GGUF.
     pub fn from_gguf(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         super::VibeVoiceCheckpoint::from_gguf(file)?;
+        Self::from_decoder_tensors(file, backend)
+    }
+
+    /// Loads the decoder half of an authenticated Realtime GGUF.
+    ///
+    /// The Realtime wrapper performs the composite checkpoint gate before
+    /// calling this helper.  This method intentionally does not invoke the
+    /// 1.5B `VibeVoiceCheckpoint` gate: doing so would misidentify a valid
+    /// Realtime checkpoint as the 1.5B model.
+    pub(crate) fn from_realtime_tensors(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        let prefix = "model.acoustic_tokenizer.decoder.";
+        let count = file
+            .tensors()
+            .iter()
+            .filter(|info| info.name.starts_with(prefix))
+            .count();
+        validate_realtime_decoder_tensor_count(count)?;
+        Self::from_decoder_tensors(file, backend)
+    }
+
+    fn from_decoder_tensors(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         let prefix = "model.acoustic_tokenizer.decoder";
         let stem = load_conv(
             file,
@@ -545,6 +572,15 @@ impl VibeVoiceAcousticDecoderStream {
         finite("vibevoice acoustic decoder stream PCM", &output)?;
         Ok(output)
     }
+}
+
+fn validate_realtime_decoder_tensor_count(count: usize) -> Result<()> {
+    if count != REALTIME_DECODER_TENSOR_COUNT {
+        return Err(VokraError::ModelLoad(format!(
+            "vibevoice-realtime acoustic decoder: found {count} tensors under `model.acoustic_tokenizer.decoder.*`, expected exactly {REALTIME_DECODER_TENSOR_COUNT}"
+        )));
+    }
+    Ok(())
 }
 
 fn decoder_pcm_len(frames: usize) -> Result<usize> {
@@ -1328,6 +1364,14 @@ mod tests {
             assert_eq!(shape.1, channels[index + 1]);
             assert!(shape.2 >= shape.3);
         }
+    }
+
+    #[test]
+    fn realtime_decoder_tensor_count_gate_is_fail_closed() {
+        assert!(validate_realtime_decoder_tensor_count(276).is_ok());
+        let error = validate_realtime_decoder_tensor_count(275).unwrap_err();
+        assert!(error.to_string().contains("expected exactly 276"));
+        assert!(validate_realtime_decoder_tensor_count(277).is_err());
     }
 
     #[test]
