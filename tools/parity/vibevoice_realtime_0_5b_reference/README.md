@@ -97,6 +97,24 @@ staged model execution, EOS/diffusion/acoustic decoding, and output numerical
 parity are not implemented by this gate. The state module must not be read as
 evidence that synthesis or real-weight parity is complete.
 
+## Native prediction-head boundary
+
+The native `vibevoice_streaming::diffusion` module implements one
+source-derived prediction-head forward step on an explicitly selected
+`Compute` backend. Its small scalar-oracle test checks the calculation
+contract only. The complete fixed safetensors/GGUF tensor header and payload
+have not been authenticated for this module, and no upstream real-weight
+reference or CPU/Metal parity has run. CFG, the scheduler, acoustic decoding,
+and the streaming synthesis route remain blocked.
+
+At exact implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`,
+a disposable VAST instance ran `cargo test -p vokra-models --lib
+vibevoice_streaming::diffusion` (5 passed) and `cargo test -p vokra-models
+--lib vibevoice_streaming` (20 passed, 2 ignored because the authenticated
+Qwen sidecars were absent). Both used Rust 1.98.1 and the instance was
+destroyed with an exact-ID readback of `instances: null`. This is model-free
+Rust test evidence, not a speed comparison or real-weight parity receipt.
+
 ## Verification boundary
 
 Run only the model-free checks:
