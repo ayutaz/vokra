@@ -14,7 +14,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import sys
 from types import ModuleType
 from typing import Any, MutableMapping
 
