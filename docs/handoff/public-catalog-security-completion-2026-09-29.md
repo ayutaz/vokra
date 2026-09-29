@@ -153,6 +153,25 @@ two Accelerate and two Diffusers. An update timestamp alone does not prove a
 newly introduced vulnerability or a completed fix. Re-read the API after each
 merge and close alerts through the dependency graph rather than dismissal.
 
+### 2026-09-29 OWSM `torch-complex` license readback (12:56 UTC)
+
+The fixed [PyPI `torch-complex` 0.4.4 release](https://pypi.org/project/torch-complex/0.4.4/)
+lists an Apache license *classifier*, but its sdist (SHA-256
+`4153fd6b24a0bad689e6f193bfbd00f38283b1890d808bef684ddc6d1f63fd3f`)
+and wheel (SHA-256
+`6ab4ecd4f3a16e3adb70a7f7cd2e769a9dfd07d7a8e27d04ff9c621ebbe34b13`)
+contain no LICENSE/COPYING/NOTICE text. Both package metadata records say
+`License: UNKNOWN`. The package's PyPI homepage points to an absent
+`kamo-naoyuki/torch_complex` repository; the author's existing
+[`kamo-naoyuki/pytorch_complex` source](https://github.com/kamo-naoyuki/pytorch_complex)
+has a `v0.4.4` tag at `8a2ad1e47f3df25a30eb426f6ad781b89103fab3`, but
+its GitHub repository license field is `null` and that exact tag's recursive
+source tree has no license file. These primary-source checks do not
+authenticate the terms for the fixed release. Keep the OWSM dependency gate
+blocked; obtain explicit upstream license bytes/permission for that release or
+an independently reviewed compatible replacement before any real-weight
+reference or CPU parity. This readback is not an owner sign-off or model pass.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
