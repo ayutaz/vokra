@@ -508,7 +508,7 @@ mod tests {
         if shape.is_empty()
             || element_count
                 .checked_mul(4)
-                .map_or(true, |size| size != bytes.len() - header_end)
+                .is_none_or(|size| size != bytes.len() - header_end)
         {
             return Err(VokraError::ModelLoad(format!(
                 "VAST Realtime reference `{path:?}` NPY shape/data length mismatch"
