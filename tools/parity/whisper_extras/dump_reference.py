@@ -74,6 +74,40 @@ ENCODER_ROWS = 32
 MAX_NEW_TOKENS = 224
 
 
+_API_IMPORT_EXCEPTION_LABELS = (
+    (ModuleNotFoundError, "ModuleNotFoundError"),
+    (ImportError, "ImportError"),
+    (OSError, "OSError"),
+    (RuntimeError, "RuntimeError"),
+    (ValueError, "ValueError"),
+    (AttributeError, "AttributeError"),
+    (TypeError, "TypeError"),
+)
+
+
+def _api_import_failure_message(exc: BaseException) -> str:
+    """Return an import diagnostic without exposing exception text."""
+    for exception_type, label in _API_IMPORT_EXCEPTION_LABELS:
+        if isinstance(exc, exception_type):
+            return f"api self-test: official API import failed: {label}"
+    return "api self-test: official API import failed: Exception"
+
+
+def _api_import_diagnostic_self_test() -> None:
+    """Ensure simulated dependency errors cannot leak their message."""
+    secret = "credential=/private/tmp/secret-token"
+    cases = (
+        (RuntimeError(secret), "RuntimeError"),
+        (Exception(secret), "Exception"),
+    )
+    for exception, label in cases:
+        message = _api_import_failure_message(exception)
+        if message != f"api self-test: official API import failed: {label}":
+            raise SystemExit("api self-test diagnostic output drift")
+        if secret in message:
+            raise SystemExit("api self-test diagnostic leaked exception text")
+
+
 def api_self_test() -> None:
     """Check the pinned official API without opening a checkpoint.
 
@@ -104,9 +138,7 @@ def api_self_test() -> None:
         import transformers
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
     except Exception as exc:  # noqa: BLE001 - preserve a loud import failure
-        raise SystemExit(
-            f"api self-test: official API import failed: {type(exc).__name__}: {exc}"
-        ) from exc
+        raise SystemExit(_api_import_failure_message(exc)) from None
 
     if torch.__version__.split("+", 1)[0] != expected["torch"]:
         raise SystemExit(f"api self-test: imported torch version drifted: {torch.__version__}")
@@ -320,6 +352,7 @@ def main() -> None:
                 raise
         else:
             raise SystemExit("unknown identity filename was accepted")
+        _api_import_diagnostic_self_test()
         print("dump_reference self-test: OK")
         return
     if not all((args.model, args.checkpoint_dir, args.audio, args.output_dir)):
