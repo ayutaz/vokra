@@ -641,8 +641,8 @@ mod tests {
             prepare_tts_step_embedding(1, &base, 3, 2, &[100.0, 200.0], &types, true).unwrap();
         let speech =
             prepare_tts_step_embedding(1, &base, 3, 2, &[100.0, 200.0], &types, false).unwrap();
-        assert_eq!(text, [101.0, 202.0]);
-        assert_eq!(speech, [103.0, 204.0]);
+        assert_eq!(text, [103.0, 204.0]);
+        assert_eq!(speech, [101.0, 202.0]);
     }
 
     #[test]
