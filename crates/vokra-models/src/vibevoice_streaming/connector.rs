@@ -252,9 +252,9 @@ mod tests {
         let output = connector_forward_with_compute(&Compute::cpu(), &weights, &input).unwrap();
 
         let projected = [
-            0.1 * 0.5 + 0.4 * -1.0,
-            0.2 * 0.5 + 0.5 * -1.0 + 0.25,
-            0.3 * 0.5 + 0.6 * -1.0 + 0.5,
+            0.1 * 0.5 - 0.4,
+            0.2 * 0.5 - 0.5 + 0.25,
+            0.3 * 0.5 - 0.6 + 0.5,
         ];
         let inverse = (projected.iter().map(|value| value * value).sum::<f32>() / 3.0
             + VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_RMS_EPS)
