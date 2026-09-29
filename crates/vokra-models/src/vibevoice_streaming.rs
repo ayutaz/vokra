@@ -20,10 +20,14 @@ use std::collections::BTreeSet;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{Result, VokraError};
 
+/// Native single-step AdaLN diffusion prediction head.
+pub mod diffusion;
 /// Cached-prompt input and bookkeeping state for the staged streaming path.
 pub mod state;
 /// Exact sidecar-backed Qwen text-tokenizer primitive for Realtime streaming.
 pub mod tokenizer;
+
+pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
 
 /// GGUF architecture tag for the streaming Realtime release.
 pub const ARCH: &str = "vibevoice_streaming";

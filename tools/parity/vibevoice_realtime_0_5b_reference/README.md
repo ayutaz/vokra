@@ -97,6 +97,16 @@ staged model execution, EOS/diffusion/acoustic decoding, and output numerical
 parity are not implemented by this gate. The state module must not be read as
 evidence that synthesis or real-weight parity is complete.
 
+## Native prediction-head boundary
+
+The native `vibevoice_streaming::diffusion` module implements one
+source-derived prediction-head forward step on an explicitly selected
+`Compute` backend. Its small scalar-oracle test checks the calculation
+contract only. The complete fixed safetensors/GGUF tensor header and payload
+have not been authenticated for this module, and no upstream real-weight
+reference or CPU/Metal parity has run. CFG, the scheduler, acoustic decoding,
+and the streaming synthesis route remain blocked.
+
 ## Verification boundary
 
 Run only the model-free checks:
