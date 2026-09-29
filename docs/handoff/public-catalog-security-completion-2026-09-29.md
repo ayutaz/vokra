@@ -353,6 +353,39 @@ an integrated synthesis loop, native real-weight CPU parity, Apple CPU/Metal
 parity, or public artifact readiness. The row remains partial and the live
 audit remains 136 full / 58 unresolved.
 
+### 2026-09-30 VibeVoice Realtime connector and preset boundary
+
+Draft [PR #168](https://github.com/ayutaz/vokra/pull/168) stages a
+model-free generation control plane on #164; it does not join the complete
+streaming synthesis path. Draft [PR #171](https://github.com/ayutaz/vokra/pull/171)
+then binds the distinct Realtime `64 -> 896 -> 896` acoustic connector and
+implements the pinned `fc1 -> RMSNorm -> fc2` path with strict tensor names,
+shapes and dense dtypes. Its exact VAST head `8a548f17` passed workspace tests
+(323 suites, 8,121 passed, 0 failed, 106 ignored; log SHA-256
+`019a943de9f1a78349509d10be5c0d42e7c7a1a3c78ba94da355e0344196a343`)
+and all-target Clippy with warnings denied (log SHA-256
+`7eb8ad0908269675e7236f795f1e291d812cbab15b4ff0c72f1d956e467862a2`).
+Disposable VAST instance `53417369` was destroyed after validation; exact-ID
+readback returned `instances: null`. The official-reference connector check is
+still ignored and diagnostic-only, not real-weight native parity. Metal has
+the required GEMM/RMSNorm Compute seam, while unsupported CUDA RMSNorm fails
+explicitly; neither observation is an Apple speed or no-fallback verdict.
+
+The [pinned Microsoft file demo](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/demo/realtime_model_inference_from_file.py)
+loads a voice preset `.pt` with `weights_only=True` and narrowly allowed
+`BaseModelOutputWithPast`/`DynamicCache` types before generating audio. The
+[pinned generation path](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/vibevoice/modular/modeling_vibevoice_streaming_inference.py)
+consumes four separate prefilled outputs: `lm`, `tts_lm`, `neg_lm` and
+`neg_tts_lm`. A fabricated prompt or cache cannot validate this path.
+[Microsoft's Realtime guidance](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/docs/vibevoice-realtime-0.5b.md)
+describes embedded prompts as a deepfake mitigation and directs voice
+customization requests to the team. The repository's MIT source license does
+not by itself settle per-preset voice consent, provenance, redistribution or
+Vokra publication. Record a fixed preset identity and owner/legal decision,
+then implement a safe offline cache bridge and independent complete-waveform
+reference before real-weight native CPU parity. The public row remains partial
+and the 136-full / 58-unresolved audit count is unchanged.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
