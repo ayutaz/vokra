@@ -90,6 +90,20 @@ immutable. None of these rows is owner-approved by this document.
 | SeamlessM4T-v2-Large | Decide between a real gated research-only artifact and withdrawal of the empty public repository. |
 | `dynet38`, `qwen-omni-utils`, `soynlp`, Triton/NVIDIA payload issues | Resolve the exact release/source mismatch, GPL/LGPL conflict or bundled native-payload review before the affected family can receive a scope hash. |
 
+> **2026-09-29 XY-Tokenizer candidate supersession:** the historical 57-row
+> XY entry above remains the 2026-09-07 scope, not a current sign-off. An
+> unmerged clean-head candidate at `e7806fe3f37d497362956b89841f4db26172c043`
+> reduced the active Python closure to 38 rows. The exact-head model-free VAST
+> collector accepted 35 and blocked SciPy 1.18.1, setuptools 84.0.0 and
+> tokenizers 0.23.1 (collection-report SHA-256
+> `d78e22695d668a4c2e57317f8dfb975544041136c0973f54f7bbf9328aa82b7c`).
+> A separate exact-artifact probe found GPL-with-GCC-exception/LGPL native
+> license terms in the SciPy wheel, LGPL vendored terms in setuptools, and no
+> unambiguous distribution-owned primary license bytes in tokenizers. The
+> current policy does not permit silently classifying any of these as clean.
+> The candidate remains `BLOCKED` / `NO_UPLOAD`; no owner decision, real-weight
+> run or publication is inferred. The disposable VAST workers were destroyed.
+
 ### HT-Demucs Multi primary-source boundary (2026-09-08)
 
 The fixed source checkout remains `facebookresearch/demucs` at
