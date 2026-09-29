@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 # These are code-bound after the staged files are finalized; a byte drift blocks.
-LOCK_SHA256 = "d124044b0c03ddc91dce362773d36c9ba4b187b78fcdd0c02826e1c6566ff74d"
-PROJECT_SHA256 = "94cc65df02993b01f8e9e0fa0eb4c1f7405a6087722eb5a7203a703c4e786611"
+LOCK_SHA256 = "106975f55b96cb1a003acb055fb59680d12f417b72404aca4c4524a3eb54c6ee"
+PROJECT_SHA256 = "9e5e594359dfa73c1a37c39207a6ef7825125e2a0bda9d6c32175823a231470d"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 PAYLOAD_FILES = (
     ".gitattributes", "README.md", "__init__.py", "config.json", "configuration_moss_audio_tokenizer.py",
@@ -42,19 +42,26 @@ MODEL_INFO = {
     "cardData_license": "apache-2.0",
 }
 ROUTE = {
-    # The former model-free route used a vulnerable helper.  Until an
-    # equivalent PyTorch-only meta construction is revalidated on VAST, the
-    # inspection remains blocked before source or weight access.
-    "status": "BLOCKED_SECURITY_ADVISORY",
+    # The former model-free route used a helper whose replacement still needs
+    # VAST API and real-weight validation before source or weight access.
+    "status": "BLOCKED_UNVERIFIED_API_SMOKE",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "BLOCKED_SECURITY_ADVISORY",
-    "reason": "official AutoModel meta construction requires VAST revalidation without the former vulnerable helper; source and weight access remain blocked",
-    "source_access": False,
-    "weight_access": False,
+    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    "previous_isolated_torch_pin": "2.7.1+cpu",
+    "isolated_torch_pin": "torch==2.13.0",
+    "torch_security_advisories": [
+        "GHSA-887c-mr87-cxwp",
+        "GHSA-vgrw-7cvw-pwgx",
+        "GHSA-qfhq-4f3w-5fph",
+        "GHSA-rrmf-rvhw-rf47",
+    ],
+    "torch_security_patched_minimum": "2.13.0",
+    "torch_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    "reason": "official AutoModel meta construction and real-weight API compatibility require authorized VAST revalidation; source and weight access remain blocked",
     "api_path": {
         "config": "transformers.AutoConfig.from_pretrained",
         "model": "transformers.AutoModel.from_config",
@@ -106,7 +113,7 @@ ROUTE = {
         "inspection_vokra_head": "aaace7e51cb42a2b4ea90319e7dd195d3952ae7b",
         "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
         "collection_status": "AUTHENTICATED",
-        "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
+        "dependency_audit_report_sha256": "c50199aa53c8659e6ac234ccf1e1af2da56e5be579457df1598ef45619d48eac",
         "dependency_audit_status": "BLOCKED",
         "dependency_audit_package_review_rows": 35,
         "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",
@@ -115,6 +122,8 @@ ROUTE = {
         "parity_status": "NOT_RUN",
         "publication": "NO_UPLOAD",
     },
+    "source_access": False,
+    "weight_access": False,
 }
 REFERENCE_CONTRACT = {
     "frames": 2, "quantizers": 16, "codebook_size": 1024,
@@ -154,7 +163,7 @@ PACKAGE_KEYS = {
 }
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 CPU_TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
-CPU_TORCH_VERSION = "2.7.1+cpu"
+CPU_TORCH_VERSION = "2.13.0+cpu"
 REGISTRY_HOSTS = {
     "https://pypi.org/simple": "files.pythonhosted.org",
     "https://download.pytorch.org/whl/cpu": "download-r2.pytorch.org",
@@ -427,8 +436,8 @@ def verify_snapshot(snapshot: Path, manifest_path: Path) -> None:
 
 
 def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path | None) -> None:
-    if ROUTE.get("status") == "BLOCKED_SECURITY_ADVISORY":
-        blocked("BLOCKED_SECURITY_ADVISORY: Nano inspection is disabled until the meta route is revalidated on VAST")
+    if ROUTE.get("status") == "BLOCKED_UNVERIFIED_API_SMOKE":
+        blocked("BLOCKED_UNVERIFIED_API_SMOKE: Nano inspection is disabled until the meta route is revalidated on VAST")
     for path, label in ((lock_path, "lock"), (project_path, "project"), (manifest_path, "manifest")):
         if path.is_symlink() or not path.is_file():
             blocked(f"{label} input is missing or not a regular file")
@@ -653,14 +662,14 @@ def self_test() -> None:
         baseline_manifest = manifest_path.read_text(encoding="utf-8")
         baseline_evidence = evidence_path.read_text(encoding="utf-8")
         synthetic_route = ROUTE
-        ROUTE = {"status": "BLOCKED_SECURITY_ADVISORY"}
+        ROUTE = {"status": "BLOCKED_UNVERIFIED_API_SMOKE"}
         try:
             run(lock_path, project_path, manifest_path, evidence_path)
         except SystemExit as error:
             if error.code != 2:
                 raise
         else:
-            raise SystemExit("self-test allowed the production security advisory route")
+            raise SystemExit("self-test allowed the unverified API smoke route")
         finally:
             ROUTE = synthetic_route
         for label, target, payload in (
