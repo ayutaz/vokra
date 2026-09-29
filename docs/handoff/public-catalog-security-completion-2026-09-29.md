@@ -58,6 +58,35 @@ remains `BLOCKED` / `NO_UPLOAD`, with no checkpoint acquisition, model
 execution, sign-off or Apple verdict. Both disposable XY VAST workers were
 destroyed after the model-free checks; unrelated instances were untouched.
 
+### 2026-09-29 VibeVoice 1.5B model-free compatibility readback (06:54 UTC)
+
+The unmerged security candidate at clean head
+`1515ab2d29f4f821c0d711097e25e19b39728b77` pins Transformers 5.10.4,
+Torch 2.13.0 and Diffusers 0.38.0. A disposable VAST worker (`53318907`)
+verified that head, the clean checkout, its frozen Python 3.12 environment and
+official VibeVoice source revision
+`2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c`. The model-free import
+probe then stopped with `BLOCKED_MODEL_FREE_API` / `ValueError` in
+`module_import`; its traceback tail reaches the [official tokenizer's
+`AutoModel.register` call](https://github.com/microsoft/VibeVoice/blob/2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c/vibevoice/modular/modular_vibevoice_tokenizer.py#L1188)
+and Transformers `auto_factory.py:429,674`. The fixed upstream
+[`pyproject.toml`](https://github.com/microsoft/VibeVoice/blob/2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c/pyproject.toml#L22)
+specifies `transformers==4.51.3` and warns that later versions may be
+incompatible. The diagnostic's message classifier did not affirm a duplicate
+registration, so the exact exception wording and a safe compatibility remedy
+remain unverified; do not bypass the upstream registration check by assumption.
+
+The sanitized [stage log](vibevoice-1-5b-import-stages-2026-09-29.ndjson)
+and [probe result](vibevoice-1-5b-import-probe-2026-09-29.json) have SHA-256
+`ac2e6783b34eef626d1475afb17593ebbee5748d100e42df7c24067d4bdd89fb`
+and `9b5cb2d647f1a7494baca5c398bd340e51fa45c225b890b137dad1502514e329`.
+This is not an API, license, CPU-parity or Apple pass. No checkpoint, weights,
+model forward or upload was requested. The worker and owned volumes were
+destroyed; the Vokra-labelled instance and volume readback was empty. The
+`vokra/vibevoice-1.5b` row remains partial and in the 58-row queue. Next,
+resolve the fixed-upstream API/security conflict and dependency-license
+decisions before any approved real-weight reference run.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
