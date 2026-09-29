@@ -87,10 +87,22 @@ authenticated checkpoint after exact state-dict binding, not a second fixture.
 The selected dtype is recorded in `reference.json`. CUDA is still selected only
 when the unchanged guard passes; changing dtype does not widen that guard.
 
-The dedicated `uv.lock` is generated and pinned, and VAST `uv sync` has
-succeeded. The recorded VAST runs already completed with this environment; the
-dependency license audit remains pending. The command below is the controlled
-replay command, not an assertion that the recorded execution is still pending:
+The dedicated `uv.lock` is generated and pinned. On the exact VAST tree, commit
+`7e11e027`, `uv sync --frozen` succeeded with 56 installed packages. A fresh
+model-free official-source API smoke on that same pinned source and environment
+also passed as `AUTHENTICATED_API_SMOKE`; its JSON evidence SHA-256 is
+`1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`. The
+smoke imported and inspected the official API only: it did not download a
+model, construct a model, execute a checkpoint, generate parity numbers, or
+publish an artifact.
+
+The installed-closure audit for the same project and lock is recorded at
+`a2d2939ae7dddff33eade14b4eb70ccc6a7af2b732617c6de2531c43ec5bcfc6` and remains
+`OWNER_REVIEW_REQUIRED/NO_UPLOAD`. It covers 56 installed packages and reports
+missing bundled license files for `safetensors`, `tokenizers`, `tqdm`, and
+`triton`. Owner/primary-source review is therefore still required before any
+real-weight replay or publication. The command below is the controlled replay
+command, not an authorization or assertion that replay is currently cleared:
 
 ```text
 uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
@@ -135,9 +147,9 @@ uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python 
 
 The check imports only the official config/model classes, inspects the
 `forward_lm`/`forward_tts_lm` signatures and `DynamicCache(config=...)`, and
-constructs neither a model nor a checkpoint. It must report
-`AUTHENTICATED_API_SMOKE` before the lock can be treated as execution-ready;
-otherwise the reference remains blocked and `NO_UPLOAD`. A model-free package
+constructs neither a model nor a checkpoint. The exact VAST run now reports
+`AUTHENTICATED_API_SMOKE`; this authenticates only the import/API surface, not
+model execution, numerical parity, or publication. A model-free package
 inventory of the 5.10.4 wheel shows that
 `transformers.models.qwen2.tokenization_qwen2_fast` is absent, while the pinned
 official source imports it directly. The runner therefore installs an explicit,
@@ -149,21 +161,25 @@ native `VibeVoiceAcousticTokenizerConfig` with the same class name as the
 older official source. The runner permits only that exact source
 config/model pair to register with `exist_ok=True`, restores the registration
 method immediately, and records the scoped override in the smoke packet. No
-other auto registration is relaxed. The shim is recorded in the smoke packet,
-but compatibility remains `BLOCKED_UNVERIFIED_API_SMOKE` until the VAST
-import/API smoke passes.
+other auto registration is relaxed. The shim is recorded in the smoke packet as
+`qwen2_fast_import=COMPATIBILITY_SHIM`, with the registration override recorded
+as `SCOPED_VIBEVOICE_ACOUSTIC_TOKENIZER_OVERRIDE`. The exact VAST import/API
+smoke passed, so the compatibility status is now
+`AUTHENTICATED_API_SMOKE`; this does not claim model execution or numerical
+parity.
 
 The first VAST smoke after the 5.10.4 lock update reached the official source
 but failed at that exact auto-registration collision (`AutoModel.register`),
-before any model construction or checkpoint access. This failure is why the
-registration scope is explicit and why the smoke must be rerun; it is not
-treated as a successful compatibility result.
+before any model construction or checkpoint access. That historical failure is
+superseded by the exact-source, exact-lock smoke receipt above; the registration
+scope remains explicit and narrow.
 
 The earlier VAST `uv sync` and dependency audit were for Transformers 4.51.3
-and are invalidated by this lock change. The new lock requires a fresh VAST
-`uv sync`, installed-closure license/native-payload audit, and then the
-model-free smoke before any reference replay. No model was downloaded or run
-for this update.
+and are invalidated by this lock change. The refreshed VAST sync and model-free
+smoke are now recorded, but the refreshed installed-closure audit remains
+`OWNER_REVIEW_REQUIRED/NO_UPLOAD` because the four bundled license files named
+above are missing. No model was downloaded or run for this compatibility
+update, and no publication is authorized.
 
 ## Fixed upstream identities
 
@@ -174,8 +190,8 @@ The gate binds all evidence to these immutable revisions:
 - VibeVoice source: `microsoft/VibeVoice`
   `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`
 - Transformers package: `5.10.4` (PyPI artifacts are hash-pinned in
-  `uv.lock`; upstream source compatibility remains `UNVERIFIED` until the
-  model-free API smoke above passes)
+  `uv.lock`; the pinned source/API smoke is `AUTHENTICATED_API_SMOKE`, with
+  evidence SHA-256 `1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`)
 - Base tokenizer: `Qwen/Qwen2.5-0.5B`
   `060db6499f32faf8b98477b0a26969ef7d8b9987`
 

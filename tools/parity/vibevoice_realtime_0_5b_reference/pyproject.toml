@@ -34,7 +34,7 @@ checkpoint_revision = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
 checkpoint_sha256 = "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"
 config_bytes = 2117
 config_sha256 = "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57"
-dependency_lock_status = "VAST_UV_SYNC_REQUIRED_PENDING_COMPATIBILITY_AND_LICENSE_AUDIT"
+dependency_lock_status = "VAST_UV_SYNC_SUCCEEDED_OWNER_REVIEW_REQUIRED"
 source_import_closure = ["torch", "numpy", "tqdm", "transformers", "diffusers.DPMSolverMultistepScheduler"]
 excluded_upstream_optional = ["accelerate", "gradio", "av", "aiortc", "uvicorn", "fastapi", "pydub", "ml-collections", "absl-py"]
 excluded_unused_audio = ["librosa", "soundfile", "soxr", "scipy", "numba", "llvmlite"]
@@ -42,4 +42,17 @@ source_declared_transformers_requirement = "transformers>=4.51.3,<5.0.0"
 transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
 transformers_security_patched_minimum = "5.10.0"
 isolated_transformers_pin = "transformers==5.10.4"
-transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
+transformers_compatibility_status = "AUTHENTICATED_API_SMOKE"
+compatibility_smoke_status = "AUTHENTICATED_API_SMOKE"
+compatibility_smoke_source_revision = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
+compatibility_smoke_evidence_sha256 = "1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189"
+compatibility_smoke_model_download = "NO_MODEL_DOWNLOAD"
+compatibility_smoke_model_execution = "NO_MODEL_EXECUTION"
+compatibility_smoke_publication = "NO_UPLOAD"
+compatibility_smoke_qwen2_fast_import = "COMPATIBILITY_SHIM"
+compatibility_smoke_registration = "SCOPED_VIBEVOICE_ACOUSTIC_TOKENIZER_OVERRIDE"
+installed_closure_audit_status = "OWNER_REVIEW_REQUIRED_NO_UPLOAD"
+installed_closure_audit_sha256 = "a2d2939ae7dddff33eade14b4eb70ccc6a7af2b732617c6de2531c43ec5bcfc6"
+installed_closure_audit_package_count = 56
+installed_closure_audit_missing_license_files = ["safetensors", "tokenizers", "tqdm", "triton"]
+reference_replay_status = "BLOCKED_OWNER_REVIEW_REQUIRED"
