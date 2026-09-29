@@ -312,6 +312,7 @@ fn finite(label: &str, values: &[f32]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn realtime_axes_are_authenticated() {
@@ -391,5 +392,260 @@ mod tests {
         // fc1([0, 2]) = [-1, 3], ReLU => [0, 3], fc2 => -3.
         let logit = apply_eos_classifier(&compute, &fc1, &fc2, &[0.0, 2.0]).unwrap();
         assert_eq!(logit, -3.0);
+    }
+
+    #[derive(Debug)]
+    struct NpyF32 {
+        shape: Vec<usize>,
+        values: Vec<f32>,
+    }
+
+    fn read_npy_f32(path: &Path) -> Result<NpyF32> {
+        let bytes = std::fs::read(path).map_err(|error| {
+            VokraError::ModelLoad(format!("VAST Realtime reference read {path:?}: {error}"))
+        })?;
+        if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+            return Err(VokraError::ModelLoad(format!(
+                "VAST Realtime reference `{path:?}` is not an NPY file"
+            )));
+        }
+        let version = (bytes[6], bytes[7]);
+        let (header_len, header_start) = match version {
+            (1, 0) | (2, 0) => {
+                let width = if version == (1, 0) { 2 } else { 4 };
+                if bytes.len() < 8 + width {
+                    return Err(VokraError::ModelLoad(format!(
+                        "VAST Realtime reference `{path:?}` has a truncated NPY header"
+                    )));
+                }
+                let length = if width == 2 {
+                    u16::from_le_bytes([bytes[8], bytes[9]]) as usize
+                } else {
+                    u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize
+                };
+                (length, 8 + width)
+            }
+            (3, 0) => {
+                if bytes.len() < 12 {
+                    return Err(VokraError::ModelLoad(format!(
+                        "VAST Realtime reference `{path:?}` has a truncated NPY v3 header"
+                    )));
+                }
+                (
+                    u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+                    12,
+                )
+            }
+            _ => {
+                return Err(VokraError::ModelLoad(format!(
+                    "VAST Realtime reference `{path:?}` uses unsupported NPY version {version:?}"
+                )));
+            }
+        };
+        let header_end = header_start.checked_add(header_len).ok_or_else(|| {
+            VokraError::ModelLoad("VAST Realtime reference NPY header length overflow".to_owned())
+        })?;
+        if header_end > bytes.len() {
+            return Err(VokraError::ModelLoad(format!(
+                "VAST Realtime reference `{path:?}` has a truncated NPY header"
+            )));
+        }
+        let header = std::str::from_utf8(&bytes[header_start..header_end]).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "VAST Realtime reference NPY header is not UTF-8: {error}"
+            ))
+        })?;
+        if !(header.contains("'descr': '<f4'") || header.contains("\"descr\": \"<f4\""))
+            || !(header.contains("'fortran_order': False")
+                || header.contains("\"fortran_order\": false"))
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "VAST Realtime reference `{path:?}` must be little-endian contiguous f32"
+            )));
+        }
+        let shape_marker = header
+            .find("'shape': (")
+            .or_else(|| header.find("\"shape\": ("));
+        let shape_marker = shape_marker.ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "VAST Realtime reference `{path:?}` has no NPY shape"
+            ))
+        })?;
+        let shape_start = shape_marker
+            + header[shape_marker..].find('(').ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "VAST Realtime reference `{path:?}` has an invalid NPY shape"
+                ))
+            })?
+            + 1;
+        let shape_end = shape_start
+            + header[shape_start..].find(')').ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "VAST Realtime reference `{path:?}` has an invalid NPY shape"
+                ))
+            })?;
+        let shape: Vec<usize> = header[shape_start..shape_end]
+            .split(',')
+            .map(|item| {
+                let item = item.trim();
+                if item.is_empty() {
+                    Ok(None)
+                } else {
+                    item.parse::<usize>().map(Some).map_err(|error| {
+                        VokraError::ModelLoad(format!(
+                            "VAST Realtime reference `{path:?}` has invalid NPY shape: {error}"
+                        ))
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|items| items.into_iter().flatten().collect())?;
+        let element_count = shape.iter().try_fold(1usize, |count, &dimension| {
+            count.checked_mul(dimension).ok_or_else(|| {
+                VokraError::ModelLoad("VAST Realtime reference NPY shape overflow".to_owned())
+            })
+        })?;
+        if shape.is_empty()
+            || element_count
+                .checked_mul(4)
+                .map_or(true, |size| size != bytes.len() - header_end)
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "VAST Realtime reference `{path:?}` NPY shape/data length mismatch"
+            )));
+        }
+        let values = bytes[header_end..]
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        Ok(NpyF32 { shape, values })
+    }
+
+    fn selected_artifact_sha256(packet: &str, filename: &str) -> Result<String> {
+        let path_marker = format!("\"path\": \"{filename}\"");
+        let start = packet.rfind(&path_marker).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "VAST Realtime reference packet does not identify selected `{filename}`"
+            ))
+        })?;
+        let tail = &packet[start..];
+        let marker = "\"sha256\": \"";
+        let hash_start = tail.find(marker).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "VAST Realtime reference packet has no hash for selected `{filename}`"
+            ))
+        })? + marker.len();
+        let hash = tail[hash_start..].split('"').next().unwrap_or_default();
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(VokraError::ModelLoad(format!(
+                "VAST Realtime reference packet has an invalid hash for `{filename}`"
+            )));
+        }
+        Ok(hash.to_owned())
+    }
+
+    fn compare_reference(native: &[f32], reference: &NpyF32, label: &str) -> Result<()> {
+        if native.len() != reference.values.len()
+            || !reference.values.iter().all(|value| value.is_finite())
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "VAST Realtime {label} reference shape/finiteness mismatch"
+            )));
+        }
+        let mut max_abs = 0.0_f32;
+        let mut squared = 0.0_f64;
+        for (left, right) in native.iter().zip(&reference.values) {
+            if !left.is_finite() {
+                return Err(VokraError::ModelLoad(format!(
+                    "VAST Realtime {label} native output is non-finite"
+                )));
+            }
+            let difference = (*left - *right).abs();
+            max_abs = max_abs.max(difference);
+            squared += f64::from(difference) * f64::from(difference);
+        }
+        let rmse = (squared / native.len() as f64).sqrt();
+        eprintln!(
+            "VAST Realtime diagnostic {label}: elements={}, max_abs={max_abs:.8e}, rmse={rmse:.8e}",
+            native.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "VAST-only authenticated Realtime GGUF and independent official packet"]
+    fn vast_real_weight_staged_language_diagnostic() {
+        let gguf_path = std::env::var_os("VOKRA_VIBEVOICE_REALTIME_GGUF")
+            .map(PathBuf::from)
+            .expect("VOKRA_VIBEVOICE_REALTIME_GGUF must point to the VAST-only GGUF");
+        let reference_dir = std::env::var_os("VOKRA_VIBEVOICE_REALTIME_REFERENCE_DIR")
+            .map(PathBuf::from)
+            .expect("VOKRA_VIBEVOICE_REALTIME_REFERENCE_DIR must point to the official packet");
+        let packet_path = reference_dir.join("reference.json");
+        let packet = std::fs::read_to_string(&packet_path)
+            .expect("VAST official reference packet must be readable");
+        for marker in [
+            "\"status\": \"REFERENCE_RUN_OPEN_NOT_RUST_PARITY\"",
+            "\"execution\": \"official_microsoft_vibevoice_only\"",
+            "\"revision\": \"94da20d98b2fa7688e9cbfaf7692ddb4954f7600\"",
+            "\"sha256\": \"7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514\"",
+            "\"compute_dtype\": \"float32\"",
+            "\"input_ids\": [[1, 2, 3, 4]]",
+            "\"tts_text_masks\": [[1, 1, 1, 1]]",
+        ] {
+            assert!(
+                packet.contains(marker),
+                "reference identity marker missing: {marker}"
+            );
+        }
+        let filenames = [
+            "cpu_lm_last_hidden_state.npy",
+            "cpu_tts_last_hidden_state.npy",
+            "cpu_eos_logits.npy",
+        ];
+        let paths: Vec<PathBuf> = filenames
+            .iter()
+            .map(|name| reference_dir.join(name))
+            .collect();
+        for (name, path) in filenames.iter().zip(&paths) {
+            let expected = selected_artifact_sha256(&packet, name).expect("selected artifact hash");
+            let bytes = std::fs::read(path).expect("selected artifact must be readable");
+            let actual = hex(&crate::strict_checkpoint::sha256_bytes(&bytes));
+            assert_eq!(
+                actual, expected,
+                "selected artifact hash mismatch for {name}"
+            );
+        }
+        let lm_reference = read_npy_f32(&paths[0]).expect("read official CPU LM NPY");
+        let tts_reference = read_npy_f32(&paths[1]).expect("read official CPU TTS NPY");
+        let eos_reference = read_npy_f32(&paths[2]).expect("read official CPU EOS NPY");
+        assert_eq!(lm_reference.shape, [1, 4, HIDDEN]);
+        assert_eq!(tts_reference.shape, [1, 4, HIDDEN]);
+        assert_eq!(eos_reference.shape, [1, 1]);
+
+        let file = GgufFile::open(&gguf_path).expect("open VAST Realtime GGUF");
+        let mut language = VibeVoiceRealtimeLanguage::from_gguf(&file, BackendKind::Cpu)
+            .expect("authenticated Realtime language binder");
+        let lm = language
+            .forward_lm(&[1, 2, 3, 4])
+            .expect("native text LM forward");
+        let tts = language
+            .forward_tts_lm(&[1, 2, 3, 4], &lm.hidden, &[true, true, true, true])
+            .expect("native TTS LM forward");
+        assert_eq!(lm.hidden.len(), 4 * HIDDEN);
+        assert_eq!(tts.hidden.len(), 4 * HIDDEN);
+        assert!(lm.hidden.iter().all(|value| value.is_finite()));
+        assert!(tts.hidden.iter().all(|value| value.is_finite()));
+        assert!(tts.eos_logit.is_finite());
+        compare_reference(&lm.hidden, &lm_reference, "lm_last_hidden_state")
+            .expect("LM diagnostic comparison");
+        compare_reference(&tts.hidden, &tts_reference, "tts_last_hidden_state")
+            .expect("TTS diagnostic comparison");
+        compare_reference(&[tts.eos_logit], &eos_reference, "eos_logits")
+            .expect("EOS diagnostic comparison");
+    }
+
+    fn hex(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 }
