@@ -125,6 +125,20 @@ An import/API incompatibility is emitted as atomic `BLOCKED_INCOMPATIBLE_API`
 evidence with `checkpoint_load=NOT_PERFORMED`, never as an unstructured
 traceback.
 
+The all-variant model-free API replay was repeated on disposable Linux x86_64
+VAST worker `53293306` at exact Vokra checkout head
+`e474cae44baef3c4bf01ef7f7fc2eb8bf072f5ab`. It returned
+`PASS_MODEL_FREE` for all four variants with
+`checkpoint_load=NOT_PERFORMED`, `publication=NO_UPLOAD`, and
+`approvals=PENDING_OWNER_APPROVAL`. The strict evidence JSON was validated
+before hand-off (SHA-256
+`cf0a977b36c9f5cc45055f29a58ea7d022f58f5d7a9028d0ced440c8f0a5bd9e`); the
+raw worker log SHA-256 is
+`5721287b85831b2517a2d1155dca03a9cd89ccbc1ec034481d15dbfb8bed4709`.
+Only the pinned official source and metadata files were staged; no checkpoint
+was acquired or imported. The worker and its storage were destroyed after the
+evidence was recovered.
+
 The separate model-free dependency/license audit is
 `scripts/publish/vast-ai/audit-qwen3-tts-dependencies.sh`. It is restricted to
 an already synchronized Linux x86_64 VAST environment and records the active
@@ -157,14 +171,16 @@ checkpoints, Cargo and upload were not used. This historical PASS is factual
 dependency evidence for that former closure, not real-weight or numerical
 parity evidence for the current lock.
 The authorized fresh audit for this lock ran on disposable Linux x86_64 VAST
-at exact repository head `895d6e38340c31b83c7e82aaadd73a11fccb6573` with
+at exact repository head `e474cae44baef3c4bf01ef7f7fc2eb8bf072f5ab` with
 Python 3.12.14. It found an exact closure of 55 active and 4 inactive rows,
 no missing or unexpected packages, 188 publisher files, 244 native files and
 zero unsafe paths. No model code or model files were acquired. The compact
 evidence SHA-256 is
-`2188b52ddac10170d4fddd99002806085c1306cbd173769ea5ae11f0896c576f`; the
+`cc22b0e23b225a26e47ad503033c280c47b8c456f05682252265406655ad1d42`; the
 full VAST report SHA-256 is
-`6b194745067461faaa110e23cf693502a71a95ff3d0ed3ef3c405c5600641265`.
+`5cd9cb20493588443ef69fab4faafdc8a07498a3544d27bd068662442631a17c`.
+The raw audit log SHA-256 is
+`f2a47d4c91b5634da5f353f10939794768dd2209fb06e30243a13b6078b56d38`.
 The report is intentionally `full_audit_status=BLOCKED` because the updated
 Torch 2.13.0/TorchAudio 2.11.0 license/native evidence remains unresolved;
 the four corresponding manifest rows are `BLOCKED_UNRESOLVED_REVIEW`. The

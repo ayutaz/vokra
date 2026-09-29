@@ -916,8 +916,8 @@ def self_test() -> None:
     assert production_manifest["dependency_audit_evidence"] == {
         "schema": COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "2188b52ddac10170d4fddd99002806085c1306cbd173769ea5ae11f0896c576f",
-        "full_audit_sha256": "6b194745067461faaa110e23cf693502a71a95ff3d0ed3ef3c405c5600641265",
+        "sha256": "cc22b0e23b225a26e47ad503033c280c47b8c456f05682252265406655ad1d42",
+        "full_audit_sha256": "5cd9cb20493588443ef69fab4faafdc8a07498a3544d27bd068662442631a17c",
         "status": "PENDING_OWNER_APPROVAL",
     }
     assert len(EXPECTED_INACTIVE_ROWS) == 4
@@ -942,7 +942,7 @@ def self_test() -> None:
     assert production_compact["schema"] == COMPACT_SCHEMA
     assert production_compact["status"] == "PENDING_OWNER_APPROVAL"
     assert production_compact["full_audit_status"] == "BLOCKED"
-    assert production_compact["repository"]["head"] == "895d6e38340c31b83c7e82aaadd73a11fccb6573"
+    assert production_compact["repository"]["head"] == "e474cae44baef3c4bf01ef7f7fc2eb8bf072f5ab"
     assert production_compact["environment"]["model_code_imported"] is False
     assert production_compact["model_facts"]["metadata_fallback_count"] == 5
     assert production_compact["closure"]["exact"] is True
