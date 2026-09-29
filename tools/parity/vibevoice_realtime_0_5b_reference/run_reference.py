@@ -396,6 +396,7 @@ def _run_once(torch, model, device: str) -> dict[str, Any]:
         acoustic = model.acoustic_connector(inputs["acoustic_latent"])
     return {
         "eos_logits": tts.logits.detach().to("cpu", dtype=torch.float32),
+        "lm_last_hidden_state": lm.last_hidden_state.detach().to("cpu", dtype=torch.float32),
         "tts_last_hidden_state": tts.last_hidden_state.detach().to("cpu", dtype=torch.float32),
         "acoustic_connector": acoustic.detach().to("cpu", dtype=torch.float32),
     }

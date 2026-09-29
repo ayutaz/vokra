@@ -76,6 +76,31 @@ impl Qwen2RuntimeConfig {
         }
     }
 
+    /// Authenticated Realtime text Qwen2 axes.
+    #[must_use]
+    pub(crate) const fn vibevoice_realtime_text() -> Self {
+        Self {
+            hidden_size: 896,
+            vocab_size: 151_936,
+            num_layers: 4,
+            num_attention_heads: 14,
+            num_key_value_heads: 2,
+            intermediate_size: 4_864,
+            rope_theta: 1_000_000.0,
+            rms_norm_eps: 1.0e-6,
+            max_position_embeddings: 8_192,
+        }
+    }
+
+    /// Authenticated Realtime TTS Qwen2 axes.
+    #[must_use]
+    pub(crate) const fn vibevoice_realtime_tts() -> Self {
+        Self {
+            num_layers: 20,
+            ..Self::vibevoice_realtime_text()
+        }
+    }
+
     fn validate(self) -> Result<()> {
         if self.hidden_size == 0
             || self.vocab_size == 0
@@ -177,9 +202,9 @@ impl LayerCache {
 #[derive(Debug)]
 pub(crate) struct Qwen2Weights {
     config: Qwen2RuntimeConfig,
-    embedding: Vec<f32>,
+    embedding: Arc<Vec<f32>>,
     layers: Vec<Layer>,
-    final_norm: Vec<f32>,
+    final_norm: Option<Vec<f32>>,
 }
 
 impl Qwen2Weights {
@@ -191,19 +216,83 @@ impl Qwen2Weights {
     pub(crate) fn from_gguf(file: &GgufFile) -> Result<Self> {
         let config = Qwen2RuntimeConfig::vibevoice_1_5b();
         config.validate()?;
-        let embedding = load_raw(
-            file,
-            "model.language_model.embed_tokens.weight",
-            &[config.vocab_size, config.hidden_size],
-        )?;
-        let final_norm = load_raw(
-            file,
-            "model.language_model.norm.weight",
-            &[config.hidden_size],
-        )?;
+        Self::from_gguf_section(file, "model.language_model", config, true, None)
+    }
+
+    /// Loads one of the authenticated Realtime Qwen2 roles.
+    ///
+    /// Realtime's text stack is constructed with an identity final norm,
+    /// while its TTS stack has the regular Qwen2 RMSNorm.  The role prefix
+    /// and this policy are explicit so a 1.5B tensor cannot be accepted by
+    /// accident and the text path cannot gain an unrequested normalization.
+    pub(crate) fn from_gguf_section(
+        file: &GgufFile,
+        role_prefix: &str,
+        config: Qwen2RuntimeConfig,
+        with_final_norm: bool,
+        shared_embedding: Option<Arc<Vec<f32>>>,
+    ) -> Result<Self> {
+        if !matches!(
+            role_prefix,
+            "model.language_model" | "model.tts_language_model"
+        ) {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice Qwen2 role prefix is not an authenticated Realtime role".to_owned(),
+            ));
+        }
+        let expected_config = if role_prefix == "model.language_model" {
+            Qwen2RuntimeConfig::vibevoice_realtime_text()
+        } else {
+            Qwen2RuntimeConfig::vibevoice_realtime_tts()
+        };
+        let realtime_role = config == expected_config
+            && with_final_norm == (role_prefix == "model.tts_language_model");
+        let legacy_role = role_prefix == "model.language_model"
+            && config == Qwen2RuntimeConfig::vibevoice_1_5b()
+            && with_final_norm
+            && shared_embedding.is_none();
+        if !realtime_role && !legacy_role {
+            return Err(VokraError::InvalidArgument(format!(
+                "vibevoice Qwen2 role `{role_prefix}` has an unauthenticated axes/final-norm policy"
+            )));
+        }
+        config.validate()?;
+        let embedding = match shared_embedding {
+            Some(embedding) => {
+                require_tensor_shape(
+                    file,
+                    "vibevoice Qwen2",
+                    &format!("{role_prefix}.embed_tokens.weight"),
+                    &[config.vocab_size, config.hidden_size],
+                )?;
+                embedding
+            }
+            None => Arc::new(load_raw(
+                file,
+                &format!("{role_prefix}.embed_tokens.weight"),
+                &[config.vocab_size, config.hidden_size],
+            )?),
+        };
+        let final_norm = if with_final_norm {
+            Some(load_raw(
+                file,
+                &format!("{role_prefix}.norm.weight"),
+                &[config.hidden_size],
+            )?)
+        } else {
+            if file
+                .tensor_info(&format!("{role_prefix}.norm.weight"))
+                .is_some()
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "vibevoice Qwen2 role `{role_prefix}` unexpectedly carries a final norm"
+                )));
+            }
+            None
+        };
         let mut layers = Vec::with_capacity(config.num_layers);
         for index in 0..config.num_layers {
-            let prefix = format!("model.language_model.layers.{index}");
+            let prefix = format!("{role_prefix}.layers.{index}");
             layers.push(Layer {
                 q: load_linear(
                     file,
@@ -299,6 +388,52 @@ impl Qwen2Runtime {
             cache,
             position: 0,
         })
+    }
+
+    /// Binds one authenticated Realtime Qwen2 role on the selected backend.
+    pub(crate) fn from_gguf_section_with_backend(
+        file: &GgufFile,
+        role_prefix: &str,
+        config: Qwen2RuntimeConfig,
+        backend: BackendKind,
+        with_final_norm: bool,
+    ) -> Result<Self> {
+        Self::from_gguf_section_with_backend_and_embedding(
+            file,
+            role_prefix,
+            config,
+            backend,
+            with_final_norm,
+            None,
+        )
+    }
+
+    /// Same as [`Self::from_gguf_section_with_backend`] while reusing the
+    /// authenticated base embedding.  The Realtime TTS forward calls the
+    /// base model's embedding lookup, so loading a second 151936x896 table
+    /// would be both unnecessary and an avoidable resident-memory cost.
+    pub(crate) fn from_gguf_section_with_backend_and_embedding(
+        file: &GgufFile,
+        role_prefix: &str,
+        config: Qwen2RuntimeConfig,
+        backend: BackendKind,
+        with_final_norm: bool,
+        shared_embedding: Option<Arc<Vec<f32>>>,
+    ) -> Result<Self> {
+        Self::new(
+            Qwen2Weights::from_gguf_section(
+                file,
+                role_prefix,
+                config,
+                with_final_norm,
+                shared_embedding,
+            )?,
+            backend,
+        )
+    }
+
+    pub(crate) fn shared_embedding(&self) -> Arc<Vec<f32>> {
+        Arc::clone(&self.weights.embedding)
     }
 
     /// Loads and binds the Qwen2 section of an authenticated VibeVoice GGUF.
@@ -552,12 +687,7 @@ impl Qwen2Runtime {
             add_assign(&mut hidden, &projected)?;
         }
         self.position += 1;
-        rms(
-            &compute,
-            &hidden,
-            &self.weights.final_norm,
-            self.config().rms_norm_eps,
-        )
+        self.finalize_hidden(&compute, hidden)
     }
 
     fn empty_cache(&self) -> Vec<LayerCache> {
@@ -695,14 +825,40 @@ impl Qwen2Runtime {
             add_assign(&mut hidden, &projected)?;
         }
         self.position = rows;
-        rms_rows(
-            &compute,
-            &hidden,
-            &self.weights.final_norm,
-            rows,
-            d,
-            config.rms_norm_eps,
-        )
+        self.finalize_hidden_rows(&compute, hidden, rows, d)
+    }
+
+    fn finalize_hidden(&self, compute: &Compute, hidden: Vec<f32>) -> Result<Vec<f32>> {
+        match self.weights.final_norm.as_deref() {
+            Some(weight) => rms(compute, &hidden, weight, self.config().rms_norm_eps),
+            None => {
+                finite("Qwen2 final hidden", &hidden)?;
+                Ok(hidden)
+            }
+        }
+    }
+
+    fn finalize_hidden_rows(
+        &self,
+        compute: &Compute,
+        hidden: Vec<f32>,
+        rows: usize,
+        width: usize,
+    ) -> Result<Vec<f32>> {
+        match self.weights.final_norm.as_deref() {
+            Some(weight) => rms_rows(
+                compute,
+                &hidden,
+                weight,
+                rows,
+                width,
+                self.config().rms_norm_eps,
+            ),
+            None => {
+                finite("Qwen2 final hidden rows", &hidden)?;
+                Ok(hidden)
+            }
+        }
     }
 
     fn attend(
@@ -806,7 +962,10 @@ fn load_linear(
 fn validate_weight_shapes(weights: &Qwen2Weights) -> Result<()> {
     let config = weights.config;
     if weights.embedding.len() != config.vocab_size * config.hidden_size
-        || weights.final_norm.len() != config.hidden_size
+        || weights
+            .final_norm
+            .as_ref()
+            .is_some_and(|norm| norm.len() != config.hidden_size)
         || weights.layers.len() != config.num_layers
     {
         return Err(VokraError::ModelLoad(
@@ -1136,9 +1295,9 @@ mod tests {
         Qwen2Runtime::new(
             Qwen2Weights {
                 config,
-                embedding,
+                embedding: Arc::new(embedding),
                 layers: vec![layer],
-                final_norm: vec![1.0; 4],
+                final_norm: Some(vec![1.0; 4]),
             },
             BackendKind::Cpu,
         )

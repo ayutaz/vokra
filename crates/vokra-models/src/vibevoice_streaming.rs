@@ -24,6 +24,8 @@ use vokra_core::{Result, VokraError};
 pub mod acoustic;
 /// Native single-step AdaLN diffusion prediction head.
 pub mod diffusion;
+/// Native staged text/TTS language-model path.
+pub mod language;
 /// Deterministic CPU-only classifier-free guidance diffusion sampler.
 pub mod sampler;
 /// Cached-prompt input and bookkeeping state for the staged streaming path.
@@ -36,6 +38,10 @@ pub use acoustic::{
     VibeVoiceRealtimeAcousticDecoder, VibeVoiceRealtimeAcousticDecoderStream,
 };
 pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
+pub use language::{
+    VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS, VibeVoiceRealtimeLanguage, VibeVoiceRealtimeLmOutput,
+    VibeVoiceRealtimeTtsOutput,
+};
 pub use sampler::{
     VIBEVOICE_REALTIME_CONDITION_WIDTH, VIBEVOICE_REALTIME_INFERENCE_STEPS,
     VIBEVOICE_REALTIME_LATENT_WIDTH, VIBEVOICE_REALTIME_TRAIN_STEPS, sample_vibevoice_realtime_cfg,

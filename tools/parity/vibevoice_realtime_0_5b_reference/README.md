@@ -60,9 +60,12 @@ acoustic-connector calls do not invoke the acoustic-tokenizer encoder. This is
 not evidence for acoustic encoding, synthesis, or complete checkpoint binding.
 
 The fixed probe uses token IDs `[1, 2, 3, 4]`, a four-token attention mask, and
-a deterministic `[1, 1, 64]` acoustic latent. It writes the EOS logits, TTS
-hidden state, acoustic-connector output, and a JSON packet containing source,
-checkpoint, input, runtime, timing, shape, finiteness, and SHA-256 metadata.
+a deterministic `[1, 1, 64]` acoustic latent. It writes the independent
+official `forward_lm` `lm_last_hidden_state`, EOS logits, TTS hidden state,
+acoustic-connector output, and a JSON packet containing source, checkpoint,
+input, runtime, timing, shape, finiteness, and SHA-256 metadata. The LM hidden
+state is captured directly from the official `forward_lm` return before it is
+spliced into `forward_tts_lm`; it is not reconstructed from the TTS output.
 When CUDA is available, the packet also contains separate CPU and CUDA copies
 of each small output plus per-output diagnostics: absolute difference, relative
 difference with a `1e-6` denominator floor, differing-element count, shape, and
@@ -113,6 +116,25 @@ uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python 
   --dtype float32 \
   --output /root/realtime-reference
 ```
+
+After `uv sync` on the disposable Linux x86_64 VAST instance, collect the
+installed-closure evidence before any new official reference replay:
+
+```text
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --project \
+  tools/parity/vibevoice_realtime_0_5b_reference python \
+  tools/parity/vibevoice_realtime_0_5b_reference/audit_installed_closure.py \
+  --source-root /root/VibeVoice \
+  --output /root/realtime-reference-dependency-audit.json
+```
+
+The audit records the exact locked distribution Name/Version/source, project
+and lockfile identities, official VibeVoice Git revision and clean-tree state,
+metadata/license files, and native payload inventory/hashes where the bounded
+hash policy permits. It performs no model download or model execution. Its
+result intentionally remains `OWNER_REVIEW_REQUIRED` and `NO_UPLOAD`; an
+independent primary-source license/native-payload review and owner decision are
+required before replay evidence can be treated as execution-authorizing.
 
 The command is intentionally not a local verification command. The full
 checkpoint is larger than the 2 GB VAST threshold and must never be downloaded
