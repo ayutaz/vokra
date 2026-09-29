@@ -7,7 +7,12 @@ dependencies = [
     "huggingface-hub==1.30.0",
     "numpy==2.5.3",
     "safetensors==0.8.0",
-    "torch==2.7.1",
+    # The four open Torch advisories require patched floors 2.8.0, 2.9.1,
+    # 2.10.0, and 2.13.0; keep the highest floor until the new lock is
+    # independently audited on VAST.  This environment has no TorchAudio
+    # dependency; the official TorchAudio stable-ABI guidance is therefore
+    # not applicable here.
+    "torch==2.13.0",
     "transformers==5.16.1",
 ]
 

@@ -459,7 +459,7 @@ def self_test() -> None:
         pass
     else:
         raise SystemExit("self-test accepted dirty checkout")
-    with tempfile.TemporaryDirectory(prefix="vokra-mms-audit-git-", dir="/private/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="vokra-mms-audit-git-", dir=Path(tempfile.gettempdir()).resolve()) as temporary:
         root = Path(temporary)
         class Result:
             def __init__(self, stdout: str, stderr: str = "", returncode: int = 0):
@@ -512,7 +512,7 @@ def self_test() -> None:
     assert is_license_name("LICENSE") and is_license_name("license.txt")
     assert not is_license_name("not-license.txt")
     assert not native_file(Path(__file__), PurePosixPath(__file__).name)
-    with tempfile.TemporaryDirectory(prefix="vokra-mms-audit-", dir="/private/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="vokra-mms-audit-", dir=Path(tempfile.gettempdir()).resolve()) as temporary:
         root = Path(temporary)
 
         class SyntheticDistribution:
