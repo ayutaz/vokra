@@ -457,6 +457,11 @@ mod tests {
     use super::*;
     use vokra_core::gguf::{GgufBuilder, GgufFile};
 
+    const KEY_CHECKPOINT_SHA256: &str = "vokra.vibevoice.checkpoint_sha256";
+    const REALTIME_CHECKPOINT_SHA256: &str =
+        "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514";
+    const REALTIME_TENSOR_COUNT: usize = 605;
+
     fn add_metadata(builder: &mut GgufBuilder) {
         builder
             .add_string(chunks::KEY_MODEL_ARCH, ARCH)
@@ -689,5 +694,23 @@ mod tests {
         let checkpoint = VibeVoiceStreamingCheckpoint::from_gguf(&file).unwrap();
         let error = checkpoint.synthesize("hello").unwrap_err();
         assert!(matches!(error, VokraError::NotImplemented(_)));
+    }
+
+    #[test]
+    #[ignore = "requires the private VAST-converted Realtime GGUF"]
+    fn vast_real_realtime_gguf_binds_the_authenticated_descriptor_count() {
+        let path = std::env::var("VOKRA_VIBEVOICE_REALTIME_GGUF")
+            .expect("VOKRA_VIBEVOICE_REALTIME_GGUF must point to the VAST-only GGUF");
+        let file = GgufFile::open(path).expect("open VAST-converted Realtime GGUF");
+        assert_eq!(file.tensors().len(), REALTIME_TENSOR_COUNT);
+        assert_eq!(
+            file.get(KEY_CHECKPOINT_SHA256)
+                .and_then(GgufMetadataValue::as_str),
+            Some(REALTIME_CHECKPOINT_SHA256)
+        );
+
+        let checkpoint = VibeVoiceStreamingCheckpoint::from_gguf(&file)
+            .expect("VAST-converted Realtime GGUF must pass the descriptor binder");
+        assert_eq!(checkpoint.tensor_count(), REALTIME_TENSOR_COUNT);
     }
 }
