@@ -63,6 +63,11 @@ model, read weights, or establish numerical parity. The locked PyTorch 2.13.0
 macOS wheel is arm64-only and targets macOS 14; the authoritative real-weight
 route remains the Linux x86_64 VAST worker.
 
+The VAST runner executes this check immediately after `uv sync --frozen` and
+before the Cargo build or any snapshot download. Its output is captured as
+`evidence/api-self-test.log` and the SHA-256 is recorded in
+`evidence/input-sha256.txt`.
+
 ## Apple Silicon handoff
 
 After the VAST runner passes, transfer the two GGUFs, both reference
