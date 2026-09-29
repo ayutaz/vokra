@@ -1,16 +1,19 @@
 {
   "schema": "vokra-clap-htsat-fused-owner-review-candidate-v2",
-  "candidate_status": "PENDING_VAST_REGENERATION",
+  "candidate_status": "PENDING_OWNER_REVIEW",
   "upstream": {
     "repository": "laion/clap-htsat-fused",
     "source_repository": "https://huggingface.co/laion/clap-htsat-fused",
     "revision": "365dea6ef167def6676140ed93bbc43f84dabb28"
   },
   "evidence": {
-    "model_free_audit_sha256": "6270476e34fd53b5d12cbd9cc0cb672a0633e1e72b77ba50db05132b6f17563c",
-    "dependency_inventory_sha256": "ada4fb32ab79a9a5ed0385c303afbb23770cc3e0314a8d5dc2e8f4935c755259",
-    "status": "STALE_AFTER_LOCK_REFRESH",
-    "summary_sha256": "d6c449e2d933702c6a516f460b73e91138b039d70de714d423f2703de477b3f6"
+    "model_free_audit_sha256": "3671fccdda418ef85bccc21d11888527ac9fb6394d725715e8327524474435d0",
+    "dependency_inventory_sha256": "9f28e0261ff1958481ff44c3b9e66367dbc0fe1182616bb6cb0110be7f258019",
+    "distributions": 34,
+    "factual_findings": 0,
+    "review_flags": 28,
+    "status": "CURRENT_VAST_MODEL_FREE",
+    "summary_sha256": "8610ce0d5f6cf3caf82cd9206f7850cefb4c067b4590fbe570d4beda06861670"
   },
   "refresh": {
     "current_lock_sha256": "a42cc43f4b3ba12cb40755e41ed8f73360866c4fc60716b9d19f20d45c91e3ec",
@@ -18,7 +21,7 @@
     "previous_lock_sha256": "84c8f2fb375dd1532570d4de2dcd6a416e19847cdc511816f8db86387ec1974c",
     "previous_torch_version": "2.7.1+cpu",
     "reason": "TORCH_SECURITY_REFRESH",
-    "status": "INVALIDATED_PENDING_VAST_REGENERATION"
+    "status": "VAST_EVIDENCE_REGENERATED"
   },
   "license_signoff": {
     "document": "docs/license-audit.md",
@@ -31,7 +34,7 @@
   },
   "disposition": {
     "model_license_status": "SIGNED_COMMERCIAL",
-    "dependency_status": "PENDING_VAST_REGENERATION",
+    "dependency_status": "PENDING_OWNER_REVIEW",
     "runtime_status": "BLOCKED",
     "publication": "NO_UPLOAD",
     "weights": "NOT_ACQUIRED",
@@ -45,6 +48,6 @@
   },
   "integrity": {
     "canonicalization": "json-sort-keys-utf8-no-whitespace-v1",
-    "payload_sha256": "a24e9d2d9f9590bdf675a47ff1a5ec40f50a5c2fb18460c1f6f50ea571bdedb9"
+    "payload_sha256": "e06348862f8b8aa41973845767a59972ed45dd630b0cae1a814101565539f10b"
   }
 }

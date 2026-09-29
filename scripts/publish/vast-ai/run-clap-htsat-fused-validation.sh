@@ -458,7 +458,7 @@ self_test() {
     'archive_members' 'installed_members' 'python_source_tree' 'canonical_tree_sha256' 'RECORD' 'byte_length' 'itemsize' 'endianness' 'ClapFeatureExtractor' '_get_input_mel' \
     '_np_extract_fbank_features' 'ProcessorMixin' 'RobertaTokenizer' 'clap_source_only_reference.py' \
     'clap_expected_manifest.py' 'transformers_sources' '--source-reference' '--expected-manifest' '--transformers-wheel' \
-    'owner_review_candidate.py' 'owner_review_candidate.json' 'PENDING_VAST_REGENERATION' 'STALE_AFTER_LOCK_REFRESH' 'INVALIDATED_PENDING_VAST_REGENERATION' 'SIGNED_COMMERCIAL' \
+    'owner_review_candidate.py' 'owner_review_candidate.json' 'PENDING_OWNER_REVIEW' 'CURRENT_VAST_MODEL_FREE' 'VAST_EVIDENCE_REGENERATED' 'SIGNED_COMMERCIAL' \
     'row_sha256' 'docs/license-audit.md' 'payload_sha256' \
     'validate_feature_extractor_serializer_contract' 'processor_class' \
     'INSPECTION_ONLY' 'no upload' 'VOKRA_CLAP_REAL_GGUF' 'GGUFReader' \

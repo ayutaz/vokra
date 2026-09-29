@@ -41,14 +41,17 @@ LICENSE_SIGNOFF = {
     "row_sha256": "3698402b9541de8e1836d60cbc52fc52de8305149c87172d0548113bc29ad833",
 }
 MODEL_FREE_AUDIT_SHA256 = (
-    "6270476e34fd53b5d12cbd9cc0cb672a0633e1e72b77ba50db05132b6f17563c"
+    "3671fccdda418ef85bccc21d11888527ac9fb6394d725715e8327524474435d0"
 )
 DEPENDENCY_INVENTORY_SHA256 = (
-    "ada4fb32ab79a9a5ed0385c303afbb23770cc3e0314a8d5dc2e8f4935c755259"
+    "9f28e0261ff1958481ff44c3b9e66367dbc0fe1182616bb6cb0110be7f258019"
 )
 SUMMARY_SHA256 = (
-    "d6c449e2d933702c6a516f460b73e91138b039d70de714d423f2703de477b3f6"
+    "8610ce0d5f6cf3caf82cd9206f7850cefb4c067b4590fbe570d4beda06861670"
 )
+DEPENDENCY_FACTUAL_FINDINGS = 0
+DEPENDENCY_REVIEW_FLAGS = 28
+DEPENDENCY_DISTRIBUTIONS = 34
 PREVIOUS_LOCK_SHA256 = "84c8f2fb375dd1532570d4de2dcd6a416e19847cdc511816f8db86387ec1974c"
 CURRENT_LOCK_SHA256 = "a42cc43f4b3ba12cb40755e41ed8f73360866c4fc60716b9d19f20d45c91e3ec"
 
@@ -161,8 +164,8 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
     )
     if root["schema"] != SCHEMA:
         raise ValueError("candidate schema drifted")
-    if root["candidate_status"] != "PENDING_VAST_REGENERATION":
-        raise ValueError("candidate status is not PENDING_VAST_REGENERATION")
+    if root["candidate_status"] != "PENDING_OWNER_REVIEW":
+        raise ValueError("candidate status is not PENDING_OWNER_REVIEW")
 
     upstream = require_exact_keys(
         root["upstream"], {"repository", "source_repository", "revision"}, "upstream"
@@ -176,11 +179,25 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
 
     evidence = require_exact_keys(
         root["evidence"],
-        {"model_free_audit_sha256", "dependency_inventory_sha256", "summary_sha256", "status"},
+        {
+            "model_free_audit_sha256",
+            "dependency_inventory_sha256",
+            "summary_sha256",
+            "status",
+            "factual_findings",
+            "review_flags",
+            "distributions",
+        },
         "evidence",
     )
-    if evidence["status"] != "STALE_AFTER_LOCK_REFRESH":
-        raise ValueError("candidate evidence is not marked stale after lock refresh")
+    if evidence["status"] != "CURRENT_VAST_MODEL_FREE":
+        raise ValueError("candidate evidence is not marked as current VAST model-free evidence")
+    if evidence["factual_findings"] != DEPENDENCY_FACTUAL_FINDINGS:
+        raise ValueError("dependency factual finding count drifted")
+    if evidence["review_flags"] != DEPENDENCY_REVIEW_FLAGS:
+        raise ValueError("dependency review flag count drifted")
+    if evidence["distributions"] != DEPENDENCY_DISTRIBUTIONS:
+        raise ValueError("dependency distribution count drifted")
     expected_evidence = {
         "model_free_audit_sha256": MODEL_FREE_AUDIT_SHA256,
         "dependency_inventory_sha256": DEPENDENCY_INVENTORY_SHA256,
@@ -209,7 +226,7 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
         "current_torch_version": "2.13.0+cpu",
         "previous_lock_sha256": PREVIOUS_LOCK_SHA256,
         "current_lock_sha256": CURRENT_LOCK_SHA256,
-        "status": "INVALIDATED_PENDING_VAST_REGENERATION",
+        "status": "VAST_EVIDENCE_REGENERATED",
     }
     if refresh != expected_refresh:
         raise ValueError("candidate dependency refresh disposition drifted")
@@ -237,7 +254,7 @@ def validate_document(document: dict[str, Any]) -> dict[str, Any]:
     )
     expected_disposition = {
         "model_license_status": "SIGNED_COMMERCIAL",
-        "dependency_status": "PENDING_VAST_REGENERATION",
+        "dependency_status": "PENDING_OWNER_REVIEW",
         "runtime_status": "BLOCKED",
         "publication": "NO_UPLOAD",
         "weights": "NOT_ACQUIRED",
@@ -379,7 +396,7 @@ def self_test() -> None:
         check=False,
     )
     assert normal.returncode == 2, normal
-    assert "PENDING_VAST_REGENERATION" in normal.stdout
+    assert "PENDING_OWNER_REVIEW" in normal.stdout
 
 
 def main() -> int:
@@ -398,7 +415,7 @@ def main() -> int:
     except ValueError as exc:
         print(f"CLAP_OWNER_REVIEW_CANDIDATE BLOCKED: {exc}", file=sys.stderr)
         return 2
-    print(f"CLAP_OWNER_REVIEW_CANDIDATE PENDING_VAST_REGENERATION: {args.candidate}")
+    print(f"CLAP_OWNER_REVIEW_CANDIDATE PENDING_OWNER_REVIEW: {args.candidate}")
     # A valid candidate is still a blocked disposition. Exit 2 prevents
     # callers from treating owner-review evidence as execution approval.
     return 2
