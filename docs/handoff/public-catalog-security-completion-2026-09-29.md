@@ -558,6 +558,64 @@ Retain the dated observations and add a supersession note when refreshing them.
    owner checklist. Never claim full catalog completion from code reachability
    alone.
 
+## 2026-09-30 continuation readback (2026-09-29 23:39 UTC)
+
+At clean `main` `4715e07f12a1e32247e848cdda4c99773d8800df`, the read-only HF
+audit still reports 194 public repositories, 193 with GGUFs and 198 GGUF
+files. CPU code/artifact reachability is 136 full, 43 partial, 14 without a
+runtime binder and one non-artifact; Metal is 136 full, 57 blocked by CPU and
+one non-artifact. The 58 unresolved rows remain in the queue. These code and
+artifact classifications do not prove independent real-weight or Apple parity.
+
+Draft [PR #147](https://github.com/ayutaz/vokra/pull/147) stages a patched
+SpeechBrain 1.1.1 source-ready candidate for VoxLingua107 without the removed
+TorchAudio compatibility shim. At exact clean VAST head `4c38e6f0`, frozen
+Python 3.12 sync installed 37 packages and the offline model-free probe
+validated the official `EncoderClassifier` import and required method names.
+The production preflight returned RC 2 on unresolved package review; the
+model-free worker returned `BLOCKED_OWNER_REVIEW`,
+`PENDING_REVIEW_NOT_OWNER_SIGNABLE` and `NO_UPLOAD`. No checkpoint was acquired,
+instantiated or executed. The exact-head workspace run passed 8,041 tests,
+failed zero and ignored 101 across 306 suites; fmt and all-target Clippy
+passed. The workspace log, Clippy log and blocked audit JSON SHA-256 values
+are `b23570b22161f0cd6098d94cef532dfc27cb9e5e7de4cce3645b1e398c759ed7`,
+`1ebbe83595d30433f5d65a14bf9d66f567c6ec96c3b287055ac5ebf27897987a`
+and `9b95641328c5637980fd48bc752610a07e5e29830abc10783d5da74a36869b4a`.
+Disposable VAST instance `53429267` and storage were destroyed; exact-ID
+readback returned `instances: null` and the full instance list was empty.
+Package/native and source/model/fixture owner reviews, independent real-weight
+reference, VAST CPU parity, Apple CPU/Metal and public replacement remain open;
+the Lang-ID row stays partial.
+
+The paginated GitHub Dependabot open-alert API at the same `main` head returned
+236 manifest alert records across 45 paths: 205 name a first patched version
+and 31 do not. This supersedes the dated 258 and 342 snapshots for queue
+sizing, without inferring why GitHub's asynchronous inventory changed or
+equating manifest alerts with unique advisories. The open code-scanning API
+still returned five Scorecard rules. The successful [Scorecard run
+`36645717529`](https://github.com/ayutaz/vokra/actions/runs/36645717529)
+on that head produced SARIF SHA-256
+`fe7950d1a40ac51928290dff97c7090028b22ae453e572cf65a24a3a4241dcea`:
+SAST reported 29/30 recent commits, Vulnerabilities reported 56 existing
+findings, Code-Review reported 0/27 approved changesets, Maintained reported
+repository age below 90 days, and CII-Best-Practices reported no registration.
+The same-head CodeQL run `36645717641` was still in progress when this
+Scorecard result was inspected. Re-run Scorecard after CodeQL completes before
+deciding whether the SAST finding persists; no finding is dismissed by this
+readback. Independent review, elapsed repository age and external Best
+Practices registration cannot be manufactured by a dependency update.
+
+At 2026-09-29 23:48 UTC, the same-head [CodeQL run
+`36645717641`](https://github.com/ayutaz/vokra/actions/runs/36645717641)
+completed successfully. The subsequently dispatched [Scorecard run
+`36646909160`](https://github.com/ayutaz/vokra/actions/runs/36646909160)
+also completed successfully on `4715e07f`; its downloaded SARIF SHA-256 is
+`5f701095b34e339d249018a29c2a27fda2ccf4f634f8b65a7ac082518918f6fa`.
+SAST still reports 29/30 recent commits, so the finding did **not** clear
+merely by completing the latest CodeQL job. The other four Scorecard findings
+remain unchanged. Do not attribute the missing historical commit to a cause
+without commit-level evidence.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
