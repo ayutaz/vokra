@@ -7,11 +7,39 @@ not alter the root `Cargo.lock`.
 
 The lock pins `nemo-toolkit[tts]` directly to NVIDIA-NeMo/Speech commit
 `4fcff72febec9395fdbd4bfa0747bfda2ecd3cef`, matching the version recorded by
-the released checkpoint. It also pins `peft==0.20.0`, which that NeMo commit's
-TTS package imports transitively but does not declare in its `tts` extra. The
-dumper additionally checks
+the released checkpoint. The pinned TTS package initializer imports
+`EasyMagpieTTSInferenceModel`, whose import-time SpeechLM2 helper imports
+`peft`, and PEFT 0.20.0 imports `accelerate`; both therefore remain explicit
+in the isolated lock. In contrast, the only TTS source path that imports
+NLTK is the G2P implementation, which is not in the AudioCodecModel import
+graph. The lock omits only `nltk` with an impossible marker override; a
+model-free closure guard fails closed if NLTK reappears or the required
+PEFT/Accelerate edges disappear. The dumper additionally checks
 that the imported `GroupFiniteScalarQuantizer` source is inside a checkout at
 that exact commit and refuses any fallback implementation.
+
+The VAST import probe was model-free and blocked NLTK in-process. It also used
+process-local compatibility shims for the pinned NeMo/Lightning OneLogger
+`overrides` signature mismatch and the missing optional `NeptuneLogger` symbol.
+Those shims changed neither installed source nor dependency metadata and are
+audit-only; they must not be added to production or reference execution. A
+normal unshimmed import remains blocked by that upstream API mismatch, so the
+probe proves only that the official `AudioCodecModel` import path does not
+require NLTK under the audited environment. It does not claim that the full
+checkpoint/reference execution is currently runnable.
+
+The dependency closure can be checked without installing NeMo or opening a
+checkpoint:
+
+```sh
+uv run --no-project --python 3.12 \
+  python tools/parity/nanocodec/dependency_guard.py --self-test
+```
+
+When an exact source checkout is available, add
+`--nemo-source-root /path/to/NVIDIA-NeMo-Speech` to audit the pinned TTS source
+boundary as well. The guard intentionally fails closed when that source root
+is omitted from the full audit mode.
 
 Run from the repository root:
 
@@ -34,8 +62,9 @@ The checkpoint remains a temporary local/VAST input and is never committed.
 
 This directory is the only trusted Python/pickle boundary for NVIDIA NeMo
 NanoCodec conversion. The project is locked to Python 3.12, the official
-`NVIDIA-NeMo/Speech` commit recorded in `pyproject.toml`, and the explicit PEFT
-import dependency required by that pinned NeMo TTS package.
+`NVIDIA-NeMo/Speech` commit recorded in `pyproject.toml`. The dependency guard
+keeps the unused NLTK branch out while retaining the required PEFT/Accelerate
+import closure.
 
 Prepare one of the three audited public checkpoints:
 
@@ -60,9 +89,9 @@ dependency-free Rust converter. No model is uploaded by this workflow.
 This is an offline, independent reference path for issue #46. It imports the
 official NVIDIA NeMo implementation pinned at commit
 `4fcff72febec9395fdbd4bfa0747bfda2ecd3cef`; it does not reproduce the Rust
-forward in Python. The isolated lock also pins `peft==0.20.0`, which that NeMo
-commit imports from its TTS package without declaring in the `tts` extra. The
-reference module loads a real `.nemo` checkpoint,
+forward in Python. The isolated lock excludes only the unused NLTK branch from
+the upstream TTS extra while retaining the required PEFT/Accelerate import
+closure; the reference module loads a real `.nemo` checkpoint,
 materializes NeMo's weight-normalized decoder tensors, runs
 `CausalHiFiGANDecoder.forward`, and writes a temporary binary fixture consumed
 by `crates/vokra-models/tests/parity_nanocodec_causal_hifigan.rs`.
