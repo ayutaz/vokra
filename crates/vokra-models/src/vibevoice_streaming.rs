@@ -20,6 +20,8 @@ use std::collections::BTreeSet;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{Result, VokraError};
 
+/// Authenticated Realtime acoustic latent-to-PCM streaming boundary.
+pub mod acoustic;
 /// Native single-step AdaLN diffusion prediction head.
 pub mod diffusion;
 /// Deterministic CPU-only classifier-free guidance diffusion sampler.
@@ -29,6 +31,10 @@ pub mod state;
 /// Exact sidecar-backed Qwen text-tokenizer primitive for Realtime streaming.
 pub mod tokenizer;
 
+pub use acoustic::{
+    REALTIME_ACOUSTIC_CHUNK_SAMPLES, REALTIME_ACOUSTIC_LATENT_WIDTH,
+    VibeVoiceRealtimeAcousticDecoder, VibeVoiceRealtimeAcousticDecoderStream,
+};
 pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
 pub use sampler::{
     VIBEVOICE_REALTIME_CONDITION_WIDTH, VIBEVOICE_REALTIME_INFERENCE_STEPS,
@@ -329,7 +335,7 @@ impl VibeVoiceStreamingCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "vibevoice-realtime synthesize: streaming state/prefill, CFG diffusion, acoustic decoder, tokenizer policy, and independent CPU parity remain VAST follow-up gates; no CPU fallback or synthetic waveform is permitted",
+            "vibevoice-realtime synthesize: streaming state/prefill, CFG diffusion composition, end-to-end acoustic decode/parity, tokenizer policy, and independent CPU parity remain VAST follow-up gates; no CPU fallback or synthetic waveform is permitted",
         ))
     }
 }
@@ -564,6 +570,22 @@ mod tests {
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         let error = VibeVoiceStreamingCheckpoint::from_gguf(&file).unwrap_err();
         assert!(error.to_string().contains("vibevoice_streaming"));
+    }
+
+    #[test]
+    fn realtime_acoustic_wrapper_rejects_nonrealtime_before_decoder_loading() {
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, "permissive")
+            .add_string(chunks::KEY_MODEL_ARCH, "vibevoice");
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let error =
+            VibeVoiceRealtimeAcousticDecoder::from_gguf(&file, vokra_core::BackendKind::Cpu)
+                .unwrap_err();
+        let message = error.to_string();
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+        assert!(message.contains("vibevoice_streaming"));
+        assert!(!message.contains("acoustic decoder"));
     }
 
     #[test]

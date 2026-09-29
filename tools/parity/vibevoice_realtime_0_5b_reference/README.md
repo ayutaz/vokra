@@ -116,8 +116,8 @@ non-CPU rejection. Its tests use a deterministic synthetic predictor to check
 branch order, shared latents, scheduler reset, and 20 steps. This is a
 model-free contract test only: it is not an official numerical reference,
 real-weight CPU parity, Apple CPU/Metal parity, or a full acoustic synthesis
-route. The tokenizer, staged language-model execution, acoustic decoding, and
-publication gates remain separate.
+route. The tokenizer, staged language-model execution, and publication gates
+remain separate; the acoustic decoder boundary is described below.
 
 At exact implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`,
 a disposable VAST instance ran `cargo test -p vokra-models --lib
@@ -126,6 +126,31 @@ vibevoice_streaming::diffusion` (5 passed) and `cargo test -p vokra-models
 Qwen sidecars were absent). Both used Rust 1.98.1 and the instance was
 destroyed with an exact-ID readback of `instances: null`. This is model-free
 Rust test evidence, not a speed comparison or real-weight parity receipt.
+
+## Native Realtime acoustic decoder boundary
+
+The fixed HF header range also records 276 BF16 tensors under
+`model.acoustic_tokenizer.decoder.*`; its canonical descriptor digest is
+`4576ebac2def6293d72668f3fa068461b7c256c6d75e9f12eb6c16207ccfbfbb`.
+The descriptor shapes match the already-native causal VibeVoice acoustic
+decoder (stem 64→2048, stage widths 2048/1024/512/256/128/64/32 with depths
+8/3/3/3/3/3/3, six transposed convolutions, and a 32→1 head). The dedicated
+Realtime constructor first applies
+`VibeVoiceStreamingCheckpoint::from_gguf`, enforces exactly 276 decoder-prefix
+tensors, then reuses the 1.5B decoder loader and scalar conversion logic. The
+rank-0 `speech_bias_factor`/`speech_scaling_factor` tensors are loaded and
+validated by the Realtime-specific `VibeVoiceLatentScale` loader after the
+composite checkpoint gate; they are not part of the descriptor-only composite
+tensor gate itself.
+
+`VibeVoiceRealtimeAcousticDecoderStream::decode_scaled_latent` accepts one
+scaled `[64]` frame, applies the official
+`latent / scaling_factor - bias_factor` conversion, and forwards it through
+the existing causal decoder stream to one 3,200-sample 24 kHz mono chunk. It
+rejects non-CPU backends explicitly; no CPU fallback is implied. The tests are
+model-free contract tests only. The header range does not authenticate the
+full payload, and no real-weight CPU parity, independent waveform reference,
+Metal parity, or complete synthesis claim follows from this boundary.
 
 ## Verification boundary
 
