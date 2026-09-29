@@ -153,6 +153,179 @@ two Accelerate and two Diffusers. An update timestamp alone does not prove a
 newly introduced vulnerability or a completed fix. Re-read the API after each
 merge and close alerts through the dependency graph rather than dismissal.
 
+### 2026-09-29 OWSM `torch-complex` license readback (12:56 UTC)
+
+The fixed [PyPI `torch-complex` 0.4.4 release](https://pypi.org/project/torch-complex/0.4.4/)
+lists an Apache license *classifier*, but its sdist (SHA-256
+`4153fd6b24a0bad689e6f193bfbd00f38283b1890d808bef684ddc6d1f63fd3f`)
+and wheel (SHA-256
+`6ab4ecd4f3a16e3adb70a7f7cd2e769a9dfd07d7a8e27d04ff9c621ebbe34b13`)
+contain no LICENSE/COPYING/NOTICE text. Both package metadata records say
+`License: UNKNOWN`. The package's PyPI homepage points to an absent
+`kamo-naoyuki/torch_complex` repository; the author's existing
+[`kamo-naoyuki/pytorch_complex` source](https://github.com/kamo-naoyuki/pytorch_complex)
+has a `v0.4.4` tag at `8a2ad1e47f3df25a30eb426f6ad781b89103fab3`, but
+its GitHub repository license field is `null` and that exact tag's recursive
+source tree has no license file. These primary-source checks do not
+authenticate the terms for the fixed release. Keep the OWSM dependency gate
+blocked; obtain explicit upstream license bytes/permission for that release or
+an independently reviewed compatible replacement before any real-weight
+reference or CPU parity. This readback is not an owner sign-off or model pass.
+
+### 2026-09-29 VibeVoice Realtime tokenizer-license readback (13:07 UTC)
+
+The fixed [`Qwen/Qwen2.5-0.5B` tokenizer companion at
+`060db6499f32faf8b98477b0a26969ef7d8b9987`](https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/LICENSE)
+contains an Apache License 2.0 `LICENSE` file, not merely a model-card tag.
+This resolves the narrow question of whether primary license text exists for
+that fixed companion; it does not authenticate the entire dependency closure,
+dataset rights, exact redistribution scope, or a new owner decision. The
+`vokra/vibevoice-realtime-0.5b` row remains partial, with converter emission,
+complete native synthesis, independent real-weight CPU parity, Apple
+CPU/Metal, and publication still blocked. No weights or model were run locally.
+
+### 2026-09-29 VibeVoice Realtime fixed-header readback (13:33 UTC)
+
+A disposable VAST worker read only bytes `0-79439` of the pinned
+`microsoft/VibeVoice-Realtime-0.5B` safetensors at revision
+`6bce5f06044837fe6d2c5d7a71a84f0416bd57e4`. The redirect advertised
+the previously pinned LFS SHA-256
+`7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514`,
+and the final HTTP response was `206` with
+`Content-Range: bytes 0-79439/2035332888`. The eight-byte prefix declared a
+79,432-byte JSON header; the 79,440 retrieved bytes have SHA-256
+`73c4658be17469d62e22a0f4b7f042cc10aa83d409055a5e3a350d5b8d8f26cb`.
+This range readback is bound to the server's immutable revision/LFS identity;
+it does **not** hash or authenticate the entire tensor payload.
+
+The header lists 605 tensors, all BF16, with contiguous payload offsets from
+zero through 2,035,253,448. Its 26 `model.prediction_head.*` names and shapes
+match the exact loader contract in VibeVoice Realtime diffusion-head
+implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`:
+four outer projections, four layers of five tensors, and two final-layer
+projections. No tensor has rank above three. This removes the narrow
+*head-name/header-shape* uncertainty; full-checkpoint hash, GGUF conversion,
+independent real-weight reference, numerical CPU parity, integrated
+CFG/scheduler, acoustic decode, Apple CPU/Metal and publication remain open. No model ran on
+the maintainer Mac. The header-only VAST instance `53365673` was destroyed;
+the exact-ID API readback returned `instances: null`.
+
+### 2026-09-29 VibeVoice Realtime CFG sampler contract (13:47 UTC)
+
+Implementation commit `e0390fdf76dc27a6be67a874bc139739b5e705db` adds a
+bounded CPU-only, 20-step classifier-free-guidance sampler around the native
+Realtime prediction head. It gives the conditional and unconditional branches
+the same current latent, applies guidance before the DPM-Solver++ step, and
+rejects a non-CPU backend explicitly. This is a model-free seam, not a full
+streaming synthesis path or a GPU speed decision.
+
+At that exact commit, disposable VAST instance `53367191` ran
+`cargo test -p vokra-models --lib vibevoice_streaming::sampler` (5 passed)
+and `cargo test -p vokra-models --lib vibevoice_streaming` (25 passed, 2
+ignored because exact Qwen sidecars were absent), with Rust 1.98.1. The
+instance and its storage were destroyed; the exact-ID readback returned
+`instances: null`. No weights were downloaded or executed in this test.
+Official-source numerical reference, full-checkpoint authentication, real-
+weight CPU parity, Apple CPU/Metal no-fallback testing, and same-input CPU/GPU
+benchmarking are still required. The public row remains partial, so the
+136-full / 58-unresolved audit counts do not change.
+
+### 2026-09-29 VibeVoice Realtime acoustic-decoder layout readback (14:02 UTC)
+
+Disposable VAST instance `53368332` reread only the fixed
+`model.safetensors` bytes `0-79439` at the same immutable HF revision. The
+response was HTTP `206`, `Content-Range: bytes 0-79439/2035332888`, with
+79,440 bytes and the same range SHA-256
+`73c4658be17469d62e22a0f4b7f042cc10aa83d409055a5e3a350d5b8d8f26cb`.
+The 605 tensor entries include exactly 276 BF16
+`model.acoustic_tokenizer.decoder.*` entries. Canonical sorted JSON of their
+`name`, `shape`, and `dtype` fields (`jq -cS`, one line with a trailing newline)
+has SHA-256
+`4576ebac2def6293d72668f3fa068461b7c256c6d75e9f12eb6c16207ccfbfbb`.
+The descriptor list has the existing decoder's 64-to-2048 stem, seven stage
+widths `2048/1024/512/256/128/64/32` with depths `8/3/3/3/3/3/3`, six
+transposed-convolution upsamplers and `[1,32,7]` PCM head. This supports a
+strict Realtime-specific binding to the shared native decoder implementation;
+it does not prove payload identity or numerical parity. The [fixed Microsoft
+streaming source](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/vibevoice/modular/modeling_vibevoice_streaming_inference.py#L716-L724)
+unscales each generated latent using the checkpoint's scalar scale and bias
+before cached acoustic decoding, which remains an implementation and parity
+gate. Both the earlier unused header worker `53367911` and the completed
+worker `53368332` were destroyed with exact-ID `instances: null` readbacks;
+no probe instance was retained. No payload or model was run locally.
+
+### 2026-09-29 VibeVoice Realtime acoustic-decoder contract replay (14:24 UTC)
+
+After PR #160 was rebased onto `main` at `289f4416`, the unpushed CFG sampler
+and acoustic-decoder commits were rebased onto PR head `3e070e4a`. Disposable
+VAST instance `53370944` checked out exact integrated head
+`70d4dc314c8c109478f754ddf8abd0b08072085a` from a git bundle and ran
+Rust 1.98.1 model-free checks: `cargo test -p vokra-models --lib
+vibevoice_streaming` (28 passed, two ignored for absent exact Qwen sidecars),
+`cargo test -p vokra-models --lib realtime_decoder_tensor_count_gate` (one
+passed), `cargo test -p vokra-models --lib vibevoice::tokenizer` (13 passed),
+and `cargo clippy -p vokra-models --lib -- -D warnings` (passed). The
+Realtime wrapper rejects a non-Realtime checkpoint before decoder loading;
+the shared decoder's existing model-free topology and causal tests also pass.
+The worker and its storage were destroyed; exact-ID API readback returned
+`instances: null`.
+
+These checks did not download or run weights. They do not establish complete
+checkpoint authentication, independent waveform reference, real-weight CPU
+parity, Metal parity, no-fallback execution, or a same-input CPU/GPU speed
+comparison. The Realtime acoustic boundary remains CPU-only and explicitly
+rejects Metal until that evidence exists; the public row remains partial.
+
+### 2026-09-30 VibeVoice Realtime real-weight and device-selection readback
+
+Follow-up [PR #161](https://github.com/ayutaz/vokra/pull/161) builds on merged
+PR #160 without promoting the public row. The pinned Microsoft
+`model.safetensors` at revision
+`6bce5f06044837fe6d2c5d7a71a84f0416bd57e4` was downloaded and hashed
+**on VAST only**: 2,035,332,888 bytes, SHA-256
+`7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514`.
+The exact 605 BF16 tensors were converted to a private 2,035,313,984-byte
+GGUF, SHA-256
+`908a10b917bee4b6389de09182b2603b833dcb1a642ed08bc8ff40c0212e0624`.
+An ignored VAST integrity test compared all names, shapes and payload bytes
+against the source, and the real GGUF passed the strict native binder. This
+supersedes the earlier *header-only* identity limitation, not its historical
+receipt. Neither weight file was moved to the maintainer Mac or uploaded.
+
+The independent narrow reference imports the clean Microsoft source at
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, binds the exact checkpoint,
+then calls the official text/TTS/EOS and acoustic-connector path. The
+decoder-only release legitimately lacks 276
+`model.acoustic_tokenizer.encoder.*` parameters; any other missing or
+unexpected parameter is rejected. BF16 same-input timing on a VAST RTX 4090
+had CPU median 16.1034 s and CUDA median 0.01907 s, but the maximum output
+difference was 0.25, above the unchanged provisional 0.05 selection guard;
+CPU remained selected. Casting that same authenticated checkpoint to FP32
+gave CPU median 23.495962 s and CUDA median 0.017232 s across three measured
+iterations, with maximum output difference 0.0000457764; CUDA was selected
+for **this fixed reference operation only**. The BF16 and FP32 packet SHA-256
+values are respectively
+`4c3590f5ef5b2bcc5f67b228dc8ce263ac95c5c579709fddfb2483c94a05b5a9`
+and `af87fbc9959da3249971a637690bd00b890997647ff566f8a8a1ea8bdf2866e4`.
+These comparisons are not native Rust parity, a release tolerance, or an
+Apple Metal speed verdict.
+
+The VAST clean head `31ab7d84` passed `cargo test --workspace` (8,100
+passed, 0 failed, 105 ignored across 323 test binaries; log SHA-256
+`ca3476bce2cb38bd1ed90e7d85fc0c5c8d77adcb785e32cc3d9c7b603023c59b`)
+and `cargo clippy --workspace --all-targets -- -D warnings` (status 0;
+log SHA-256
+`be923e2675304dfbe7cb0379fef1f59e2699dfab11a215e0f38378cfbdc1fc29`).
+The rebased PR head `9879093f` has the identical Git tree
+`f24576cd3e385339c1450e6609b288039ed33114`; only commit ancestry
+changed after #160 auto-merged. Disposable VAST instance `53372081` was
+destroyed after small evidence recovery; exact-ID readback returned
+`instances: null`. The reference Python dependency-license audit, complete
+native synthesis, Rust CPU parity, independent waveform reference, Apple
+CPU/Metal/no-fallback verification and public artifact gates remain open.
+The row therefore remains partial and the 136-full / 58-unresolved count
+does not change.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
