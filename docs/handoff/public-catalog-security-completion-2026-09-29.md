@@ -30,6 +30,34 @@ The live audit logic and HF revisions, GitHub alert API, exact source/weight
 manifests, and measured parity packets supersede this dated count whenever
 they change. Do not replace historical measurements with a current total.
 
+### 2026-09-29 continuation readback (01:56 UTC)
+
+The read-only HF summary still reports 194 public repositories, 193 with
+GGUFs, 198 GGUF files, CPU `136 full / 43 partial / 14 no-runtime-binder /
+1 not-artifact`, and Metal `136 full / 57 blocked-by-cpu / 1 not-artifact`.
+This does not prove real-weight or Apple parity. PR #146 merged at
+`d8759c6dc870a9ba5c4ef48ed342c13eb9cb1800`; PR #135 was rebased onto
+that main head and awaits its fresh CI. PRs #137 and #142 remain stacked on
+#135 and #137 respectively, and PR #147 remains draft. No model row is
+promoted by these model-free changes.
+
+The unmerged XY-Tokenizer closure candidate at clean head
+`e7806fe3f37d497362956b89841f4db26172c043` has lock SHA-256
+`c445c7c2f6dfc036620ff7cf123b974f0e519f2081c62ca9bde2a73c61c1ae57`.
+Its exact-head VAST model-free collector reports 38 active dependency rows,
+35 successful and three blocked: SciPy 1.18.1, setuptools 84.0.0 and
+tokenizers 0.23.1. The recovered collection report SHA-256 is
+`d78e22695d668a4c2e57317f8dfb975544041136c0973f54f7bbf9328aa82b7c`;
+the license-evidence SHA-256 is
+`15166ba9dc0ad739defbdc6fa5787bf5ea6c4b65c331749b84933e0e88de0ec8`.
+The subsequent exact-artifact probe found GPL-with-GCC-exception and LGPL
+native terms in SciPy's wheel license payload, LGPL vendored terms in
+setuptools, and no unambiguous distribution-owned primary license bytes in
+tokenizers. A permissive classifier was therefore not added. This candidate
+remains `BLOCKED` / `NO_UPLOAD`, with no checkpoint acquisition, model
+execution, sign-off or Apple verdict. Both disposable XY VAST workers were
+destroyed after the model-free checks; unrelated instances were untouched.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
