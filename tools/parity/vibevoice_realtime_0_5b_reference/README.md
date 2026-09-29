@@ -133,10 +133,11 @@ historical CUDA-enabled receipts above. The smoke imports and inspects the
 official API only: it does not download a checkpoint, construct a model,
 execute a checkpoint, generate parity numbers, or publish an artifact.
 
-The installed-closure audit for the CPU-only lock remains
-`OWNER_REVIEW_REQUIRED/NO_UPLOAD` until the fresh VAST receipt is collected.
-Owner/primary-source review is still required before any real-weight replay or
-publication. The command below is the controlled replay command, not an
+The installed-closure audit for the CPU-only lock completed on VAST and remains
+`OWNER_REVIEW_REQUIRED/NO_UPLOAD` because the bundled license files for
+`safetensors`, `tokenizers`, and `tqdm` still require owner/primary-source
+review. That review is therefore still required before any real-weight replay
+or publication. The command below is the controlled replay command, not an
 authorization or assertion that replay is currently cleared:
 
 ```text
