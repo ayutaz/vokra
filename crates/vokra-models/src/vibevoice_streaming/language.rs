@@ -18,7 +18,6 @@ use crate::strict_checkpoint::{embedding_rows, load_tensor};
 use crate::vibevoice::{Qwen2Runtime, Qwen2RuntimeConfig};
 
 use super::HIDDEN;
-use super::connector::VibeVoiceRealtimeAcousticConnector;
 
 /// Hot operations used by the EOS classifier in addition to the Qwen2 path.
 pub const VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Relu];
@@ -589,6 +588,7 @@ fn finite(label: &str, values: &[f32]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vibevoice_streaming::connector::VibeVoiceRealtimeAcousticConnector;
     use std::path::{Path, PathBuf};
 
     #[test]
