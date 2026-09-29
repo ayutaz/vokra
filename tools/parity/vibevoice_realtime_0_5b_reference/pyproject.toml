@@ -7,7 +7,7 @@ dependencies = [
     "diffusers==0.32.2",
     "numpy==2.3.5",
     "safetensors==0.5.3",
-    "torch==2.7.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch==2.13.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "tqdm==4.67.1",
     "transformers==5.10.4",
 ]
