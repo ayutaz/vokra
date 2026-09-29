@@ -32,7 +32,8 @@ use vokra_core::{Result, VokraError};
 /// `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, lines 25 and 667-669.
 pub const TTS_TEXT_WINDOW_SIZE: usize = 5;
 
-/// Number of speech iterations interleaved after each upstream text window.
+/// Maximum number of speech iterations interleaved after each upstream text
+/// window before the upstream loop evaluates the next text window.
 ///
 /// Source: `vibevoice/modular/modeling_vibevoice_streaming_inference.py` at
 /// `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, lines 26 and 705-706.
@@ -187,10 +188,10 @@ impl VibeVoiceStreamingTextWindow {
         self.next_text_window_size
     }
 
-    /// Number of speech iterations in the upstream loop after this text
-    /// window, before the next loop condition is evaluated.
+    /// Maximum number of speech iterations in the upstream loop after this
+    /// text window, before the next loop condition is evaluated.
     #[must_use]
-    pub const fn speech_steps_after_text(&self) -> usize {
+    pub const fn max_speech_steps_after_text(&self) -> usize {
         TTS_SPEECH_WINDOW_SIZE
     }
 
@@ -212,15 +213,16 @@ impl VibeVoiceStreamingTextWindow {
 /// model maximum length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VibeVoiceStreamingZeroTextContinuation {
-    /// Continue six-step speech-only iterations until EOS, max length, or
+    /// Continue up to six speech-only iterations until EOS, max length, or
     /// external stop.
     UntilEosMaxLengthOrExternalStop,
 }
 
 impl VibeVoiceStreamingZeroTextContinuation {
-    /// Number of speech iterations in each zero-text continuation loop.
+    /// Maximum number of speech iterations in each zero-text continuation
+    /// loop.
     #[must_use]
-    pub const fn speech_steps_per_iteration(self) -> usize {
+    pub const fn max_speech_steps_per_iteration(self) -> usize {
         TTS_SPEECH_WINDOW_SIZE
     }
 }
@@ -510,7 +512,7 @@ mod tests {
         assert_eq!(plan.text_windows()[0].text_ids(), &[1, 2, 3, 4, 5]);
         assert_eq!(plan.text_windows()[0].text_window_size(), 5);
         assert_eq!(plan.text_windows()[0].next_text_window_size(), 5);
-        assert_eq!(plan.text_windows()[0].speech_steps_after_text(), 6);
+        assert_eq!(plan.text_windows()[0].max_speech_steps_after_text(), 6);
         assert!(!plan.text_windows()[0].is_last_text_window());
 
         assert_eq!(plan.text_windows()[1].index(), 1);
@@ -529,7 +531,8 @@ mod tests {
             VibeVoiceStreamingZeroTextContinuation::UntilEosMaxLengthOrExternalStop
         );
         assert_eq!(
-            plan.zero_text_continuation().speech_steps_per_iteration(),
+            plan.zero_text_continuation()
+                .max_speech_steps_per_iteration(),
             6
         );
 
@@ -546,13 +549,14 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan.text_windows()[0].text_window_size(), 5);
         assert_eq!(plan.text_windows()[0].next_text_window_size(), 0);
-        assert_eq!(plan.text_windows()[0].speech_steps_after_text(), 6);
+        assert_eq!(plan.text_windows()[0].max_speech_steps_after_text(), 6);
         assert_eq!(
             plan.zero_text_continuation(),
             VibeVoiceStreamingZeroTextContinuation::UntilEosMaxLengthOrExternalStop
         );
         assert_eq!(
-            plan.zero_text_continuation().speech_steps_per_iteration(),
+            plan.zero_text_continuation()
+                .max_speech_steps_per_iteration(),
             6
         );
     }
