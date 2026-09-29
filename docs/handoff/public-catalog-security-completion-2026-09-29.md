@@ -172,6 +172,18 @@ blocked; obtain explicit upstream license bytes/permission for that release or
 an independently reviewed compatible replacement before any real-weight
 reference or CPU parity. This readback is not an owner sign-off or model pass.
 
+### 2026-09-29 VibeVoice Realtime tokenizer-license readback (13:07 UTC)
+
+The fixed [`Qwen/Qwen2.5-0.5B` tokenizer companion at
+`060db6499f32faf8b98477b0a26969ef7d8b9987`](https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/060db6499f32faf8b98477b0a26969ef7d8b9987/LICENSE)
+contains an Apache License 2.0 `LICENSE` file, not merely a model-card tag.
+This resolves the narrow question of whether primary license text exists for
+that fixed companion; it does not authenticate the entire dependency closure,
+dataset rights, exact redistribution scope, or a new owner decision. The
+`vokra/vibevoice-realtime-0.5b` row remains partial, with converter emission,
+complete native synthesis, independent real-weight CPU parity, Apple
+CPU/Metal, and publication still blocked. No weights or model were run locally.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
