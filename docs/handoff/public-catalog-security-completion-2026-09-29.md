@@ -87,6 +87,28 @@ destroyed; the Vokra-labelled instance and volume readback was empty. The
 resolve the fixed-upstream API/security conflict and dependency-license
 decisions before any approved real-weight reference run.
 
+### 2026-09-29 VibeVoice import diagnosis supersession (10:48 UTC)
+
+The earlier `auto_model_registration_duplicate=false` field is a diagnostic
+false negative, not evidence that registration succeeded. In the fixed
+[Transformers 5.10.4 source distribution](https://files.pythonhosted.org/packages/f7/5d/1df789ca27a436ce09de67c8fee6acd2a528d34c28685991f8203e5418ae/transformers-5.10.4.tar.gz),
+`auto_mappings.py` maps `vibevoice_acoustic_tokenizer` to
+`VibeVoiceAcousticTokenizerConfig`, `modeling_auto.py` maps the same type to
+`VibeVoiceAcousticTokenizerModel`, and `auto_factory.py:674` raises
+`ValueError` when another class with that config name is registered without
+`exist_ok`. The authenticated Microsoft source calls `AutoModel.register`
+without `exist_ok` at the line reached by the VAST traceback. Together these
+fixed-source facts identify a registration collision; the previous classifier
+missed the library's actual "already used by a Transformers model" wording.
+
+A local, unmerged diagnostic candidate at `2554a00f` now categorizes only
+that exact VibeVoice `module_import` `ValueError` and redacts arbitrary
+exception text. Its model-free self-test passed, but the candidate has **not**
+been replayed on VAST and does not make the upstream import compatible.
+Dependency-license review, a safe compatibility remedy, independent real-weight
+reference, CPU parity, Apple CPU/Metal and publication all remain open. No
+model row is promoted by this source-level diagnosis.
+
 ### 2026-09-29 GitHub security-alert readback (07:05 UTC)
 
 With GitHub `main` at `09b39079a5b205e859ea24392ffe56b3bcd2371b`, a
