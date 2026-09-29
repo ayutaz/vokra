@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
+import inspect
 import json
 import os
 import statistics
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +39,8 @@ sys.dont_write_bytecode = True
 SOURCE_REVISION = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
 CHECKPOINT_REVISION = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
 CHECKPOINT_SHA256 = "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"
+TRANSFORMERS_PIN = "5.10.4"
+QWEN2_FAST_MODULE = "transformers.models.qwen2.tokenization_qwen2_fast"
 CONFIG_BYTES = 2117
 CONFIG_SHA256 = "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57"
 EXPECTED_TENSOR_COUNT = 605
@@ -122,6 +127,149 @@ def _load_official(source_root: Path):
             "pinned official VibeVoice import failed; no mirror/fallback is permitted"
         ) from error
     return VibeVoiceStreamingConfig, VibeVoiceStreamingForConditionalGenerationInference
+
+
+def _qwen2_fast_init_kwargs(
+    vocab_file: str | None,
+    merges_file: str | None,
+    tokenizer_file: str | None,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate the removed Fast-tokenizer constructor names to Transformers 5."""
+
+    translated = dict(kwargs)
+    if vocab_file is not None:
+        translated.setdefault("vocab", vocab_file)
+        translated.setdefault("vocab_file", vocab_file)
+    if merges_file is not None:
+        translated.setdefault("merges", merges_file)
+        translated.setdefault("merges_file", merges_file)
+    if tokenizer_file is not None:
+        translated.setdefault("tokenizer_file", tokenizer_file)
+    return translated
+
+
+def _install_qwen2_fast_shim() -> str:
+    """Install only the removed Qwen2 fast-module compatibility namespace.
+
+    Transformers 5 moved the fast implementation into ``Qwen2Tokenizer``
+    backed by ``TokenizersBackend``. The pinned official source still imports
+    the old module and constructor names. The shim maps only those names and
+    translates file arguments; it does not replace tokenization behavior or
+    provide a model fallback. The real import/API smoke remains mandatory.
+    """
+
+    try:
+        importlib.import_module(QWEN2_FAST_MODULE)
+        return "NATIVE"
+    except ModuleNotFoundError as error:
+        if error.name != QWEN2_FAST_MODULE:
+            raise RuntimeError(
+                f"Qwen2 fast tokenizer import failed for another missing dependency: {error.name}"
+            ) from error
+
+    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+
+    class Qwen2TokenizerFast(Qwen2Tokenizer):
+        """Compatibility name for the Transformers 5 TokenizersBackend class."""
+
+        def __init__(
+            self,
+            vocab_file: str | None = None,
+            merges_file: str | None = None,
+            tokenizer_file: str | None = None,
+            **kwargs: Any,
+        ) -> None:
+            super().__init__(
+                **_qwen2_fast_init_kwargs(vocab_file, merges_file, tokenizer_file, kwargs)
+            )
+
+    Qwen2TokenizerFast.__name__ = "Qwen2TokenizerFast"
+    Qwen2TokenizerFast.__qualname__ = "Qwen2TokenizerFast"
+    shim = types.ModuleType(QWEN2_FAST_MODULE)
+    shim.Qwen2TokenizerFast = Qwen2TokenizerFast
+    shim.__all__ = ["Qwen2TokenizerFast"]
+    sys.modules[QWEN2_FAST_MODULE] = shim
+    return "COMPATIBILITY_SHIM"
+
+
+def _compatibility_check(source_root: Path) -> dict[str, Any]:
+    """Import pinned upstream classes and inspect their model-free API.
+
+    The upstream project currently declares a Transformers ``<5.0.0``
+    requirement while this isolated environment uses patched ``5.10.4`` for
+    GHSA-xrqw-3rrv-vx5w. This gate therefore checks the actual pinned source
+    import and API surface before any checkpoint is constructed or loaded.
+    """
+
+    import transformers
+
+    if transformers.__version__ != TRANSFORMERS_PIN:
+        raise RuntimeError(
+            "Transformers compatibility check requires the isolated pin "
+            f"{TRANSFORMERS_PIN}, got {transformers.__version__}"
+        )
+    qwen2_fast_import = _install_qwen2_fast_shim()
+    config_class, model_class = _load_official(source_root)
+    required_config_attrs = {"model_type", "from_dict", "get_text_config"}
+    missing_config = sorted(name for name in required_config_attrs if not hasattr(config_class, name))
+    if missing_config:
+        raise RuntimeError(
+            f"official config API missing under Transformers {TRANSFORMERS_PIN}: {missing_config}"
+        )
+    required_model_attrs = {"forward_lm", "forward_tts_lm"}
+    missing_model = sorted(name for name in required_model_attrs if not hasattr(model_class, name))
+    if missing_model:
+        raise RuntimeError(
+            f"official model API missing under Transformers {TRANSFORMERS_PIN}: {missing_model}"
+        )
+    signatures = {
+        "forward_lm": inspect.signature(model_class.forward_lm),
+        "forward_tts_lm": inspect.signature(model_class.forward_tts_lm),
+    }
+    required_parameters = {
+        "forward_lm": {"input_ids", "attention_mask", "use_cache", "return_dict"},
+        "forward_tts_lm": {
+            "input_ids",
+            "attention_mask",
+            "lm_last_hidden_state",
+            "tts_text_masks",
+            "use_cache",
+            "return_dict",
+        },
+    }
+    missing_parameters = {
+        name: sorted(parameters - set(signatures[name].parameters))
+        for name, parameters in required_parameters.items()
+    }
+    missing_parameters = {name: values for name, values in missing_parameters.items() if values}
+    if missing_parameters:
+        raise RuntimeError(
+            f"official VibeVoice forward API is incompatible with the runner: {missing_parameters}"
+        )
+    from transformers.cache_utils import DynamicCache
+
+    if "config" not in inspect.signature(DynamicCache.__init__).parameters:
+        raise RuntimeError(
+            "Transformers DynamicCache lacks the config parameter required by the pinned VibeVoice source"
+        )
+    result = {
+        "status": "AUTHENTICATED_API_SMOKE",
+        "transformers": TRANSFORMERS_PIN,
+        "source_revision": SOURCE_REVISION,
+        "qwen2_fast_import": qwen2_fast_import,
+        "official_config": f"{config_class.__module__}.{config_class.__name__}",
+        "official_model": f"{model_class.__module__}.{model_class.__name__}",
+        "forward_parameters": {
+            name: sorted(signature.parameters) for name, signature in signatures.items()
+        },
+        "dynamic_cache_config_parameter": True,
+        "model_download": "NO_MODEL_DOWNLOAD",
+        "model_execution": "NO_MODEL_EXECUTION",
+        "publication": "NO_UPLOAD",
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return result
 
 
 def _load_model(source_root: Path, config_path: Path, weights_path: Path):
@@ -322,6 +470,7 @@ def run(args: argparse.Namespace) -> None:
     if weights_identity["bytes"] < 2_000_000_000:
         raise RuntimeError("checkpoint is unexpectedly small; refusing partial/fixture weights")
     _assert_regular_output_dir(output_dir)
+    _compatibility_check(source_root)
     torch.manual_seed(SEED)
     np.random.seed(SEED)
 
@@ -433,6 +582,11 @@ def self_test() -> None:
     assert len(SOURCE_REVISION) == 40
     assert len(CHECKPOINT_REVISION) == 40
     assert len(CHECKPOINT_SHA256) == 64
+    assert TRANSFORMERS_PIN == "5.10.4"
+    translated = _qwen2_fast_init_kwargs("vocab.json", "merges.txt", "tokenizer.json", {"unk_token": "<unk>"})
+    assert translated["vocab"] == "vocab.json"
+    assert translated["merges"] == "merges.txt"
+    assert translated["tokenizer_file"] == "tokenizer.json"
     assert EXPECTED_TENSOR_COUNT == 605
     assert EXPECTED_HIDDEN_SIZE == 896
     assert EXPECTED_ACOUSTIC_DIM == 64
@@ -442,6 +596,11 @@ def self_test() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--compatibility-check",
+        action="store_true",
+        help="import the pinned official source and inspect its API without model construction",
+    )
     parser.add_argument("--source-root", type=Path, help="pinned Microsoft/VibeVoice git checkout")
     parser.add_argument("--config", type=Path, help="pinned checkpoint config.json")
     parser.add_argument("--weights", type=Path, help="pinned model.safetensors")
@@ -453,6 +612,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.self_test:
         self_test()
+        return
+    if args.compatibility_check:
+        if args.source_root is None:
+            parser.error("--compatibility-check requires --source-root")
+        _source_identity(args.source_root.resolve())
+        _compatibility_check(args.source_root.resolve())
         return
     if any(value is None for value in (args.source_root, args.config, args.weights, args.output)):
         parser.error("--source-root, --config, --weights, and --output are required")

@@ -115,6 +115,44 @@ added. Neither are `librosa`, `soundfile`, `soxr`, `scipy`, `numba`, or
 `llvmlite`; adding them would expand the reference closure without evidence
 that the selected official forward path needs them.
 
+## Patched Transformers compatibility gate
+
+The official VibeVoice `pyproject.toml` at the pinned source currently declares
+`transformers>=4.51.3,<5.0.0`. The isolated reference lock uses
+`transformers==5.10.4` because dependency review rejects 4.51.3 for
+`GHSA-xrqw-3rrv-vx5w`; 5.10.4 is above the patched minimum `5.10.0`. This is
+an intentional source-declared-range exception and is not treated as compatible
+by assumption.
+
+Before any real-weight replay, run the model-free import/API smoke on the same
+VAST environment and pinned clean source checkout:
+
+```text
+uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
+  tools/parity/vibevoice_realtime_0_5b_reference/run_reference.py \
+  --compatibility-check --source-root /root/VibeVoice
+```
+
+The check imports only the official config/model classes, inspects the
+`forward_lm`/`forward_tts_lm` signatures and `DynamicCache(config=...)`, and
+constructs neither a model nor a checkpoint. It must report
+`AUTHENTICATED_API_SMOKE` before the lock can be treated as execution-ready;
+otherwise the reference remains blocked and `NO_UPLOAD`. A model-free package
+inventory of the 5.10.4 wheel shows that
+`transformers.models.qwen2.tokenization_qwen2_fast` is absent, while the pinned
+official source imports it directly. The runner therefore installs an explicit,
+temporary namespace shim that maps only that removed module and translates the
+old `vocab_file`/`merges_file` constructor names to Transformers 5's native
+`Qwen2Tokenizer`/`TokenizersBackend`. It does not emulate tokenization or model
+execution. The shim is recorded in the smoke packet, but compatibility remains
+`BLOCKED_UNVERIFIED_API_SMOKE` until the VAST import/API smoke passes.
+
+The earlier VAST `uv sync` and dependency audit were for Transformers 4.51.3
+and are invalidated by this lock change. The new lock requires a fresh VAST
+`uv sync`, installed-closure license/native-payload audit, and then the
+model-free smoke before any reference replay. No model was downloaded or run
+for this update.
+
 ## Fixed upstream identities
 
 The gate binds all evidence to these immutable revisions:
@@ -123,8 +161,9 @@ The gate binds all evidence to these immutable revisions:
   `6bce5f06044837fe6d2c5d7a71a84f0416bd57e4`
 - VibeVoice source: `microsoft/VibeVoice`
   `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`
-- Transformers: `v4.51.3`
-  `5f4ecf2d9f867a1255131d2461d75793c0cf1db2`
+- Transformers package: `5.10.4` (PyPI artifacts are hash-pinned in
+  `uv.lock`; upstream source compatibility remains `UNVERIFIED` until the
+  model-free API smoke above passes)
 - Base tokenizer: `Qwen/Qwen2.5-0.5B`
   `060db6499f32faf8b98477b0a26969ef7d8b9987`
 

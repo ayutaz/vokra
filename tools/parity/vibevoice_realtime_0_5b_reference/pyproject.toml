@@ -9,7 +9,7 @@ dependencies = [
     "safetensors==0.5.3",
     "torch==2.7.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "tqdm==4.67.1",
-    "transformers==4.51.3",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]
@@ -34,7 +34,12 @@ checkpoint_revision = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
 checkpoint_sha256 = "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"
 config_bytes = 2117
 config_sha256 = "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57"
-dependency_lock_status = "VAST_UV_SYNC_SUCCEEDED_PENDING_LICENSE_AUDIT"
+dependency_lock_status = "VAST_UV_SYNC_REQUIRED_PENDING_COMPATIBILITY_AND_LICENSE_AUDIT"
 source_import_closure = ["torch", "numpy", "tqdm", "transformers", "diffusers.DPMSolverMultistepScheduler"]
 excluded_upstream_optional = ["accelerate", "gradio", "av", "aiortc", "uvicorn", "fastapi", "pydub", "ml-collections", "absl-py"]
 excluded_unused_audio = ["librosa", "soundfile", "soxr", "scipy", "numba", "llvmlite"]
+source_declared_transformers_requirement = "transformers>=4.51.3,<5.0.0"
+transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
+transformers_security_patched_minimum = "5.10.0"
+isolated_transformers_pin = "transformers==5.10.4"
+transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
