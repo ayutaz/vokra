@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Fail-closed, import-only SpeechBrain/TorchAudio API probe.
 
-This probe deliberately does not acquire or execute a checkpoint.  SpeechBrain
-1.0.3 imports a removed ``torchaudio.list_audio_backends`` symbol when paired
-with the pinned TorchAudio 2.11.0+cpu wheel.  An in-memory shim is exercised
-only to distinguish that known import seam from an unrelated import failure;
-the production result remains blocked whenever the shim is required.
+This probe deliberately does not acquire or execute a checkpoint.  The pinned
+SpeechBrain 1.1.1 release contains the upstream guard for the removed
+``torchaudio.list_audio_backends`` API and exposes the classifier methods used
+by the official VoxLingua107 dumper.  No compatibility shim is installed: a
+successful result must come from the fixed release itself.
 """
 from __future__ import annotations
 
@@ -14,24 +14,13 @@ import importlib.metadata
 import json
 import os
 import platform
-from types import ModuleType
 from typing import Any, MutableMapping
 
 
 EXPECTED_TORCH_PREFIX = "2.13.0"
 EXPECTED_TORCHAUDIO_PREFIX = "2.11.0"
-EXPECTED_SPEECHBRAIN_VERSION = "1.0.3"
-SCHEMA = "vokra-speechbrain-lang-id-model-free-api-probe-v1"
-
-
-def install_audio_backend_compat(module: ModuleType) -> str:
-    """Install only the known import-time shim and report its disposition."""
-    if hasattr(module, "list_audio_backends"):
-        return "native"
-    module.list_audio_backends = lambda: []  # type: ignore[attr-defined]
-    if not callable(module.list_audio_backends):  # type: ignore[attr-defined]
-        raise RuntimeError("torchaudio compatibility shim was not callable")
-    return "shimmed"
+EXPECTED_SPEECHBRAIN_VERSION = "1.1.1"
+SCHEMA = "vokra-speechbrain-lang-id-model-free-api-probe-v2"
 
 
 def _exception_record(error: BaseException) -> dict[str, str]:
@@ -45,15 +34,10 @@ def force_offline_environment(environment: MutableMapping[str, str]) -> None:
 
 
 def self_test() -> None:
-    native = ModuleType("native")
-    native.list_audio_backends = lambda: []  # type: ignore[attr-defined]
-    assert install_audio_backend_compat(native) == "native"
-    missing = ModuleType("missing")
-    assert install_audio_backend_compat(missing) == "shimmed"
-    assert missing.list_audio_backends() == []  # type: ignore[attr-defined]
     offline = {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}
     force_offline_environment(offline)
     assert offline == {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+    assert EXPECTED_SPEECHBRAIN_VERSION == "1.1.1"
     print("model_free_api_probe.py self-test: PASS")
 
 
@@ -98,41 +82,30 @@ def probe() -> tuple[int, dict[str, Any]]:
         result["status"] = "BLOCKED_UNEXPECTED_TORCHAUDIO"
         return 2, result
 
-    native_api = hasattr(torchaudio, "list_audio_backends")
-    result["torchaudio_list_audio_backends"] = "native" if native_api else "missing"
-    if native_api:
-        try:
-            import speechbrain  # noqa: F401
-        except Exception as error:  # noqa: BLE001 - record official import failure
-            result["native_speechbrain_import"] = "BLOCKED"
-            result["native_import_error"] = _exception_record(error)
-        else:
-            result["native_speechbrain_import"] = "PASS"
-        if result["native_speechbrain_import"] != "PASS":
-            result["status"] = "BLOCKED_SPEECHBRAIN_IMPORT"
-            return 2, result
-        result["status"] = "MODEL_FREE_API_VALIDATED"
-        return 0, result
-
-    # Do not import SpeechBrain before installing the shim: a failed import
-    # leaves partially initialized submodules in sys.modules and would make a
-    # later compatibility-only retry report a false circular-import failure.
-    result["native_speechbrain_import"] = "NOT_ATTEMPTED_MISSING_API"
-    result["native_import_error"] = {
-        "type": "MissingTorchaudioAPI",
-        "message": "torchaudio.list_audio_backends is absent",
-    }
-    shim = install_audio_backend_compat(torchaudio)
-    result["compatibility_shim"] = shim
     try:
-        import speechbrain  # noqa: F811,F401
-    except Exception as error:  # noqa: BLE001 - record shimmed import failure
-        result["shimmed_speechbrain_import"] = "BLOCKED"
-        result["shimmed_import_error"] = _exception_record(error)
-    else:
-        result["shimmed_speechbrain_import"] = "PASS"
-    result["status"] = "BLOCKED_COMPATIBILITY_SHIM_REQUIRED"
-    return 2, result
+        import speechbrain  # noqa: F401 - validate the fixed release import
+        from speechbrain.inference.classifiers import EncoderClassifier
+    except Exception as error:  # noqa: BLE001 - report import-only failure
+        result["status"] = "BLOCKED_SPEECHBRAIN_IMPORT"
+        result["error"] = _exception_record(error)
+        return 2, result
+
+    result["speechbrain_import"] = "PASS"
+    result["classifier_api"] = {
+        "EncoderClassifier": "PASS",
+        "encode_batch": callable(getattr(EncoderClassifier, "encode_batch", None)),
+        "classify_batch": callable(getattr(EncoderClassifier, "classify_batch", None)),
+    }
+    if not all(
+        (
+            result["classifier_api"]["encode_batch"],
+            result["classifier_api"]["classify_batch"],
+        )
+    ):
+        result["status"] = "BLOCKED_MISSING_CLASSIFIER_API"
+        return 2, result
+    result["status"] = "MODEL_FREE_API_VALIDATED"
+    return 0, result
 
 
 def main() -> int:

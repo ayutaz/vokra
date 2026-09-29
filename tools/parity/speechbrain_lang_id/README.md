@@ -40,33 +40,39 @@ SHA-256 `58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f`).
 No unsafe pickle loading is
 allowed: the official SpeechBrain loader remains the only checkpoint reader.
 
-`model_free_api_probe.py` is an import-only probe. SpeechBrain 1.0.3 still
-expects `torchaudio.list_audio_backends`, which is absent from TorchAudio
-2.11.0+cpu. The probe may install an in-memory compatibility shim solely to
-confirm that the package import can proceed, but it exits 2 with
-`BLOCKED_COMPATIBILITY_SHIM_REQUIRED`; that result is not an API-compatibility
-or model-execution claim. It never downloads weights, instantiates a model, or
-contacts the Hub.
+`model_free_api_probe.py` is an import-only, source-ready probe for the
+official SpeechBrain 1.1.1 release. It verifies the pinned Torch/TorchAudio
+versions, imports SpeechBrain without a compatibility shim, and checks that
+the official classifier exposes the `encode_batch` and `classify_batch` APIs
+used by the current dumper. It forces Hub offline and never downloads weights,
+instantiates a model, or executes inference. `MODEL_FREE_API_VALIDATED` means
+only that this import/API contract is available; it is not a CPU parity or
+Metal parity result. The dumper's former `torchaudio.list_audio_backends`
+monkey-patch was removed; any import failure now blocks the source-ready
+candidate instead of being hidden by a compatibility shim.
 
-## SpeechBrain 1.1.1 candidate review (not adopted)
+## SpeechBrain 1.1.1 source-ready candidate
 
-SpeechBrain's official `v1.1.1` backend implementation checks whether
-`torchaudio.list_audio_backends` exists and otherwise defers audio loading to
-TorchCodec. A disposable VAST model-free probe confirmed that the official
-`speechbrain==1.1.1`, `torch==2.13.0+cpu`, and `torchaudio==2.11.0+cpu` imports
-complete without a shim, with Hub offline and no model instantiated. Sources:
-the [v1.1.1 backend implementation](https://github.com/speechbrain/speechbrain/blob/v1.1.1/speechbrain/utils/torch_audio_backend.py)
-and the [official PyPI 1.1.1 release](https://pypi.org/project/speechbrain/1.1.1/).
+SpeechBrain 1.1.1 is the official PyPI release from 2026-08-27 and is
+Apache-2.0. Its official backend implementation guards the removed
+`torchaudio.list_audio_backends` API for TorchAudio 2.9+:
+[release backend](https://github.com/speechbrain/speechbrain/blob/v1.1.1/speechbrain/utils/torch_audio_backend.py)
+and [PyPI release](https://pypi.org/project/speechbrain/1.1.1/). The fixed
+PCM input path in the current dumper remains the stdlib `wave` reader; no input
+fixture or parity tolerance was changed here.
 
-That candidate is not accepted as a drop-in oracle upgrade. The same official
-release changes `speechbrain.dataio.dataio`: `read_audio` and
-`read_audio_info` move from `torchaudio.load/info` to the new `soundfile`
-wrapper, and related checkpoint/model code also changed between the official
-`v1.0.3` and `v1.1.1` tags. Those are material input and execution semantics
-for the VoxLingua107 reference. Therefore this project remains pinned to
-SpeechBrain 1.0.3; the lock, license manifest, and current fail-closed probe
-are not silently rewritten to 1.1.1. The probe explicitly blocks an unexpected
-SpeechBrain version with `BLOCKED_UNEXPECTED_SPEECHBRAIN`.
+The release also changes SpeechBrain's internal audio loading from
+`torchaudio.load/info` to its `soundfile`-based `audio_io` layer and adds
+`requests` and `soundfile` to the locked SpeechBrain dependency closure. The
+existing direct `soundfile` and `requests` pins remain, but the native
+`libsndfile` payload and the complete Python closure still require the
+separate owner/license review. The manifest therefore keeps every dependency
+and native-bundled review row unresolved and keeps `publication_decision` at
+`NO_UPLOAD`.
+
+This is a source-ready candidate only. Real-weight CPU parity, independent
+reference evidence, and subsequent Apple CPU/Metal validation have not been
+run for SpeechBrain 1.1.1; no existing fixture or numeric bound is promoted.
 
 All real conversion and measurements are VAST-only and no-upload. Numeric
 bounds remain unset; evidence is measurement-only until CPU and Metal results
