@@ -38,6 +38,23 @@ pub struct VibeVoiceRealtimeTtsOutput {
     pub eos_logit: f32,
 }
 
+/// An independently cached Realtime TTS language-model branch.
+///
+/// The official streaming generator keeps positive and negative TTS
+/// `past_key_values` separately for classifier-free guidance.  This wrapper
+/// makes that ownership explicit: it shares immutable weights with the
+/// originating language path, but owns an independent KV cache.  It only
+/// returns TTS hidden states and the EOS logit; acoustic sampling and PCM
+/// decoding remain outside this language-model boundary.
+#[derive(Debug, Clone)]
+pub struct VibeVoiceRealtimeTtsBranch {
+    backend: BackendKind,
+    tts_lm: Qwen2Runtime,
+    tts_input_types: Vec<f32>,
+    eos_fc1: Dense,
+    eos_fc2: Dense,
+}
+
 #[derive(Debug, Clone)]
 struct Dense {
     /// Column-major [in_features, out_features] for Compute::gemm_f32.
@@ -165,6 +182,60 @@ fn prepare_tts_embeddings(
     Ok(embeddings)
 }
 
+/// Build one cached TTS input row from the official incremental splice.
+///
+/// `forward_tts_lm` receives one new token embedding when a generation cache
+/// is present, replaces that row with the preceding text/acoustic hidden row,
+/// and adds the text (`true`) or speech (`false`) type embedding.  Keeping
+/// this operation separate from the cache step prevents a caller from
+/// accidentally reusing the full-prompt prefill path for an incremental
+/// token.
+fn prepare_tts_step_embedding(
+    input_id: u32,
+    base_embedding: &[f32],
+    vocab_size: usize,
+    hidden: usize,
+    lm_last_hidden_state: &[f32],
+    tts_input_types: &[f32],
+    is_text: bool,
+) -> Result<Vec<f32>> {
+    if hidden == 0 || lm_last_hidden_state.len() != hidden {
+        return Err(VokraError::InvalidArgument(
+            "vibevoice realtime incremental TTS splice shape mismatch".to_owned(),
+        ));
+    }
+    if tts_input_types.len() != 2 * hidden {
+        return Err(VokraError::InvalidArgument(
+            "vibevoice realtime incremental TTS type embedding shape mismatch".to_owned(),
+        ));
+    }
+    finite(
+        "vibevoice realtime incremental TTS splice",
+        lm_last_hidden_state,
+    )?;
+    finite(
+        "vibevoice realtime incremental TTS type embedding",
+        tts_input_types,
+    )?;
+    let mut embedding = embedding_rows(
+        "vibevoice realtime incremental TTS base embedding",
+        &[input_id],
+        base_embedding,
+        vocab_size,
+        hidden,
+    )?;
+    embedding.copy_from_slice(lm_last_hidden_state);
+    let type_offset = usize::from(is_text) * hidden;
+    for (value, type_value) in embedding.iter_mut().zip(&tts_input_types[type_offset..]) {
+        *value += type_value;
+    }
+    finite(
+        "vibevoice realtime incremental TTS prepared embedding",
+        &embedding,
+    )?;
+    Ok(embedding)
+}
+
 fn apply_eos_classifier(compute: &Compute, fc1: &Dense, fc2: &Dense, input: &[f32]) -> Result<f32> {
     let first = fc1.apply(compute, input)?;
     let mut activated = vec![0.0; first.len()];
@@ -252,10 +323,48 @@ impl VibeVoiceRealtimeLanguage {
         self.backend
     }
 
+    /// Clears both authenticated language-model caches.
+    ///
+    /// This is the explicit sequence-boundary operation for callers that
+    /// reuse one binder for multiple requests.  It does not alter weights or
+    /// the selected backend.
+    pub fn reset(&mut self) {
+        self.text_lm.reset();
+        self.tts_lm.reset();
+    }
+
     /// Runs the four-layer text LM with no final normalization.
     pub fn forward_lm(&mut self, input_ids: &[u32]) -> Result<VibeVoiceRealtimeLmOutput> {
         Ok(VibeVoiceRealtimeLmOutput {
             hidden: self.text_lm.prefill(input_ids)?,
+        })
+    }
+
+    /// Runs one text token against the existing language-model KV cache.
+    ///
+    /// This corresponds to the pinned Microsoft `forward_lm` call after
+    /// `prepare_inputs_for_generation` has reduced a cached sequence to its
+    /// newly appended token.  Unlike [`Self::forward_lm`], it never resets the
+    /// cache and therefore must only be used after a valid prompt prefill or
+    /// another incremental step.
+    pub fn forward_lm_step(&mut self, input_id: u32) -> Result<VibeVoiceRealtimeLmOutput> {
+        Ok(VibeVoiceRealtimeLmOutput {
+            hidden: self.text_lm.step(input_id)?,
+        })
+    }
+
+    /// Runs one already-mixed text-LM embedding against the existing cache.
+    ///
+    /// This is the incremental `inputs_embeds` counterpart of
+    /// [`Self::forward_lm_step`].  It is useful for an authenticated caller
+    /// that has already performed the text embedding splice; it does not
+    /// accept a partial row or silently tokenize arbitrary input.
+    pub fn forward_lm_embedding_step(
+        &mut self,
+        embedding: &[f32],
+    ) -> Result<VibeVoiceRealtimeLmOutput> {
+        Ok(VibeVoiceRealtimeLmOutput {
+            hidden: self.text_lm.step_embedding(embedding)?,
         })
     }
 
@@ -290,14 +399,181 @@ impl VibeVoiceRealtimeLanguage {
             &self.tts_input_types,
             tts_text_masks,
         )?;
-        let hidden = self
-            .tts_lm
-            .prefill_embeddings(&embeddings, input_ids.len())?;
-        let last = &hidden[(input_ids.len() - 1) * HIDDEN..];
-        let compute = Compute::for_backend(self.backend, VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS)?;
-        let eos_logit = apply_eos_classifier(&compute, &self.eos_fc1, &self.eos_fc2, last)?;
-        Ok(VibeVoiceRealtimeTtsOutput { hidden, eos_logit })
+        run_tts_prefill(
+            &mut self.tts_lm,
+            self.backend,
+            &self.eos_fc1,
+            &self.eos_fc2,
+            &embeddings,
+            input_ids.len(),
+        )
     }
+
+    /// Runs one incremental TTS LM row against the existing TTS KV cache.
+    ///
+    /// The hidden row is the preceding text-LM output for a text token or the
+    /// acoustic connector output for a speech token.  `is_text` is deliberately
+    /// explicit because the official generator uses `true` for streamed text
+    /// and `false` for both positive and negative speech branches.
+    pub fn forward_tts_lm_step(
+        &mut self,
+        input_id: u32,
+        lm_last_hidden_state: &[f32],
+        is_text: bool,
+    ) -> Result<VibeVoiceRealtimeTtsOutput> {
+        let embedding = prepare_tts_step_embedding(
+            input_id,
+            &self.embedding,
+            151_936,
+            HIDDEN,
+            lm_last_hidden_state,
+            &self.tts_input_types,
+            is_text,
+        )?;
+        run_tts_step(
+            &mut self.tts_lm,
+            self.backend,
+            &self.eos_fc1,
+            &self.eos_fc2,
+            &embedding,
+        )
+    }
+
+    /// Forks the current TTS cache into an independent same-prefix branch.
+    ///
+    /// The returned branch starts with the same prefix state as this language
+    /// path, while its subsequent KV appends are independent.  Use this only
+    /// when the other CFG branch has the same authenticated prefix.  The
+    /// official Realtime negative branch has a distinct prompt, so it must be
+    /// built with [`Self::fork_empty_tts_lm_branch`] and
+    /// [`VibeVoiceRealtimeTtsBranch::prefill`].
+    #[must_use]
+    pub fn fork_tts_lm_branch(&self) -> VibeVoiceRealtimeTtsBranch {
+        VibeVoiceRealtimeTtsBranch {
+            backend: self.backend,
+            tts_lm: self.tts_lm.clone(),
+            tts_input_types: self.tts_input_types.clone(),
+            eos_fc1: self.eos_fc1.clone(),
+            eos_fc2: self.eos_fc2.clone(),
+        }
+    }
+
+    /// Creates an empty TTS branch sharing only immutable authenticated
+    /// weights.  Callers must use [`VibeVoiceRealtimeTtsBranch::prefill`] with
+    /// that branch's own authenticated prompt before stepping it; no cache
+    /// contents are implied by this constructor.
+    #[must_use]
+    pub fn fork_empty_tts_lm_branch(&self) -> VibeVoiceRealtimeTtsBranch {
+        VibeVoiceRealtimeTtsBranch {
+            backend: self.backend,
+            tts_lm: self.tts_lm.fork_empty_cache(),
+            tts_input_types: self.tts_input_types.clone(),
+            eos_fc1: self.eos_fc1.clone(),
+            eos_fc2: self.eos_fc2.clone(),
+        }
+    }
+}
+
+impl VibeVoiceRealtimeTtsBranch {
+    /// Returns the explicitly selected backend; no fallback is performed.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Clears this branch's KV cache and starts a new sequence.
+    pub fn reset(&mut self) {
+        self.tts_lm.reset();
+    }
+
+    /// Prefills this branch with its own authenticated TTS prompt.
+    ///
+    /// This is the branch counterpart of the pinned Microsoft
+    /// `forward_tts_lm` call: token embeddings are built first, the supplied
+    /// language/acoustic hidden rows replace the input tail, and the explicit
+    /// text/speech type mask is added before the causal cache is populated.
+    /// A subsequent [`Self::step`] continues this branch without resetting
+    /// that cache.  This method is required for the official negative CFG
+    /// prompt, whose prefilled cache is distinct from the positive prompt.
+    pub fn prefill(
+        &mut self,
+        input_ids: &[u32],
+        lm_last_hidden_state: &[f32],
+        tts_text_masks: &[bool],
+    ) -> Result<VibeVoiceRealtimeTtsOutput> {
+        let base_embedding = self.tts_lm.shared_embedding();
+        let embeddings = prepare_tts_embeddings(
+            input_ids,
+            base_embedding.as_slice(),
+            151_936,
+            HIDDEN,
+            lm_last_hidden_state,
+            &self.tts_input_types,
+            tts_text_masks,
+        )?;
+        run_tts_prefill(
+            &mut self.tts_lm,
+            self.backend,
+            &self.eos_fc1,
+            &self.eos_fc2,
+            &embeddings,
+            input_ids.len(),
+        )
+    }
+
+    /// Runs one incremental TTS LM row on this independent cache branch.
+    pub fn step(
+        &mut self,
+        input_id: u32,
+        lm_last_hidden_state: &[f32],
+        is_text: bool,
+    ) -> Result<VibeVoiceRealtimeTtsOutput> {
+        let base_embedding = self.tts_lm.shared_embedding();
+        let embedding = prepare_tts_step_embedding(
+            input_id,
+            base_embedding.as_slice(),
+            151_936,
+            HIDDEN,
+            lm_last_hidden_state,
+            &self.tts_input_types,
+            is_text,
+        )?;
+        run_tts_step(
+            &mut self.tts_lm,
+            self.backend,
+            &self.eos_fc1,
+            &self.eos_fc2,
+            &embedding,
+        )
+    }
+}
+
+fn run_tts_step(
+    tts_lm: &mut Qwen2Runtime,
+    backend: BackendKind,
+    eos_fc1: &Dense,
+    eos_fc2: &Dense,
+    embedding: &[f32],
+) -> Result<VibeVoiceRealtimeTtsOutput> {
+    let hidden = tts_lm.step_embedding(embedding)?;
+    let compute = Compute::for_backend(backend, VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS)?;
+    let eos_logit = apply_eos_classifier(&compute, eos_fc1, eos_fc2, &hidden)?;
+    Ok(VibeVoiceRealtimeTtsOutput { hidden, eos_logit })
+}
+
+fn run_tts_prefill(
+    tts_lm: &mut Qwen2Runtime,
+    backend: BackendKind,
+    eos_fc1: &Dense,
+    eos_fc2: &Dense,
+    embeddings: &[f32],
+    rows: usize,
+) -> Result<VibeVoiceRealtimeTtsOutput> {
+    let hidden = tts_lm.prefill_embeddings(embeddings, rows)?;
+    let last = &hidden[(rows - 1) * HIDDEN..];
+    let compute = Compute::for_backend(backend, VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS)?;
+    let eos_logit = apply_eos_classifier(&compute, eos_fc1, eos_fc2, last)?;
+    Ok(VibeVoiceRealtimeTtsOutput { hidden, eos_logit })
 }
 
 fn finite(label: &str, values: &[f32]) -> Result<()> {
@@ -355,6 +631,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, [13.0, 15.0, 33.0, 35.0]);
+    }
+
+    #[test]
+    fn tts_step_replaces_token_embedding_and_selects_text_or_speech_type() {
+        let base = [10.0, 11.0, 20.0, 21.0, 30.0, 31.0];
+        let types = [1.0, 2.0, 3.0, 4.0];
+        let text =
+            prepare_tts_step_embedding(1, &base, 3, 2, &[100.0, 200.0], &types, true).unwrap();
+        let speech =
+            prepare_tts_step_embedding(1, &base, 3, 2, &[100.0, 200.0], &types, false).unwrap();
+        assert_eq!(text, [103.0, 204.0]);
+        assert_eq!(speech, [101.0, 202.0]);
+    }
+
+    #[test]
+    fn tts_step_rejects_non_single_hidden_rows_and_non_finite_values() {
+        let base = [10.0, 11.0, 20.0, 21.0];
+        let types = [1.0, 2.0, 3.0, 4.0];
+        assert!(prepare_tts_step_embedding(0, &base, 2, 2, &[1.0], &types, true).is_err());
+        assert!(
+            prepare_tts_step_embedding(0, &base, 2, 2, &[f32::NAN, 2.0], &types, true,).is_err()
+        );
+        assert!(
+            prepare_tts_step_embedding(0, &base, 2, 2, &[1.0, 2.0], &[1.0, 2.0], true,).is_err()
+        );
     }
 
     #[test]

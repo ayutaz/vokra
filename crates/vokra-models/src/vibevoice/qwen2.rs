@@ -1226,6 +1226,39 @@ mod tests {
     }
 
     #[test]
+    fn cloned_cache_branches_append_without_mutating_each_other() {
+        let mut runtime = fixture_runtime();
+        runtime.step_embedding(&[0.1, 0.2, 0.3, 0.4]).unwrap();
+        let mut branch = runtime.clone();
+        branch.step_embedding(&[0.4, 0.3, 0.2, 0.1]).unwrap();
+
+        assert_eq!(runtime.position, 1);
+        assert_eq!(branch.position, 2);
+        assert_eq!(runtime.cache[0].keys.len(), 2);
+        assert_eq!(branch.cache[0].keys.len(), 4);
+    }
+
+    #[test]
+    fn independently_prefilled_branches_keep_prompt_specific_context() {
+        let mut positive = fixture_runtime();
+        let mut negative = fixture_runtime();
+        positive
+            .prefill_embeddings(&[0.1, 0.2, 0.3, 0.4], 1)
+            .unwrap();
+        negative
+            .prefill_embeddings(&[0.4, 0.3, 0.2, 0.1, 0.2, 0.3, 0.4, 0.5], 2)
+            .unwrap();
+
+        positive.step_embedding(&[0.5, 0.6, 0.7, 0.8]).unwrap();
+        negative.step_embedding(&[0.5, 0.6, 0.7, 0.8]).unwrap();
+
+        assert_eq!(positive.position, 2);
+        assert_eq!(negative.position, 3);
+        assert_eq!(positive.cache[0].keys.len(), 4);
+        assert_eq!(negative.cache[0].keys.len(), 6);
+    }
+
+    #[test]
     fn prefill_error_restores_previous_cache_without_cloning_it() {
         let mut runtime = fixture_runtime();
         runtime.step_embedding(&[0.1, 0.2, 0.3, 0.4]).unwrap();
