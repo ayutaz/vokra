@@ -1,0 +1,20 @@
+[project]
+name = "vokra-nsnet2-reference"
+version = "0.1.0"
+description = "Minimal offline reference environment for the pinned Microsoft NSNet2 ONNX sidecar"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==2.5.3",
+    "onnx==1.23.1",
+]
+
+[tool.uv]
+package = false
+no-binary-package = ["numpy"]
+
+# NumPy's Linux wheels bundle libgfortran/libquadmath and BLAS payloads with
+# GPL/LGPL obligations. Build the pinned sdist with NumPy's no-BLAS fallback;
+# the VAST worker independently audits the resulting native payload before it
+# downloads the model.
+[tool.uv.config-settings-package.numpy]
+setup-args = ["-Dallow-noblas=true", "-Dblas=none", "-Dlapack=none"]
