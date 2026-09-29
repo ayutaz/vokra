@@ -230,6 +230,30 @@ weight CPU parity, Apple CPU/Metal no-fallback testing, and same-input CPU/GPU
 benchmarking are still required. The public row remains partial, so the
 136-full / 58-unresolved audit counts do not change.
 
+### 2026-09-29 VibeVoice Realtime acoustic-decoder layout readback (14:02 UTC)
+
+Disposable VAST instance `53368332` reread only the fixed
+`model.safetensors` bytes `0-79439` at the same immutable HF revision. The
+response was HTTP `206`, `Content-Range: bytes 0-79439/2035332888`, with
+79,440 bytes and the same range SHA-256
+`73c4658be17469d62e22a0f4b7f042cc10aa83d409055a5e3a350d5b8d8f26cb`.
+The 605 tensor entries include exactly 276 BF16
+`model.acoustic_tokenizer.decoder.*` entries. Canonical sorted JSON of their
+`name`, `shape`, and `dtype` fields (`jq -cS`, one line with a trailing newline)
+has SHA-256
+`4576ebac2def6293d72668f3fa068461b7c256c6d75e9f12eb6c16207ccfbfbb`.
+The descriptor list has the existing decoder's 64-to-2048 stem, seven stage
+widths `2048/1024/512/256/128/64/32` with depths `8/3/3/3/3/3/3`, six
+transposed-convolution upsamplers and `[1,32,7]` PCM head. This supports a
+strict Realtime-specific binding to the shared native decoder implementation;
+it does not prove payload identity or numerical parity. The [fixed Microsoft
+streaming source](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/vibevoice/modular/modeling_vibevoice_streaming_inference.py#L716-L724)
+unscales each generated latent using the checkpoint's scalar scale and bias
+before cached acoustic decoding, which remains an implementation and parity
+gate. Both the earlier unused header worker `53367911` and the completed
+worker `53368332` were destroyed with exact-ID `instances: null` readbacks;
+no probe instance was retained. No payload or model was run locally.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
