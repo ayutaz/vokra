@@ -37,7 +37,9 @@ patched minimum of 5.10.0. Security remediation is complete for this pin;
 the route remains `BLOCKED_UNVERIFIED_API_SMOKE` until authorized VAST API
 and real-weight validation completes. The VAST evidence binds an authenticated
 model-free API/meta-device route using `AutoConfig.from_pretrained` and
-`AutoModel.from_config`; no weight was loaded or executed. The meta-device
+`AutoModel.from_config`; a successful route manifest records the exact
+`torch==2.13.0+cpu` runtime before that probe. An unverified route records no
+observed Torch version. No weight was loaded or executed. The meta-device
 inspection authenticated quantizer shape `1x768x2` and nine decoder taps
 through `decoder_8`; real-weight/API runtime compatibility and numerical
 parity remain unresolved and blocked.

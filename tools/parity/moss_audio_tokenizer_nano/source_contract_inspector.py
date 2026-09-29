@@ -32,6 +32,7 @@ from typing import Any
 
 REPOSITORY = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
+TORCH_VERSION = "2.13.0+cpu"
 TRANSFORMERS_VERSION = "5.10.4"
 PAYLOAD_FILES = (
     ".gitattributes",
@@ -559,6 +560,10 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
         from transformers import AutoConfig, AutoModel
     except Exception as error:  # noqa: BLE001
         raise InspectionError(f"reference imports unavailable: {error}") from error
+    if str(torch.__version__) != TORCH_VERSION:
+        raise InspectionError(
+            f"Torch {torch.__version__!s} != pinned {TORCH_VERSION}"
+        )
     if str(transformers.__version__) != TRANSFORMERS_VERSION:
         raise InspectionError(
             f"Transformers {transformers.__version__!s} != pinned {TRANSFORMERS_VERSION}"
@@ -619,6 +624,7 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
         raise InspectionError(f"official decoded audio shape drifted: {audio_shape!r}")
     return {
         "status": "AUTHENTICATED_META_SHAPE_PROBE",
+        "torch_version": str(torch.__version__),
         "transformers_version": str(transformers.__version__),
         "config_class": f"{type(config).__module__}.{type(config).__name__}",
         "model_class": f"{type(model).__module__}.{type(model).__name__}",
@@ -712,6 +718,18 @@ def blocked_manifest(
     }
 
 
+def unverified_route() -> dict[str, Any]:
+    """Return the pre-probe route without claiming an observed Torch version."""
+
+    return {
+        "status": "BLOCKED_UNVERIFIED_API_SMOKE",
+        "torch_version": None,
+        "transformers_version": TRANSFORMERS_VERSION,
+        "weights_loaded": False,
+        "weights_executed": False,
+    }
+
+
 def self_test() -> None:
     assert safe_relative_path("config.json") == "config.json"
     assert "LICENSE" not in MATERIALIZED_FILES
@@ -721,6 +739,10 @@ def self_test() -> None:
     assert EXPECTED_AUTO_MAP["AutoModel"].endswith("MossAudioTokenizerModel")
     assert len(EXPECTED_DECODER_LAYOUT) == 9
     assert EXPECTED_TAPS[-1] == {"name": "decoder_8", "shape": "1x1x15360"}
+    pre_probe = unverified_route()
+    assert pre_probe["status"] == "BLOCKED_UNVERIFIED_API_SMOKE"
+    assert pre_probe["torch_version"] is None
+    assert pre_probe["torch_version"] != TORCH_VERSION
     try:
         validate_model_info({**EXPECTED_MODEL_INFO, "gated": True})
     except InspectionError:
@@ -897,6 +919,8 @@ def self_test() -> None:
     assert 'torch_module.device("meta")' in source
     assert ("init_" + "empty_weights") not in source
     assert ("accel" + "erate") not in source.lower()
+    assert 'TORCH_VERSION = "2.13.0+cpu"' in source
+    assert '"torch_version": str(torch.__version__)' in source
     assert '"weights_loaded": False' in source
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "evidence"
@@ -1015,12 +1039,7 @@ def main() -> int:
     except InspectionError as caught:
         print(f"moss Nano source-contract inspector: BLOCKED: {caught}", file=sys.stderr)
         return 2
-    route: dict[str, Any] = {
-        "status": "BLOCKED_UNVERIFIED_API_SMOKE",
-        "transformers_version": TRANSFORMERS_VERSION,
-        "weights_loaded": False,
-        "weights_executed": False,
-    }
+    route = unverified_route()
     resolved_revision: str | None = None
     model_info: dict[str, Any] | None = None
     files: list[dict[str, Any]] | None = None
