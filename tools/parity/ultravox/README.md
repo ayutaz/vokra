@@ -25,8 +25,10 @@ security update requires a fresh VAST rerun before parity can be claimed).
 The official fixed-revision `ultravox_model.py` imports both `peft` and
 `accelerate` and uses `peft.PeftModel`/LoRA helpers. They therefore cannot be
 removed without changing the official reference route. Accelerate advisory
-#257 has no patched release, so this remains a documented no-fix blocker; the
-loader keeps `low_cpu_mem_usage=True` and the dependency gate remains closed.
+#257 has no patched release and remains an unresolved security blocker. The
+official loader keeps `low_cpu_mem_usage=True` for fidelity; that setting is
+not an advisory mitigation, and the dependency gate remains closed until the
+owner reviews the affected closure.
 
 Run only on a provisioned VAST host:
 

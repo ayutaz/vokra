@@ -161,7 +161,7 @@
       "required_identity": "lock_sha256/project_sha256/package_rows_sha256"
     }
   ],
-  "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
+  "license_rows_sha256": "62623143095ee2d9dfc422450d54299f95d19ada6f10c9aee82ce41c22911b16",
   "dependency_audit_evidence": {
     "schema": "vokra-ultravox-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
@@ -170,7 +170,7 @@
     "status": "PENDING_OWNER_APPROVAL",
     "approval_scope_sha256": "978535af15b82610f06aa73fb62e839cd0e2af146ef7f4ecd57c7b296067ea34"
   },
-  "approval_scope_sha256": "978535af15b82610f06aa73fb62e839cd0e2af146ef7f4ecd57c7b296067ea34",
+  "approval_scope_sha256": "323925ba7ca401801dda5821ed00dc9c230a292d018b6568a821ad7adafd501b",
   "approval": {
     "status": "OWNER_SIGNOFF_REQUIRED",
     "signer": null,
