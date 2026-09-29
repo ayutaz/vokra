@@ -109,6 +109,35 @@ Dependency-license review, a safe compatibility remedy, independent real-weight
 reference, CPU parity, Apple CPU/Metal and publication all remain open. No
 model row is promoted by this source-level diagnosis.
 
+### 2026-09-29 VibeVoice bounded import replay (11:20 UTC)
+
+An unmerged compatibility candidate at clean head
+`9d181d7205d19f10284327df52a05aab374d2f70` limits the
+Transformers 5.10.4 `AutoModel.register` override to the two fixed upstream
+tokenizer class pairs and the exact duplicate-registration error, restores the
+registry method after import, and removes the reference dumper's broad
+file-by-path import fallback. Both model-free local self-tests and the
+forbidden-symbol/zero-dependency gates passed. This is a candidate, not an
+upstream API or parity verdict.
+
+A disposable VAST worker (`53348901`) replayed that exact head against clean
+Microsoft source `2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c` and locked
+Python 3.12 environment (uv.lock SHA-256
+`1b481e4774ec3c5cb53a061cbf7f68b0a98f52d4005b86fda1c19b01302d20fd`).
+The registration collision no longer appears as the first failure. The
+model-free import still stops at `module_import` with `ModuleNotFoundError`:
+the fixed [Microsoft text tokenizer](https://github.com/microsoft/VibeVoice/blob/2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c/vibevoice/modular/modular_vibevoice_text_tokenizer.py#L7)
+imports `transformers.models.qwen2.tokenization_qwen2_fast` and subclasses
+`Qwen2TokenizerFast`, while the locked Transformers 5.10.4 installation has
+only `tokenization_qwen2.py` with `Qwen2Tokenizer(TokenizersBackend)` in that
+package. A name alias is not proof of tokenizer-semantic equivalence and was
+not added. The sanitized [API result](vibevoice-1-5b-api-smoke-9d181d72-2026-09-29.json)
+has SHA-256 `2f2f54755ff319b205d6708edb419bc27443cabb0d3189f4f9a1e97e77f1fe0e`.
+No checkpoint, weight, forward, numerical reference, CPU parity or upload ran.
+The worker and an earlier unusable stopped contract (`53348753`) were both
+destroyed; neither left an owned volume. An unrelated VAST instance was not
+modified. The public row stays partial and in the 58-row queue.
+
 ### 2026-09-29 GitHub security-alert readback (07:05 UTC)
 
 With GitHub `main` at `09b39079a5b205e859ea24392ffe56b3bcd2371b`, a
