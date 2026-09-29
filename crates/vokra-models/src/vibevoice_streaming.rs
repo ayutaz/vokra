@@ -41,8 +41,8 @@ pub use acoustic::{
 };
 pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
 pub use generation::{
-    VIBEVOICE_REALTIME_EOS_THRESHOLD, VibeVoiceRealtimeGenerationControl,
-    VibeVoiceRealtimeGenerationSession, VibeVoiceRealtimeGenerationStopReason,
+    VibeVoiceRealtimeGenerationControl, VibeVoiceRealtimeGenerationSession,
+    VibeVoiceRealtimeGenerationStopReason,
 };
 pub use language::{
     VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS, VibeVoiceRealtimeLanguage, VibeVoiceRealtimeLmOutput,

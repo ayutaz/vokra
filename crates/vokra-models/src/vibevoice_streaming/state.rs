@@ -418,6 +418,11 @@ fn validate_text_ids(text_ids: &[u32], streaming_pad_id: u32) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(crate) fn synthetic_generation_test_state() -> VibeVoiceStreamingState {
+    VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(1, 1, 7))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

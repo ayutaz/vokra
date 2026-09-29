@@ -23,11 +23,6 @@ use vokra_core::{Result, VokraError};
 
 use super::state::{TTS_SPEECH_WINDOW_SIZE, VibeVoiceStreamingState, VibeVoiceStreamingTextPlan};
 
-/// The source's EOS decision threshold, retained as documentation for the
-/// future model-backed boundary. This control plane never guesses a logit or
-/// applies sigmoid itself.
-pub const VIBEVOICE_REALTIME_EOS_THRESHOLD: f32 = 0.5;
-
 /// Why a Realtime control-plane session stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VibeVoiceRealtimeGenerationStopReason {
@@ -100,6 +95,7 @@ pub struct VibeVoiceRealtimeGenerationSession {
     plan: VibeVoiceStreamingTextPlan,
     cursor: Cursor,
     backend: BackendKind,
+    remaining_speech_steps: usize,
     stop_reason: Option<VibeVoiceRealtimeGenerationStopReason>,
 }
 
@@ -109,14 +105,24 @@ impl VibeVoiceRealtimeGenerationSession {
         state: &VibeVoiceStreamingState,
         text_ids: &[u32],
         backend: BackendKind,
+        speech_step_budget: usize,
     ) -> Result<Self> {
         require_cpu(backend)?;
         let plan = state.plan_text_windows(text_ids)?;
-        Self::from_plan(plan, backend)
+        Self::from_plan(plan, backend, speech_step_budget)
     }
 
     /// Builds a session from a previously authenticated text-window plan.
-    pub fn from_plan(plan: VibeVoiceStreamingTextPlan, backend: BackendKind) -> Result<Self> {
+    ///
+    /// `speech_step_budget` is an explicit caller-owned control-plane budget.
+    /// It is consumed once per emitted speech action and is deliberately not
+    /// presented as an inferred replacement for the upstream model's
+    /// `max_length` position accounting.
+    pub fn from_plan(
+        plan: VibeVoiceStreamingTextPlan,
+        backend: BackendKind,
+        speech_step_budget: usize,
+    ) -> Result<Self> {
         require_cpu(backend)?;
         if plan.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -127,6 +133,7 @@ impl VibeVoiceRealtimeGenerationSession {
             plan,
             cursor: Cursor::TextWindow(0),
             backend,
+            remaining_speech_steps: speech_step_budget,
             stop_reason: None,
         })
     }
@@ -155,11 +162,19 @@ impl VibeVoiceRealtimeGenerationSession {
         matches!(self.cursor, Cursor::Finished)
     }
 
+    /// Returns the number of speech actions still permitted by the caller's
+    /// explicit control-plane budget.
+    #[must_use]
+    pub const fn remaining_speech_steps(&self) -> usize {
+        self.remaining_speech_steps
+    }
+
     /// Emits the next source-authenticated control action.
     ///
     /// After the last text window, this keeps emitting zero-text speech steps
-    /// until the caller reports EOS, max length, or external stop with
-    /// [`Self::finish`]. It never reports completion merely because text ended.
+    /// until the explicit caller budget is exhausted or the caller reports EOS or
+    /// external stop with [`Self::finish`]. It never reports completion merely
+    /// because text ended.
     pub fn next_control(&mut self) -> Result<VibeVoiceRealtimeGenerationControl> {
         match self.cursor {
             Cursor::TextWindow(index) => {
@@ -180,17 +195,32 @@ impl VibeVoiceRealtimeGenerationSession {
                 text_window_index,
                 step,
             } => {
+                if self.remaining_speech_steps == 0 {
+                    self.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                    return self.next_control();
+                }
+                self.remaining_speech_steps -= 1;
+                let budget_exhausted = self.remaining_speech_steps == 0;
                 if step + 1 >= TTS_SPEECH_WINDOW_SIZE {
-                    self.cursor = if text_window_index + 1 < self.plan.len() {
+                    self.cursor = if budget_exhausted {
+                        Cursor::Finished
+                    } else if text_window_index + 1 < self.plan.len() {
                         Cursor::TextWindow(text_window_index + 1)
                     } else {
                         Cursor::ZeroText { step: 0 }
                     };
                 } else {
-                    self.cursor = Cursor::SpeechWindow {
-                        text_window_index,
-                        step: step + 1,
+                    self.cursor = if budget_exhausted {
+                        Cursor::Finished
+                    } else {
+                        Cursor::SpeechWindow {
+                            text_window_index,
+                            step: step + 1,
+                        }
                     };
+                }
+                if budget_exhausted {
+                    self.stop_reason = Some(VibeVoiceRealtimeGenerationStopReason::MaxLength);
                 }
                 Ok(VibeVoiceRealtimeGenerationControl::SpeechStep {
                     text_window_index: Some(text_window_index),
@@ -199,9 +229,19 @@ impl VibeVoiceRealtimeGenerationSession {
                 })
             }
             Cursor::ZeroText { step } => {
+                if self.remaining_speech_steps == 0 {
+                    self.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                    return self.next_control();
+                }
+                self.remaining_speech_steps -= 1;
+                let budget_exhausted = self.remaining_speech_steps == 0;
                 self.cursor = Cursor::ZeroText {
                     step: (step + 1) % TTS_SPEECH_WINDOW_SIZE,
                 };
+                if budget_exhausted {
+                    self.cursor = Cursor::Finished;
+                    self.stop_reason = Some(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                }
                 Ok(VibeVoiceRealtimeGenerationControl::SpeechStep {
                     text_window_index: None,
                     speech_step: step,
@@ -223,15 +263,6 @@ impl VibeVoiceRealtimeGenerationSession {
             self.cursor = Cursor::Finished;
         }
     }
-
-    /// Explicitly rejects native synthesis until the four authenticated
-    /// upstream prompt KV branches and caller-owned noise contract can be
-    /// imported without fabrication.
-    pub fn execute_native(&self) -> Result<()> {
-        Err(VokraError::NotImplemented(
-            "vibevoice realtime native generation requires authenticated lm/tts_lm/neg_lm/neg_tts_lm prompt KV caches and caller-owned 64-wide diffusion noise; use next_control for the source-faithful control plane",
-        ))
-    }
 }
 
 fn require_cpu(backend: BackendKind) -> Result<()> {
@@ -246,50 +277,149 @@ fn require_cpu(backend: BackendKind) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vibevoice_streaming::state::TTS_TEXT_WINDOW_SIZE;
+
+    fn session(speech_step_budget: usize) -> VibeVoiceRealtimeGenerationSession {
+        let state = super::super::state::synthetic_generation_test_state();
+        VibeVoiceRealtimeGenerationSession::new(
+            &state,
+            &(101..=112).collect::<Vec<_>>(),
+            BackendKind::Cpu,
+            speech_step_budget,
+        )
+        .unwrap()
+    }
+
+    fn assert_text_window(
+        session: &mut VibeVoiceRealtimeGenerationSession,
+        index: usize,
+        text_ids: &[u32],
+        next_text_window_size: usize,
+    ) {
+        assert_eq!(
+            session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::TextWindow {
+                text_window_index: index,
+                text_ids: text_ids.to_vec(),
+                next_text_window_size,
+            }
+        );
+    }
+
+    fn assert_six_speech_steps(
+        session: &mut VibeVoiceRealtimeGenerationSession,
+        text_window_index: usize,
+    ) {
+        for speech_step in 0..TTS_SPEECH_WINDOW_SIZE {
+            assert_eq!(
+                session.next_control().unwrap(),
+                VibeVoiceRealtimeGenerationControl::SpeechStep {
+                    text_window_index: Some(text_window_index),
+                    speech_step,
+                    max_speech_steps: TTS_SPEECH_WINDOW_SIZE,
+                }
+            );
+        }
+    }
 
     #[test]
-    fn source_limits_are_bounded_without_claiming_completion() {
-        assert_eq!(TTS_TEXT_WINDOW_SIZE, 5,);
-        assert_eq!(TTS_SPEECH_WINDOW_SIZE, 6,);
-        let action = VibeVoiceRealtimeGenerationControl::SpeechStep {
-            text_window_index: None,
-            speech_step: 0,
-            max_speech_steps: TTS_SPEECH_WINDOW_SIZE,
-        };
-        assert!(matches!(
-            action,
+    fn control_plane_emits_three_windows_and_six_steps_each() {
+        let mut session = session(24);
+        assert_text_window(&mut session, 0, &[101, 102, 103, 104, 105], 5);
+        assert_six_speech_steps(&mut session, 0);
+        assert_text_window(&mut session, 1, &[106, 107, 108, 109, 110], 2);
+        assert_six_speech_steps(&mut session, 1);
+        assert_text_window(&mut session, 2, &[111, 112], 0);
+        assert_six_speech_steps(&mut session, 2);
+        assert_eq!(session.remaining_speech_steps(), 6);
+        assert_eq!(
+            session.next_control().unwrap(),
             VibeVoiceRealtimeGenerationControl::SpeechStep {
                 text_window_index: None,
-                max_speech_steps: 6,
-                ..
+                speech_step: 0,
+                max_speech_steps: TTS_SPEECH_WINDOW_SIZE,
+            }
+        );
+        assert!(!session.is_finished());
+    }
+
+    #[test]
+    fn zero_text_budget_exhaustion_is_checked_without_off_by_one() {
+        let mut session = session(19);
+        for index in 0..3 {
+            match index {
+                0 => assert_text_window(&mut session, 0, &[101, 102, 103, 104, 105], 5),
+                1 => assert_text_window(&mut session, 1, &[106, 107, 108, 109, 110], 2),
+                2 => assert_text_window(&mut session, 2, &[111, 112], 0),
+                _ => unreachable!(),
+            }
+            assert_six_speech_steps(&mut session, index);
+        }
+        assert_eq!(session.remaining_speech_steps(), 1);
+        assert_eq!(
+            session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::SpeechStep {
+                text_window_index: None,
+                speech_step: 0,
+                max_speech_steps: TTS_SPEECH_WINDOW_SIZE,
+            }
+        );
+        assert_eq!(session.remaining_speech_steps(), 0);
+        assert!(session.is_finished());
+        assert_eq!(TTS_SPEECH_WINDOW_SIZE, 6,);
+        assert!(matches!(
+            session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::Finished {
+                reason: VibeVoiceRealtimeGenerationStopReason::MaxLength
             }
         ));
     }
 
     #[test]
-    fn terminal_reasons_are_explicit_observations() {
-        assert_ne!(
-            VibeVoiceRealtimeGenerationStopReason::EndOfSpeech,
-            VibeVoiceRealtimeGenerationStopReason::MaxLength
+    fn zero_budget_stops_before_first_speech_action() {
+        let mut session = session(0);
+        assert_text_window(&mut session, 0, &[101, 102, 103, 104, 105], 5);
+        assert_eq!(
+            session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::Finished {
+                reason: VibeVoiceRealtimeGenerationStopReason::MaxLength
+            }
         );
-        assert_ne!(
-            VibeVoiceRealtimeGenerationStopReason::MaxLength,
-            VibeVoiceRealtimeGenerationStopReason::ExternalStop
-        );
+        assert_eq!(session.remaining_speech_steps(), 0);
     }
 
     #[test]
     fn non_cpu_backend_is_rejected_without_fallback() {
-        let error = require_cpu(BackendKind::Metal).unwrap_err();
+        let state = super::super::state::synthetic_generation_test_state();
+        let error = VibeVoiceRealtimeGenerationSession::new(&state, &[101], BackendKind::Metal, 1)
+            .unwrap_err();
         assert!(matches!(error, VokraError::UnsupportedOp(_)));
         assert!(error.to_string().contains("no CPU fallback"));
     }
 
     #[test]
-    fn native_blocker_names_authenticated_prefill_and_noise_contract() {
-        let message = "vibevoice realtime native generation requires authenticated lm/tts_lm/neg_lm/neg_tts_lm prompt KV caches and caller-owned 64-wide diffusion noise; use next_control for the source-faithful control plane";
-        assert!(message.contains("neg_tts_lm"));
-        assert!(message.contains("caller-owned 64-wide diffusion noise"));
+    fn terminal_observations_are_explicit_and_idempotent() {
+        let mut eos_session = session(24);
+        eos_session.finish(VibeVoiceRealtimeGenerationStopReason::EndOfSpeech);
+        eos_session.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+        assert_eq!(
+            eos_session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::Finished {
+                reason: VibeVoiceRealtimeGenerationStopReason::EndOfSpeech,
+            }
+        );
+        assert_eq!(
+            eos_session.stop_reason(),
+            Some(VibeVoiceRealtimeGenerationStopReason::EndOfSpeech)
+        );
+        assert!(eos_session.is_finished());
+
+        let mut externally_stopped = session(24);
+        externally_stopped.finish(VibeVoiceRealtimeGenerationStopReason::ExternalStop);
+        assert_eq!(
+            externally_stopped.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::Finished {
+                reason: VibeVoiceRealtimeGenerationStopReason::ExternalStop,
+            }
+        );
     }
 }
