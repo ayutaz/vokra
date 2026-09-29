@@ -50,9 +50,9 @@ so neither row is a commercial or publication sign-off.
 
 The decoder-only reference path previously imported successfully with
 `transformers` blocked from import under the original Torch 2.5.0 / TorchAudio
-2.5.0 pair. That is historical evidence only: the patched 2.13.0 / 2.11.0
-pair in this candidate has not yet passed an official import on VAST. The
-impossible-marker override in `pyproject.toml` is recorded in `uv.lock`'s
+2.5.0 pair. That historical evidence has now been superseded for the patched
+pair by the VAST model-free replay recorded below. The impossible-marker
+override in `pyproject.toml` is recorded in `uv.lock`'s
 `[manifest].overrides` and removes the unused
 Transformers/Typer/tokenizers/shellingham branch from the resolved environment.
 The guard is fail-closed: a review must require both `uv lock --check` and the
@@ -82,6 +82,24 @@ only the official decoder source/API contract. A successful documents-only
 guard does not certify ABI compatibility on a target host, the full model API,
 real-weight execution, or CPU/Metal parity; those require the recorded VAST
 follow-up.
+
+## VAST model-free replay
+
+On 2026-09-30, disposable VAST instance `53434693` verified the exact clean
+HEAD `e3e90572a5125e585b0a6f9f681f5606fc38a7a4`. The frozen lock had SHA-256
+`d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4`.
+Python 3.12.14 completed `uv sync --frozen --python 3.12` with 62 packages,
+and the environment resolved Torch `2.13.0+cpu`, TorchAudio `2.11.0+cpu`, and
+XCodec2 `0.1.5`. Both `uv lock --check --offline` and
+`uv run --frozen python dependency_guard.py --self-test` passed; the latter
+validated the official decoder-only import/API contract without loading a
+GGUF or executing weights. The instance was destroyed afterward; its exact-ID
+API returned `instances: null` and the full instance list was empty.
+
+This evidence covers only the frozen, model-free dependency/import boundary.
+Real-weight execution, CPU parity, Metal parity, and CPU/GPU speed-versus-
+quality selection remain unverified. LICENSE text and bundled third-party
+notices remain unaudited, and owner/legal approval is still absent.
 
 | Distribution | Version | License | Resolution | Native payload | Review |
 | --- | ---: | --- | --- | --- | --- |
