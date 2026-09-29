@@ -1,8 +1,119 @@
 # VibeVoice Realtime 0.5B reference contract
 
-This directory records the model-free contract used by
-`tools/parity/vibevoice_realtime_0_5b_inspect.py`. It is an inspection gate,
-not a runtime or parity implementation.
+The inspector portion of this directory records the original model-free
+contract used by `tools/parity/vibevoice_realtime_0_5b_inspect.py`; the
+dedicated runner below now records a separate narrow official real-weight
+reference.
+
+## 2026-09-30 supersession note
+
+Earlier header-only/model-free statements in this historical document are
+superseded for checkpoint identity by the VAST evidence: the complete pinned
+`model.safetensors` payload was SHA-256 authenticated, the offline conversion
+and native binder accepted the authenticated tensor topology, and the official
+CPU/CUDA narrow reference completed against those real weights. The dated
+model-free receipts below are intentionally retained as history. This does not
+claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
+Apple CPU/Metal parity, or publication eligibility.
+
+## 2026-09-30 VAST narrow-reference receipts
+
+Both runs used the exact checkpoint/source contract above and three timed
+repeats. BF16 measured CPU median `16.1034 s` and RTX 4090 CUDA median
+`0.01907 s`, but the global max absolute difference was `0.25`; the unchanged
+provisional `0.05` guard therefore selected CPU. The packet SHA-256 is
+`4c3590f5ef5b2bcc5f67b228dc8ce263ac95c5c579709fddfb2483c94a05b5a9`.
+
+FP32 measured CPU median `23.4959622710 s` and RTX 4090 CUDA median
+`0.0172316080 s`; global max absolute difference was
+`4.57763671875e-05`, so the same `0.05` guard passed and selected CUDA. The
+packet SHA-256 is
+`af87fbc9959da3249971a637690bd00b890997647ff566f8a8a1ea8bdf2866e4`.
+These are narrow same-workload device-selection receipts, not Rust parity or a
+release tolerance; the BF16 guard remains unchanged.
+
+## Official real-weight reference runner
+
+`run_reference.py` is a VAST-only runner for a deliberately narrow real-weight
+operation. It imports the pinned Microsoft implementation from a clean checkout
+at `94da20d98b2fa7688e9cbfaf7692ddb4954f7600` and calls its
+`forward_lm`, `forward_tts_lm`, and `model.acoustic_connector` methods. It does
+not contain a copied model implementation and has no CPU fallback for a failed
+official import. The checkpoint is required to be the complete pinned
+`model.safetensors` payload (`605` tensors, SHA-256
+`7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514`) from HF
+revision `6bce5f06044837fe6d2c5d7a71a84f0416bd57e4`.
+The supplied `config.json` is also authenticated before model construction:
+2117 bytes, SHA-256
+`caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57`.
+The source checkout must be clean as well as at the pinned Git revision.
+The runner disables Python bytecode writes before importing the upstream source,
+so repeated runs do not create untracked `__pycache__` files. A pre-existing
+dirty checkout is still rejected and must be cleaned on VAST before execution.
+
+The pinned Realtime checkpoint is decoder-only for the acoustic tokenizer. Its
+official state dict therefore omits `model.acoustic_tokenizer.encoder.*`. The
+runner permits exactly that missing prefix, records the sorted-name SHA and
+count in `reference.json`, and rejects every other missing or unexpected tensor.
+The selected official `forward_lm`, `forward_tts_lm`, EOS-classifier, and
+acoustic-connector calls do not invoke the acoustic-tokenizer encoder. This is
+not evidence for acoustic encoding, synthesis, or complete checkpoint binding.
+
+The fixed probe uses token IDs `[1, 2, 3, 4]`, a four-token attention mask, and
+a deterministic `[1, 1, 64]` acoustic latent. It writes the EOS logits, TTS
+hidden state, acoustic-connector output, and a JSON packet containing source,
+checkpoint, input, runtime, timing, shape, finiteness, and SHA-256 metadata.
+When CUDA is available, the packet also contains separate CPU and CUDA copies
+of each small output plus per-output diagnostics: absolute difference, relative
+difference with a `1e-6` denominator floor, differing-element count, shape, and
+finite status. The selected-device aliases are retained separately.
+This is an official narrow reference run, not Rust parity or a complete
+synthesis claim. The packet must remain `NO_UPLOAD` until the separate license,
+provenance, and model-zoo gates are complete.
+
+The runner measures the same workload on CPU and CUDA when CUDA is available.
+CUDA is selected only when its median is lower than CPU and every output stays
+within the fixed provisional `5e-2` comparison guard; otherwise CPU remains
+selected. This guard is only a same-workload device-selection safety check. It
+is not an independent numerical reference, a Rust parity tolerance, or a
+release gate, and no performance claim is valid without the emitted timing and
+diagnostic fields. A large CPU/CUDA difference must be investigated from the
+paired outputs; it must not be resolved by widening this guard without
+evidence.
+
+The checkpoint tensors are BF16. The runner retains BF16 as the default compute
+dtype and also accepts `--dtype float32`; FP32 is a cast of the same
+authenticated checkpoint after exact state-dict binding, not a second fixture.
+The selected dtype is recorded in `reference.json`. CUDA is still selected only
+when the unchanged guard passes; changing dtype does not widen that guard.
+
+The dedicated `uv.lock` is generated and pinned, and VAST `uv sync` has
+succeeded. The recorded VAST runs already completed with this environment; the
+dependency license audit remains pending. The command below is the controlled
+replay command, not an assertion that the recorded execution is still pending:
+
+```text
+uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
+  tools/parity/vibevoice_realtime_0_5b_reference/run_reference.py \
+  --source-root /root/VibeVoice \
+  --config /root/realtime-checkpoint/config.json \
+  --weights /root/model.safetensors \
+  --dtype float32 \
+  --output /root/realtime-reference
+```
+
+The command is intentionally not a local verification command. The full
+checkpoint is larger than the 2 GB VAST threshold and must never be downloaded
+or executed on the maintainer Mac.
+
+The authenticated import closure for this runner is `torch`, `numpy`, `tqdm`,
+`transformers`, `safetensors`, and the official `diffusers` scheduler. The
+official package's UI/server and optional audio dependencies (`accelerate`,
+`gradio`, `av`, `aiortc`, `uvicorn`, `fastapi`, `pydub`, `ml-collections`,
+`absl-py`) are not imported by this fixed class path and are intentionally not
+added. Neither are `librosa`, `soundfile`, `soxr`, `scipy`, `numba`, or
+`llvmlite`; adding them would expand the reference closure without evidence
+that the selected official forward path needs them.
 
 ## Fixed upstream identities
 
@@ -107,8 +218,10 @@ authenticated: the 79,432-byte JSON header declares all 605 tensors as BF16,
 and the 26 `prediction_head` tensor names/shapes match the native loader in
 PR #160. The authenticated range SHA-256 is
 `73c4658be17469d62e22a0f4b7f042cc10aa83d409055a5e3a350d5b8d8f26cb`.
-This authenticates only the header range; the complete payload hash and
-real-weight tensor values remain unverified.
+This paragraph is a historical header-only receipt and is superseded by the
+2026-09-30 full-payload SHA-256 authentication and VAST conversion/binder
+evidence recorded at the top of this document. It remains useful for the
+descriptor-only provenance, but it is not the current checkpoint identity.
 
 The native `vibevoice_streaming::sampler::sample_vibevoice_realtime_cfg`
 boundary now contains the fixed 20-step CPU-only CFG loop and an explicit
@@ -148,9 +261,11 @@ scaled `[64]` frame, applies the official
 `latent / scaling_factor - bias_factor` conversion, and forwards it through
 the existing causal decoder stream to one 3,200-sample 24 kHz mono chunk. It
 rejects non-CPU backends explicitly; no CPU fallback is implied. The tests are
-model-free contract tests only. The header range does not authenticate the
-full payload, and no real-weight CPU parity, independent waveform reference,
-Metal parity, or complete synthesis claim follows from this boundary.
+model-free contract tests only. The header-only wording is superseded for
+checkpoint identity by the 2026-09-30 full-payload and conversion/binder
+evidence. No real-weight waveform parity, independent acoustic waveform
+reference, Metal parity, or complete synthesis claim follows from this
+boundary.
 
 ## Verification boundary
 
@@ -161,9 +276,9 @@ uv run --no-project --python 3.12 python tools/parity/vibevoice_realtime_0_5b_in
 uv run --no-project --python 3.12 python tools/parity/vibevoice_realtime_0_5b_inspect.py --gate-self-test
 ```
 
-No model, tokenizer snapshot, or tensor body is loaded by these checks. The
-HF model contains a roughly 2 GB safetensors payload and remains VAST-only;
-the inspector only accepts a future authenticated remote evidence packet. A
-real-weight reference run, independent native parity, owner/legal approval,
-dataset provenance review, and public publication are still blocked and must
-not be inferred from this structural contract.
+No model, tokenizer snapshot, or tensor body is loaded by these inspector
+checks. The roughly 2 GB HF safetensors payload remains VAST-only; the narrow
+real-weight packet is generated separately by `run_reference.py`. Independent
+native parity, full acoustic waveform parity, owner/legal approval, dataset
+provenance review, and public publication remain blocked and must not be
+inferred from this structural contract.

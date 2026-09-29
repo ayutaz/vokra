@@ -1,0 +1,40 @@
+[project]
+name = "vokra-vibevoice-realtime-0-5b-reference"
+version = "0.1.0"
+description = "VAST-only official VibeVoice Realtime 0.5B reference runner"
+requires-python = "==3.12.*"
+dependencies = [
+    "diffusers==0.32.2",
+    "numpy==2.3.5",
+    "safetensors==0.5.3",
+    "torch==2.7.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "tqdm==4.67.1",
+    "transformers==4.51.3",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # The runner is VAST-only; this marker keeps metadata tooling on the
+    # maintainer Mac from trying to resolve a nonexistent Torch 2.7.1 arm64
+    # wheel. The actual reference environment remains Linux-only in practice.
+    "sys_platform == 'darwin' and platform_machine == 'aarch64'",
+]
+
+# Keep the standard Linux Torch wheel so a VAST RTX 4090 can be measured.  A
+# CPU-only source here would make the CUDA leg impossible before the runner can
+# apply its measured faster-and-parity-passing selection rule.
+
+[tool.vokra.reference]
+execution = "VAST_ONLY"
+publication = "NO_UPLOAD"
+official_source_revision = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
+checkpoint_revision = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
+checkpoint_sha256 = "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"
+config_bytes = 2117
+config_sha256 = "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57"
+dependency_lock_status = "VAST_UV_SYNC_SUCCEEDED_PENDING_LICENSE_AUDIT"
+source_import_closure = ["torch", "numpy", "tqdm", "transformers", "diffusers.DPMSolverMultistepScheduler"]
+excluded_upstream_optional = ["accelerate", "gradio", "av", "aiortc", "uvicorn", "fastapi", "pydub", "ml-collections", "absl-py"]
+excluded_unused_audio = ["librosa", "soundfile", "soxr", "scipy", "numba", "llvmlite"]
