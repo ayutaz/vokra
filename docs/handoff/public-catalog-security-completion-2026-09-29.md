@@ -164,6 +164,14 @@ Metal/CPU measurements with explicit no-fallback; separately authorized
 publication or withholding; and a final live public audit. A build, synthetic
 fixture, inspection route, or model-free self-test does not skip a stage.
 
+For execution after validation, benchmark CPU and GPU on the same model,
+input and quality contract, and use the faster supported backend. Record the
+measurement and selected device; do not assume GPU is faster for a small
+workload or omit mandatory CPU/reference and Metal/no-fallback evidence. An
+unsupported GPU operation remains an explicit error, never a silent CPU
+fallback. This is an execution policy, not a claim that every model has been
+benchmarked or that automatic backend selection is implemented.
+
 The protected
 `tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json` must not be
 read, edited, staged, reverted, or cleaned. The maintainer Mac performs no
