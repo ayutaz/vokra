@@ -18,6 +18,7 @@ use crate::strict_checkpoint::{embedding_rows, load_tensor};
 use crate::vibevoice::{Qwen2Runtime, Qwen2RuntimeConfig};
 
 use super::HIDDEN;
+use super::connector::VibeVoiceRealtimeAcousticConnector;
 
 /// Hot operations used by the EOS classifier in addition to the Qwen2 path.
 pub const VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Relu];
@@ -903,6 +904,7 @@ mod tests {
             "cpu_lm_last_hidden_state.npy",
             "cpu_tts_last_hidden_state.npy",
             "cpu_eos_logits.npy",
+            "cpu_acoustic_connector.npy",
         ];
         let paths: Vec<PathBuf> = filenames
             .iter()
@@ -920,9 +922,11 @@ mod tests {
         let lm_reference = read_npy_f32(&paths[0]).expect("read official CPU LM NPY");
         let tts_reference = read_npy_f32(&paths[1]).expect("read official CPU TTS NPY");
         let eos_reference = read_npy_f32(&paths[2]).expect("read official CPU EOS NPY");
+        let acoustic_reference = read_npy_f32(&paths[3]).expect("read official CPU acoustic NPY");
         assert_eq!(lm_reference.shape, [1, 4, HIDDEN]);
         assert_eq!(tts_reference.shape, [1, 4, HIDDEN]);
         assert_eq!(eos_reference.shape, [1, 1]);
+        assert_eq!(acoustic_reference.shape, [1, 1, HIDDEN]);
 
         let file = GgufFile::open(&gguf_path).expect("open VAST Realtime GGUF");
         let mut language = VibeVoiceRealtimeLanguage::from_gguf(&file, BackendKind::Cpu)
@@ -944,6 +948,16 @@ mod tests {
             .expect("TTS diagnostic comparison");
         compare_reference(&[tts.eos_logit], &eos_reference, "eos_logits")
             .expect("EOS diagnostic comparison");
+        let acoustic = VibeVoiceRealtimeAcousticConnector::from_gguf(&file, BackendKind::Cpu)
+            .expect("authenticated Realtime acoustic connector binder");
+        let acoustic_input: Vec<f32> = (0..64)
+            .map(|index| -1.0 + 2.0 * index as f32 / 63.0)
+            .collect();
+        let acoustic_output = acoustic
+            .forward(&acoustic_input)
+            .expect("native acoustic connector forward");
+        compare_reference(&acoustic_output, &acoustic_reference, "acoustic_connector")
+            .expect("acoustic connector diagnostic comparison");
     }
 
     fn hex(bytes: &[u8; 32]) -> String {
