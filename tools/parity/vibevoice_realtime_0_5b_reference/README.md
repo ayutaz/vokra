@@ -22,7 +22,7 @@ The security review of the Torch 2.7.1 to 2.13.0 Dependabot update uses the
 explicit CPU-only PyTorch index and locks `torch==2.13.0+cpu` for Linux x86_64.
 The lock contains no `nvidia-*`, CUDA, cuDNN, cuBLAS, cuFFT, NCCL, or NVJITLINK
 package/native payload. The lock SHA-256 is recorded in the project metadata
-after the VAST sync receipt is collected. This is intentional: the CUDA 13
+and was verified by the VAST sync receipt. This is intentional: the CUDA 13
 closure has not received the required owner/legal review and must not enter the
 model-free API/license gate implicitly.
 
@@ -210,7 +210,7 @@ superseded by the exact-source, exact-lock smoke receipt above; the registration
 scope remains explicit and narrow.
 
 The earlier VAST `uv sync` and dependency audit were for a CUDA-enabled Torch
-lock and are historical only. The CPU-only lock must be audited again on VAST;
+lock and are historical only. The CPU-only lock audit is complete on VAST, but
 the installed closure remains `OWNER_REVIEW_REQUIRED/NO_UPLOAD` because no
 owner/legal approval has been granted for a real-weight replay or publication.
 No checkpoint may be downloaded or run for this compatibility update.
