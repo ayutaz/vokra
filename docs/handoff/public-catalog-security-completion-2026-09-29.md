@@ -58,6 +58,101 @@ remains `BLOCKED` / `NO_UPLOAD`, with no checkpoint acquisition, model
 execution, sign-off or Apple verdict. Both disposable XY VAST workers were
 destroyed after the model-free checks; unrelated instances were untouched.
 
+### 2026-09-29 VibeVoice 1.5B model-free compatibility readback (06:54 UTC)
+
+The unmerged security candidate at clean head
+`1515ab2d29f4f821c0d711097e25e19b39728b77` pins Transformers 5.10.4,
+Torch 2.13.0 and Diffusers 0.38.0. A disposable VAST worker (`53318907`)
+verified that head, the clean checkout, its frozen Python 3.12 environment and
+official VibeVoice source revision
+`2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c`. The model-free import
+probe then stopped with `BLOCKED_MODEL_FREE_API` / `ValueError` in
+`module_import`; its traceback tail reaches the [official tokenizer's
+`AutoModel.register` call](https://github.com/microsoft/VibeVoice/blob/2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c/vibevoice/modular/modular_vibevoice_tokenizer.py#L1188)
+and Transformers `auto_factory.py:429,674`. The fixed upstream
+[`pyproject.toml`](https://github.com/microsoft/VibeVoice/blob/2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c/pyproject.toml#L22)
+specifies `transformers==4.51.3` and warns that later versions may be
+incompatible. The diagnostic's message classifier did not affirm a duplicate
+registration, so the exact exception wording and a safe compatibility remedy
+remain unverified; do not bypass the upstream registration check by assumption.
+
+The sanitized [stage log](vibevoice-1-5b-import-stages-2026-09-29.ndjson)
+and [probe result](vibevoice-1-5b-import-probe-2026-09-29.json) have SHA-256
+`ac2e6783b34eef626d1475afb17593ebbee5748d100e42df7c24067d4bdd89fb`
+and `9b5cb2d647f1a7494baca5c398bd340e51fa45c225b890b137dad1502514e329`.
+This is not an API, license, CPU-parity or Apple pass. No checkpoint, weights,
+model forward or upload was requested. The worker and owned volumes were
+destroyed; the Vokra-labelled instance and volume readback was empty. The
+`vokra/vibevoice-1.5b` row remains partial and in the 58-row queue. Next,
+resolve the fixed-upstream API/security conflict and dependency-license
+decisions before any approved real-weight reference run.
+
+### 2026-09-29 VibeVoice import diagnosis supersession (10:48 UTC)
+
+The earlier `auto_model_registration_duplicate=false` field is a diagnostic
+false negative, not evidence that registration succeeded. In the fixed
+[Transformers 5.10.4 source distribution](https://files.pythonhosted.org/packages/f7/5d/1df789ca27a436ce09de67c8fee6acd2a528d34c28685991f8203e5418ae/transformers-5.10.4.tar.gz),
+`auto_mappings.py` maps `vibevoice_acoustic_tokenizer` to
+`VibeVoiceAcousticTokenizerConfig`, `modeling_auto.py` maps the same type to
+`VibeVoiceAcousticTokenizerModel`, and `auto_factory.py:674` raises
+`ValueError` when another class with that config name is registered without
+`exist_ok`. The authenticated Microsoft source calls `AutoModel.register`
+without `exist_ok` at the line reached by the VAST traceback. Together these
+fixed-source facts identify a registration collision; the previous classifier
+missed the library's actual "already used by a Transformers model" wording.
+
+A local, unmerged diagnostic candidate at `2554a00f` now categorizes only
+that exact VibeVoice `module_import` `ValueError` and redacts arbitrary
+exception text. Its model-free self-test passed, but the candidate has **not**
+been replayed on VAST and does not make the upstream import compatible.
+Dependency-license review, a safe compatibility remedy, independent real-weight
+reference, CPU parity, Apple CPU/Metal and publication all remain open. No
+model row is promoted by this source-level diagnosis.
+
+### 2026-09-29 VibeVoice bounded import replay (11:20 UTC)
+
+An unmerged compatibility candidate at clean head
+`9d181d7205d19f10284327df52a05aab374d2f70` limits the
+Transformers 5.10.4 `AutoModel.register` override to the two fixed upstream
+tokenizer class pairs and the exact duplicate-registration error, restores the
+registry method after import, and removes the reference dumper's broad
+file-by-path import fallback. Both model-free local self-tests and the
+forbidden-symbol/zero-dependency gates passed. This is a candidate, not an
+upstream API or parity verdict.
+
+A disposable VAST worker (`53348901`) replayed that exact head against clean
+Microsoft source `2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c` and locked
+Python 3.12 environment (uv.lock SHA-256
+`1b481e4774ec3c5cb53a061cbf7f68b0a98f52d4005b86fda1c19b01302d20fd`).
+The registration collision no longer appears as the first failure. The
+model-free import still stops at `module_import` with `ModuleNotFoundError`:
+the fixed [Microsoft text tokenizer](https://github.com/microsoft/VibeVoice/blob/2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c/vibevoice/modular/modular_vibevoice_text_tokenizer.py#L7)
+imports `transformers.models.qwen2.tokenization_qwen2_fast` and subclasses
+`Qwen2TokenizerFast`, while the locked Transformers 5.10.4 installation has
+only `tokenization_qwen2.py` with `Qwen2Tokenizer(TokenizersBackend)` in that
+package. A name alias is not proof of tokenizer-semantic equivalence and was
+not added. The sanitized [API result](vibevoice-1-5b-api-smoke-9d181d72-2026-09-29.json)
+has SHA-256 `2f2f54755ff319b205d6708edb419bc27443cabb0d3189f4f9a1e97e77f1fe0e`.
+No checkpoint, weight, forward, numerical reference, CPU parity or upload ran.
+The worker and an earlier unusable stopped contract (`53348753`) were both
+destroyed; neither left an owned volume. An unrelated VAST instance was not
+modified. The public row stays partial and in the 58-row queue.
+
+### 2026-09-29 GitHub security-alert readback (07:05 UTC)
+
+With GitHub `main` at `09b39079a5b205e859ea24392ffe56b3bcd2371b`, a
+fresh paginated `GET /repos/ayutaz/vokra/dependabot/alerts?state=open` returned
+342 open alert records: 299 have `security_vulnerability.first_patched_version`
+and 43 do not. They span 63 manifest paths and 61 distinct GHSA IDs; a
+manifest alert is not a unique advisory. The separate open code-scanning alert
+API still returned five records. This supersedes the 258 / 226 / 32 starting
+snapshot above for current queue sizing, without rewriting that dated result
+or claiming that the count change has a known cause. Of the 342 records, 88
+have a 2026-09-29 `updated_at` date; 63 of those name Torch, 21 Transformers,
+two Accelerate and two Diffusers. An update timestamp alone does not prove a
+newly introduced vulnerability or a completed fix. Re-read the API after each
+merge and close alerts through the dependency graph rather than dismissal.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
@@ -68,6 +163,14 @@ fresh hash-bound transfer packet; Apple CPU/reference, Metal/reference and
 Metal/CPU measurements with explicit no-fallback; separately authorized
 publication or withholding; and a final live public audit. A build, synthetic
 fixture, inspection route, or model-free self-test does not skip a stage.
+
+For execution after validation, benchmark CPU and GPU on the same model,
+input and quality contract, and use the faster supported backend. Record the
+measurement and selected device; do not assume GPU is faster for a small
+workload or omit mandatory CPU/reference and Metal/no-fallback evidence. An
+unsupported GPU operation remains an explicit error, never a silent CPU
+fallback. This is an execution policy, not a claim that every model has been
+benchmarked or that automatic backend selection is implemented.
 
 The protected
 `tools/parity/cosyvoice2_llm_reference/license_gate_manifest.json` must not be
@@ -195,8 +298,9 @@ Neither outcome may be inferred from an empty repository.
 
 The current detailed security execution record is
 [`security-remediation-2026-09-21.md`](security-remediation-2026-09-21.md).
-Its 261-alert snapshot predates PR #131 and the current 258-alert API result;
-retain that dated observation and add a supersession note when refreshing it.
+Its 261-alert snapshot predates PR #131 and the 258-alert starting API result;
+the later 342-alert readback above supersedes both for current queue sizing.
+Retain the dated observations and add a supersession note when refreshing them.
 
 ## Execution order and ownership
 
