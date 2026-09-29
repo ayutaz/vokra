@@ -138,6 +138,7 @@ updates:
       - "/tools/parity/nanocodec"
       - "/tools/parity/neucodec"
       - "/tools/parity/neutts_air"
+      - "/tools/parity/nsnet2_reference"
       - "/tools/parity/omniasr_ctc"
       - "/tools/parity/owsm_v4_medium_1b_reference"
       - "/tools/parity/parler_tts"
