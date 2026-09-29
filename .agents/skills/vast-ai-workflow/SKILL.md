@@ -204,8 +204,8 @@ git rev-parse --short HEAD    # 手元と一致することを必ず確認
 ```bash
 # 手元 CLI から
 scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id> --yes
-scripts/publish/vast-ai/vastai-safe.sh show instances --raw
-# ↑ 今回借りた instance ID が一覧から消えたことを確認。残存・照会不能なら未完了扱い
+scripts/publish/vast-ai/vastai-safe.sh show instance <instance-id> --raw
+# ↑ 対象の id がなく instances: null であることを確認。残存・照会不能なら未完了扱い
 ```
 
 ラッパーの契約（資格情報クエリの redaction、通常出力、終了コード保持）は
@@ -215,7 +215,7 @@ scripts/publish/vast-ai/vastai-safe.sh show instances --raw
 scripts/publish/vast-ai/test-vastai-safe.sh
 ```
 
-**auto-destroy を仕込む**: ローカルの lifecycle controller の `EXIT` trap で、今回借りた ID への `destroy instance "$VAST_INSTANCE_ID" --yes` と `show instances --raw` による ID 不在の readback を一つの cleanup 処理にまとめる（ADR §D6）。destroy の終了コードが 0 でも対象が残れば失敗として通知・非ゼロ終了する。Vast ホスト上ではローカル CLI/credential を前提にしない。
+**auto-destroy を仕込む**: ローカルの lifecycle controller の `EXIT` trap で、今回借りた ID への `destroy instance "$VAST_INSTANCE_ID" --yes` と `show instance "$VAST_INSTANCE_ID" --raw` による個別 readback を一つの cleanup 処理にまとめる（ADR §D6）。destroy の終了コードが 0 でも対象が残る、または照会不能なら失敗として通知・非ゼロ終了する。Vast ホスト上ではローカル CLI/credential を前提にしない。
 
 **destroy 忘れは $/h で継続課金**。H100 は $1.7-2.5/h、8h 忘れると $15+ 溶ける。
 
@@ -242,7 +242,7 @@ scripts/publish/vast-ai/test-vastai-safe.sh
 
 - **「今回くらいはローカルで」**: これが 2026-08-16 に mac を再起動させた。現在の閾値は artefact 合計 2 GB、Cargo は workspace 全体または `-p vokra-models`。**判断で防げなかったので hook で強制した** = `guard-local-memory.sh`。`VOKRA_ALLOW_LOCAL_HEAVY=1` は依頼者がその1回を明示承認した場合だけ使う
 - **未検証のまま `VOKRA_SKIP_HOOKS=1` で push**: bypass の根拠はリモート検証結果であって、急いでいることではない
-- **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap には今回の ID に対する `vastai-safe.sh destroy instance <instance-id> --yes` を仕込み、一覧 readback で削除を確認する
+- **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap には今回の ID に対する `vastai-safe.sh destroy instance <instance-id> --yes` を仕込み、個別 readback で削除を確認する
 - **provision.sh を skip して pip 手打ちで頑張る**: 4 gotcha に順番にハマる（実績 1 day 溶かす）
 - **`huggingface_hub` を local と同じ最新版で使う**: vast.ai 上では <0.30 pin 必須（xet-token regression）、local との差分を明示的に持つ
 - **`HF_TOKEN` を CLI 引数で渡す**: shell history + `ps` に残る → 環境変数経由で
