@@ -274,7 +274,7 @@ def self_test() -> None:
         pass
     else:
         raise SystemExit("self-test accepted HEAD mismatch")
-    with tempfile.TemporaryDirectory(prefix="vokra-mms-api-git-", dir="/private/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="vokra-mms-api-git-", dir=Path(tempfile.gettempdir()).resolve()) as temporary:
         root = Path(temporary)
         class Result:
             def __init__(self, stdout: str, stderr: str = "", returncode: int = 0):
@@ -311,7 +311,7 @@ def self_test() -> None:
         pass
     else:
         raise SystemExit("self-test accepted evidence schema tamper")
-    with tempfile.TemporaryDirectory(prefix="vokra-mms-api-", dir="/private/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="vokra-mms-api-", dir=Path(tempfile.gettempdir()).resolve()) as temporary:
         root = Path(temporary)
         output = root / "evidence.json"
         write_atomic_no_replace(output, "first\n")
