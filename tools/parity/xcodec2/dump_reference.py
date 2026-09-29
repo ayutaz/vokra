@@ -31,6 +31,8 @@ from gguf import GGUFReader
 
 
 XCODEC2_VERSION = "0.1.5"
+TORCH_VERSION = "2.13.0"
+TORCHAUDIO_VERSION = "2.11.0"
 XCODEC2_SDIST_SHA256 = (
     "dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b"
 )
@@ -57,6 +59,23 @@ def sha256_file(path: Path) -> str:
         while chunk := handle.read(8 * 1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_patched_runtime() -> tuple[str, str]:
+    """Require the reviewed Torch/TorchAudio pair before importing upstream."""
+
+    torch_version = importlib.metadata.version("torch")
+    torchaudio_version = importlib.metadata.version("torchaudio")
+    if torch_version.split("+", 1)[0] != TORCH_VERSION:
+        raise RuntimeError(
+            f"torch version {torch_version!r} != audited {TORCH_VERSION!r}"
+        )
+    if torchaudio_version.split("+", 1)[0] != TORCHAUDIO_VERSION:
+        raise RuntimeError(
+            "torchaudio version "
+            f"{torchaudio_version!r} != audited {TORCHAUDIO_VERSION!r}"
+        )
+    return torch_version, torchaudio_version
 
 
 def install_official_rope_import() -> None:
@@ -90,6 +109,7 @@ def install_official_rope_import() -> None:
 
 
 def import_official_decoder():
+    validate_patched_runtime()
     if importlib.metadata.version("xcodec2") != XCODEC2_VERSION:
         raise RuntimeError("xcodec2 package version mismatch")
     install_official_rope_import()
@@ -172,6 +192,8 @@ def main() -> int:
     if importlib.metadata.version("vector-quantize-pytorch") != VECTOR_QUANTIZE_VERSION:
         raise RuntimeError("vector-quantize-pytorch version mismatch")
 
+    torch_version, torchaudio_version = validate_patched_runtime()
+
     codes = np.fromfile(args.codes, dtype="<u4")
     if codes.size == 0 or np.any(codes >= CODEBOOK_SIZE):
         raise RuntimeError(f"codes must be non-empty and each below {CODEBOOK_SIZE}")
@@ -214,7 +236,8 @@ def main() -> int:
         "torchtune": TORCHTUNE_VERSION,
         "torchtune_rope_sha256": TORCHTUNE_ROPE_SHA256,
         "vector_quantize_pytorch": VECTOR_QUANTIZE_VERSION,
-        "torch": str(torch.__version__),
+        "torch": torch_version,
+        "torchaudio": torchaudio_version,
         "official_state_tensors_loaded": loaded_count + 2,
         "official_defaulted_deterministic_buffers": defaulted,
         "code_count": int(codes.size),

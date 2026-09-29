@@ -18,10 +18,46 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PYPROJECT = ROOT / "pyproject.toml"
 LOCKFILE = ROOT / "uv.lock"
-EXPECTED_OVERRIDE = "transformers ; python_version < '0'"
-EXPECTED_LOCK_OVERRIDE = {
-    "name": "transformers",
-    "marker": "python_full_version < '0'",
+EXPECTED_OVERRIDES = [
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+    "transformers ; python_version < '0'",
+]
+EXPECTED_LOCK_OVERRIDES = [
+    {
+        "name": "torch",
+        "specifier": "==2.13.0",
+        "index": "https://download.pytorch.org/whl/cpu",
+    },
+    {
+        "name": "torchaudio",
+        "specifier": "==2.11.0",
+        "index": "https://download.pytorch.org/whl/cpu",
+    },
+    {
+        "name": "transformers",
+        "marker": "python_full_version < '0'",
+    },
+]
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+EXPECTED_RESOLVED_VERSIONS = {
+    "torch": {"2.13.0", "2.13.0+cpu"},
+    "torchaudio": {"2.11.0", "2.11.0+cpu"},
+}
+MACOS_MARKER = "sys_platform == 'darwin'"
+LINUX_MARKER = (
+    "sys_platform != 'darwin' and sys_platform != 'emscripten' and "
+    "sys_platform != 'win32'"
+)
+EXPECTED_PLATFORM_WHEELS = {
+    "torch": {
+        "2.13.0": ("macosx_14_0_arm64",),
+        "2.13.0+cpu": ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64"),
+    },
+    "torchaudio": {
+        "2.11.0": ("macosx_11_0_arm64",),
+        "2.11.0+cpu": ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64"),
+    },
 }
 FORBIDDEN_LOCK_ROWS = ("transformers", "tokenizers", "typer", "shellingham")
 
@@ -34,22 +70,91 @@ def _parse_documents(pyproject_text: str, lock_text: str) -> tuple[dict, dict]:
 
 def _validate_documents(pyproject: dict, lock: dict) -> None:
     tool_uv = pyproject.get("tool", {}).get("uv", {})
-    if tool_uv.get("override-dependencies") != [EXPECTED_OVERRIDE]:
-        raise AssertionError("pyproject lost the impossible Transformers override")
+    if tool_uv.get("override-dependencies") != EXPECTED_OVERRIDES:
+        raise AssertionError("pyproject lost the audited dependency overrides")
+    indexes = tool_uv.get("index")
+    if indexes != [
+        {"name": "pytorch-cpu", "url": PYTORCH_CPU_INDEX, "explicit": True}
+    ]:
+        raise AssertionError("pyproject lost the explicit PyTorch CPU index")
+    if tool_uv.get("sources") != {
+        "torch": {"index": "pytorch-cpu"},
+        "torchaudio": {"index": "pytorch-cpu"},
+    }:
+        raise AssertionError("pyproject lost the Torch/TorchAudio CPU sources")
     project_dependencies = set(pyproject.get("project", {}).get("dependencies", []))
-    for declaration in ('transformers==5.10.4', 'xcodec2==0.1.5'):
+    for declaration in (
+        "torch==2.13.0",
+        "torchaudio==2.11.0",
+        "transformers==5.10.4",
+        "xcodec2==0.1.5",
+    ):
         if declaration not in project_dependencies:
             raise AssertionError(f"missing audited declaration: {declaration}")
 
     manifest = lock.get("manifest", {})
-    if manifest.get("overrides") != [EXPECTED_LOCK_OVERRIDE]:
-        raise AssertionError("uv.lock lost the impossible Transformers override")
+    if manifest.get("overrides") != EXPECTED_LOCK_OVERRIDES:
+        raise AssertionError("uv.lock lost the audited dependency overrides")
 
-    rows = {package["name"] for package in lock.get("package", [])}
+    packages = lock.get("package", [])
+    rows = {package["name"] for package in packages}
     unexpected = rows.intersection(FORBIDDEN_LOCK_ROWS)
     if unexpected:
         names = ", ".join(sorted(unexpected))
         raise AssertionError(f"forbidden dependency lock row(s) reintroduced: {names}")
+
+    for name, expected_versions in EXPECTED_RESOLVED_VERSIONS.items():
+        resolved = [package for package in packages if package.get("name") == name]
+        actual_versions = {package.get("version") for package in resolved}
+        if actual_versions != expected_versions:
+            raise AssertionError(
+                f"{name} resolved versions {sorted(actual_versions)!r} != "
+                f"{sorted(expected_versions)!r}"
+            )
+        if any(
+            package.get("source", {}).get("registry") != PYTORCH_CPU_INDEX
+            for package in resolved
+        ):
+            raise AssertionError(
+                f"{name} is not fully sourced from the PyTorch CPU index"
+            )
+        for package in resolved:
+            version = package["version"]
+            markers = set(package.get("resolution-markers", []))
+            if version.endswith("+cpu"):
+                if LINUX_MARKER not in markers:
+                    raise AssertionError(
+                        f"{name} {version} lacks the Linux CPU resolution marker"
+                    )
+            elif MACOS_MARKER not in markers:
+                raise AssertionError(
+                    f"{name} {version} lacks the macOS resolution marker"
+                )
+            wheel_urls = {
+                wheel["url"] for wheel in package.get("wheels", [])
+            }
+            for platform_token in EXPECTED_PLATFORM_WHEELS[name][version]:
+                if not any(platform_token in url for url in wheel_urls):
+                    raise AssertionError(
+                        f"{name} {version} lacks an audited {platform_token} wheel"
+                    )
+
+    xcodec2 = [package for package in packages if package.get("name") == "xcodec2"]
+    if len(xcodec2) != 1:
+        raise AssertionError("uv.lock must contain exactly one xcodec2 package row")
+    xcodec2_dependencies = xcodec2[0].get("dependencies", [])
+    for name, expected_versions in EXPECTED_RESOLVED_VERSIONS.items():
+        dependencies = [
+            dependency
+            for dependency in xcodec2_dependencies
+            if dependency.get("name") == name
+        ]
+        if {
+            dependency.get("version") for dependency in dependencies
+        } != expected_versions:
+            raise AssertionError(
+                f"xcodec2 dependency edge for {name} does not follow the audited pair"
+            )
 
 
 def _validate_files(pyproject_text: str, lock_text: str) -> None:
@@ -86,6 +191,16 @@ def _validate_official_decoder() -> None:
 
 def _tamper_self_test(pyproject_text: str, lock_text: str) -> None:
     pyproject, lock = _parse_documents(pyproject_text, lock_text)
+
+    def assert_rejected(
+        label: str, tampered_pyproject: dict, tampered_lock: dict
+    ) -> None:
+        try:
+            _validate_documents(tampered_pyproject, tampered_lock)
+        except AssertionError:
+            return
+        raise AssertionError(f"tamper self-test accepted {label}")
+
     # Exercise the fail-closed branch in memory: a future lock regeneration
     # that adds any excluded package must make this guard fail.
     for name in FORBIDDEN_LOCK_ROWS:
@@ -97,20 +212,126 @@ def _tamper_self_test(pyproject_text: str, lock_text: str) -> None:
             )["package"][0]
             tampered_lock = copy.deepcopy(lock)
             tampered_lock.setdefault("package", []).append(tampered_row)
-            try:
-                _validate_documents(pyproject, tampered_lock)
-            except AssertionError:
-                continue
-            raise AssertionError(f"tamper self-test accepted reintroduced {name}")
+            assert_rejected(
+                f"reintroduced {name} lock row",
+                copy.deepcopy(pyproject),
+                tampered_lock,
+            )
+
+    for index, label in ((0, "Torch"), (1, "TorchAudio")):
+        tampered_pyproject = copy.deepcopy(pyproject)
+        tampered_pyproject["tool"]["uv"]["override-dependencies"].pop(index)
+        assert_rejected(
+            f"missing {label} override", tampered_pyproject, copy.deepcopy(lock)
+        )
+
+    for index, replacement, label in (
+        (0, "torch==2.5.0", "Torch"),
+        (1, "torchaudio==2.5.0", "TorchAudio"),
+    ):
+        tampered_pyproject = copy.deepcopy(pyproject)
+        tampered_pyproject["tool"]["uv"]["override-dependencies"][index] = replacement
+        assert_rejected(
+            f"weakened {label} override", tampered_pyproject, copy.deepcopy(lock)
+        )
+
+    tampered_pyproject = copy.deepcopy(pyproject)
+    tampered_pyproject["tool"]["uv"]["index"][0]["url"] = "https://pypi.org/simple"
+    assert_rejected("non-PyTorch index", tampered_pyproject, copy.deepcopy(lock))
+
+    tampered_pyproject = copy.deepcopy(pyproject)
+    tampered_pyproject["tool"]["uv"]["index"][0]["explicit"] = False
+    assert_rejected("non-explicit PyTorch index", tampered_pyproject, copy.deepcopy(lock))
+
+    for name in ("torch", "torchaudio"):
+        tampered_pyproject = copy.deepcopy(pyproject)
+        tampered_pyproject["tool"]["uv"]["sources"][name]["index"] = "pypi"
+        assert_rejected(
+            f"{name} source escape", tampered_pyproject, copy.deepcopy(lock)
+        )
 
     tampered_pyproject = copy.deepcopy(pyproject)
     tampered_pyproject["tool"]["uv"]["override-dependencies"] = []
-    try:
-        _validate_documents(tampered_pyproject, lock)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("tamper self-test accepted a weakened pyproject override")
+    assert_rejected(
+        "weakened dependency override set", tampered_pyproject, copy.deepcopy(lock)
+    )
+
+    for index, label in ((0, "Torch"), (1, "TorchAudio")):
+        tampered_lock = copy.deepcopy(lock)
+        tampered_lock["manifest"]["overrides"].pop(index)
+        assert_rejected(
+            f"missing lock {label} override", copy.deepcopy(pyproject), tampered_lock
+        )
+
+    for index, replacement, label in (
+        (0, "==2.5.0", "Torch"),
+        (1, "==2.5.0", "TorchAudio"),
+    ):
+        tampered_lock = copy.deepcopy(lock)
+        tampered_lock["manifest"]["overrides"][index]["specifier"] = replacement
+        assert_rejected(
+            f"weakened lock {label} override", copy.deepcopy(pyproject), tampered_lock
+        )
+
+    for index, label in ((0, "Torch"), (1, "TorchAudio")):
+        tampered_lock = copy.deepcopy(lock)
+        tampered_lock["manifest"]["overrides"][index]["index"] = (
+            "https://pypi.org/simple"
+        )
+        assert_rejected(
+            f"lock {label} source escape", copy.deepcopy(pyproject), tampered_lock
+        )
+
+    for name, versions in EXPECTED_RESOLVED_VERSIONS.items():
+        for version in versions:
+            tampered_lock = copy.deepcopy(lock)
+            tampered_lock["package"] = [
+                package
+                for package in tampered_lock["package"]
+                if not (
+                    package.get("name") == name
+                    and package.get("version") == version
+                )
+            ]
+            assert_rejected(
+                f"missing {name} {version} platform row",
+                copy.deepcopy(pyproject),
+                tampered_lock,
+            )
+
+    for name in EXPECTED_RESOLVED_VERSIONS:
+        tampered_lock = copy.deepcopy(lock)
+        package = next(
+            package
+            for package in tampered_lock["package"]
+            if package.get("name") == name
+            and package.get("version", "").endswith("+cpu")
+        )
+        package["source"]["registry"] = "https://pypi.org/simple"
+        assert_rejected(
+            f"{name} CPU package source escape",
+            copy.deepcopy(pyproject),
+            tampered_lock,
+        )
+
+    for name in EXPECTED_RESOLVED_VERSIONS:
+        tampered_lock = copy.deepcopy(lock)
+        package = next(
+            package
+            for package in tampered_lock["package"]
+            if package.get("name") == "xcodec2"
+        )
+        dependency = next(
+            dependency
+            for dependency in package["dependencies"]
+            if dependency.get("name") == name
+        )
+        dependency.pop("version", None)
+        assert_rejected(
+            f"weakened xcodec2 {name} dependency edge",
+            copy.deepcopy(pyproject),
+            tampered_lock,
+        )
 
 
 def main() -> int:
@@ -120,6 +341,11 @@ def main() -> int:
         action="store_true",
         help="also exercise fail-closed tamper cases in memory",
     )
+    parser.add_argument(
+        "--documents-only",
+        action="store_true",
+        help="validate the lock and tamper cases without importing packages",
+    )
     args = parser.parse_args()
 
     pyproject_text = PYPROJECT.read_text(encoding="utf-8")
@@ -127,6 +353,9 @@ def main() -> int:
     _validate_files(pyproject_text, lock_text)
     if args.self_test:
         _tamper_self_test(pyproject_text, lock_text)
+    if args.documents_only:
+        print("xcodec2 dependency guard: PASS (documents-only)")
+        return 0
     _validate_installed_environment()
     _validate_official_decoder()
     print("xcodec2 dependency guard: PASS (decoder-only, model-free)")

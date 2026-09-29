@@ -7,9 +7,16 @@ dependencies = [
     "einops==0.8.0",
     "gguf==0.19.0",
     "numpy==2.0.2",
-    "torch==2.5.0",
+    # xcodec2==0.1.5 hard-pins torch/torchaudio 2.5.0.  The decoder-only
+    # oracle imports torchaudio only as an upstream module dependency and uses
+    # torch tensor/NN/FFT APIs shared by the patched CPU line.  Keep the
+    # security-maintained pair explicit and revalidate the official import on
+    # VAST before generating any real-weight fixture.  TorchAudio 2.11 is the
+    # stable-ABI line for PyTorch 2.11 and later:
+    # https://docs.pytorch.org/audio/main/installation.html
+    "torch==2.13.0",
     "torchao==0.5.0",
-    "torchaudio==2.5.0",
+    "torchaudio==2.11.0",
     "torchtune==0.3.1",
     "transformers==5.10.4",
     "vector-quantize-pytorch==1.17.8",
@@ -22,4 +29,20 @@ package = false
 # xcodec2.vq.codec_decoder_vocos module and never imports xcodec2's full
 # Transformers model wrapper. Keep this unused upstream edge impossible so
 # uv cannot silently reintroduce the incompatible full-model dependency.
-override-dependencies = ["transformers ; python_version < '0'"]
+# Override only the fixed upstream requirements that conflict with the
+# security-maintained CPU pair.  Transformers remains impossible because the
+# decoder-only route never imports xcodec2's full model wrapper.
+override-dependencies = [
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+    "transformers ; python_version < '0'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }

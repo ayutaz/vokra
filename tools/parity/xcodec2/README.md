@@ -19,8 +19,9 @@ uv run --frozen python dump_reference.py \
   --output /path/to/reference
 ```
 
-The project declares `xcodec2==0.1.5` and the audited
-`transformers==5.10.4` floor, plus `vector-quantize-pytorch==1.17.8`,
+The project declares `xcodec2==0.1.5` and the audited patched CPU pair
+`torch==2.13.0` / `torchaudio==2.11.0`, plus the audited
+`transformers==5.10.4` floor, `vector-quantize-pytorch==1.17.8`,
 `torchtune==0.3.1`, the official decoder source hashes, and public GGUF
 SHA-256
 `7ab4b94006068226b0741930081f7e149316e045511c1cddb94769e7f598698e`.
@@ -28,27 +29,35 @@ SHA-256
 `transformers==5.10.4` is a non-yanked patched release for the path-traversal
 advisory tracked by Dependabot. Keep this pin explicit and review it when a
 newer patched release is published. The official `xcodec2==0.1.5`
-distribution hard-pins `torch==2.5.0` and `torchaudio==2.5.0`; upgrading Torch
-independently is not a valid security fix because uv cannot resolve that
-upstream contract. Torch alerts therefore remain open until the official
-X-Codec2 dependency is released with a compatible patched Torch pair.
+distribution hard-pins `torch==2.5.0` and `torchaudio==2.5.0`; this oracle
+uses an explicit `override-dependencies` contract and the official PyTorch CPU
+index to replace those edges with the patched pair. The override is limited to
+the decoder-only oracle and is not a claim that the full Transformers model
+API is compatible. TorchAudio's official compatibility guide states that its
+2.11 stable-ABI line supports PyTorch 2.11 and all later releases, including
+2.13: [TorchAudio installation and compatibility](https://docs.pytorch.org/audio/main/installation.html).
 
 ## Dependency license/native audit
 
 This is a model-free dependency candidate. No GGUF was downloaded or executed,
-and no real-weight CPU/Metal parity was run. The lock now resolves only the
-two changed distributions shown below. Their LICENSE files were checked
-against versioned upstream sources; this tree has no owner/legal approval
-manifest, so neither row is a commercial or publication sign-off.
+and no real-weight CPU/Metal parity was run. The lock resolves the patched CPU
+pair from the explicit PyTorch index and removes the old CUDA wheel closure.
+For Torch 2.13.0 / 2.13.0+cpu and TorchAudio 2.11.0 / 2.11.0+cpu, the
+versioned official wheel metadata was checked for the license expression and
+classifier shown below. The LICENSE text and bundled third-party notices were
+not audited in this candidate; this tree has no owner/legal approval manifest,
+so neither row is a commercial or publication sign-off.
 
-The decoder-only reference path used by `dump_reference.py` imports successfully
-with `transformers` blocked from import. The impossible-marker override in
-`pyproject.toml` is recorded in `uv.lock`'s `[manifest].overrides` and removes
-the unused Transformers/Typer/tokenizers/shellingham branch from the resolved
-environment. The guard is fail-closed: a review must require both
-`uv lock --check` and the automated `dependency_guard.py` assertion that no
-`name = "transformers"` package row returns before using this decoder-only
-oracle. The full official
+The decoder-only reference path previously imported successfully with
+`transformers` blocked from import under the original Torch 2.5.0 / TorchAudio
+2.5.0 pair. That is historical evidence only: the patched 2.13.0 / 2.11.0
+pair in this candidate has not yet passed an official import on VAST. The
+impossible-marker override in `pyproject.toml` is recorded in `uv.lock`'s
+`[manifest].overrides` and removes the unused
+Transformers/Typer/tokenizers/shellingham branch from the resolved environment.
+The guard is fail-closed: a review must require both `uv lock --check` and the
+automated `dependency_guard.py` assertion that no `name = "transformers"`
+package row returns before using this decoder-only oracle. The full official
 `xcodec2.modeling_xcodec2` API is intentionally out of scope; under the
 original pair it is blocked because Transformers 5.10.4 accesses
 `torch.float8_e8m0fnu`, absent from hard-pinned Torch 2.5.0.
@@ -58,17 +67,26 @@ The model-free guard is:
 ```bash
 cd tools/parity/xcodec2
 uv lock --check
+# Local maintainer check: no package sync/import and no model execution.
+uv run --no-project --python 3.12 python dependency_guard.py --self-test --documents-only
+# VAST only, after the frozen environment has been installed:
 uv run --frozen python dependency_guard.py --self-test
 ```
 
-The guard checks the exact impossible-marker override, rejects Transformers,
-tokenizers, Typer, and shellingham lock or installed rows, runs tamper cases
-for override/dependency reintroduction, and exercises only the official
-decoder source/API contract. A successful guard does not certify the full
-model API, real-weight execution, or CPU/Metal parity.
+The guard checks the exact Torch/TorchAudio CPU override and source index,
+rejects Transformers, tokenizers, Typer, and shellingham lock or installed
+rows, verifies that xcodec2's resolved dependency edges follow the patched
+pair, verifies separate Linux CPU and macOS arm64 lock rows, runs tamper cases
+for override/source/platform/dependency-edge reintroduction, and exercises
+only the official decoder source/API contract. A successful documents-only
+guard does not certify ABI compatibility on a target host, the full model API,
+real-weight execution, or CPU/Metal parity; those require the recorded VAST
+follow-up.
 
 | Distribution | Version | License | Resolution | Native payload | Review |
 | --- | ---: | --- | --- | --- | --- |
+| `[torch][torch-license]` | 2.13.0 / 2.13.0+cpu | Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT (official wheel metadata) | explicit PyTorch CPU index; macOS arm64 and Linux CPU rows | native binary wheel | owner required; no sign-off |
+| `[torchaudio][torchaudio-license]` | 2.11.0 / 2.11.0+cpu | BSD License (official wheel metadata) | explicit PyTorch CPU index; macOS arm64 and Linux CPU rows | native extension wheel | owner required; no sign-off |
 | `[click][click-license]` | 8.5.0 | BSD-3-Clause | resolved | none | owner required |
 | `[huggingface-hub][hub-license]` | 1.33.0 | Apache-2.0 | resolved | none | owner required |
 | `[versioned sdist LICENSE member][transformers-license]` | 5.10.4 | Apache-2.0 | declared, impossible-marker excluded | none | owner required |
@@ -77,6 +95,8 @@ model API, real-weight execution, or CPU/Metal parity.
 | `[shellingham][shellingham-license]` | 1.5.4 | ISC_BLOCKED_BY_POLICY | transitive, excluded | none | owner required |
 
 [click-license]: https://raw.githubusercontent.com/pallets/click/8.5.0/LICENSE.txt
+[torch-license]: https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl.metadata
+[torchaudio-license]: https://download.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl.metadata
 [hub-license]: https://raw.githubusercontent.com/huggingface/huggingface_hub/v1.33.0/LICENSE
 [shellingham-license]: https://raw.githubusercontent.com/sarugaku/shellingham/1.5.4/LICENSE
 [tokenizers-license]: https://raw.githubusercontent.com/huggingface/tokenizers/v0.22.2/tokenizers/LICENSE
