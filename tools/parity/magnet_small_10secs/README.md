@@ -31,6 +31,13 @@ Sibling of:
   closure, with lock/package/license digests and a fail-closed audit. The
   worker allows only `README.md`, `compression_state_dict.bin`, and the
   exact `state_dict.bin` payload.
+- The CPU closure pins `torch==2.13.0`, the highest patched Torch security
+  floor for the four open Dependabot alerts on this lockfile (#388, #389,
+  #390, #391; patched floors 2.8.0, 2.9.1, 2.10.0, and 2.13.0). The lock
+  remains bound to the official PyTorch CPU index and the wheel's primary
+  source. The new native/bundled Torch payload remains
+  `OWNER_REVIEW_REQUIRED`; this update does not clear the CC-BY-NC-4.0
+  weight owner gate, runtime-binder decision, or real-weight parity gate.
 - `.python-version` — `3.12`.
 
 ## VAST-only workflow
