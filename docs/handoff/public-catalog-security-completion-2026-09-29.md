@@ -276,6 +276,56 @@ parity, Metal parity, no-fallback execution, or a same-input CPU/GPU speed
 comparison. The Realtime acoustic boundary remains CPU-only and explicitly
 rejects Metal until that evidence exists; the public row remains partial.
 
+### 2026-09-30 VibeVoice Realtime real-weight and device-selection readback
+
+Follow-up [PR #161](https://github.com/ayutaz/vokra/pull/161) builds on merged
+PR #160 without promoting the public row. The pinned Microsoft
+`model.safetensors` at revision
+`6bce5f06044837fe6d2c5d7a71a84f0416bd57e4` was downloaded and hashed
+**on VAST only**: 2,035,332,888 bytes, SHA-256
+`7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514`.
+The exact 605 BF16 tensors were converted to a private 2,035,313,984-byte
+GGUF, SHA-256
+`908a10b917bee4b6389de09182b2603b833dcb1a642ed08bc8ff40c0212e0624`.
+An ignored VAST integrity test compared all names, shapes and payload bytes
+against the source, and the real GGUF passed the strict native binder. This
+supersedes the earlier *header-only* identity limitation, not its historical
+receipt. Neither weight file was moved to the maintainer Mac or uploaded.
+
+The independent narrow reference imports the clean Microsoft source at
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, binds the exact checkpoint,
+then calls the official text/TTS/EOS and acoustic-connector path. The
+decoder-only release legitimately lacks 276
+`model.acoustic_tokenizer.encoder.*` parameters; any other missing or
+unexpected parameter is rejected. BF16 same-input timing on a VAST RTX 4090
+had CPU median 16.1034 s and CUDA median 0.01907 s, but the maximum output
+difference was 0.25, above the unchanged provisional 0.05 selection guard;
+CPU remained selected. Casting that same authenticated checkpoint to FP32
+gave CPU median 23.495962 s and CUDA median 0.017232 s across three measured
+iterations, with maximum output difference 0.0000457764; CUDA was selected
+for **this fixed reference operation only**. The BF16 and FP32 packet SHA-256
+values are respectively
+`4c3590f5ef5b2bcc5f67b228dc8ce263ac95c5c579709fddfb2483c94a05b5a9`
+and `af87fbc9959da3249971a637690bd00b890997647ff566f8a8a1ea8bdf2866e4`.
+These comparisons are not native Rust parity, a release tolerance, or an
+Apple Metal speed verdict.
+
+The VAST clean head `31ab7d84` passed `cargo test --workspace` (8,100
+passed, 0 failed, 105 ignored across 323 test binaries; log SHA-256
+`ca3476bce2cb38bd1ed90e7d85fc0c5c8d77adcb785e32cc3d9c7b603023c59b`)
+and `cargo clippy --workspace --all-targets -- -D warnings` (status 0;
+log SHA-256
+`be923e2675304dfbe7cb0379fef1f59e2699dfab11a215e0f38378cfbdc1fc29`).
+The rebased PR head `9879093f` has the identical Git tree
+`f24576cd3e385339c1450e6609b288039ed33114`; only commit ancestry
+changed after #160 auto-merged. Disposable VAST instance `53372081` was
+destroyed after small evidence recovery; exact-ID readback returned
+`instances: null`. The reference Python dependency-license audit, complete
+native synthesis, Rust CPU parity, independent waveform reference, Apple
+CPU/Metal/no-fallback verification and public artifact gates remain open.
+The row therefore remains partial and the 136-full / 58-unresolved count
+does not change.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
