@@ -24,6 +24,8 @@ use vokra_core::{Result, VokraError};
 pub mod acoustic;
 /// Native single-step AdaLN diffusion prediction head.
 pub mod diffusion;
+/// Source-authenticated, model-free Realtime generation control plane.
+pub mod generation;
 /// Native staged text/TTS language-model path.
 pub mod language;
 /// Deterministic CPU-only classifier-free guidance diffusion sampler.
@@ -38,6 +40,10 @@ pub use acoustic::{
     VibeVoiceRealtimeAcousticDecoder, VibeVoiceRealtimeAcousticDecoderStream,
 };
 pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
+pub use generation::{
+    VIBEVOICE_REALTIME_EOS_THRESHOLD, VibeVoiceRealtimeGenerationControl,
+    VibeVoiceRealtimeGenerationSession, VibeVoiceRealtimeGenerationStopReason,
+};
 pub use language::{
     VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS, VibeVoiceRealtimeLanguage, VibeVoiceRealtimeLmOutput,
     VibeVoiceRealtimeTtsOutput,
