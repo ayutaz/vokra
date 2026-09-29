@@ -6,6 +6,17 @@ project.  It contains a dedicated Python 3.12/Linux x86_64 CPU-only
 `uv lock --refresh`.  The lock is restricted to the PyPI and official
 PyTorch CPU indexes; CUDA, NVIDIA, and Triton dependencies are forbidden.
 
+The pinned Torch closure is now `torch==2.13.0` / `2.13.0+cpu`.  GitHub
+Dependabot alerts #396--#399 reported patched floors 2.8.0, 2.9.1, 2.10.0,
+and 2.13.0 respectively (`GHSA-887c-mr87-cxwp`, `GHSA-vgrw-7cvw-pwgx`,
+`GHSA-qfhq-4f3w-5fph`, and `GHSA-rrmf-rvhw-rf47`); the highest floor is
+therefore selected.  This environment has no TorchAudio dependency, so the
+official TorchAudio stable-ABI guidance is not applicable to this closure.
+The new lock has now received a clean exact-HEAD VAST dependency audit and
+model-free API rerun.  The audit remains `BLOCKED` pending owner review, and
+the API report is evidence only; owner sign-off, real-weight parity, and a
+publication decision remain fail-closed.
+
 `dependency_audit_evidence.json` is the model-free VAST inventory for the
 exact lock.  It records every lock artifact URL/hash/size tuple, publisher
 license metadata, bundled license-file hashes, native payload hashes, and
@@ -31,8 +42,12 @@ only; it does not authorize checkpoint loading or parity.
 exact project/lock, requires a clean checkout at the supplied 40-character
 HEAD, binds its own SHA-256, and writes evidence without replacement.
 `dependency_audit.py` applies the same clean-HEAD and self-hash binding to its
-VAST package inventory.  Existing evidence in this tree is provisional until
-both generators are rerun after the first clean implementation commit.
+VAST package inventory.  The committed reports were regenerated on VAST at
+the clean source HEAD recorded in their `expected_head` fields and are bound
+by the pending manifest.  They are therefore factual model-free evidence for
+that source revision, not provisional reruns; they remain fail-closed pending
+the separate owner/native-package review and must not be treated as runtime or
+real-weight parity evidence.
 Run both generators with output paths outside the checkout (or in a separate
 clean worktree): the generated evidence itself must not make the checkout
 dirty before the second generator runs.  Only after both outputs are

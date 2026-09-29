@@ -672,7 +672,10 @@ def self_test() -> None:
     else:
         raise SystemExit("self-test accepted oversized raw response")
 
-    with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+    # Use the platform-selected temporary directory.  The self-test runs on
+    # both Linux VAST and macOS; `/private/tmp` is macOS-specific.
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
         output = Path(temporary) / "metadata.json"
         write_no_replace(output, report)
         try:

@@ -25,7 +25,11 @@ protected_scope_in_text() {
     # intentionally not included: a different explicit path must remain
     # usable even while the owner manifest is dirty.  Git pathspec magic and
     # relative parent prefixes are covered because they can name repo/tools.
-    local scope_re="(^|[[:space:]'\"])((\./|\.\./)+|:/|:\([^)]*\))?(tools/?([[:space:]'\"]|$)|tools/(\\*{1,2}|\\?|\\[|\\{)([[:space:]'\"]|$)|tools/parity([/[:space:]'\"]|$)|tools/parity/cosyvoice2_llm_reference([/[:space:]'\"]|$))"
+    # Keep tools/parity itself and its immediate globs broad, but do not treat
+    # every descendant of tools/parity as an ancestor of the protected tree:
+    # explicit sibling files (for example tools/parity/xcodec2/README.md) are
+    # safe to stage or commit while the owner manifest remains dirty.
+    local scope_re="(^|[[:space:]'\"])((\./|\.\./)+|:/|:\([^)]*\))?(tools/?([[:space:]'\"]|$)|tools/(\\*{1,2}|\\?|\\[|\\{)([[:space:]'\"]|$)|tools/parity([[:space:]'\"]|$)|tools/parity/([[:space:]'\"]|$)|tools/parity/(\\*{1,2}|\\?|\\[|\\{)([[:space:]'\"]|$)|tools/parity/cosyvoice2_llm_reference([/[:space:]'\"]|$))"
     printf '%s' "$1" | grep -Eiq "$scope_re"
 }
 
@@ -180,6 +184,10 @@ self_test() {
     check 'explicit git add target' block "git add $PROTECTED_REL"
     check 'ancestor git add tools' block 'git add tools'
     check 'ancestor git add parity' block 'git add tools/parity'
+    check 'ancestor git add parity slash' block 'git add tools/parity/'
+    check 'ancestor git add parity glob' block 'git add tools/parity/*'
+    check 'ancestor git add parity recursive glob' block 'git add tools/parity/**'
+    check 'top magic parity glob' block 'git add :(top,glob)tools/parity/**'
     check 'ancestor git add dot slash' block 'git add ./tools/parity/'
     check 'quoted ancestor tools' block 'git add "tools"'
     check 'quoted ancestor parity' block "git checkout -- 'tools/parity'"
@@ -221,6 +229,11 @@ self_test() {
     check 'other explicit add' allow 'git add docs/README.md'
     check 'other tools path' allow 'git add tools/coreml/foo.py'
     check 'quoted other tools path' allow 'git add "tools/coreml/foo.py"'
+    check 'explicit sibling parity path' allow 'git add tools/parity/xcodec2/README.md'
+    check 'explicit sibling parity directory' allow 'git add tools/parity/xcodec2'
+    check 'explicit sibling parity glob' allow 'git add tools/parity/xcodec2/*'
+    check 'explicit sibling parity commit only' allow 'git commit --only -- tools/parity/xcodec2/README.md'
+    check 'protected subtree glob' block 'git add tools/parity/cosyvoice2_llm_reference/*'
     check_payload 'JSON command extraction' block \
         "{\"tool_input\":{\"command\":\"git add $PROTECTED_REL\"}}"
     check_payload 'JSON prose extraction' allow \

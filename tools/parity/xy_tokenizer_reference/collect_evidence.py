@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import tarfile
@@ -30,7 +31,7 @@ MAX_METADATA_BYTES = 1 << 20
 # file.  2 GiB accommodates large CPU Torch extensions while bounding a
 # malformed archive before it can consume unbounded local resources.
 MAX_NATIVE_BYTES = 2 << 30
-PRIMARY_LICENSE_NAMES = ("license", "copying")
+PRIMARY_LICENSE_NAMES = ("license", "licence", "copying")
 NATIVE_SUFFIXES = (".so", ".dylib", ".dll", ".pyd")
 SPDX_ALIASES = {
     "apache software license": "Apache-2.0",
@@ -49,6 +50,10 @@ SPDX_ALIASES = {
     "python software foundation license": "PSF-2.0",
     "python-2.0": "Python-2.0",
 }
+# tqdm 4.70.0 uses this exact compound value in the legacy ``License:``
+# field.  Keep the compatibility map deliberately narrow; arbitrary compound
+# legacy declarations remain rejected and must use ``License-Expression``.
+LEGACY_SPDX_EXPRESSIONS = {"mpl-2.0 and mit": "MPL-2.0 AND MIT"}
 CLASSIFIER_ALIASES = {
     "License :: OSI Approved :: Apache Software License": "Apache-2.0",
     "License :: OSI Approved :: CNRI Python License": "CNRI-Python",
@@ -103,7 +108,13 @@ def _license_rank(name: str, kind: str) -> tuple[int, int, int, str]:
         parts = parts[1:]
     lowered = tuple(part.lower() for part in parts)
     base = lowered[-1]
-    basename_rank = 0 if base == "license" else 1 if base.startswith("license.") or base.startswith("license-") else 2
+    basename_rank = (
+        0
+        if base in {"license", "licence"}
+        else 1
+        if base.startswith(("license.", "license-", "licence.", "licence-"))
+        else 2
+    )
     for index, part in enumerate(lowered[:-1]):
         if part.endswith(".dist-info") and index + 1 < len(lowered) and lowered[index + 1] == "licenses":
             return (0, len(lowered) - index - 2, basename_rank, name.lower())
@@ -196,9 +207,12 @@ def _metadata_license(metadata: bytes, label: str = "METADATA", primary_license:
         for value in legacy:
             lowered = value.lower().strip()
             if lowered not in SPDX_ALIASES:
-                if lowered not in GENERIC_BSD_LEGACY:
+                if lowered in GENERIC_BSD_LEGACY:
+                    continue
+                if lowered not in LEGACY_SPDX_EXPRESSIONS:
                     raise ValueError(f"{label} has an unrecognized legacy license declaration ({summary})")
-                generic_legacy = generic_legacy and True
+                parsed_legacy.append(_spdx_expression(LEGACY_SPDX_EXPRESSIONS[lowered]))
+                generic_legacy = False
                 continue
             generic_legacy = False
             parsed_legacy.append(SPDX_ALIASES[lowered])
@@ -312,7 +326,10 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
     primary_rank = _license_rank(license_entries[primary_index][0], kind)
     if primary_rank[0] == 3:
         raise ValueError(f"{path.name} has no distribution-owned primary license location")
-    primary_entries = [item for item in ranked if _license_rank(item[1][0], kind) == primary_rank]
+    # The final rank component is only a deterministic tie-breaker.  Exclude
+    # it from the ambiguity check so LICENSE and LICENCE at the same
+    # distribution-owned location cannot silently select one another.
+    primary_entries = [item for item in ranked if _license_rank(item[1][0], kind)[:3] == primary_rank[:3]]
     if len(primary_entries) > 1 and any(item[1][1] != primary_entries[0][1] for item in primary_entries[1:]):
         raise ValueError(f"{path.name} has conflicting license files")
     license_bytes = license_entries[primary_index][1]
@@ -478,11 +495,51 @@ def self_test() -> None:
         license_bytes, spdx, native, bundled = inspect_archive(wheel, "wheel")
         assert license_bytes == b"MIT License\n" and spdx == "MIT" and native[0]["name"] == "demo/native.so"
         assert {entry["path"] for entry in bundled} == {"demo-1.0.dist-info/COPYING", "demo/vendor/LICENSE"}
+        licence_wheel = root / "licence-dist-info.whl"
+        with zipfile.ZipFile(licence_wheel, "w") as archive:
+            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nLicense: MIT\n")
+            archive.writestr("demo-1.0.dist-info/licenses/LICENCE", b"MIT License from dist-info\n")
+        licence_bytes, licence_spdx, _, _ = inspect_archive(licence_wheel, "wheel")
+        assert licence_bytes == b"MIT License from dist-info\n" and licence_spdx == "MIT"
+        licence_sdist = root / "licence-root.tar.gz"
+        with tarfile.open(licence_sdist, "w:gz") as archive:
+            metadata = tarfile.TarInfo("demo-1.0/PKG-INFO")
+            metadata_bytes = b"Metadata-Version: 2.1\nLicense: MIT\n"
+            metadata.size = len(metadata_bytes)
+            archive.addfile(metadata, io.BytesIO(metadata_bytes))
+            licence = tarfile.TarInfo("demo-1.0/LICENCE")
+            licence_bytes = b"MIT License from sdist root\n"
+            licence.size = len(licence_bytes)
+            archive.addfile(licence, io.BytesIO(licence_bytes))
+        sdist_licence_bytes, sdist_licence_spdx, _, _ = inspect_archive(licence_sdist, "sdist")
+        assert sdist_licence_bytes == b"MIT License from sdist root\n" and sdist_licence_spdx == "MIT"
+        vendored_only = root / "vendored-only.whl"
+        with zipfile.ZipFile(vendored_only, "w") as archive:
+            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nLicense: MIT\n")
+            archive.writestr("demo/vendor/LICENCE", b"Bundled component license only\n")
+        try:
+            inspect_archive(vendored_only, "wheel")
+        except ValueError as error:
+            assert "distribution-owned" in str(error)
+        else:
+            raise AssertionError("vendored-only LICENCE was accepted")
+        ambiguous_licence = root / "ambiguous-licence.whl"
+        with zipfile.ZipFile(ambiguous_licence, "w") as archive:
+            archive.writestr("demo-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nLicense: MIT\n")
+            archive.writestr("demo-1.0.dist-info/licenses/LICENCE", b"one\n")
+            archive.writestr("demo-1.0.dist-info/licenses/LICENSE", b"two\n")
+        try:
+            inspect_archive(ambiguous_licence, "wheel")
+        except ValueError as error:
+            assert "conflicting" in str(error)
+        else:
+            raise AssertionError("same-priority LICENCE/LICENSE ambiguity accepted")
         assert _metadata_license(b"License-Expression: BSD-3-Clause\n") == "BSD-3-Clause"
         assert _metadata_license(b"License-Expression: MIT AND MPL-2.0 OR PSF-2.0\n") == "MIT AND MPL-2.0 OR PSF-2.0"
         assert _metadata_license(b"License-Expression: Apache-2.0 WITH LLVM-exception\n") == "Apache-2.0 WITH LLVM-exception"
         assert _metadata_license(b"License-Expression: MIT-0\n") == "MIT-0"
         assert _metadata_license(b"License-Expression: CC0-1.0 OR BSL-1.0\n") == "CC0-1.0 OR BSL-1.0"
+        assert _metadata_license(b"License: MPL-2.0 AND MIT\n") == "MPL-2.0 AND MIT"
         assert _metadata_license(b"License: mpl-2.0\n") == "MPL-2.0"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: CNRI Python License\n") == "CNRI-Python"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: ISC License (ISCL)\n") == "ISC"
@@ -498,6 +555,9 @@ def self_test() -> None:
             b"Classifier: License :: OSI Approved :: BSD License\n",
             b"License-Expression: GPL-3.0\n",
             b"License-Expression: LGPL-2.1-or-later\n",
+            b"License: MPL-2.0 AND GPL-3.0\n",
+            b"License: MIT AND MPL-2.0\n",
+            b"License: MPL-2.0 AND MIT OR (BSD-3-Clause)\n",
             b"License-Expression: Apache-2.0 WITH MIT-exception\n",
             b"License-Expression: MIT WITH LLVM-exception\n",
             b"License-Expression: Apache-2.0 (MIT)\n",
