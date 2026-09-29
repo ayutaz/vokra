@@ -184,6 +184,32 @@ dataset rights, exact redistribution scope, or a new owner decision. The
 complete native synthesis, independent real-weight CPU parity, Apple
 CPU/Metal, and publication still blocked. No weights or model were run locally.
 
+### 2026-09-29 VibeVoice Realtime fixed-header readback (13:33 UTC)
+
+A disposable VAST worker read only bytes `0-79439` of the pinned
+`microsoft/VibeVoice-Realtime-0.5B` safetensors at revision
+`6bce5f06044837fe6d2c5d7a71a84f0416bd57e4`. The redirect advertised
+the previously pinned LFS SHA-256
+`7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514`,
+and the final HTTP response was `206` with
+`Content-Range: bytes 0-79439/2035332888`. The eight-byte prefix declared a
+79,432-byte JSON header; the 79,440 retrieved bytes have SHA-256
+`73c4658be17469d62e22a0f4b7f042cc10aa83d409055a5e3a350d5b8d8f26cb`.
+This range readback is bound to the server's immutable revision/LFS identity;
+it does **not** hash or authenticate the entire tensor payload.
+
+The header lists 605 tensors, all BF16, with contiguous payload offsets from
+zero through 2,035,253,448. Its 26 `model.prediction_head.*` names and shapes
+match the exact loader contract in VibeVoice Realtime diffusion-head
+implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`:
+four outer projections, four layers of five tensors, and two final-layer
+projections. No tensor has rank above three. This removes the narrow
+*head-name/header-shape* uncertainty; full-checkpoint hash, GGUF conversion,
+independent real-weight reference, numerical CPU parity, CFG/scheduler,
+acoustic decode, Apple CPU/Metal and publication remain open. No model ran on
+the maintainer Mac. The header-only VAST instance `53365673` was destroyed;
+the exact-ID API readback returned `instances: null`.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
