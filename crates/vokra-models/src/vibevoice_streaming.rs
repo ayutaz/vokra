@@ -20,6 +20,9 @@ use std::collections::BTreeSet;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{Result, VokraError};
 
+/// Exact sidecar-backed Qwen text-tokenizer primitive for Realtime streaming.
+pub mod tokenizer;
+
 /// GGUF architecture tag for the streaming Realtime release.
 pub const ARCH: &str = "vibevoice_streaming";
 /// Canonical Vokra model name for the Realtime release.
