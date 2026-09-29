@@ -107,6 +107,14 @@ have not been authenticated for this module, and no upstream real-weight
 reference or CPU/Metal parity has run. CFG, the scheduler, acoustic decoding,
 and the streaming synthesis route remain blocked.
 
+At exact implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`,
+a disposable VAST instance ran `cargo test -p vokra-models --lib
+vibevoice_streaming::diffusion` (5 passed) and `cargo test -p vokra-models
+--lib vibevoice_streaming` (20 passed, 2 ignored because the authenticated
+Qwen sidecars were absent). Both used Rust 1.98.1 and the instance was
+destroyed with an exact-ID readback of `instances: null`. This is model-free
+Rust test evidence, not a speed comparison or real-weight parity receipt.
+
 ## Verification boundary
 
 Run only the model-free checks:
