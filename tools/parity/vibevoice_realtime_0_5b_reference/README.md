@@ -102,10 +102,22 @@ evidence that synthesis or real-weight parity is complete.
 The native `vibevoice_streaming::diffusion` module implements one
 source-derived prediction-head forward step on an explicitly selected
 `Compute` backend. Its small scalar-oracle test checks the calculation
-contract only. The complete fixed safetensors/GGUF tensor header and payload
-have not been authenticated for this module, and no upstream real-weight
-reference or CPU/Metal parity has run. CFG, the scheduler, acoustic decoding,
-and the streaming synthesis route remain blocked.
+contract only. A fixed range read of the HF safetensors header is now
+authenticated: the 79,432-byte JSON header declares all 605 tensors as BF16,
+and the 26 `prediction_head` tensor names/shapes match the native loader in
+PR #160. The authenticated range SHA-256 is
+`73c4658be17469d62e22a0f4b7f042cc10aa83d409055a5e3a350d5b8d8f26cb`.
+This authenticates only the header range; the complete payload hash and
+real-weight tensor values remain unverified.
+
+The native `vibevoice_streaming::sampler::sample_vibevoice_realtime_cfg`
+boundary now contains the fixed 20-step CPU-only CFG loop and an explicit
+non-CPU rejection. Its tests use a deterministic synthetic predictor to check
+branch order, shared latents, scheduler reset, and 20 steps. This is a
+model-free contract test only: it is not an official numerical reference,
+real-weight CPU parity, Apple CPU/Metal parity, or a full acoustic synthesis
+route. The tokenizer, staged language-model execution, acoustic decoding, and
+publication gates remain separate.
 
 At exact implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`,
 a disposable VAST instance ran `cargo test -p vokra-models --lib

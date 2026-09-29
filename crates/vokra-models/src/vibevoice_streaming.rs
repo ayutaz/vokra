@@ -22,12 +22,18 @@ use vokra_core::{Result, VokraError};
 
 /// Native single-step AdaLN diffusion prediction head.
 pub mod diffusion;
+/// Deterministic CPU-only classifier-free guidance diffusion sampler.
+pub mod sampler;
 /// Cached-prompt input and bookkeeping state for the staged streaming path.
 pub mod state;
 /// Exact sidecar-backed Qwen text-tokenizer primitive for Realtime streaming.
 pub mod tokenizer;
 
 pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
+pub use sampler::{
+    VIBEVOICE_REALTIME_CONDITION_WIDTH, VIBEVOICE_REALTIME_INFERENCE_STEPS,
+    VIBEVOICE_REALTIME_LATENT_WIDTH, VIBEVOICE_REALTIME_TRAIN_STEPS, sample_vibevoice_realtime_cfg,
+};
 
 /// GGUF architecture tag for the streaming Realtime release.
 pub const ARCH: &str = "vibevoice_streaming";
