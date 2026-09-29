@@ -87,6 +87,21 @@ destroyed; the Vokra-labelled instance and volume readback was empty. The
 resolve the fixed-upstream API/security conflict and dependency-license
 decisions before any approved real-weight reference run.
 
+### 2026-09-29 GitHub security-alert readback (07:05 UTC)
+
+With GitHub `main` at `09b39079a5b205e859ea24392ffe56b3bcd2371b`, a
+fresh paginated `GET /repos/ayutaz/vokra/dependabot/alerts?state=open` returned
+342 open alert records: 299 have `security_vulnerability.first_patched_version`
+and 43 do not. They span 63 manifest paths and 61 distinct GHSA IDs; a
+manifest alert is not a unique advisory. The separate open code-scanning alert
+API still returned five records. This supersedes the 258 / 226 / 32 starting
+snapshot above for current queue sizing, without rewriting that dated result
+or claiming that the count change has a known cause. Of the 342 records, 88
+have a 2026-09-29 `updated_at` date; 63 of those name Torch, 21 Transformers,
+two Accelerate and two Diffusers. An update timestamp alone does not prove a
+newly introduced vulnerability or a completed fix. Re-read the API after each
+merge and close alerts through the dependency graph rather than dismissal.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
@@ -224,8 +239,9 @@ Neither outcome may be inferred from an empty repository.
 
 The current detailed security execution record is
 [`security-remediation-2026-09-21.md`](security-remediation-2026-09-21.md).
-Its 261-alert snapshot predates PR #131 and the current 258-alert API result;
-retain that dated observation and add a supersession note when refreshing it.
+Its 261-alert snapshot predates PR #131 and the 258-alert starting API result;
+the later 342-alert readback above supersedes both for current queue sizing.
+Retain the dated observations and add a supersession note when refreshing them.
 
 ## Execution order and ownership
 
