@@ -32,6 +32,29 @@ guard, it must use a separately reviewed GPU lock and record that evidence;
 neither the current API smoke nor this lock authorizes a real-weight replay or
 publication.
 
+The fresh VAST receipt for this lock used disposable instance `53407724` and
+implementation HEAD `c7dc975c`. `uv sync --frozen` installed 41 packages,
+including `torch==2.13.0+cpu`; the lock SHA-256 is
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e` and no
+`nvidia-*` package was present. The imported Torch runtime reported
+`2.13.0+cpu`, `torch.version.cuda=None`, and `cuda_available=false`; its
+`torch/lib` contained no CUDA/cuDNN/cuBLAS/cuFFT/NCCL/NVJITLINK-named native
+library. The model-free lock contract test passed with evidence SHA-256
+`70f593a0f94db5c51c05806dbd85fac295f1e223d135fc789848173dd98b3f8a`.
+
+Against the clean Microsoft source checkout at revision
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, the official import/API smoke
+returned `AUTHENTICATED_API_SMOKE` with evidence SHA-256
+`1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`.
+It reported `NO_MODEL_DOWNLOAD`, `NO_MODEL_EXECUTION`, and `NO_UPLOAD`.
+The installed closure audit covered 41 packages and returned
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`; bundled license files were missing for
+`safetensors`, `tokenizers`, and `tqdm`. The audit evidence SHA-256 is
+`23bc546d7fcf47f1dc3b66f587c53d37b8025e5b418c185148f3201f1417e06e`.
+
+The disposable instance was destroyed after evidence collection and its
+individual API readback returned `instances: null`.
+
 ## 2026-09-30 VAST narrow-reference receipts
 
 Both runs used the exact checkpoint/source contract above and three timed
