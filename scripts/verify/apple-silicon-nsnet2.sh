@@ -86,7 +86,7 @@ require_metric_sentinel() {
 }
 
 license_preflight() {
-  local approval="$1" expected_head="$2" approval_sha="$3" project="$VOKRA_ROOT/tools/parity/pyproject.toml" lock="$VOKRA_ROOT/tools/parity/uv.lock" project_sha lock_sha
+  local approval="$1" expected_head="$2" approval_sha="$3" project="$VOKRA_ROOT/tools/parity/nsnet2_reference/pyproject.toml" lock="$VOKRA_ROOT/tools/parity/nsnet2_reference/uv.lock" project_sha lock_sha
   [[ -f "$project" && ! -L "$project" && -f "$lock" && ! -L "$lock" ]] || die 'locked parity project is missing or symlinked'
   [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die 'approval evidence must be a nonempty regular non-symlink file'
   project_sha="$(shasum -a 256 "$project" | awk '{print $1}')"; lock_sha="$(shasum -a 256 "$lock" | awk '{print $1}')"

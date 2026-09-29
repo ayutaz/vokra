@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
-PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
+PARITY_PROJECT="$VOKRA_ROOT/tools/parity/nsnet2_reference"
 PROJECT_FILE="$PARITY_PROJECT/pyproject.toml"
 LOCK_FILE="$PARITY_PROJECT/uv.lock"
 INPUT_FILE="nsnet2-20ms-baseline.onnx"
@@ -164,7 +164,7 @@ require_tooling() {
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] \
     || die "VOKRA_ROOT is not the repository checkout: $VOKRA_ROOT"
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] \
-    || die "tools/parity locked Python project is missing"
+    || die "tools/parity/nsnet2_reference locked Python project is missing"
   for path in \
     "$VOKRA_ROOT/tools/parity/nsnet2_prepare_checkpoint.py" \
     "$VOKRA_ROOT/tools/parity/nsnet2_dump_reference.py" \
@@ -238,6 +238,8 @@ run_self_test() {
     "$PARITY_TEST" "$GGUF_ENV" "$WAV_ENV" "$REFERENCE_WAV_ENV" \
     "tools/parity/nsnet2_prepare_checkpoint.py" \
     "tools/parity/nsnet2_dump_reference.py" \
+    "tools/parity/nsnet2_reference/pyproject.toml" \
+    "tools/parity/nsnet2_reference/uv.lock" \
     "uv run --project \"\$PARITY_PROJECT\" --frozen --python 3.12 python" \
     "target/release/vokra-cli convert" "  --model \"\$MODEL_KIND\"" \
     "  --license \"\$LICENSE_SPDX\"" "--expected-head" "expected_head" \
