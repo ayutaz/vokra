@@ -30,6 +30,12 @@ pub enum VibeVoiceRealtimeGenerationStopReason {
     EndOfSpeech,
     /// The caller's model-position budget was exhausted.
     MaxLength,
+    /// The finite caller-owned control-plane speech budget was exhausted.
+    ///
+    /// This is intentionally distinct from [`Self::MaxLength`]: the native
+    /// control plane does not infer model positions or authenticate a model
+    /// `max_length` from this budget.
+    ControlBudgetExhausted,
     /// The caller requested an external stop.
     ExternalStop,
 }
@@ -196,7 +202,7 @@ impl VibeVoiceRealtimeGenerationSession {
                 step,
             } => {
                 if self.remaining_speech_steps == 0 {
-                    self.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                    self.finish(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
                     return self.next_control();
                 }
                 self.remaining_speech_steps -= 1;
@@ -220,7 +226,8 @@ impl VibeVoiceRealtimeGenerationSession {
                     };
                 }
                 if budget_exhausted {
-                    self.stop_reason = Some(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                    self.stop_reason =
+                        Some(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
                 }
                 Ok(VibeVoiceRealtimeGenerationControl::SpeechStep {
                     text_window_index: Some(text_window_index),
@@ -230,7 +237,7 @@ impl VibeVoiceRealtimeGenerationSession {
             }
             Cursor::ZeroText { step } => {
                 if self.remaining_speech_steps == 0 {
-                    self.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                    self.finish(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
                     return self.next_control();
                 }
                 self.remaining_speech_steps -= 1;
@@ -240,7 +247,8 @@ impl VibeVoiceRealtimeGenerationSession {
                 };
                 if budget_exhausted {
                     self.cursor = Cursor::Finished;
-                    self.stop_reason = Some(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+                    self.stop_reason =
+                        Some(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
                 }
                 Ok(VibeVoiceRealtimeGenerationControl::SpeechStep {
                     text_window_index: None,
@@ -369,7 +377,7 @@ mod tests {
         assert!(matches!(
             session.next_control().unwrap(),
             VibeVoiceRealtimeGenerationControl::Finished {
-                reason: VibeVoiceRealtimeGenerationStopReason::MaxLength
+                reason: VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted
             }
         ));
     }
@@ -381,7 +389,7 @@ mod tests {
         assert_eq!(
             session.next_control().unwrap(),
             VibeVoiceRealtimeGenerationControl::Finished {
-                reason: VibeVoiceRealtimeGenerationStopReason::MaxLength
+                reason: VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted
             }
         );
         assert_eq!(session.remaining_speech_steps(), 0);
@@ -412,6 +420,15 @@ mod tests {
             Some(VibeVoiceRealtimeGenerationStopReason::EndOfSpeech)
         );
         assert!(eos_session.is_finished());
+
+        let mut max_length_session = session(24);
+        max_length_session.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
+        assert_eq!(
+            max_length_session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::Finished {
+                reason: VibeVoiceRealtimeGenerationStopReason::MaxLength,
+            }
+        );
 
         let mut externally_stopped = session(24);
         externally_stopped.finish(VibeVoiceRealtimeGenerationStopReason::ExternalStop);
