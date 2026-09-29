@@ -254,6 +254,28 @@ gate. Both the earlier unused header worker `53367911` and the completed
 worker `53368332` were destroyed with exact-ID `instances: null` readbacks;
 no probe instance was retained. No payload or model was run locally.
 
+### 2026-09-29 VibeVoice Realtime acoustic-decoder contract replay (14:24 UTC)
+
+After PR #160 was rebased onto `main` at `289f4416`, the unpushed CFG sampler
+and acoustic-decoder commits were rebased onto PR head `3e070e4a`. Disposable
+VAST instance `53370944` checked out exact integrated head
+`70d4dc314c8c109478f754ddf8abd0b08072085a` from a git bundle and ran
+Rust 1.98.1 model-free checks: `cargo test -p vokra-models --lib
+vibevoice_streaming` (28 passed, two ignored for absent exact Qwen sidecars),
+`cargo test -p vokra-models --lib realtime_decoder_tensor_count_gate` (one
+passed), `cargo test -p vokra-models --lib vibevoice::tokenizer` (13 passed),
+and `cargo clippy -p vokra-models --lib -- -D warnings` (passed). The
+Realtime wrapper rejects a non-Realtime checkpoint before decoder loading;
+the shared decoder's existing model-free topology and causal tests also pass.
+The worker and its storage were destroyed; exact-ID API readback returned
+`instances: null`.
+
+These checks did not download or run weights. They do not establish complete
+checkpoint authentication, independent waveform reference, real-weight CPU
+parity, Metal parity, no-fallback execution, or a same-input CPU/GPU speed
+comparison. The Realtime acoustic boundary remains CPU-only and explicitly
+rejects Metal until that evidence exists; the public row remains partial.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
