@@ -242,51 +242,70 @@ impl VibeVoiceStreamingWeights {
                     info.name, info.dtype
                 )));
             }
-            if !info.name.starts_with("model.") {
-                return Err(VokraError::ModelLoad(format!(
-                    "vibevoice-realtime: tensor `{}` is outside the authenticated model namespace",
-                    info.name
-                )));
-            }
-            if info.name.starts_with("model.semantic") {
-                return Err(VokraError::ModelLoad(
-                    "vibevoice-realtime: semantic tokenizer tensors are forbidden".to_owned(),
-                ));
+            match info.name.as_str() {
+                // The Realtime checkpoint keeps this classifier at the
+                // top-level.  The old `model.tts_eos_classifier.{weight,bias}`
+                // aliases are intentionally not accepted.
+                "tts_eos_classifier.fc1.weight"
+                | "tts_eos_classifier.fc1.bias"
+                | "tts_eos_classifier.fc2.weight"
+                | "tts_eos_classifier.fc2.bias" => {}
+                // These names were emitted by an earlier synthetic fixture,
+                // not by the official Realtime checkpoint.
+                "model.tts_input_types"
+                | "model.tts_eos_classifier.weight"
+                | "model.tts_eos_classifier.bias" => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "vibevoice-realtime: legacy or synthetic tensor name `{}` is forbidden",
+                        info.name
+                    )));
+                }
+                name if name.starts_with("model.") => {
+                    if name.starts_with("model.semantic") {
+                        return Err(VokraError::ModelLoad(
+                            "vibevoice-realtime: semantic tokenizer tensors are forbidden"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "vibevoice-realtime: tensor `{}` is outside the authenticated model namespace",
+                        info.name
+                    )));
+                }
             }
             names.insert(info.name.clone());
         }
         require_layer_stack(file, "model.language_model", LANGUAGE_LAYERS)?;
         require_layer_stack(file, "model.tts_language_model", TTS_LAYERS)?;
-        require_nonempty_ranked_tensor(file, "model.tts_input_types")?;
-        let classifier = file
-            .tensor_info("model.tts_eos_classifier.weight")
-            .ok_or_else(|| {
-                VokraError::ModelLoad(
-                    "vibevoice-realtime: missing model.tts_eos_classifier.weight".to_owned(),
-                )
-            })?;
-        if classifier.dimensions.len() != 2
-            || classifier.dimensions[1] as usize != HIDDEN
-            || classifier.dimensions[0] == 0
+        require_tensor_shape(file, "model.tts_input_types.weight", &[2, HIDDEN as u64])?;
+        require_tensor_shape(
+            file,
+            "model.tts_language_model.embed_tokens.weight",
+            &[VOCAB as u64, HIDDEN as u64],
+        )?;
+        require_tensor_shape(
+            file,
+            "model.tts_language_model.norm.weight",
+            &[HIDDEN as u64],
+        )?;
+        if file
+            .tensor_info("model.language_model.norm.weight")
+            .is_some()
         {
-            return Err(VokraError::ModelLoad(format!(
-                "vibevoice-realtime: classifier shape {:?} does not end in hidden width {HIDDEN}",
-                classifier.dimensions
-            )));
+            return Err(VokraError::ModelLoad(
+                "vibevoice-realtime: unexpected model.language_model.norm.weight tensor".to_owned(),
+            ));
         }
-        let bias = file
-            .tensor_info("model.tts_eos_classifier.bias")
-            .ok_or_else(|| {
-                VokraError::ModelLoad(
-                    "vibevoice-realtime: missing model.tts_eos_classifier.bias".to_owned(),
-                )
-            })?;
-        if bias.dimensions != [classifier.dimensions[0]] {
-            return Err(VokraError::ModelLoad(format!(
-                "vibevoice-realtime: classifier bias shape {:?} does not match {:?}",
-                bias.dimensions, classifier.dimensions
-            )));
-        }
+        require_tensor_shape(
+            file,
+            "tts_eos_classifier.fc1.weight",
+            &[HIDDEN as u64, HIDDEN as u64],
+        )?;
+        require_tensor_shape(file, "tts_eos_classifier.fc1.bias", &[HIDDEN as u64])?;
+        require_tensor_shape(file, "tts_eos_classifier.fc2.weight", &[1, HIDDEN as u64])?;
+        require_tensor_shape(file, "tts_eos_classifier.fc2.bias", &[1])?;
         Ok(Self {
             tensor_names: names,
         })
@@ -361,16 +380,16 @@ fn require_layer_stack(file: &GgufFile, prefix: &str, layers: usize) -> Result<(
     Ok(())
 }
 
-fn require_nonempty_ranked_tensor(file: &GgufFile, name: &str) -> Result<()> {
+fn require_tensor_shape(file: &GgufFile, name: &str, expected: &[u64]) -> Result<()> {
     let Some(info) = file.tensor_info(name) else {
         return Err(VokraError::ModelLoad(format!(
             "vibevoice-realtime: missing `{name}` tensor"
         )));
     };
-    if info.dimensions.is_empty() || info.dimensions.contains(&0) {
+    if info.dimensions != expected {
         return Err(VokraError::ModelLoad(format!(
-            "vibevoice-realtime: `{name}` has empty shape {:?}",
-            info.dimensions
+            "vibevoice-realtime: `{name}` shape {:?}, expected {expected:?}",
+            info.dimensions,
         )));
     }
     Ok(())
@@ -506,7 +525,7 @@ mod tests {
         })
     }
 
-    fn valid_file() -> GgufFile {
+    fn valid_builder() -> GgufBuilder {
         let mut builder = GgufBuilder::new();
         add_metadata(&mut builder);
         for prefix in ["model.language_model", "model.tts_language_model"] {
@@ -521,32 +540,72 @@ mod tests {
                     builder
                         .add_tensor(
                             &format!("{prefix}.layers.{layer}.{suffix}"),
-                            GgmlType::F32,
+                            GgmlType::F16,
                             vec![HIDDEN as u64],
-                            vec![0; HIDDEN * 4],
+                            vec![0; HIDDEN * 2],
                         )
                         .unwrap();
                 }
             }
         }
         builder
-            .add_tensor("model.tts_input_types", GgmlType::F32, vec![2], vec![0; 8])
-            .unwrap()
             .add_tensor(
-                "model.tts_eos_classifier.weight",
-                GgmlType::F32,
-                vec![1, HIDDEN as u64],
-                vec![0; HIDDEN * 4],
-            )
-            .unwrap()
-            .add_tensor(
-                "model.tts_eos_classifier.bias",
-                GgmlType::F32,
-                vec![1],
-                vec![0; 4],
+                "model.tts_input_types.weight",
+                GgmlType::F16,
+                vec![2, HIDDEN as u64],
+                vec![0; 2 * HIDDEN * 2],
             )
             .unwrap();
-        GgufFile::parse(builder.to_bytes().unwrap()).unwrap()
+        builder
+            .add_tensor(
+                "model.tts_language_model.embed_tokens.weight",
+                GgmlType::F16,
+                vec![VOCAB as u64, HIDDEN as u64],
+                vec![0; VOCAB * HIDDEN * 2],
+            )
+            .unwrap();
+        builder
+            .add_tensor(
+                "model.tts_language_model.norm.weight",
+                GgmlType::F16,
+                vec![HIDDEN as u64],
+                vec![0; HIDDEN * 2],
+            )
+            .unwrap();
+        builder
+            .add_tensor(
+                "tts_eos_classifier.fc1.weight",
+                GgmlType::F16,
+                vec![HIDDEN as u64, HIDDEN as u64],
+                vec![0; HIDDEN * HIDDEN * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "tts_eos_classifier.fc1.bias",
+                GgmlType::F16,
+                vec![HIDDEN as u64],
+                vec![0; HIDDEN * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "tts_eos_classifier.fc2.weight",
+                GgmlType::F16,
+                vec![1, HIDDEN as u64],
+                vec![0; HIDDEN * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "tts_eos_classifier.fc2.bias",
+                GgmlType::F16,
+                vec![1],
+                vec![0; 2],
+            )
+            .unwrap();
+        builder
+    }
+
+    fn valid_file() -> GgufFile {
+        GgufFile::parse(valid_builder().to_bytes().unwrap()).unwrap()
     }
 
     #[test]
@@ -558,7 +617,33 @@ mod tests {
         assert_eq!(checkpoint.config().tts_backbone_layers, TTS_LAYERS);
         assert_eq!(
             checkpoint.tensor_count(),
-            2 * (LANGUAGE_LAYERS + TTS_LAYERS) + 3
+            2 * (LANGUAGE_LAYERS + TTS_LAYERS) + 7
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_or_synthetic_tensor_names() {
+        let mut builder = valid_builder();
+        builder
+            .add_tensor("model.tts_input_types", GgmlType::F16, vec![2], vec![0; 4])
+            .unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let error = VibeVoiceStreamingCheckpoint::from_gguf(&file).unwrap_err();
+        assert!(error.to_string().contains("legacy or synthetic"));
+    }
+
+    #[test]
+    fn rejects_unexpected_top_level_tensor() {
+        let mut builder = valid_builder();
+        builder
+            .add_tensor("unexpected.top_level", GgmlType::F16, vec![1], vec![0; 2])
+            .unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let error = VibeVoiceStreamingCheckpoint::from_gguf(&file).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("outside the authenticated model namespace")
         );
     }
 
