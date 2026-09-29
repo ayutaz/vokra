@@ -1388,11 +1388,12 @@ mod tests {
                     *dst += src;
                 }
             }
-            output.extend(reference_rms(
-                &hidden,
-                &runtime.weights.final_norm,
-                config.rms_norm_eps,
-            ));
+            let final_norm = runtime
+                .weights
+                .final_norm
+                .as_deref()
+                .expect("legacy 1.5B Qwen2 oracle requires a final norm");
+            output.extend(reference_rms(&hidden, final_norm, config.rms_norm_eps));
         }
         output
     }
