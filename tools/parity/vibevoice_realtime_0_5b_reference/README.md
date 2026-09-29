@@ -144,8 +144,20 @@ official source imports it directly. The runner therefore installs an explicit,
 temporary namespace shim that maps only that removed module and translates the
 old `vocab_file`/`merges_file` constructor names to Transformers 5's native
 `Qwen2Tokenizer`/`TokenizersBackend`. It does not emulate tokenization or model
-execution. The shim is recorded in the smoke packet, but compatibility remains
-`BLOCKED_UNVERIFIED_API_SMOKE` until the VAST import/API smoke passes.
+execution. During the same import-only window, Transformers 5.10.4 also has a
+native `VibeVoiceAcousticTokenizerConfig` with the same class name as the
+older official source. The runner permits only that exact source
+config/model pair to register with `exist_ok=True`, restores the registration
+method immediately, and records the scoped override in the smoke packet. No
+other auto registration is relaxed. The shim is recorded in the smoke packet,
+but compatibility remains `BLOCKED_UNVERIFIED_API_SMOKE` until the VAST
+import/API smoke passes.
+
+The first VAST smoke after the 5.10.4 lock update reached the official source
+but failed at that exact auto-registration collision (`AutoModel.register`),
+before any model construction or checkpoint access. This failure is why the
+registration scope is explicit and why the smoke must be rerun; it is not
+treated as a successful compatibility result.
 
 The earlier VAST `uv sync` and dependency audit were for Transformers 4.51.3
 and are invalidated by this lock change. The new lock requires a fresh VAST

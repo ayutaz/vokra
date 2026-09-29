@@ -18,6 +18,7 @@ numerical reference or release gate.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib
 import inspect
@@ -41,6 +42,7 @@ CHECKPOINT_REVISION = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
 CHECKPOINT_SHA256 = "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"
 TRANSFORMERS_PIN = "5.10.4"
 QWEN2_FAST_MODULE = "transformers.models.qwen2.tokenization_qwen2_fast"
+REGISTRATION_COMPATIBILITY = "SCOPED_VIBEVOICE_ACOUSTIC_TOKENIZER_OVERRIDE"
 CONFIG_BYTES = 2117
 CONFIG_SHA256 = "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57"
 EXPECTED_TENSOR_COUNT = 605
@@ -193,6 +195,52 @@ def _install_qwen2_fast_shim() -> str:
     return "COMPATIBILITY_SHIM"
 
 
+def _is_official_registration_pair(auto_model, cls, config_class, model_class) -> bool:
+    return (
+        cls is auto_model
+        and config_class.__module__.startswith("vibevoice.")
+        and model_class.__module__.startswith("vibevoice.")
+        and config_class.__name__ == "VibeVoiceAcousticTokenizerConfig"
+        and model_class.__name__ == "VibeVoiceAcousticTokenizerModel"
+    )
+
+
+@contextlib.contextmanager
+def _official_registration_scope():
+    """Allow only the known official/source class-name collision once.
+
+    Transformers 5.10.4 ships a native ``VibeVoiceAcousticTokenizerConfig``
+    with the same class name as the older pinned Microsoft source. Its auto
+    mapping rejects the source registration even though the source is imported
+    directly and never asks AutoModel to construct the native class. The
+    scoped adapter permits exactly that source config/model pair with
+    ``exist_ok=True`` and leaves every other registration unchanged.
+    """
+
+    from transformers.models.auto import AutoModel
+
+    original_owner = next(base for base in AutoModel.__mro__ if "register" in base.__dict__)
+    original_descriptor = original_owner.__dict__["register"]
+    had_own_register = "register" in AutoModel.__dict__
+    own_register = AutoModel.__dict__.get("register")
+    original_function = original_descriptor.__func__
+
+    def scoped_register(cls, config_class, model_class, exist_ok=False):
+        source_pair = _is_official_registration_pair(
+            AutoModel, cls, config_class, model_class
+        )
+        return original_function(cls, config_class, model_class, exist_ok=exist_ok or source_pair)
+
+    AutoModel.register = classmethod(scoped_register)
+    try:
+        yield REGISTRATION_COMPATIBILITY
+    finally:
+        if had_own_register:
+            AutoModel.register = own_register
+        else:
+            delattr(AutoModel, "register")
+
+
 def _compatibility_check(source_root: Path) -> dict[str, Any]:
     """Import pinned upstream classes and inspect their model-free API.
 
@@ -210,7 +258,8 @@ def _compatibility_check(source_root: Path) -> dict[str, Any]:
             f"{TRANSFORMERS_PIN}, got {transformers.__version__}"
         )
     qwen2_fast_import = _install_qwen2_fast_shim()
-    config_class, model_class = _load_official(source_root)
+    with _official_registration_scope() as registration_compatibility:
+        config_class, model_class = _load_official(source_root)
     required_config_attrs = {"model_type", "from_dict", "get_text_config"}
     missing_config = sorted(name for name in required_config_attrs if not hasattr(config_class, name))
     if missing_config:
@@ -258,6 +307,7 @@ def _compatibility_check(source_root: Path) -> dict[str, Any]:
         "transformers": TRANSFORMERS_PIN,
         "source_revision": SOURCE_REVISION,
         "qwen2_fast_import": qwen2_fast_import,
+        "registration_compatibility": registration_compatibility,
         "official_config": f"{config_class.__module__}.{config_class.__name__}",
         "official_model": f"{model_class.__module__}.{model_class.__name__}",
         "forward_parameters": {
@@ -578,6 +628,69 @@ def run(args: argparse.Namespace) -> None:
     print(json.dumps(packet, indent=2, sort_keys=True))
 
 
+def _registration_scope_self_test() -> None:
+    module_names = ("transformers", "transformers.models", "transformers.models.auto")
+    missing = object()
+    saved_modules = {name: sys.modules.get(name, missing) for name in module_names}
+    calls: list[tuple[str, str, bool]] = []
+
+    class BaseAutoModel:
+        @classmethod
+        def register(cls, config_class, model_class, exist_ok=False):
+            calls.append((config_class.__name__, model_class.__name__, exist_ok))
+
+    class FakeAutoModel(BaseAutoModel):
+        pass
+
+    exact_config = type("VibeVoiceAcousticTokenizerConfig", (), {})
+    exact_model = type("VibeVoiceAcousticTokenizerModel", (), {})
+    other_config = type("OtherConfig", (), {})
+    other_model = type("OtherModel", (), {})
+    exact_config.__module__ = "vibevoice.modular.configuration_vibevoice"
+    exact_model.__module__ = "vibevoice.modular.modular_vibevoice_tokenizer"
+    other_config.__module__ = "vibevoice.modular"
+    other_model.__module__ = "vibevoice.modular"
+    transformers_module = types.ModuleType("transformers")
+    models_module = types.ModuleType("transformers.models")
+    auto_module = types.ModuleType("transformers.models.auto")
+    auto_module.AutoModel = FakeAutoModel
+    sys.modules.update(
+        {
+            "transformers": transformers_module,
+            "transformers.models": models_module,
+            "transformers.models.auto": auto_module,
+        }
+    )
+    original_register = FakeAutoModel.register
+    try:
+        assert "register" not in FakeAutoModel.__dict__
+        with _official_registration_scope() as status:
+            assert status == REGISTRATION_COMPATIBILITY
+            FakeAutoModel.register(exact_config, exact_model)
+            FakeAutoModel.register(other_config, other_model)
+        assert calls == [
+            ("VibeVoiceAcousticTokenizerConfig", "VibeVoiceAcousticTokenizerModel", True),
+            ("OtherConfig", "OtherModel", False),
+        ]
+        assert "register" not in FakeAutoModel.__dict__
+        assert FakeAutoModel.register == original_register
+        try:
+            with _official_registration_scope():
+                raise RuntimeError("self-test exception")
+        except RuntimeError as error:
+            assert str(error) == "self-test exception"
+        else:
+            raise AssertionError("registration scope swallowed an exception")
+        assert "register" not in FakeAutoModel.__dict__
+        assert FakeAutoModel.register == original_register
+    finally:
+        for name, value in saved_modules.items():
+            if value is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+
+
 def self_test() -> None:
     assert len(SOURCE_REVISION) == 40
     assert len(CHECKPOINT_REVISION) == 40
@@ -587,6 +700,8 @@ def self_test() -> None:
     assert translated["vocab"] == "vocab.json"
     assert translated["merges"] == "merges.txt"
     assert translated["tokenizer_file"] == "tokenizer.json"
+    assert REGISTRATION_COMPATIBILITY == "SCOPED_VIBEVOICE_ACOUSTIC_TOKENIZER_OVERRIDE"
+    _registration_scope_self_test()
     assert EXPECTED_TENSOR_COUNT == 605
     assert EXPECTED_HIDDEN_SIZE == 896
     assert EXPECTED_ACOUSTIC_DIM == 64
