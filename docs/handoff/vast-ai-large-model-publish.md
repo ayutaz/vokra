@@ -177,7 +177,7 @@ curl -sI https://huggingface.co/vokra/voxtral-small-24b-2507 | head -1
 
 ### 2.6 instance destroy (billing 抑制)
 
-vast.ai UI から即 destroy、または `scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。ローカルから Vast CLI を呼ぶ場合は必ず `vastai-safe.sh` を経由すること。stdout/stderr に誤って出る URL クエリの `api_key` 等を `[REDACTED]` に置換し、CLI の終了コードは保持する。
+vast.ai UI から即 destroy、または今回借りた instance ID を確認して `scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id> --yes` (CLI 使用時)。続けて `scripts/publish/vast-ai/vastai-safe.sh show instances --raw` で対象 ID が一覧から消えたことを確認する。残存または照会不能なら終了扱いにしない。CLI は `--yes` を付けないと確認プロンプトを中断しても終了コード 0 を返し得るため、destroy コマンドの終了コードだけでは課金停止の証拠にならない。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。ローカルから Vast CLI を呼ぶ場合は必ず `vastai-safe.sh` を経由すること。stdout/stderr に誤って出る URL クエリの `api_key` 等を `[REDACTED]` に置換し、CLI の終了コードは保持する。
 
 #### retained handoff の一時停止例外
 
