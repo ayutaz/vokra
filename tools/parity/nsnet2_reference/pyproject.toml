@@ -10,3 +10,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+no-binary-package = ["numpy"]
+
+# NumPy's Linux wheels bundle libgfortran/libquadmath and BLAS payloads with
+# GPL/LGPL obligations. Build the pinned sdist with NumPy's no-BLAS fallback;
+# the VAST worker independently audits the resulting native payload before it
+# downloads the model.
+[tool.uv.config-settings-package.numpy]
+setup-args = ["-Dallow-noblas=true", "-Dblas=none", "-Dlapack=none"]
