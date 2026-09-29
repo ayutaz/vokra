@@ -331,8 +331,7 @@ impl VibeVoiceStreamingState {
         validate_text_capacity(self.prompt, text_ids.len())?;
         validate_text_ids(text_ids, self.prompt.streaming_pad_id)?;
 
-        let mut windows =
-            Vec::with_capacity((text_ids.len() + TTS_TEXT_WINDOW_SIZE - 1) / TTS_TEXT_WINDOW_SIZE);
+        let mut windows = Vec::with_capacity(text_ids.len().div_ceil(TTS_TEXT_WINDOW_SIZE));
         for (index, current) in text_ids.chunks(TTS_TEXT_WINDOW_SIZE).enumerate() {
             let next_text_window_size = text_ids
                 .get((index + 1) * TTS_TEXT_WINDOW_SIZE..)
