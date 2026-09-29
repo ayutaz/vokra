@@ -326,6 +326,33 @@ CPU/Metal/no-fallback verification and public artifact gates remain open.
 The row therefore remains partial and the 136-full / 58-unresolved count
 does not change.
 
+### 2026-09-30 VibeVoice Realtime staged native follow-ups
+
+Draft [PR #163](https://github.com/ayutaz/vokra/pull/163), stacked on
+PR #161, adds the four-layer text LM, twenty-layer TTS LM, shared embedding
+and hidden-state splice, and the EOS classifier. Its fixed-upstream reference
+runner can export official LM hidden states, while an ignored VAST-only Rust
+diagnostic reports native-versus-official errors without declaring a parity
+pass. The Rust tree matched VAST-tested commit `6bdb1f72`: workspace tests
+passed 8,105/0/106 ignored across 323 suites and all-target Clippy passed.
+The installed reference closure remains `OWNER_REVIEW_REQUIRED/NO_UPLOAD`;
+the diagnostic has not been accepted as real-weight parity.
+
+Draft [PR #164](https://github.com/ayutaz/vokra/pull/164), stacked on
+PR #163, adds authenticated five-token text windows and incremental LM/TTS
+KV-cache operations. Six speech iterations per window is a maximum, not an
+EOS signal; positive and negative CFG prompts retain independent caches.
+At exact VAST head `0ea381f9cd0a4398ee067c792746c32b2ccda7e7`, workspace
+tests passed 8,113/0/106 ignored across 323 suites (log SHA-256
+`41a7d9d38b587923e12f410da60cee9255a1779ce961ca6d6a5ed8c811d2e4a3`)
+and all-target Clippy passed (log SHA-256
+`5025862a5cdf2366e84dfefb99ea7355af609f4764e1f84a0fe8d30be86d47c0`).
+The verification instance `53393052` and its storage were destroyed with an
+exact-ID `instances: null` readback. These model-free checks do not establish
+an integrated synthesis loop, native real-weight CPU parity, Apple CPU/Metal
+parity, or public artifact readiness. The row remains partial and the live
+audit remains 136 full / 58 unresolved.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
