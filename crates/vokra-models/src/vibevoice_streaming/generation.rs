@@ -86,6 +86,7 @@ enum Cursor {
     ZeroText {
         step: usize,
     },
+    BudgetExhausted,
     Finished,
 }
 
@@ -209,7 +210,7 @@ impl VibeVoiceRealtimeGenerationSession {
                 let budget_exhausted = self.remaining_speech_steps == 0;
                 if step + 1 >= TTS_SPEECH_WINDOW_SIZE {
                     self.cursor = if budget_exhausted {
-                        Cursor::Finished
+                        Cursor::BudgetExhausted
                     } else if text_window_index + 1 < self.plan.len() {
                         Cursor::TextWindow(text_window_index + 1)
                     } else {
@@ -217,17 +218,13 @@ impl VibeVoiceRealtimeGenerationSession {
                     };
                 } else {
                     self.cursor = if budget_exhausted {
-                        Cursor::Finished
+                        Cursor::BudgetExhausted
                     } else {
                         Cursor::SpeechWindow {
                             text_window_index,
                             step: step + 1,
                         }
                     };
-                }
-                if budget_exhausted {
-                    self.stop_reason =
-                        Some(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
                 }
                 Ok(VibeVoiceRealtimeGenerationControl::SpeechStep {
                     text_window_index: Some(text_window_index),
@@ -246,15 +243,19 @@ impl VibeVoiceRealtimeGenerationSession {
                     step: (step + 1) % TTS_SPEECH_WINDOW_SIZE,
                 };
                 if budget_exhausted {
-                    self.cursor = Cursor::Finished;
-                    self.stop_reason =
-                        Some(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
+                    self.cursor = Cursor::BudgetExhausted;
                 }
                 Ok(VibeVoiceRealtimeGenerationControl::SpeechStep {
                     text_window_index: None,
                     speech_step: step,
                     max_speech_steps: TTS_SPEECH_WINDOW_SIZE,
                 })
+            }
+            Cursor::BudgetExhausted => {
+                self.stop_reason =
+                    Some(VibeVoiceRealtimeGenerationStopReason::ControlBudgetExhausted);
+                self.cursor = Cursor::Finished;
+                self.next_control()
             }
             Cursor::Finished => Ok(VibeVoiceRealtimeGenerationControl::Finished {
                 reason: self
@@ -372,7 +373,8 @@ mod tests {
             }
         );
         assert_eq!(session.remaining_speech_steps(), 0);
-        assert!(session.is_finished());
+        assert!(!session.is_finished());
+        assert_eq!(session.stop_reason(), None);
         assert_eq!(TTS_SPEECH_WINDOW_SIZE, 6,);
         assert!(matches!(
             session.next_control().unwrap(),
@@ -420,6 +422,25 @@ mod tests {
             Some(VibeVoiceRealtimeGenerationStopReason::EndOfSpeech)
         );
         assert!(eos_session.is_finished());
+
+        let mut final_step_session = session(18);
+        for index in 0..3 {
+            match index {
+                0 => assert_text_window(&mut final_step_session, 0, &[101, 102, 103, 104, 105], 5),
+                1 => assert_text_window(&mut final_step_session, 1, &[106, 107, 108, 109, 110], 2),
+                2 => assert_text_window(&mut final_step_session, 2, &[111, 112], 0),
+                _ => unreachable!(),
+            }
+            assert_six_speech_steps(&mut final_step_session, index);
+        }
+        assert!(!final_step_session.is_finished());
+        final_step_session.finish(VibeVoiceRealtimeGenerationStopReason::EndOfSpeech);
+        assert_eq!(
+            final_step_session.next_control().unwrap(),
+            VibeVoiceRealtimeGenerationControl::Finished {
+                reason: VibeVoiceRealtimeGenerationStopReason::EndOfSpeech,
+            }
+        );
 
         let mut max_length_session = session(24);
         max_length_session.finish(VibeVoiceRealtimeGenerationStopReason::MaxLength);
