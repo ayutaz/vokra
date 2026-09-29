@@ -504,23 +504,29 @@ mod tests {
     #[test]
     fn source_text_plan_slices_text_and_marks_speech_steps() {
         let state = VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(1, 1, 7));
-        let text_ids: Vec<u32> = (1..=12).collect();
+        let text_ids: Vec<u32> = (101..=112).collect();
         let plan = state.plan_text_windows(&text_ids).unwrap();
 
         assert_eq!(plan.len(), 3);
         assert_eq!(plan.text_windows()[0].index(), 0);
-        assert_eq!(plan.text_windows()[0].text_ids(), &[1, 2, 3, 4, 5]);
+        assert_eq!(
+            plan.text_windows()[0].text_ids(),
+            &[101, 102, 103, 104, 105]
+        );
         assert_eq!(plan.text_windows()[0].text_window_size(), 5);
         assert_eq!(plan.text_windows()[0].next_text_window_size(), 5);
         assert_eq!(plan.text_windows()[0].max_speech_steps_after_text(), 6);
         assert!(!plan.text_windows()[0].is_last_text_window());
 
         assert_eq!(plan.text_windows()[1].index(), 1);
-        assert_eq!(plan.text_windows()[1].text_ids(), &[6, 7, 8, 9, 10]);
+        assert_eq!(
+            plan.text_windows()[1].text_ids(),
+            &[106, 107, 108, 109, 110]
+        );
         assert_eq!(plan.text_windows()[1].next_text_window_size(), 2);
 
         assert_eq!(plan.text_windows()[2].index(), 2);
-        assert_eq!(plan.text_windows()[2].text_ids(), &[11, 12]);
+        assert_eq!(plan.text_windows()[2].text_ids(), &[111, 112]);
         assert_eq!(plan.text_windows()[2].next_text_window_size(), 0);
         assert!(plan.text_windows()[2].is_last_text_window());
 
