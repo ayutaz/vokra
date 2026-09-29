@@ -54,3 +54,10 @@ def test_lock_metadata_declares_cpu_security_boundary() -> None:
     assert reference["dependency_lock_sha256"] == hashlib.sha256(LOCK.read_bytes()).hexdigest()
     assert reference["cuda_native_payload"] == "EXCLUDED_UNREVIEWED"
     assert reference["gpu_timing_status"] == "DEFERRED_CPU_ONLY_SECURITY_LOCK"
+
+
+if __name__ == "__main__":
+    test_torch_is_explicitly_cpu_only()
+    test_lock_has_no_unreviewed_cuda_payload()
+    test_lock_metadata_declares_cpu_security_boundary()
+    print("vibevoice realtime CPU lock contract: OK")
