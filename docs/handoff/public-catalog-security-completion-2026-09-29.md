@@ -205,10 +205,30 @@ implementation commit `21dded9b7b0630266ee6c223b87d5ff7e569e2bc`:
 four outer projections, four layers of five tensors, and two final-layer
 projections. No tensor has rank above three. This removes the narrow
 *head-name/header-shape* uncertainty; full-checkpoint hash, GGUF conversion,
-independent real-weight reference, numerical CPU parity, CFG/scheduler,
-acoustic decode, Apple CPU/Metal and publication remain open. No model ran on
+independent real-weight reference, numerical CPU parity, integrated
+CFG/scheduler, acoustic decode, Apple CPU/Metal and publication remain open. No model ran on
 the maintainer Mac. The header-only VAST instance `53365673` was destroyed;
 the exact-ID API readback returned `instances: null`.
+
+### 2026-09-29 VibeVoice Realtime CFG sampler contract (13:47 UTC)
+
+Implementation commit `e0390fdf76dc27a6be67a874bc139739b5e705db` adds a
+bounded CPU-only, 20-step classifier-free-guidance sampler around the native
+Realtime prediction head. It gives the conditional and unconditional branches
+the same current latent, applies guidance before the DPM-Solver++ step, and
+rejects a non-CPU backend explicitly. This is a model-free seam, not a full
+streaming synthesis path or a GPU speed decision.
+
+At that exact commit, disposable VAST instance `53367191` ran
+`cargo test -p vokra-models --lib vibevoice_streaming::sampler` (5 passed)
+and `cargo test -p vokra-models --lib vibevoice_streaming` (25 passed, 2
+ignored because exact Qwen sidecars were absent), with Rust 1.98.1. The
+instance and its storage were destroyed; the exact-ID readback returned
+`instances: null`. No weights were downloaded or executed in this test.
+Official-source numerical reference, full-checkpoint authentication, real-
+weight CPU parity, Apple CPU/Metal no-fallback testing, and same-input CPU/GPU
+benchmarking are still required. The public row remains partial, so the
+136-full / 58-unresolved audit counts do not change.
 
 ## Completion rule for each model
 
