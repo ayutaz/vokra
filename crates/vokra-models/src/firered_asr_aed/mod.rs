@@ -85,14 +85,17 @@
 //!    upstream SentencePiece companion is intentionally unbound because it is
 //!    used for text-to-training-IDs; inference detokenization uses the bound
 //!    output dictionary. The complete official beam forward now exists as a
-//!    feature-to-token seam, while independent parity remains an explicit gate.
+//!    feature-to-token seam, and [`FireredAsrAed::transcribe_pcm_beam_pending`]
+//!    composes PCM → beam → text for an explicit parity-pending diagnostic;
+//!    independent parity remains an explicit gate.
 //! 4. **Full transcription graph gap.** [`native`] exposes CPU/Metal-dispatched
 //!    encoder and decoder feature primitives, including incremental greedy
 //!    token generation, and [`FireredAsrAed::transcribe_tokens_with_cmvn`]
 //!    composes them with the explicit frontend seam. They are VAST
 //!    numerical-parity-pending; the official beam policy and native beam
-//!    execution are available as a feature-to-token seam, while the ordinary
-//!    transcription surface remains fail-closed until parity.
+//!    execution are available as feature-to-token and explicit PCM-to-text
+//!    diagnostic seams, while the ordinary transcription surface remains
+//!    fail-closed until parity.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
 //! the sibling LLM release
@@ -108,9 +111,9 @@
 //! dictionary/CMVN sidecars and search policy are already
 //! authenticated. The upstream SentencePiece companion is intentionally
 //! unbound here because the pinned tokenizer uses it for text-to-training-IDs;
-//! inference detokenization uses the authenticated output dictionary. The raw
-//! PCM-to-token seam remains parity-gated and does not make a text-transcription
-//! or PASS claim.
+//! inference detokenization uses the authenticated output dictionary. The
+//! explicit raw PCM-to-beam-to-text seam remains parity-gated and does not
+//! promote the ordinary transcription API or make a PASS claim.
 //!
 //! # Loud-partial classification
 //!
@@ -241,6 +244,23 @@ pub use native::{
     FireRedConformerEncoder, FireRedConformerFeedForward, FireRedConv2dSubsampling,
     FireRedDictionary, FireRedRelativeAttention, relative_positional_encoding,
 };
+
+/// Best result returned by the explicit PCM-to-beam composition seam.
+///
+/// This result type is deliberately separate from [`Transcription`] and from
+/// [`FireRedBeamHypothesis`]: the former would make the ordinary ASR surface
+/// look complete, while the latter contains native `usize` ids and no rendered
+/// text.  The composition remains parity-pending and is not used by the
+/// [`AsrEngine`] implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FireRedPcmBeamHypothesis {
+    /// Content token ids, excluding SOS and a terminal EOS.
+    pub token_ids: Vec<u32>,
+    /// Text rendered through the authenticated FireRed output dictionary.
+    pub text: String,
+    /// Official GNMT-normalized beam score (larger is better).
+    pub normalized_log_score: f32,
+}
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of
@@ -2745,6 +2765,131 @@ impl FireredAsrAed {
         Ok(hypotheses)
     }
 
+    /// Composes the authenticated PCM frontend, encoder, official FireRed
+    /// `batch_beam_search`, and output dictionary into one explicit
+    /// **parity-pending** result.
+    ///
+    /// This is intentionally not [`Self::transcribe_tokens`] and does not
+    /// alter the [`AsrEngine`] contract.  It is a low-level validation seam
+    /// for the exact converted release only: CMVN, geometry/special ids,
+    /// search policy, dictionary, and runtime tensors all come from this
+    /// handle.  No caller-supplied transform or fallback backend is accepted.
+    /// `from_gguf_with_backend` selects the backend before decoding and every
+    /// hot operation is dispatched through [`Compute::for_backend`].
+    ///
+    /// The result must still be compared with an independent upstream
+    /// reference and real-weight CPU parity before the ordinary transcription
+    /// APIs may be enabled.  A green call here is not a parity or publication
+    /// claim.
+    pub fn transcribe_pcm_beam_pending(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<FireRedPcmBeamHypothesis> {
+        self.runtime_weights.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires exact runtime tensor binding; use from_gguf_with_backend after the exact-provenance 940-tensor artifact is available".to_owned(),
+            )
+        })?;
+        let cfg = self.cfg.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires authenticated frontend/decoder metadata; refusing to guess sample rate or special-token ids".to_owned(),
+            )
+        })?;
+        let cmvn = self.cmvn.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires the exact authenticated cmvn.txt sidecar".to_owned(),
+            )
+        })?;
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires the exact authenticated dict.txt sidecar".to_owned(),
+            )
+        })?;
+        let search = self.search.ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires authenticated official batch_beam_search metadata".to_owned(),
+            )
+        })?;
+        if !search.is_official() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: PCM beam composition search policy drifted from official batch_beam_search defaults".to_owned(),
+            ));
+        }
+        if cfg.sample_rate != sample_rate {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l: PCM sample rate {sample_rate} Hz does not match authenticated metadata {} Hz",
+                cfg.sample_rate
+            )));
+        }
+
+        let (features, frames) = pcm_to_features(pcm, sample_rate, cmvn)?;
+        let memory = self.encode_features(&features, frames, &vec![true; frames])?;
+        if memory.is_empty() || memory.len() % AUTHENTICATED_ENCODER_D_MODEL as usize != 0 {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition produced an invalid encoder memory shape"
+                    .to_owned(),
+            ));
+        }
+        let source_frames = memory.len() / AUTHENTICATED_ENCODER_D_MODEL as usize;
+        let hypotheses = self.decode_features_beam(
+            &memory,
+            source_frames,
+            &vec![true; source_frames],
+            cfg.sos_id as usize,
+            cfg.eos_id as usize,
+        )?;
+        let best = hypotheses.into_iter().next().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition returned no hypothesis".to_owned(),
+            )
+        })?;
+        if !best.normalized_log_score.is_finite() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition returned a non-finite hypothesis score"
+                    .to_owned(),
+            ));
+        }
+
+        let mut token_ids = Vec::with_capacity(best.token_ids.len());
+        for id in best.token_ids {
+            let id = u32::try_from(id).map_err(|_| {
+                VokraError::ModelLoad(
+                    "firered-asr-aed-l PCM beam composition emitted a token id outside u32"
+                        .to_owned(),
+                )
+            })?;
+            if id >= cfg.vocab_size {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l PCM beam composition emitted token id {id} outside authenticated vocabulary size {}",
+                    cfg.vocab_size
+                )));
+            }
+            if id == cfg.sos_id || id == cfg.eos_id || id == cfg.pad_id || id == cfg.blank_id {
+                return Err(VokraError::ModelLoad(format!(
+                    "firered-asr-aed-l PCM beam composition emitted forbidden structural token id {id}"
+                )));
+            }
+            token_ids.push(id);
+        }
+        if token_ids.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition returned no content tokens".to_owned(),
+            ));
+        }
+        let text = dictionary.decode_token_ids(&token_ids)?;
+        if text.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition rendered empty text".to_owned(),
+            ));
+        }
+        Ok(FireRedPcmBeamHypothesis {
+            token_ids,
+            text,
+            normalized_log_score: best.normalized_log_score,
+        })
+    }
+
     /// Runs the authenticated PCM → Kaldi fbank/CMVN → encoder → greedy
     /// decoder seam and returns raw decoder ids.
     ///
@@ -4664,6 +4809,21 @@ mod tests {
         assert!(
             matches!(error, VokraError::UnsupportedOp(message) if message.contains("feature tensor binding is absent"))
         );
+    }
+
+    #[test]
+    fn pcm_beam_composition_requires_exact_runtime_binding() {
+        let model = FireredAsrAed::from_gguf(&converter_shaped_gguf()).expect("bind");
+        let error = model
+            .transcribe_pcm_beam_pending(&vec![0.0; 1_600], 16_000)
+            .expect_err("inspection-only binding must not execute PCM or fall back to CPU");
+        match error {
+            VokraError::UnsupportedOp(message) => {
+                assert!(message.contains("exact runtime tensor binding"));
+                assert!(message.contains("from_gguf_with_backend"));
+            }
+            other => panic!("expected UnsupportedOp, got {other:?}"),
+        }
     }
 
     #[test]
