@@ -53,7 +53,10 @@ def _git_fixture(root: Path, *, origin: str = audit.SOURCE_URL, revision: str = 
 
 
 def _tempdir() -> tempfile.TemporaryDirectory[str]:
-    return tempfile.TemporaryDirectory(prefix="vokra-mimi-source-audit-", dir="/private/tmp")
+    # Resolve platform temp aliases (for example macOS /tmp) without baking
+    # a host-specific directory into the Linux/VAST stdlib test suite.
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    return tempfile.TemporaryDirectory(prefix="vokra-mimi-source-audit-", dir=str(temp_root))
 
 
 class StaticSourceAuditTests(unittest.TestCase):
