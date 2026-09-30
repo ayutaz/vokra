@@ -44,6 +44,19 @@ is_model_download() {
         '^(curl|wget|aria2c|scp|rsync|huggingface-cli|hf[[:space:]]+download|git[[:space:]]+clone|uv[[:space:]]+run|uv[[:space:]]+tool)([[:space:]]|$)|(^|[[:space:]])(curl|wget|aria2c)[[:space:]].*(https?://|--output|-O[[:space:]])'
 }
 
+is_literal_git_add() {
+    local normalized="$1" shell_substitution="\$(" backtick="\`"
+    # Indexing an already-present path is not model acquisition or execution.
+    # Keep this deliberately narrower than generic Git handling: aliases,
+    # `git -c`/`-C`, commits, and shell substitutions remain on the guarded
+    # path.  Reject shell metacharacters before exempting the exact command.
+    printf '%s' "$normalized" | grep -Eq '^git[[:space:]]+add([[:space:]]|$)' || return 1
+    case "$normalized" in
+        *"$shell_substitution"*|*"$backtick"*|*'>'*|*'<'*|*'&'*|*'|'*|*';'*) return 1 ;;
+    esac
+    return 0
+}
+
 is_model_execution() {
     local normalized="$1"
 
@@ -128,6 +141,7 @@ analyse_segment() {
     esac
     is_help_or_self_test "$normalized" && return 1
     is_static_command "$normalized" && return 1
+    is_literal_git_add "$normalized" && return 1
 
     if is_model_download "$normalized"; then
         echo "model/checkpoint download"
@@ -199,6 +213,11 @@ self_test() {
     check 'ordinary parity script is guarded' block 'uv run --project tools/parity python tools/parity/foo.py'
     check 'audit script is model-free' allow 'uv run --no-project python tools/audit/hf_mac_coverage.py'
     check 'static check script with marker' allow 'bash scripts/check-doc-references.sh model.gguf'
+    check 'literal git add parity source' allow 'git add -- tools/parity/new_probe.py'
+    check 'literal git add checkpoint path' allow 'git add -- model.gguf'
+    check 'git add chained model execution' block 'git add -- tools/parity/new_probe.py && uv run --project tools/parity python tools/parity/foo.py'
+    check 'git -c add remains guarded' block 'git -c user.name=bot add -- tools/parity/new_probe.py'
+    check 'git commit remains guarded' block 'git commit --only -- tools/parity/new_probe.py -m docs'
     check 'prose false positive' allow 'echo "download model.gguf later"'
     check 'prose chained false positive' allow 'echo "ssh vast worker" && git status --short'
     if is_maintainer_mac Darwin && ! is_maintainer_mac Linux; then
