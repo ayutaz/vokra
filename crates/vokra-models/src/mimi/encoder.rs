@@ -52,7 +52,10 @@ use crate::compute::{Compute, HotOp};
 use crate::csm::backbone::xavier_uniform;
 
 /// Hot ops the Mimi neural chain dispatches (im2col-GEMM convolutions +
-/// transformer GEMM/softmax/LayerNorm/GELU).
+/// transformer GEMM/softmax/LayerNorm/GELU + the learned LayerScale residual
+/// update). RVQ nearest-codebook search and the remaining host-layout glue are
+/// still intentionally outside this registry; this is not a claim of full
+/// Metal residency or GPU speedup.
 pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Gemv,
@@ -60,6 +63,7 @@ pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::LayerNorm,
     HotOp::Gelu,
     HotOp::Elu,
+    HotOp::ResidualScaleAdd,
 ];
 
 /// One SEANet residual block (assembled).
@@ -1287,6 +1291,7 @@ mod tests {
     #[test]
     fn mimi_backend_gate_declares_elu_and_refuses_uncovered_backend() {
         assert!(MIMI_HOT_OPS.contains(&HotOp::Elu));
+        assert!(MIMI_HOT_OPS.contains(&HotOp::ResidualScaleAdd));
         assert!(Compute::for_backend(BackendKind::Vulkan, MIMI_HOT_OPS).is_err());
     }
 

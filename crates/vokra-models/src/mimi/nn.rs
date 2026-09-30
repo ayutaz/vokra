@@ -23,9 +23,11 @@
 //! frequencies at `max_period` — no Llama-3 scaling here).
 //! Mimi's causal QK and AV contractions likewise use `Compute::gemm_f32` on
 //! non-CPU backends, with chronological ring gathers into preallocated
-//! scratch. LayerScale residual arithmetic and RVQ encoder arithmetic remain
-//! host paths; this module therefore does not claim complete Metal residency
-//! or no-fallback coverage.
+//! scratch. LayerScale residual arithmetic uses the checked
+//! `Compute::residual_scale_add_f32` seam, whose Metal arm is a real device
+//! kernel; RVQ encoder arithmetic and other host-layout glue remain host
+//! paths. This module therefore does not claim complete Metal residency,
+//! no-fallback coverage, or GPU performance parity.
 //!
 //! # Upstream anchors (ADR M4-05 §D2 — transcribed)
 //!
@@ -974,11 +976,13 @@ impl MimiTransformer {
                 None,
                 &mut state.b_attn_o[..t * d],
             )?;
-            for i in 0..t {
-                for c in 0..d {
-                    x[i * d + c] += layer.layer_scale_1[c] * state.b_attn_o[i * d + c];
-                }
-            }
+            compute.residual_scale_add_f32(
+                t,
+                d,
+                &mut x[..t * d],
+                &layer.layer_scale_1,
+                &state.b_attn_o[..t * d],
+            )?;
             // ---- MLP sublayer (gating = none → GELU MLP) ----
             compute.layer_norm_f32(
                 &x[..t * d],
@@ -1011,11 +1015,13 @@ impl MimiTransformer {
                 None,
                 &mut state.b_ff2[..t * d],
             )?;
-            for i in 0..t {
-                for c in 0..d {
-                    x[i * d + c] += layer.layer_scale_2[c] * state.b_ff2[i * d + c];
-                }
-            }
+            compute.residual_scale_add_f32(
+                t,
+                d,
+                &mut x[..t * d],
+                &layer.layer_scale_2,
+                &state.b_ff2[..t * d],
+            )?;
         }
         state.pos += t;
         Ok(())
@@ -1179,9 +1185,13 @@ impl MimiTransformer {
                 None,
                 &mut state.attn_o,
             )?;
-            for c in 0..d {
-                state.h[c] += layer.layer_scale_1[c] * state.attn_o[c];
-            }
+            compute.residual_scale_add_f32(
+                1,
+                d,
+                &mut state.h,
+                &layer.layer_scale_1,
+                &state.attn_o,
+            )?;
             // ---- MLP sublayer (gating = none → GELU MLP) ----
             compute.layer_norm_f32(
                 &state.h,
@@ -1211,9 +1221,7 @@ impl MimiTransformer {
                 None,
                 &mut state.ff2,
             )?;
-            for c in 0..d {
-                state.h[c] += layer.layer_scale_2[c] * state.ff2[c];
-            }
+            compute.residual_scale_add_f32(1, d, &mut state.h, &layer.layer_scale_2, &state.ff2)?;
         }
         state.pos += 1;
         Ok(())
@@ -1623,7 +1631,10 @@ mod tests {
         // Vulkan has no Compute seam arm in this slice. Requiring the actual
         // learned contractions pins selection as an explicit error rather
         // than allowing a coverage-empty CPU fallback.
-        let result = Compute::for_backend(BackendKind::Vulkan, &[HotOp::Gemm, HotOp::Softmax]);
+        let result = Compute::for_backend(
+            BackendKind::Vulkan,
+            &[HotOp::Gemm, HotOp::Softmax, HotOp::ResidualScaleAdd],
+        );
         assert!(result.is_err(), "unsupported backend must fail explicitly");
     }
 
@@ -1652,7 +1663,13 @@ mod tests {
         let cpu = compute();
         let metal = match Compute::for_backend(
             BackendKind::Metal,
-            &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Gelu],
+            &[
+                HotOp::Gemm,
+                HotOp::Softmax,
+                HotOp::LayerNorm,
+                HotOp::Gelu,
+                HotOp::ResidualScaleAdd,
+            ],
         ) {
             Ok(compute) => compute,
             Err(error) => {

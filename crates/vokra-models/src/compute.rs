@@ -117,6 +117,16 @@ pub enum HotOp {
     /// explicitly uncovered; a model listing this op is rejected before
     /// execution on those backends rather than silently running it on CPU.
     Elu,
+    /// Mimi's learned LayerScale residual update:
+    /// `dst[row, channel] += scale[channel] * src[row, channel]`.
+    ///
+    /// The CPU arm preserves the transformer loop's operand order exactly.
+    /// Metal uses a dedicated vector-scale/add kernel after validating the
+    /// complete `[rows, channels]` shape. CUDA, Vulkan, WebGPU, and delegates
+    /// remain explicitly uncovered; a Mimi model therefore fails its backend
+    /// coverage gate instead of silently running this learned operation on the
+    /// host (FR-EX-08).
+    ResidualScaleAdd,
     /// Element-wise hyperbolic tangent. SpeechT5's four activated postnet
     /// convolution blocks require this exact nonlinearity. CPU dispatches the
     /// existing portable kernel and Metal has a dedicated MSL kernel; other
@@ -501,6 +511,7 @@ impl HotOp {
                 | HotOp::GeluNew
                 | HotOp::Relu
                 | HotOp::Elu
+                | HotOp::ResidualScaleAdd
                 | HotOp::Tanh
                 | HotOp::Silu
                 | HotOp::OuveSde
@@ -1043,6 +1054,80 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
+        }
+    }
+
+    /// Fused row-wise learned residual update used by Mimi LayerScale.
+    ///
+    /// `dst` and `src` are row-major `[rows, channels]` buffers and `scale` is
+    /// one learned multiplier per channel. Shape and overflow checks happen
+    /// before the CPU loop or any Metal allocation, so a rejected call cannot
+    /// partially mutate `dst`. The CPU expression intentionally remains
+    /// `dst[i] += scale[c] * src[i]`, matching the pre-seam Mimi loop's
+    /// operand/order and signed-zero behavior. The Metal arm uses a real
+    /// device kernel and copies the completed result back only after the
+    /// command buffer succeeds; no backend falls back to the CPU. Metal also
+    /// requires `rows`, `channels`, and their checked product to fit the
+    /// kernel's `u32` dimensions.
+    pub fn residual_scale_add_f32(
+        &self,
+        rows: usize,
+        channels: usize,
+        dst: &mut [f32],
+        scale: &[f32],
+        src: &[f32],
+    ) -> Result<()> {
+        let total = rows.checked_mul(channels).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 rows*channels overflow: {rows} * {channels}"
+            ))
+        })?;
+        if scale.len() != channels {
+            return Err(VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 scale length {} != channels {channels}",
+                scale.len()
+            )));
+        }
+        if src.len() != total {
+            return Err(VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 src length {} != rows*channels {total}",
+                src.len()
+            )));
+        }
+        if dst.len() != total {
+            return Err(VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 dst length {} != rows*channels {total}",
+                dst.len()
+            )));
+        }
+
+        match &self.be {
+            Be::Cpu => {
+                if total == 0 {
+                    return Ok(());
+                }
+                for row in 0..rows {
+                    let base = row * channels;
+                    for channel in 0..channels {
+                        dst[base + channel] += scale[channel] * src[base + channel];
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.residual_scale_add_f32(rows, channels, dst, scale, src),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "residual_scale_add_f32 has no CUDA kernel; Vokra does not silently run Mimi \
+                 LayerScale on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "residual_scale_add_f32 has no WebGPU kernel; Vokra does not silently run Mimi \
+                 LayerScale on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -4819,6 +4904,87 @@ mod tests {
     }
 
     #[test]
+    fn mimi_residual_scale_add_cpu_preserves_operand_order_and_signed_zero() {
+        let mut actual = [-0.0f32, 1.0, -2.0, 3.0];
+        let scale = [-0.0f32, 2.0];
+        let src = [1.0f32, -0.0, -3.0, 4.0];
+        Compute::cpu()
+            .residual_scale_add_f32(2, 2, &mut actual, &scale, &src)
+            .unwrap();
+
+        let mut expected = [-0.0f32, 1.0, -2.0, 3.0];
+        for row in 0..2 {
+            for channel in 0..2 {
+                expected[row * 2 + channel] += scale[channel] * src[row * 2 + channel];
+            }
+        }
+        assert!(actual.iter().all(|value| value.is_finite()));
+        assert_eq!(
+            actual
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            "LayerScale CPU seam changed the pre-seam operand order"
+        );
+    }
+
+    #[test]
+    fn mimi_residual_scale_add_rejects_shapes_before_mutation() {
+        let mut dst = [1.0f32, -2.0, 3.0, -4.0];
+        let before = dst;
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(2, 2, &mut dst, &[1.0], &[1.0, 2.0, 3.0, 4.0])
+                .is_err()
+        );
+        assert_eq!(dst, before);
+
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(2, 2, &mut dst, &[1.0, 1.0], &[1.0, 2.0])
+                .is_err()
+        );
+        assert_eq!(dst, before);
+
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(2, 2, &mut dst[..3], &[1.0, 1.0], &[1.0, 2.0, 3.0, 4.0],)
+                .is_err()
+        );
+        assert_eq!(dst, before);
+
+        // Empty dimensions are valid declared shapes and must be no-ops. The
+        // Metal arm additionally rejects non-empty dimensions that exceed its
+        // checked u32 kernel contract before allocating or mutating output.
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(0, 3, &mut [], &[1.0, 1.0, 1.0], &[])
+                .is_ok()
+        );
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(3, 0, &mut [], &[], &[])
+                .is_ok()
+        );
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(usize::MAX, 0, &mut [], &[], &[])
+                .is_ok()
+        );
+
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(usize::MAX, 2, &mut dst, &[], &[])
+                .is_err()
+        );
+        assert_eq!(dst, before);
+    }
+
+    #[test]
     fn cpu_fir_resample_matches_sgmse_fixed_kernel_contract() {
         let mut up = vec![0.0f32; 16];
         Compute::cpu()
@@ -5777,6 +5943,7 @@ mod tests {
             HotOp::GeluNew,
             HotOp::Relu,
             HotOp::Elu,
+            HotOp::ResidualScaleAdd,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::OuveSde,
@@ -5863,6 +6030,7 @@ mod tests {
             HotOp::GeluNew,
             HotOp::Relu,
             HotOp::Elu,
+            HotOp::ResidualScaleAdd,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -6028,6 +6196,67 @@ mod tests {
         }
     }
 
+    /// Device-gated component parity for the Mimi LayerScale seam. A Linux or
+    /// feature-off run cannot establish this result; on an Apple Metal device
+    /// it compares the real kernel with the CPU reference under NFR-QL-01's
+    /// existing FP32 bound. This is not a full Mimi residency or performance
+    /// claim.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn residual_scale_add_metal_matches_cpu_when_device_is_available() {
+        let metal = match Compute::for_backend(BackendKind::Metal, &[HotOp::ResidualScaleAdd]) {
+            Ok(compute) => compute,
+            Err(VokraError::BackendUnavailable(message)) => {
+                eprintln!("no Metal device; residual_scale_add parity is device-gated: {message}");
+                return;
+            }
+            Err(error) => panic!("unexpected Metal LayerScale setup error: {error}"),
+        };
+        let scale = [0.25f32, -0.5, 1.25];
+        let src = [1.0f32, -2.0, 3.0, -4.0, 5.0, -6.0];
+        let initial = [0.5f32, 1.0, -1.5, 2.0, -2.5, 3.0];
+        let mut malformed_dst = [9.0f32; 5];
+        let malformed_before = malformed_dst;
+        assert!(
+            metal
+                .residual_scale_add_f32(2, 3, &mut malformed_dst, &scale, &src)
+                .is_err()
+        );
+        assert_eq!(malformed_dst, malformed_before);
+
+        // This reaches the Metal wrapper's explicit u32 dimension guard: the
+        // checked product is empty, but the declared row dimension is not
+        // representable by the MSL `uint` field.
+        let oversized_rows = (u32::MAX as usize)
+            .checked_add(1)
+            .expect("Metal parity target must expose usize wider than u32");
+        let mut empty_dst = [];
+        assert!(
+            metal
+                .residual_scale_add_f32(oversized_rows, 0, &mut empty_dst, &[], &[])
+                .is_err()
+        );
+        assert!(empty_dst.is_empty());
+
+        let mut expected = initial;
+        Compute::cpu()
+            .residual_scale_add_f32(2, 3, &mut expected, &scale, &src)
+            .unwrap();
+        let mut actual = initial;
+        metal
+            .residual_scale_add_f32(2, 3, &mut actual, &scale, &src)
+            .unwrap();
+        let mut max_delta = 0.0f32;
+        for (&got, &want) in actual.iter().zip(expected.iter()) {
+            assert!(got.is_finite() && want.is_finite());
+            max_delta = max_delta.max((got - want).abs());
+        }
+        assert!(
+            max_delta <= 0.01,
+            "Mimi LayerScale Metal parity exceeded NFR-QL-01: max_delta={max_delta}"
+        );
+    }
+
     /// On a CUDA build, coverage is enforced. As of Phase 4 (M2-03 T10-T14) the
     /// CUDA backend covers the **whole** Whisper hot-op set, so `for_backend`
     /// never returns `UnsupportedOp` for it — it either builds (device present)
@@ -6097,6 +6326,7 @@ mod tests {
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
+            HotOp::ResidualScaleAdd,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -6184,6 +6414,7 @@ mod tests {
             HotOp::AntiAliasedUpsample,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
+            HotOp::ResidualScaleAdd,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -6252,6 +6483,7 @@ mod tests {
             HotOp::AntiAliasedUpsample,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
+            HotOp::ResidualScaleAdd,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -6565,6 +6797,7 @@ mod tests {
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
+            HotOp::ResidualScaleAdd,
         ] {
             assert!(
                 !op.covered_by_webgpu(),

@@ -1133,6 +1133,30 @@ kernel void vokra_add_assign_f32(
     dst[gid] = dst[gid] + src[gid];
 }
 
+// ---- Mimi LayerScale residual update --------------------------------------
+// One thread owns one row-major element. The channel-indexed learned scale is
+// shared across rows; the operation order mirrors Mimi's CPU loop:
+// `dst[i] = dst[i] + scale[channel] * src[i]`.
+struct ResidualScaleAddDims {
+    uint rows;
+    uint channels;
+};
+
+kernel void vokra_residual_scale_add_f32(
+    device float*       dst   [[buffer(0)]],
+    device const float* scale [[buffer(1)]],
+    device const float* src   [[buffer(2)]],
+    constant ResidualScaleAddDims& d [[buffer(3)]],
+    uint                gid   [[thread_position_in_grid]])
+{
+    const uint total = d.rows * d.channels;
+    if (gid >= total) {
+        return;
+    }
+    const uint channel = gid % d.channels;
+    dst[gid] = dst[gid] + scale[channel] * src[gid];
+}
+
 // ---- cc-27: element-wise multiply + copy (graph-executor `Mul` / `Copy`) -----
 // The two kernels that bring the Metal graph arm level with the CUDA / Vulkan /
 // WebGPU arms. Both reuse `AddAssignDims` (a single `uint n`) — the operand
@@ -3029,6 +3053,14 @@ struct AddAssignDims {
     n: u32,
 }
 
+/// Mimi LayerScale residual-update dimensions (`setBytes:` index 3).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ResidualScaleAddDims {
+    rows: u32,
+    channels: u32,
+}
+
 /// Gamma-only RMSNorm dims (`setBytes:` index 3). The trailing `f32 eps` matches
 /// the MSL `struct RmsNormDims` (all fields 4-byte, so `#[repr(C)]` needs no
 /// padding).
@@ -3684,6 +3716,8 @@ pub struct MetalContext {
     col_gather_t_pipeline: Id,
     col_scatter_pipeline: Id,
     add_assign_pipeline: Id,
+    /// Mimi LayerScale vector-scale + residual-add kernel.
+    residual_scale_add_pipeline: Id,
     /// cc-27 graph-executor element-wise multiply (`dst[i] *= src[i]`).
     mul_pipeline: Id,
     /// cc-27 graph-executor element-wise copy (`dst[i] = src[i]`).
@@ -4000,6 +4034,11 @@ impl MetalContext {
         // SAFETY: as above.
         let add_assign_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_add_assign_f32") }?;
+        // Mimi LayerScale's channel-vector residual update; this is separate
+        // from scalar `scale_f32` and from element-wise `add_assign_f32`.
+        // SAFETY: as above.
+        let residual_scale_add_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_residual_scale_add_f32") }?;
         // cc-27 graph-executor element-wise multiply / copy; same library.
         // SAFETY: as above.
         let mul_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_mul_f32") }?;
@@ -4182,6 +4221,7 @@ impl MetalContext {
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
             col_scatter_pipeline: col_scatter_pipeline.into_raw(),
             add_assign_pipeline: add_assign_pipeline.into_raw(),
+            residual_scale_add_pipeline: residual_scale_add_pipeline.into_raw(),
             mul_pipeline: mul_pipeline.into_raw(),
             copy_pipeline: copy_pipeline.into_raw(),
             dequant_gemv_q4_0_pipeline: dequant_gemv_q4_0_pipeline.into_raw(),
@@ -4260,6 +4300,80 @@ impl MetalContext {
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r
+    }
+
+    /// Host-in/host-out Mimi LayerScale residual update:
+    /// `dst[row, channel] += scale[channel] * src[row, channel]`.
+    ///
+    /// Inputs are uploaded into temporary Metal buffers and the result is
+    /// copied into `dst` only after a successful command-buffer completion.
+    /// Thus allocation, shape, and dispatch failures leave the caller's host
+    /// output untouched; this wrapper never falls back to a host loop.
+    pub fn residual_scale_add_f32(
+        &self,
+        rows: usize,
+        channels: usize,
+        dst: &mut [f32],
+        scale: &[f32],
+        src: &[f32],
+    ) -> Result<()> {
+        let total = checked_mul(rows, channels, "residual_scale_add_f32 rows*channels")?;
+        checked_u32(rows, "residual_scale_add_f32 rows")?;
+        checked_u32(channels, "residual_scale_add_f32 channels")?;
+        checked_u32(total, "residual_scale_add_f32 rows*channels")?;
+        expect_len("residual_scale_add_f32 scale", scale.len(), channels)?;
+        expect_len("residual_scale_add_f32 src", src.len(), total)?;
+        expect_len("residual_scale_add_f32 dst", dst.len(), total)?;
+        if total == 0 {
+            return Ok(());
+        }
+
+        // Keep all temporary Objective-C objects inside a bounded autorelease
+        // pool, like the other host-in/host-out imperative entry points.
+        // SAFETY: `objc_autoreleasePoolPush` returns an opaque pool token that
+        // is consumed exactly once by the matching pop below; all temporary
+        // Metal objects created by the wrapper are scoped between the pair.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_residual_scale_add_f32(rows, channels, dst, scale, src);
+        // SAFETY: `pool` is the token returned by the immediately preceding
+        // push and has not been consumed on any other path.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_residual_scale_add_f32(
+        &self,
+        rows: usize,
+        channels: usize,
+        dst: &mut [f32],
+        scale: &[f32],
+        src: &[f32],
+    ) -> Result<()> {
+        let dst_buf = self.new_buffer_from_slice(dst)?;
+        let scale_buf = self.new_buffer_from_slice(scale)?;
+        let src_buf = self.new_buffer_from_slice(src)?;
+        let dims = ResidualScaleAddDims {
+            rows: checked_u32(rows, "residual_scale_add_f32 rows")?,
+            channels: checked_u32(channels, "residual_scale_add_f32 channels")?,
+        };
+        let total = checked_mul(rows, channels, "residual_scale_add_f32 rows*channels")?;
+        let cmd = self.new_command_buffer("residual_scale_add_f32")?;
+        let (grid, tg) = grid_1d(total);
+        self.encode_pass(
+            cmd,
+            self.residual_scale_add_pipeline,
+            &[&dst_buf, &scale_buf, &src_buf],
+            (&dims as *const ResidualScaleAddDims).cast::<c_void>(),
+            size_of::<ResidualScaleAddDims>(),
+            grid,
+            tg,
+            "residual_scale_add_f32",
+        )?;
+        self.commit_and_wait(cmd, "residual_scale_add_f32")?;
+        // `read_back` validates the contents pointer before copying. The host
+        // destination is therefore committed only after the GPU submission
+        // has completed successfully.
+        read_back(&dst_buf, dst)
     }
 
     /// GEMM body: allocate shared buffers, encode + run, read back. Runs inside
@@ -11768,6 +11882,7 @@ impl Drop for MetalContext {
             release(self.dequant_gemv_q4_0_pipeline);
             release(self.copy_pipeline);
             release(self.mul_pipeline);
+            release(self.residual_scale_add_pipeline);
             release(self.add_assign_pipeline);
             release(self.col_scatter_pipeline);
             release(self.col_gather_t_pipeline);
