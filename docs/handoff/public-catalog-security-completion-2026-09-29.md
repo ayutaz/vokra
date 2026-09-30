@@ -1077,6 +1077,33 @@ not be attributed to `6328ad62`. LayerScale residual and RVQ encoder host
 paths, independent reference and Apple validation remain open. No public
 model row is promoted and no artifact is uploaded by these changes.
 
+### Recovered Mimi ELU full-verification packet (11:05 UTC)
+
+The `336de430` run above is now final: focused Mimi tests, all-features /
+all-targets Clippy, workspace tests, deny and audit all exit zero. The
+workspace log contains 323 result summaries, 8,106 passed tests, zero
+failures and 105 ignored tests; ignored tests are not passed tests or
+real-weight/hardware proof. Deny reports an unmatched pre-existing
+`libfuzzer-sys` license-exception warning, with advisories, bans and licenses
+otherwise successful. Audit scans 22 lockfile dependencies without a
+reported vulnerability.
+
+All 18 packet entries were recovered and independently SHA-256 checked.
+The actual final HEAD is `336de430e4c9d40bb81906cd09381b43797c22de`;
+observed worktree status and diff-check output are empty. Packet manifest
+SHA-256 is `f3fa28666744869483f7309e40c8124633f262433acbb504b028bbab322483e6`;
+workspace log SHA-256 is
+`7f3bdbbd3fb502390c34bba6770e081d976e9accf1cf59633cdf51d55537ad16`.
+This is Linux code regression evidence only, not independent model parity,
+Apple CPU/Metal coverage or verification of the newer attention HEAD.
+
+Controller exit is zero; collection, destroy and readback all exit zero.
+Worker `53512626` and its disk were destroyed. Individual strict readback
+returns `instances: null`, and exact-label readback is empty. A fresh
+all-pages account readback also reports zero instances (SHA-256
+`0bae59a551bcb5491b24cb982cdb029b20509d86fa38b75209f12ca13415f63c`).
+No model row, legal gate or public artifact is advanced by this run.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
