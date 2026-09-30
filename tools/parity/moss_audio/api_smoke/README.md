@@ -58,3 +58,22 @@ scripts/publish/vast-ai/run-moss-audio-api-smoke.sh --variant all \
 The pinned identities in `api_smoke.py` must be regenerated from authenticated
 primary-source evidence if upstream metadata changes; no topology or parity
 bound is inferred by this smoke.
+
+## Torch/TorchAudio security-floor assessment
+
+As of 2026-09-29, Dependabot alerts #400 and #401 require `torch>=2.13.0`.
+The official TorchAudio installation guidance states that the 2.11.0 line
+uses the stable ABI and supports PyTorch 2.11 and all later versions,
+including 2.13. The official CPU index therefore supports this compatible
+security-floor pair, which is now pinned here as `torch==2.13.0` /
+`torchaudio==2.11.0` (resolved Linux CPU distributions are
+`2.13.0+cpu` / `2.11.0+cpu`). A Torch-only bump would still be invalid; the
+TorchAudio ABI floor is updated together with the Torch security floor.
+
+The model-free import/API smoke remains required before any real-weight
+validation, and no model or checkpoint is acquired by this project. Primary
+sources for the pair and ABI rule:
+
+- <https://download.pytorch.org/whl/cpu/torch/>
+- <https://download.pytorch.org/whl/cpu/torchaudio/>
+- <https://docs.pytorch.org/audio/main/installation.html>
