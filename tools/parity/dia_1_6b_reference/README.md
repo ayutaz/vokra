@@ -59,8 +59,9 @@ A fresh exact-head VAST dependency/native collector at checkout
 `bbb11630a98d8cae7f43074a7ba9871c25d43d0f23b762f35ba147f963776dde` and
 preparation SHA-256
 `04dac5e91eac4de5401571889f81e7535e4c80bb7a87cfc49371b78e2d19993e2`:
-27 active packages, exact closure, 147 publisher license bytes, 164 native
-files, and no collection failures.  Scope generation from these facts remains
+27 active packages, exact closure, 147 publisher-license file records with raw
+bytes captured, 164 native files, and no collection failures.  Scope generation
+from these facts remains
 pending the next exact-head collector run; the intended result is an unsigned
 `PENDING_OWNER_REVIEW` scope with publication `NO_UPLOAD`.
 
