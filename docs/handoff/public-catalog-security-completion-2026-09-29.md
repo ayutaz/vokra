@@ -2080,6 +2080,53 @@ The catalog scope remains 194 rows with 58 unresolved; required independent
 CPU and Apple CPU/Metal/no-fallback checks are not replaced by faster GPU
 routing.
 
+### Corrected-head platform CI and next-wave review (17:21 UTC)
+
+At exact PR #186 HEAD `ecf0990db79047d142090220d2dbf1ac49623ce6`,
+all sixteen required contexts are completed successfully. Root checked the
+commit's check-run records against the live main-branch protection contexts,
+including their GitHub App IDs (`15368`, or `57789` for CodeQL); no required
+context is missing. The repaired
+[Metal job](https://github.com/ayutaz/vokra/actions/runs/36748200588/job/109999715994)
+also completed successfully at 17:16:42 UTC. Its build, Clippy, feature tests,
+Metal backend tests and pinned-GGUF C ABI steps pass. The log reports an
+Apple Paravirtual Metal device and passing native Mimi RVQ dispatch,
+attention/ELU synthetic tests and device-in/out kernel checks. These are
+bounded CI/kernel results, not independent real-weight completion evidence
+for the unresolved catalog rows. The earlier failed Windows and Metal jobs
+remain historical failure evidence, superseded only for this repaired head.
+
+The optional Voxtral mini job has completed; the Unity packaging job
+`110006855931` is still live, progressing through its platform cross-builds.
+The latest rollup has no failure and still reports `UNSTABLE` while packaging
+runs. No unchanged job was restarted and PR #186 has not yet been merged.
+
+Root fully reviewed the separate FireRed follow-up controller at SHA-256
+`495cf49371cd81d7cdc69a0ab35b229b8a10937087cb2bf584b9aa55abdd881a`
+and independently passed syntax, ShellCheck and its complete offline mock.
+It targets clean follow-up HEAD `ba61396cf51bf2bee889a002c36a201047a434bf`,
+requires sixteen actual regression/audit legs and a strict 40-member packet,
+and authenticates six PCM-wire tests plus seven namespaced Rust consumer
+tests and exactly one intentionally ignored real-model test. The namespaced
+matcher correction is covered by a negative namespace-drift fixture. No
+remote Cargo or real-model verdict is claimed for this follow-up yet.
+
+The separate source-cache transport driver is not accepted: root's review
+found transferred-basename and real unittest-summary mismatches, an escaped
+marker, and missing whole-operation/active-log bounds. Corrections and actual
+offline orchestration mocks are delegated before any new rental. The frozen
+source-cache probe itself is unchanged; actual dependency acquisition,
+license disposition and native/reference execution remain open. An encoder
+trace follow-up is also delegated in a separate clone, attaching observations
+to actual native calls rather than inventing a reference mirror.
+
+A fresh paginated VAST account read returned `success: true`,
+`next_token: null` and no Vokra worker or retained storage. The sole returned
+instance, `53558591` (`jtalm-train_action_v051_seeds`), belongs to unrelated
+training and was not modified. No new rental, model acquisition, upload,
+Scaleway run or catalog-row promotion occurred. The full scope remains
+194 public rows with 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
