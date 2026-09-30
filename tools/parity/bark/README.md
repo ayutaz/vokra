@@ -9,7 +9,8 @@ The locked official API can be checked without acquiring a checkpoint or
 running generation:
 
 ```sh
-uv run --frozen --no-sync --python 3.12 python dump_reference.py --api-smoke
+uv run --project tools/parity/bark --frozen --no-sync --python 3.12 python \
+  tools/parity/bark/dump_reference.py --api-smoke
 ```
 
 This smoke only imports the pinned Transformers Bark classes, checks the
