@@ -14,10 +14,11 @@ use std::process::{Command, Stdio};
 
 use vokra_core::backend::BackendKind;
 use vokra_core::json::{JsonValue, parse as parse_json};
+use vokra_models::vibevoice_streaming::tokenizer::VibeVoiceRealtimeTokenizer;
 use vokra_models::vibevoice_streaming::{
     VibeVoiceRealtimeGenerationStopReason, VibeVoiceRealtimePresetBranch,
     VibeVoiceRealtimePresetCache, VibeVoiceRealtimeRuntime, VibeVoiceRealtimeSynthesisConfig,
-    VibeVoiceRealtimeSynthesisStep, VibeVoiceRealtimeTokenizer,
+    VibeVoiceRealtimeSynthesisStep,
 };
 
 const FORMAT: &str = "vokra-vibevoice-realtime-streaming-reference-v1";
