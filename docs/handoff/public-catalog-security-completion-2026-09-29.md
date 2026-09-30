@@ -1999,6 +1999,38 @@ corrected exact head passes the required CI. FireRed wire/real-consumer and
 Moshi source-cache follow-ups remain separate, unverified work. There is no
 new worker, model execution, artifact upload or catalog-row promotion.
 
+### Platform-fix replay started (16:45 UTC)
+
+Reviewed commit `ecf0990db79047d142090220d2dbf1ac49623ce6` changes only the
+Mimi capability predicate and portable PCM authentication-test filename. It
+preserves the existing backend availability and byte-count/hash rejection
+semantics. Formatting, diff hygiene, zero-dependency and forbidden-symbol
+checks pass; it is not yet pushed to PR #186.
+
+The separate replay controller has SHA-256
+`8a2e1f0c6778d1338f37bce7be4a05645eb2bccc85b853c2fd52cf2a918ee5f1`.
+Root reviewed its complete delta and independently ran its full offline mock
+with `bundle-observation-self-test=PASS`. It preserves thirteen actual
+regression/audit legs and the exact 34-member evidence contract, adds a strict
+compute-source hash guard inside the Mimi leg, and does not include the
+unverified FireRed wire/consumer or Moshi cache-acquisition work.
+
+Reviewed offer `17191369` created owned worker `53555925`, labelled
+`vokra-mimi-pr186-platform-fix-verify-ecf0990d-20260930T164510Z-99087`.
+Its readback records 32 effective logical CPUs, 128,609 MB RAM, 200-GB storage,
+16 build jobs, and total rental rate `$0.2051851851851852/hour`. Before rent,
+the account read found no owned verification worker; unrelated training
+`53554562` was not modified. Bundle authentication/transfer completed and
+remote tool setup is progressing. There is no terminal test verdict or
+deletion claim yet. The existing live controller owns bounded evidence
+recovery and destruction of this exact instance, including storage.
+
+Fresh CI at the still-published `76cd4175` retains the same Windows and Metal
+failures; it does not test `ecf0990`. Real-weight CPU/reference, Apple
+CPU/Metal/no-fallback, license/owner and publication gates remain open where
+previously recorded. No model acquisition, upload or public-row promotion is
+claimed; the scope remains 194 rows with 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
