@@ -857,6 +857,29 @@ individual readback returned `instances: null`; the subsequent all-pages
 account readback reported zero instances with no next page. No model row,
 GPU performance selection, Apple/Metal gate or publication is promoted.
 
+### Security and diagnostic preparation readback (09:26 UTC)
+
+The paginated GitHub open-alert API readback reports 209 Dependabot alerts,
+all in the pip ecosystem: 182 have a published first patched version and
+27 do not. GitHub main at this observation is
+`a76f8c5317a4284772a4045d382eb86b385094ba`. This dated observation
+supersedes earlier queue-sizing snapshots, not their historical evidence;
+it is not a numerical-validation verdict or a reason to dismiss alerts.
+
+The clean, unpushed Kyutai diagnostic candidate is
+`a9f462465f32ce43535f1e84e507c6b54b7552d4`. It preserves the strict
+assertion and production arithmetic, adding test-only frame/bin, bit/ULP,
+CPU/ISA and cache-position reporting. Listed operation shapes are candidates,
+not measured first-divergence taps. Focused scalar/default VAST diagnosis
+remains pending; no tolerance or model-completion verdict changed.
+
+A separate reviewed hook candidate,
+`f6cea6557484564ac4645abbacf07eb9ffe17e0e`, distinguishes literal Git
+index staging from model execution. Its complete dispatcher self-test passes,
+including the local-model, memory and protected-path guards. The active
+maintainer hook was not changed by this preparation. Account-wide VAST
+readback reports zero instances and no next page; no worker was retained.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
