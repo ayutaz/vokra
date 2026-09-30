@@ -2373,6 +2373,57 @@ raw RAM number to a CLI field expressed in GB; root inspected the installed
 CLI conversion and repeated the read-only search with the correct units.
 No model payload, source-cache run, upload or Apple allocation occurred.
 
+### Shared FireRed decoder trace reviewed and committed (18:51 UTC)
+
+Root accepted the corrected three-file native decoder/search observation
+slice and committed it as `a374eb004dcbfc028c12127171174e17a483b388`
+on top of `961c4733`. The trace observes the shared production decoder and
+search driver, without recomputing a separate numerical mirror. Event,
+tensor-value, checked-overflow and metadata-inclusive byte budgets fail
+closed; the implementation includes mechanism tests for duplicate/order,
+shape/nonfinite/resource failures and a real small-shape sixteen-layer shared
+decoder call with two cache positions and a PAD key mask. These tests are
+not independent upstream reference or real-weight evidence.
+
+Root independently passed `cargo fmt --all -- --check`, `git diff --check`,
+zero-dependency and forbidden-symbol gates. The clean committed checkout has
+native-source SHA-256
+`e89eb262f70693285042e7813e21c6c6ed85e5d38da2ab432b43865fe5b4bd53`,
+module-source SHA-256
+`41aed8c4e22166895b4e7e93e5dff4a7109e3a43d73d3256f95ce25055877075`
+and design-record SHA-256
+`f16755f9062f571c70eac7e7668e59599a343bb210b368bffacd9c5e2ba9c0d3`.
+No Rust compilation, actual test execution, real-model run, code push or
+hardware verdict is claimed for this candidate. The frozen `0f016bc5`
+checkout and accepted standalone controller remain unchanged; a separate
+combined controller must be reviewed and retargeted to this candidate before
+its one-worker verification, so the old candidate is not rented and tested
+redundantly.
+
+The GPU preference is conditional on authenticated input, unchanged precision
+and numerical gates, complete backend coverage, and transfer/setup-inclusive
+timing. The current FireRed CUDA Compute seam lacks Conv2d, ReLU and SiLU;
+its source explicitly rejects these operations rather than silently running
+them on CPU. Metal has separate source dispatches but still requires actual
+Apple validation. Rust compilation and source-cache collection are CPU work;
+renting a GPU-equipped worker alone is not GPU model execution. The mandatory
+CPU reference and Apple CPU/Metal/no-fallback gates remain in scope.
+
+The separate CosyVoice source-only evidence collector and combined VAST
+controller were returned for concrete safety/test corrections. Neither is
+accepted for live acquisition or execution yet. Source authentication is not
+full composite dependency/legal closure, and the forbidden soxr dependency
+remains unresolved. No source or model payload was acquired in this slice.
+
+Root published only the independently checked management journal in
+[PR #189](https://github.com/ayutaz/vokra/pull/189), head
+`c7af1357f69e6a5e1de495b31cfec043e59d15ce`, based on merged main
+`b6589bef`. That one-file documentation change excludes the unreviewed local
+hook commit and all FireRed implementation commits. CI is actually queued and
+running on this exact head, with no failure at the readback; it is not merged
+and pending checks are not green evidence. All 194 public rows, 58 unresolved
+code/artifact rows and attachment security/provenance tasks remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
