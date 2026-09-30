@@ -16,6 +16,45 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## 2026-09-30 PR #167 dependency-security boundary
+
+The security review of the Torch 2.7.1 to 2.13.0 Dependabot update uses the
+explicit CPU-only PyTorch index and locks `torch==2.13.0+cpu` for Linux x86_64.
+The lock contains no `nvidia-*`, CUDA, cuDNN, cuBLAS, cuFFT, NCCL, or NVJITLINK
+package/native payload. The lock SHA-256 is recorded in the project metadata
+and was verified by the VAST sync receipt. This is intentional: the CUDA 13
+closure has not received the required owner/legal review and must not enter the
+model-free API/license gate implicitly.
+
+This CPU-only security lock does not make a GPU performance claim. If an
+approved future run shows that GPU is faster while meeting the fixed numerical
+guard, it must use a separately reviewed GPU lock and record that evidence;
+neither the current API smoke nor this lock authorizes a real-weight replay or
+publication.
+
+The fresh VAST receipt for this lock used disposable instance `53407724` and
+implementation HEAD `c7dc975c`. `uv sync --frozen` installed 41 packages,
+including `torch==2.13.0+cpu`; the lock SHA-256 is
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e` and no
+`nvidia-*` package was present. The imported Torch runtime reported
+`2.13.0+cpu`, `torch.version.cuda=None`, and `cuda_available=false`; its
+`torch/lib` contained no CUDA/cuDNN/cuBLAS/cuFFT/NCCL/NVJITLINK-named native
+library. The model-free lock contract test passed with evidence SHA-256
+`70f593a0f94db5c51c05806dbd85fac295f1e223d135fc789848173dd98b3f8a`.
+
+Against the clean Microsoft source checkout at revision
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, the official import/API smoke
+returned `AUTHENTICATED_API_SMOKE` with evidence SHA-256
+`1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`.
+It reported `NO_MODEL_DOWNLOAD`, `NO_MODEL_EXECUTION`, and `NO_UPLOAD`.
+The installed closure audit covered 41 packages and returned
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`; bundled license files were missing for
+`safetensors`, `tokenizers`, and `tqdm`. The audit evidence SHA-256 is
+`23bc546d7fcf47f1dc3b66f587c53d37b8025e5b418c185148f3201f1417e06e`.
+
+The disposable instance was destroyed after evidence collection and its
+individual API readback returned `instances: null`.
+
 ## 2026-09-30 VAST narrow-reference receipts
 
 Both runs used the exact checkpoint/source contract above and three timed
@@ -87,22 +126,19 @@ authenticated checkpoint after exact state-dict binding, not a second fixture.
 The selected dtype is recorded in `reference.json`. CUDA is still selected only
 when the unchanged guard passes; changing dtype does not widen that guard.
 
-The dedicated `uv.lock` is generated and pinned. On the exact VAST tree, commit
-`7e11e027`, `uv sync --frozen` succeeded with 56 installed packages. A fresh
-model-free official-source API smoke on that same pinned source and environment
-also passed as `AUTHENTICATED_API_SMOKE`; its JSON evidence SHA-256 is
-`1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`. The
-smoke imported and inspected the official API only: it did not download a
-model, construct a model, execute a checkpoint, generate parity numbers, or
-publish an artifact.
+The dedicated `uv.lock` is generated and pinned. The PR #167 security lock is
+CPU-only (`torch==2.13.0+cpu`) and its VAST sync, package inventory, and
+model-free official-source API smoke are recorded separately from the
+historical CUDA-enabled receipts above. The smoke imports and inspects the
+official API only: it does not download a checkpoint, construct a model,
+execute a checkpoint, generate parity numbers, or publish an artifact.
 
-The installed-closure audit for the same project and lock is recorded at
-`a2d2939ae7dddff33eade14b4eb70ccc6a7af2b732617c6de2531c43ec5bcfc6` and remains
-`OWNER_REVIEW_REQUIRED/NO_UPLOAD`. It covers 56 installed packages and reports
-missing bundled license files for `safetensors`, `tokenizers`, `tqdm`, and
-`triton`. Owner/primary-source review is therefore still required before any
-real-weight replay or publication. The command below is the controlled replay
-command, not an authorization or assertion that replay is currently cleared:
+The installed-closure audit for the CPU-only lock completed on VAST and remains
+`OWNER_REVIEW_REQUIRED/NO_UPLOAD` because the bundled license files for
+`safetensors`, `tokenizers`, and `tqdm` still require owner/primary-source
+review. That review is therefore still required before any real-weight replay
+or publication. The command below is the controlled replay command, not an
+authorization or assertion that replay is currently cleared:
 
 ```text
 uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
@@ -174,12 +210,11 @@ before any model construction or checkpoint access. That historical failure is
 superseded by the exact-source, exact-lock smoke receipt above; the registration
 scope remains explicit and narrow.
 
-The earlier VAST `uv sync` and dependency audit were for Transformers 4.51.3
-and are invalidated by this lock change. The refreshed VAST sync and model-free
-smoke are now recorded, but the refreshed installed-closure audit remains
-`OWNER_REVIEW_REQUIRED/NO_UPLOAD` because the four bundled license files named
-above are missing. No model was downloaded or run for this compatibility
-update, and no publication is authorized.
+The earlier VAST `uv sync` and dependency audit were for a CUDA-enabled Torch
+lock and are historical only. The CPU-only lock audit is complete on VAST, but
+the installed closure remains `OWNER_REVIEW_REQUIRED/NO_UPLOAD` because no
+owner/legal approval has been granted for a real-weight replay or publication.
+No checkpoint may be downloaded or run for this compatibility update.
 
 ## Fixed upstream identities
 
