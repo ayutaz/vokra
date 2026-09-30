@@ -4,21 +4,21 @@ This is a dedicated Python 3.12 reference project for the pinned official
 WeSpeaker loader. The lock is immutable for the staged run:
 
 - uv.lock SHA-256:
-  996f10762498f29a8f6c24d3403ebac4734118f8150137b716ddf5d54e512b6e
+  65715f60a9f86aa80792e4a11303bc4eb2067cb4a3cd670b5b6d724d478c9d51
 - pyproject.toml SHA-256:
-  4d5a2bae9fdd3dff3d1224235c6e125995f32e491e3f42bb2063281d2a9d1850
+  88c7416e8a4a0f57a537e4ac832f268d24c6747fe06777aa392981fd9ba98bba
 - The current 14-package closure is recorded and reviewed as one exact graph;
   it is not interchangeable with a generic parity project.
 - The direct closure is limited to numpy, safetensors, torch, and torchaudio;
   their transitive runtime packages are resolver-recorded with complete HTTPS
   artifact URLs, SHA-256 values, and positive sizes. No dynamic `uv --with`
   dependencies are permitted.
-- The resolver is constrained to Python 3.12 on Linux x86_64. Torch and
-  torchaudio 2.9.1 are sourced only from the official PyTorch CPU index; the
+- The resolver is constrained to Python 3.12 on Linux x86_64. Torch 2.13.0 and
+  torchaudio 2.11.0 are sourced only from the official PyTorch CPU index; the
   lock records the official x86_64 wheel sizes and hashes: torch
-  184,378,187 bytes / `7417d8c565f219d3455654cb431c6d892a3eb40246055e14d645422de13b9ea1`,
-  torchaudio 495,619 bytes /
-  `43cf20a2965cf081945c91d2dc8844377e5e3f1b172c0d0c18399ca3ecf1f899`.
+  191,817,609 bytes / `4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2`,
+  torchaudio 341,338 bytes /
+  `2354248848d06a9ae1e7a12165f800f0dda7df60ecac9fca892322b722b922c0`.
 
 The independent dumper imports official wenet-e2e/wespeaker revision
 45941e7cba2c3ea99e232d02bedf617fc71b0dad, loads only the pinned
