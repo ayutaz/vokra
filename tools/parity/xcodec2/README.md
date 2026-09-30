@@ -85,6 +85,12 @@ follow-up.
 
 ## VAST model-free replay
 
+This is historical evidence from the VAST run at the earlier clean HEAD
+`e3e90572a5125e585b0a6f9f681f5606fc38a7a4`; it is not a verification of the
+current integrated candidate `696238a45f493a7a9cf4c9449810f5bc83218294`. The
+current candidate has only passed the local static documents-only guard. A
+fresh VAST replay is still pending.
+
 On 2026-09-30, disposable VAST instance `53434693` verified the exact clean
 HEAD `e3e90572a5125e585b0a6f9f681f5606fc38a7a4`. The frozen lock had SHA-256
 `d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4`.
@@ -121,10 +127,11 @@ notices remain unaudited, and owner/legal approval is still absent.
 [transformers-license]: https://files.pythonhosted.org/packages/f7/5d/1df789ca27a436ce09de67c8fee6acd2a528d34c28685991f8203e5418ae/transformers-5.10.4.tar.gz
 [typer-license]: https://raw.githubusercontent.com/fastapi/typer/0.27.2/LICENSE
 
-The Transformers link is the exact sdist URL recorded in `uv.lock` (sdist
-SHA-256 `de37741509e64ccb88f7f5708beaf5b1914df447f5fe659f9c0fd95950413168`);
-the extracted `LICENSE` member was separately checked at SHA-256
-`77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049`.
+The Transformers link and the two SHA-256 values above are an independently
+audited source-distribution/license-member record for the excluded
+`transformers==5.10.4` row. They are not an installed frozen-lock package
+record: the current `uv.lock` contains the impossible-marker/declared pin but
+does not record this sdist URL or either payload digest.
 
 The excluded `shellingham==1.5.4` remains recorded as
 `ISC_BLOCKED_BY_POLICY` because ISC is outside the repository's Apache/MIT/BSD
