@@ -1052,6 +1052,31 @@ original strict eight-frame streaming test is unchanged; its default-AVX2
 rerun and independent real-weight reference remain pending. Neither this
 candidate nor the failed preflight closes any of the 58 unresolved rows.
 
+### Mimi attention candidate and active full-verification readback (11:01 UTC)
+
+The replacement single-worker controller is frozen at SHA-256
+`40601ecf9099b3c14eaf66380e3d3846be64b5f3b11f77944f01cdbef239408d`.
+Its disposable worker `53512626` verifies the unchanged ELU candidate
+`336de430e4c9d40bb81906cd09381b43797c22de`, with 14 allocated CPU cores
+and 200 GB disk. The Mimi-focused result is 40 passed, zero failed and zero
+ignored; all-features/all-targets Clippy with warnings denied also exits zero.
+At 11:01 UTC the serial workspace regression is still active, with recent
+log updates and an active test process. Workspace, deny, audit, packet
+recovery and strict destruction are not yet final results. This Linux
+run is neither an Apple/Metal verdict nor independent real-weight parity.
+
+A distinct, reviewed attention candidate is clean at
+`6328ad62aeafd3483221cd9ec04d56fbbc879168`. Non-CPU causal QK and AV
+contractions dispatch through `Compute::gemm_f32`, using preallocated
+chronological ring scratch; the CPU accumulation order is retained. New
+synthetic tests cover scratch reset and errors, unsupported backend
+selection, and device-gated batch/step ring-wrap and reset comparisons.
+Formatting, diff hygiene and five static gates passed, but this new HEAD
+has not been compiled or tested remotely. The active `336de430` run must
+not be attributed to `6328ad62`. LayerScale residual and RVQ encoder host
+paths, independent reference and Apple validation remain open. No public
+model row is promoted and no artifact is uploaded by these changes.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
