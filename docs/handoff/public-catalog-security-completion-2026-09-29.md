@@ -386,6 +386,31 @@ then implement a safe offline cache bridge and independent complete-waveform
 reference before real-weight native CPU parity. The public row remains partial
 and the 136-full / 58-unresolved audit count is unchanged.
 
+### 2026-09-30 VibeVoice Realtime fixed voice-preset inventory
+
+A read-only [GitHub tree API check](https://api.github.com/repos/microsoft/VibeVoice/git/trees/94da20d98b2fa7688e9cbfaf7692ddb4954f7600?recursive=1) of Microsoft's fixed source commit
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600` returned `truncated=false`
+and 25 blobs under `demo/voices/streaming_model/`. The English Carter
+candidate used by the pinned official file-demo instructions is
+`demo/voices/streaming_model/en-Carter_man.pt`, 4,256,002 bytes, Git blob
+SHA-1 `1d795ef667e6641eecb8b22452bb853b089bfdbe`. This is a Git object
+identity and size, **not** a verified payload SHA-256, cache-schema audit,
+voice-consent finding or permission to redistribute. The [fixed HF model
+revision](https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/tree/6bce5f06044837fe6d2c5d7a71a84f0416bd57e4) `6bce5f06044837fe6d2c5d7a71a84f0416bd57e4` lists the model,
+config and preprocessor files but no voice preset; a complete reference must
+bind the separate Git source artifact. No preset bytes, model weights or
+token were downloaded to the maintainer Mac.
+
+Microsoft's fixed file demo loads the `.pt` through `weights_only=True` with
+only `BaseModelOutputWithPast` and `DynamicCache` safe globals, and its
+Realtime guidance describes embedded prompts as a deepfake mitigation. The
+[fixed model card](https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/raw/6bce5f06044837fe6d2c5d7a71a84f0416bd57e4/README.md) says generated audio carries an audible disclaimer and an
+imperceptible watermark. These source facts clarify the required safe cache
+bridge and full-waveform guard but do not establish that a native Vokra path
+preserves those safeguards. The preset's voice rights, execution scope and
+publication remain for owner/legal disposition; native real-weight parity and
+the public row remain blocked/partial.
+
 ## Completion rule for each model
 
 Move a row only when the evidence for that stage exists: exact upstream
