@@ -97,6 +97,10 @@ use crate::strict_checkpoint::sha256_bytes;
 /// Incremental main-language-model KV state for one-frame STT decoding.
 pub mod streaming_lm;
 pub use streaming_lm::{KyutaiSttStreamingLm, KyutaiSttStreamingLmStep};
+/// The PCM composite is intentionally crate-private until real-weight CPU
+/// parity, backend coverage, and provenance/legal review are complete.
+#[allow(dead_code)]
+pub(crate) mod pcm_session;
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
