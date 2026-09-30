@@ -75,6 +75,26 @@ MODEL_INFO_EXPECTED = {
     },
 }
 
+# The only permitted refresh bootstrap is the reviewed transition from the
+# checked-in pre-5.10.4 evidence to the current lock/manifest contract.  Once
+# the fresh VAST compact proof is rebound, these values no longer match and
+# --refresh-evidence cannot bypass the normal strict evidence gate.
+REFRESH_CURRENT_CONTRACT = {
+    "project_sha256": "f22f9f26ab490b3a3e5a0d545c69530ab2220c97c9170193b8c48b9a2f843b62",
+    "lock_sha256": "1a98b86cc71bf2ad8c84dae2ad53dc48369878c857fa756bb050260060d6da25",
+    "package_rows_sha256": "f6b33b6c58c8110bba2178503468e678a0f8d2af0dced7ee00c9de447bf7d407",
+    "license_rows_sha256": "62623143095ee2d9dfc422450d54299f95d19ada6f10c9aee82ce41c22911b16",
+    "approval_scope_sha256": "323925ba7ca401801dda5821ed00dc9c230a292d018b6568a821ad7adafd501b",
+}
+REFRESH_STALE_INPUTS = {
+    "pyproject_sha256": "0f9cb64cc8f43a6e1fe8cd793f43909a2f9dbf4957ea963a03d929666c521f78",
+    "uv_lock_sha256": "56e14c7e85174b16b22bf33d6cbb4a1c4f21eb3714ebdee854dd3417f4194d45",
+    "package_review_rows_sha256": "9f2b262a39e7251e5ab23a27fd9535a83c709f12dc4246f5b4456497d0872a9c",
+    "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
+}
+REFRESH_STALE_EVIDENCE_SHA256 = "64fde03fcb8e8e770ba8cb51bc9963ab97efd56d530725eea304f0d542c91b03"
+REFRESH_STALE_SCOPE_SHA256 = "978535af15b82610f06aa73fb62e839cd0e2af146ef7f4ecd57c7b296067ea34"
+
 
 class AuditError(ValueError):
     """A factual or structural blocker."""
@@ -171,6 +191,49 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
         raise AuditError("uv.lock must contain exactly one virtual root")
 
 
+def _validate_refresh_evidence(
+    project: Path,
+    manifest: dict[str, Any],
+    project_bytes: bytes,
+    lock_bytes: bytes,
+    lock_data: dict[str, Any],
+) -> None:
+    """Allow only the one reviewed stale-proof -> fresh-proof transition."""
+    current = REFRESH_CURRENT_CONTRACT
+    if any(manifest.get(key) != value for key, value in current.items()):
+        raise AuditError("Ultravox refresh contract is not the reviewed current lock/manifest")
+    if sha256_bytes(project_bytes) != current["project_sha256"] or sha256_bytes(lock_bytes) != current["lock_sha256"]:
+        raise AuditError("Ultravox refresh bytes differ from the reviewed current lock/project")
+    if license_gate.canonical_digest(license_gate.package_rows(lock_data)) != current["package_rows_sha256"]:
+        raise AuditError("Ultravox refresh lock rows differ from the reviewed current contract")
+    if license_gate.canonical_digest(license_gate.approval_scope(manifest)) != current["approval_scope_sha256"]:
+        raise AuditError("Ultravox refresh approval scope differs from the reviewed current contract")
+    evidence_ref = manifest.get("dependency_audit_evidence")
+    expected_ref = {
+        "schema": license_gate.COMPACT_SCHEMA,
+        "path": "dependency_audit_evidence.json",
+        "sha256": REFRESH_STALE_EVIDENCE_SHA256,
+        "full_audit_sha256": license_gate.FULL_AUDIT_SHA256,
+        "status": "PENDING_OWNER_APPROVAL",
+        "approval_scope_sha256": REFRESH_STALE_SCOPE_SHA256,
+    }
+    if evidence_ref != expected_ref:
+        raise AuditError("Ultravox refresh evidence reference is not the reviewed stale proof")
+    evidence_path = project / "dependency_audit_evidence.json"
+    if not regular_file(evidence_path):
+        raise AuditError("Ultravox refresh compact evidence is missing or symlinked")
+    evidence_bytes = evidence_path.read_bytes()
+    if sha256_bytes(evidence_bytes) != REFRESH_STALE_EVIDENCE_SHA256:
+        raise AuditError("Ultravox refresh compact evidence bytes differ from the reviewed stale proof")
+    compact = strict_json(evidence_path)
+    if compact.get("schema") != license_gate.COMPACT_SCHEMA or compact.get("status") != "PENDING_OWNER_APPROVAL" or compact.get("full_audit_status") != "BLOCKED" or compact.get("full_audit_sha256") != license_gate.FULL_AUDIT_SHA256:
+        raise AuditError("Ultravox refresh compact evidence schema/status drifted")
+    if compact.get("inputs") != REFRESH_STALE_INPUTS:
+        raise AuditError("Ultravox refresh compact evidence inputs are not the reviewed stale hashes")
+    if compact.get("approval") != {"status": "PENDING_OWNER_APPROVAL", "signer": None, "digest": None} or compact.get("publication") != "NO_UPLOAD":
+        raise AuditError("Ultravox refresh compact evidence approval/publication state drifted")
+
+
 def _contract(project: Path, *, allow_unbound_evidence: bool = False) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes, bytes]:
     project_path, lock_path, manifest_path = (project / name for name in ("pyproject.toml", "uv.lock", "license_gate_manifest.json"))
     if not all(regular_file(path) for path in (project_path, lock_path, manifest_path)):
@@ -191,7 +254,9 @@ def _contract(project: Path, *, allow_unbound_evidence: bool = False) -> tuple[d
     if sha256_bytes(project_bytes) != manifest["project_sha256"] or sha256_bytes(lock_bytes) != manifest["lock_sha256"]:
         raise AuditError("pyproject.toml/uv.lock bytes differ from the reviewed contract")
     evidence_ref = manifest["dependency_audit_evidence"]
-    if not allow_unbound_evidence:
+    if allow_unbound_evidence:
+        _validate_refresh_evidence(project, manifest, project_bytes, lock_bytes, lock_data)
+    else:
         if (
             not isinstance(evidence_ref, dict)
             or set(evidence_ref) != {"schema", "path", "sha256", "full_audit_sha256", "status", "approval_scope_sha256"}
@@ -1130,18 +1195,8 @@ def self_test() -> int:
     checked_manifest = strict_json(project_root / "license_gate_manifest.json")
     checked_lock = tomllib.loads(lock_bytes.decode("utf-8"))
     checked_evidence = strict_json(evidence_path)
-    current_contract = {
-        "project_sha256": "f22f9f26ab490b3a3e5a0d545c69530ab2220c97c9170193b8c48b9a2f843b62",
-        "lock_sha256": "1a98b86cc71bf2ad8c84dae2ad53dc48369878c857fa756bb050260060d6da25",
-        "package_rows_sha256": "f6b33b6c58c8110bba2178503468e678a0f8d2af0dced7ee00c9de447bf7d407",
-        "license_rows_sha256": "62623143095ee2d9dfc422450d54299f95d19ada6f10c9aee82ce41c22911b16",
-    }
-    stale_evidence = {
-        "pyproject_sha256": "0f9cb64cc8f43a6e1fe8cd793f43909a2f9dbf4957ea963a03d929666c521f78",
-        "uv_lock_sha256": "56e14c7e85174b16b22bf33d6cbb4a1c4f21eb3714ebdee854dd3417f4194d45",
-        "package_review_rows_sha256": "9f2b262a39e7251e5ab23a27fd9535a83c709f12dc4246f5b4456497d0872a9c",
-        "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
-    }
+    current_contract = REFRESH_CURRENT_CONTRACT
+    stale_evidence = REFRESH_STALE_INPUTS
     assert {key: checked_manifest[key] for key in current_contract} == current_contract
     assert sha256_bytes(project_bytes) == current_contract["project_sha256"]
     assert sha256_bytes(lock_bytes) == current_contract["lock_sha256"]
@@ -1170,6 +1225,8 @@ def self_test() -> int:
         project_data = tomllib.loads(project_bytes.decode("utf-8"))
         _validate_lock_shape(checked_lock, project_data)
         assert checked_manifest["dependency_audit_evidence"]["status"] == "PENDING_OWNER_APPROVAL"
+    _, refresh_lock, refresh_manifest, _, _ = _contract(project_root, allow_unbound_evidence=True)
+    assert refresh_lock == checked_lock and refresh_manifest == checked_manifest
     active_rows, inactive_rows = classify_rows(checked_lock)
     assert len(checked_lock["package"]) == 40 and len(active_rows) == 37 and len(inactive_rows) == 3
     colorama_rows = [row for row in inactive_rows if row["name"] == "colorama"]

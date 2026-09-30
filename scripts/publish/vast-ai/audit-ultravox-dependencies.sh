@@ -14,6 +14,7 @@ MIN_VAST_MEM_KIB=60000000
 usage() {
   cat <<'EOF' >&2
 usage: audit-ultravox-dependencies.sh --output <audit.json>
+       audit-ultravox-dependencies.sh --refresh-evidence --output <audit.json>
        audit-ultravox-dependencies.sh --self-test
 
 The target is an already synchronized, separately authorized named VAST job.
@@ -22,6 +23,8 @@ downloads weights. It may fetch only exact locked PyPI sdists for missing
 publisher evidence and the fixed source/model/Meta companion LICENSE paths.
 EOF
 }
+
+REFRESH_EVIDENCE=0
 
 canonicalize_uncreated() {
   local path="$1" suffix='' name parent component rest scan
@@ -79,8 +82,10 @@ run_audit() {
   done
   require_absent_output "$output" || return 2
   mkdir -p "$(dirname "$output")" || return 2
+  local -a refresh_args=()
+  (( REFRESH_EVIDENCE == 1 )) && refresh_args+=(--refresh-evidence)
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
-    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses --refresh-evidence
+    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses "${refresh_args[@]}"
 }
 
 self_test() {
@@ -88,6 +93,7 @@ self_test() {
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'exact locked PyPI sdist' "$0" || failed=1
+  grep -Fq -- 'refresh-evidence' "$0" || failed=1
   grep -Fq -- 'fixed source/model/Meta companion LICENSE paths' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   probe_root="$(mktemp -d "$probe_parent/ultravox-audit-wrapper.XXXXXX")"
@@ -118,10 +124,11 @@ self_test() {
 while (( $# > 0 )); do
   case "$1" in
     --output) [[ $# -ge 2 && -n "$2" && "$2" != -* && -z "$OUTPUT" ]] || { usage; exit 2; }; OUTPUT="$2"; shift 2 ;;
+    --refresh-evidence) (( REFRESH_EVIDENCE == 0 )) || { usage; exit 2; }; REFRESH_EVIDENCE=1; shift ;;
     --self-test) [[ -z "$OUTPUT" ]] || { usage; exit 2; }; OUTPUT=self-test; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
 done
 
-if [[ "$OUTPUT" == self-test ]]; then self_test; else [[ -n "$OUTPUT" ]] || { usage; exit 2; }; run_audit "$OUTPUT"; fi
+if [[ "$OUTPUT" == self-test ]]; then (( REFRESH_EVIDENCE == 0 )) || { usage; exit 2; }; self_test; else [[ -n "$OUTPUT" ]] || { usage; exit 2; }; run_audit "$OUTPUT"; fi
