@@ -1,11 +1,12 @@
 //! Incremental Kyutai STT main-language-model state.
 //!
-//! This is a clean-room Rust implementation of the published Moshi `LMGen`
-//! streaming semantics at the `dep_q == 0` boundary.  It keeps one bounded
+//! This is an original first-party Rust implementation of the published Moshi
+//! `LMGen` streaming semantics at the `dep_q == 0` boundary; no upstream source
+//! is copied.  It keeps one bounded
 //! key/value history per transformer layer, applies RoPE at the absolute
 //! frame position, and executes one text/audio frame without recomputing a
 //! prefix.  The source contract is Moshi commit
-//! `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`; no upstream source is copied.
+//! `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`.
 //!
 //! The first call writes the caller's current audio frame before reading the
 //! ring position, but the source's initial-token substitution replaces both
@@ -451,6 +452,123 @@ mod tests {
     use super::*;
     use crate::kyutai_stt::KyutaiSttWeights;
 
+    fn ordered_f32_bits(value: f32) -> u32 {
+        let bits = value.to_bits();
+        if bits & 0x8000_0000 != 0 {
+            !bits
+        } else {
+            bits ^ 0x8000_0000
+        }
+    }
+
+    fn ulp_distance(left: f32, right: f32) -> u64 {
+        u64::from(ordered_f32_bits(left)).abs_diff(u64::from(ordered_f32_bits(right)))
+    }
+
+    fn diagnostic_cpu_field(prefixes: &[&str]) -> String {
+        let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") else {
+            return "<unavailable>".to_owned();
+        };
+        cpuinfo
+            .lines()
+            .find_map(|line| {
+                prefixes
+                    .iter()
+                    .find(|prefix| line.starts_with(*prefix))
+                    .map(|_| line.trim().to_owned())
+            })
+            .unwrap_or_else(|| "<unavailable>".to_owned())
+    }
+
+    fn report_logits_mismatch(
+        frame: usize,
+        actual: &[f32],
+        expected: &[f32],
+        stream: &KyutaiSttStreamingLm<'_>,
+        config: &KyutaiSttConfig,
+        frames: usize,
+    ) {
+        let mismatch = (0..actual.len().max(expected.len())).find_map(|index| {
+            (actual.get(index).copied() != expected.get(index).copied()).then_some(index)
+        });
+        let stream_length = frame.saturating_add(1).min(config.backbone.context);
+        let (index, left, right) = mismatch
+            .map(|index| {
+                (
+                    index,
+                    actual.get(index).copied(),
+                    expected.get(index).copied(),
+                )
+            })
+            .unwrap_or((usize::MAX, None, None));
+        eprintln!(
+            "kyutai-stt strict streaming/full mismatch: frame={frame} index={index} actual_len={} expected_len={}",
+            actual.len(),
+            expected.len()
+        );
+        if let (Some(left), Some(right)) = (left, right) {
+            eprintln!(
+                "  actual={left:?} bits=0x{:08x}; expected={right:?} bits=0x{:08x}; abs_diff={:?}; ulps={}",
+                left.to_bits(),
+                right.to_bits(),
+                (left - right).abs(),
+                ulp_distance(left, right),
+            );
+        }
+        eprintln!(
+            "  cpu={} active_isa={:?} VOKRA_CPU_ISA={:?} simd-transcendental=not_recorded_by_runtime; Cargo dependency default intent=enabled",
+            diagnostic_cpu_field(&["model name", "Model", "Hardware"]),
+            vokra_backend_cpu::active_isa(),
+            std::env::var("VOKRA_CPU_ISA").ok(),
+        );
+        eprintln!(
+            "  cpu_flags={} backend={:?} context={} head_dim={} text_card={}",
+            diagnostic_cpu_field(&["flags", "Features"]),
+            stream.backend,
+            config.backbone.context,
+            config.backbone.head_dim(),
+            config.text_card,
+        );
+        eprintln!(
+            "  candidate stage shapes only (not a first-divergence finding or relaxed verdict): QKV full=[m={},n={},k={}] step=[m=1,n={},k={}]; QK full=[m={},n={},k={}] step=[m=1,n={},k={}]; softmax full=[rows={},cols={}] step=[rows=1,cols={}]; weighted-V full=[m={},n={},k={}] step=[m=1,n={},k={}]; final-logits full=[m={},n={},k={}] step=[m=1,n={},k={}]",
+            frames,
+            3 * config.backbone.d_model,
+            config.backbone.d_model,
+            3 * config.backbone.d_model,
+            config.backbone.d_model,
+            frames,
+            frames,
+            config.backbone.head_dim(),
+            stream_length,
+            config.backbone.head_dim(),
+            frames,
+            frames,
+            stream_length,
+            frames,
+            config.backbone.head_dim(),
+            frames,
+            config.backbone.head_dim(),
+            stream_length,
+            frames,
+            config.text_card,
+            config.backbone.d_model,
+            config.text_card,
+            config.backbone.d_model,
+        );
+        let cache_positions: Vec<String> = (0..config.backbone.n_layer)
+            .map(|layer| {
+                format!(
+                    "layer{layer}={:?}",
+                    stream.layer_cache_positions(layer).unwrap_or(&[])
+                )
+            })
+            .collect();
+        eprintln!("  cache_positions={}", cache_positions.join(" "));
+        eprintln!(
+            "  stage taps are not exposed by this production component; the shapes above are route candidates only, while exact assert_eq remains authoritative"
+        );
+    }
+
     fn fixture() -> (KyutaiSttAsr, KyutaiSttConfig) {
         let mut config = KyutaiSttConfig::tiny_for_tests();
         config.backbone.context = 3;
@@ -494,10 +612,19 @@ mod tests {
                 )
                 .expect("stream step");
             assert_eq!(step.position(), frame);
-            assert_eq!(
-                step.logits().as_slice(),
-                &full.as_slice()[frame * config.text_card..(frame + 1) * config.text_card]
-            );
+            let expected =
+                &full.as_slice()[frame * config.text_card..(frame + 1) * config.text_card];
+            if step.logits().as_slice() != expected {
+                report_logits_mismatch(
+                    frame,
+                    step.logits().as_slice(),
+                    expected,
+                    &stream,
+                    &config,
+                    frames,
+                );
+            }
+            assert_eq!(step.logits().as_slice(), expected);
             let expected_start = frame
                 .saturating_add(1)
                 .saturating_sub(config.backbone.context);
