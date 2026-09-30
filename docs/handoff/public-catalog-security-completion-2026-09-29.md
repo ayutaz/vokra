@@ -1468,6 +1468,56 @@ real-weight gates remain open. No owner approval, Apple result or artifact
 upload is inferred; the public classification remains 136 code/artifact-full
 and 58 unresolved rows.
 
+### Authenticated Kyutai readback and source-audit tooling (13:28 UTC)
+
+The Kyutai parser correction was reviewed separately, with SHA-256
+`9ae38da37a061c988516d7e5447f826dc88e3355ee96de032d3f9161e2194c60`.
+Root independently passed syntax, ShellCheck, offline self-tests and the
+unchanged packet readback above. The readback authenticates the exact source
+and base, all 20 file hashes, all six zero exits, all four named focused
+results and the Avx2/Scalar observations. Missing, duplicate and conflicting
+terminal statuses are rejected. No bound or original packet was modified,
+and the original controller exit one remains recorded. The reviewed source
+was pushed as [draft PR #187](https://github.com/ayutaz/vokra/pull/187).
+Its fresh CI is not yet green: `typos (advisory)` failed before checking source
+because GitHub returned HTTP 500 for the pinned tool download. An attempted
+single-job rerun was refused while the parent workflow still had queued/live
+jobs. This is distinguished from the genuine source failures in PR #186;
+neither failure is waived or recorded as a successful job.
+
+The bounded, standard-library-only Mimi upstream source collector and its
+tests were reviewed and committed separately at
+`592bf0ca1674ac8906edbd2185756ddc0f097fe6`. The blocked full-reference
+dumper and its test remain untracked, frozen and unstaged. The implementer
+reports 16 tests green; root's attempted independent local invocation was
+refused by the local-model guard before execution and was not retried through
+another invocation. Independent remote static replay is pending. Root did
+independently authenticate the actual generated inventory JSON SHA-256
+`2157000f7e0257125bd11db8929bdefe89d5cf1a18fe00720b27142aa1797cb0`
+and its internal inventory digest
+`d122055281ebc997611f1069fcb8a09268cbb86ae96f7cc93da609dc8a73f0b0`.
+The clean official Moshi checkout at
+`e6a55d2722a65870ef52a6c9f6ecfc0e90f38362` contributed 42 selected
+tracked source/license/metadata files, totalling 368,627 bytes. Both actual
+`moshi/LICENSE` and `moshi/LICENSE.audiocraft` primary texts were read.
+No upstream import, build, dependency resolution or model access occurred.
+The inventory remains `PENDING_REVIEW_NOT_OWNER_SIGNABLE` / `NO_UPLOAD`,
+not a complete runtime or native-license closure.
+
+In particular, the fixed source declares `torch >= 2.2.0, < 2.10`; no local
+override to 2.13 is inferred from another reference project's candidate.
+Official-source and advisory compatibility still require review before any
+Mimi real-weight reference run. Root reviewed a new six-leg Mimi controller
+for clean implementation head `d33ba0b9`, with a separate exact singleton ABI
+test, ten required Mimi test names, all six exits required zero, and a 20-file
+authenticated packet. Its SHA-256 is
+`f2b9abe95c2f0ecefa348cd04cf6fc2f0cecaeaf8182ea523559c39c4590d8cd`.
+Syntax, ShellCheck and offline controller tests passed. A single reviewed
+offer attempt is now active; there is no result for this head yet. It runs
+source/Rust checks only, transfers no HF token, and destroys its owned worker
+and storage after recovery on either result. Public coverage remains 136/58;
+no new Apple or publication verdict is claimed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
