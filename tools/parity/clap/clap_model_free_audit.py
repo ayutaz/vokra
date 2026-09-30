@@ -45,6 +45,10 @@ TRANSFORMERS_WHEEL_URL = (
     "https://files.pythonhosted.org/packages/d7/f1/d66881f28d3e64002a21d043c7c8db306c0ad5a711c85337ff551bfbc040/transformers-5.10.4-py3-none-any.whl"
 )
 TRANSFORMERS_WHEEL_SIZE = 11_004_075
+TORCH_VERSION = "2.13.0"
+TORCH_LOCKED_VERSION = "2.13.0+cpu"
+TORCH_WHEEL_SHA256 = "4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2"
+TORCH_WHEEL_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl"
 SCHEMA = "vokra-clap-htsat-fused-model-free-audit-v1"
 SOURCE_CONTRACT_SCHEMA = "vokra-clap-htsat-fused-source-contract-v2"
 EXPECTED_DEPENDENCY_AUDIT_STATUS = "PENDING_VAST_AUDIT"
@@ -475,7 +479,7 @@ def audit_dependencies(project_path: Path, lock_path: Path) -> dict[str, Any]:
     lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     expected_dependencies = {
         "numpy==2.3.5",
-        "torch==2.7.1",
+        "torch==2.13.0",
         "transformers==5.10.4",
     }
     actual_dependencies = set(project["project"]["dependencies"])
@@ -488,9 +492,19 @@ def audit_dependencies(project_path: Path, lock_path: Path) -> dict[str, Any]:
         for package in lock.get("package", [])
         if isinstance(package, dict) and "name" in package
     }
-    for name, version in (("numpy", "2.3.5"), ("torch", "2.7.1+cpu"), ("transformers", "5.10.4")):
+    for name, version in (("numpy", "2.3.5"), ("torch", TORCH_LOCKED_VERSION), ("transformers", "5.10.4")):
         if packages.get(name, {}).get("version") != version:
             raise RuntimeError(f"uv.lock {name} drifted: {packages.get(name)}")
+    torch_package = packages["torch"]
+    torch_wheels = [
+        wheel for wheel in torch_package.get("wheels", [])
+        if isinstance(wheel, dict) and wheel.get("url") == TORCH_WHEEL_URL
+    ]
+    if len(torch_wheels) != 1:
+        raise RuntimeError("uv.lock must contain exactly one fixed Linux CPU Torch wheel")
+    torch_artifact = torch_wheels[0]
+    if torch_artifact.get("hash") != f"sha256:{TORCH_WHEEL_SHA256}":
+        raise RuntimeError("uv.lock Torch wheel hash differs from fixed wheel identity")
     transformers_package = packages["transformers"]
     transformer_wheels = [
         wheel for wheel in transformers_package.get("wheels", [])
@@ -507,6 +521,10 @@ def audit_dependencies(project_path: Path, lock_path: Path) -> dict[str, Any]:
         raise RuntimeError("pyproject Transformers pin drifted")
     if values["transformers_wheel_sha256"] != TRANSFORMERS_WHEEL_SHA256:
         raise RuntimeError("pyproject Transformers wheel hash drifted")
+    if values.get("isolated_torch_pin") != TORCH_VERSION:
+        raise RuntimeError("pyproject Torch pin drifted")
+    if values.get("torch_wheel_sha256") != TORCH_WHEEL_SHA256:
+        raise RuntimeError("pyproject Torch wheel hash drifted")
     if values.get("source_contract_status") != SOURCE_STATUS_PENDING:
         raise RuntimeError("pyproject source contract must remain pending before VAST wheel binding")
     return {
@@ -517,6 +535,9 @@ def audit_dependencies(project_path: Path, lock_path: Path) -> dict[str, Any]:
             name: packages[name]["version"] for name in ("numpy", "torch", "transformers")
         },
         "torch_index": torch_source["registry"],
+        "torch_version": TORCH_LOCKED_VERSION,
+        "torch_wheel_sha256": TORCH_WHEEL_SHA256,
+        "torch_wheel_artifact": torch_artifact,
         "transformers_wheel_sha256": TRANSFORMERS_WHEEL_SHA256,
         "transformers_wheel_artifact": transformers_artifact,
         "source_contract_status": values["source_contract_status"],
@@ -1187,6 +1208,9 @@ def audit(
         raise RuntimeError(
             f"installed Transformers version drifted: {observed_transformers!r}"
         )
+    observed_torch = importlib.metadata.version("torch")
+    if observed_torch != TORCH_LOCKED_VERSION:
+        raise RuntimeError(f"installed Torch version drifted: {observed_torch!r}")
     processor_source = source_fact(ClapProcessor)
     if processor_source["class"] != raw_processor_class:
         raise RuntimeError("raw processor_class is not bound to official ClapProcessor source")
@@ -1234,6 +1258,8 @@ def audit(
         "api_facts": {
             "transformers_version": observed_transformers,
             "transformers_wheel_sha256": TRANSFORMERS_WHEEL_SHA256,
+            "torch_version": observed_torch,
+            "torch_wheel_sha256": TORCH_WHEEL_SHA256,
             "config": source_fact(ClapConfig),
             "feature_extractor": source_fact(ClapFeatureExtractor),
             "processor": processor_source,
@@ -1258,6 +1284,9 @@ def self_test() -> None:
     assert SCHEMA.endswith("-v1")
     assert len(REVISION) == 40 and all(char in "0123456789abcdef" for char in REVISION)
     assert TRANSFORMERS_VERSION == "5.10.4"
+    assert TORCH_VERSION == "2.13.0"
+    assert TORCH_LOCKED_VERSION == "2.13.0+cpu"
+    assert len(TORCH_WHEEL_SHA256) == 64
     assert len(TRANSFORMERS_WHEEL_SHA256) == 64
     assert WEIGHT_SUFFIXES == {".bin", ".ckpt", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}
     archive_hashes = {
