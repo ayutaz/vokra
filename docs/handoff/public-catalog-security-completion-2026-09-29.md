@@ -637,6 +637,40 @@ one skip and 15 pending checks. These are dated queue observations, not merge
 or alert-closure evidence. Real-weight native parity, whole-path CPU/GPU timing,
 Apple CPU/Metal/no-fallback and the remaining public rows stay open.
 
+## 2026-09-30 Corrected-HEAD replay setup disposition (07:30 UTC)
+
+The corrected candidate `47a4314532e7099e635732ce5cb4abbcefb24657`
+has not obtained a valid remote Cargo result. Four disposable setup attempts
+stopped before verification: `53488650` encountered an scp port-option error;
+`53489086` attempted to fetch a local work branch from origin; `53489463`
+assumed the wrong binary path inside the cargo-deny archive after validating
+its SHA-256; and `53489842` was interrupted during provisioning. Each was
+destroyed and its individual readback returned `instances: null`. Small setup
+logs were recovered into `/private/tmp/vokra-vast-47a-logs` and its `-2`, `-3`
+and `-4` counterparts. These are workflow/setup failures, not model-parity
+failures or valid test runs. The pass count for this replay is not available;
+test, Clippy and dependency gates must be rerun after reviewing the controller.
+Further automatic re-renting was stopped. An unrelated project instance was
+not operated on.
+
+The separately reviewed consumer candidate
+`b85c420e4252656fb75f32fe728c61ac2a2b51a5` authenticates an independent
+official streaming packet, the actual owner-scope file and externally reviewed
+digests, fixed inputs, strict native preset import and Qwen sidecars. It
+distinguishes NPY-file hashes from raw F32 noise-payload hashes, observes native
+logical positions rather than inventing counters, and distinguishes EOS drain
+and uncached max-length terminal chunks. It can diagnose native PCM differences
+when real authorized artifacts exist; no full-waveform bound has been supplied.
+Static formatting, diff, forbidden-symbol and zero-dependency gates passed,
+but remote compilation and real-packet execution are still pending. No hidden
+state/latent numerical parity, voice-rights approval or Apple pass is claimed.
+
+PR #139 merged at `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` and the
+maintainer's clean `main` was fast-forwarded to it. A fresh Dependabot readback
+still contains 215 open alerts, so closure is not inferred merely from merging.
+PR #138 remains open with auto-merge enabled and its last three checks pending.
+The public code/artifact baseline remains 136 full and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
