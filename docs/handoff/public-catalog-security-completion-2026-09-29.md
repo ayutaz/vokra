@@ -1177,6 +1177,66 @@ authorize replacing required CPU ISA parity or Apple CPU/Metal/no-fallback
 checks with a GPU result, inventing a speedup, silently falling back to CPU,
 or executing models on the maintainer PC.
 
+### Mimi ELU merge, LayerScale regression and Kyutai setup readback (11:53 UTC)
+
+PR #185's exact head `336de430e4c9d40bb81906cd09381b43797c22de`
+finished with 78 successful checks, five intentional skips, no failures and
+no pending checks. All 16 required checks passed. After the reviewed body was
+updated and the draft flag removed, the PR was squash-merged without an
+administrator bypass at 11:44:39 UTC as
+`81d72f2317a3bd2462cb7abbca15ac55b7518d56`. This accepts the ELU dispatch
+component only; it does not establish complete Mimi Apple or real-weight
+parity.
+
+A separate clean VAST replay of
+`e49ca0c51244d9bc47e7af0797ddc376f2747525` completed successfully on the
+AMD EPYC 7C13 worker `53519879`. The focused Mimi selection passed 75 tests
+with no failures or ignored tests. All-feature/all-target Clippy, serial
+workspace tests, deny and audit each exited zero. Workspace output contains
+323 result summaries, 8,111 passed tests, no failed tests and 105 explicit
+ignores. The five named attention and LayerScale regressions were present
+and passed; this result is not attributed to PR #185 or a later rebased HEAD.
+All 18 recovered packet entries passed independent local SHA-256 checks;
+actual final HEAD matches and observed worktree status is empty. The manifest
+SHA-256 is
+`ae73e5160116df9311cd70c2b13452c0f6ebc770748e7492c43364c9b36d0cfd`.
+Controller exit, evidence recovery, destroy and readback all exited zero.
+Individual readback returned `instances: null`, and all-pages account
+readback returned zero instances with `next_token: null`. Worker and its
+200-GB disk were destroyed; no retained handoff was created. Linux-only
+regression does not close Apple execution, independent reference, real-weight
+parity, RVQ encoding or speed measurement gates.
+
+The distinct `1dacaa14` Kyutai attempt on worker `53520465` did not start
+Rust verification. The instance API reported the owned instance running,
+but exposed the direct SSH port under `ports["22/tcp"]` while
+`direct_port_start` was -1. The reviewed controller accepted only the legacy
+field and failed closed before SSH/bootstrap. Controller exit remains one;
+no test pass or numerical conclusion is inferred. Destroy and strict
+individual/label readbacks passed, including `instances: null` and a
+terminal empty label list. The worker and its disk were destroyed. A bounded
+endpoint-parser correction and offline regression fixtures are under review
+before any new rent; proxy guessing and automatic rerent are not used.
+
+The XCodec2 static sdist inspector was reviewed and committed cleanly as
+`018c01742f29441bf335960b1926739eb033943b`. Its isolated, offline self-test
+passed; it neither imports nor builds upstream code. Static archive findings
+do not approve a build backend, resolve uv markers or establish source-built
+wheel provenance. A separate model-free byte audit authenticated the exact
+locked setuptools 84.0.0 wheel (818,216 bytes, SHA-256
+`51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670`).
+Its embedded `setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA`
+declares LGPLv3, and its primary LICENSE contains LGPL version 3, with
+SHA-256
+`ade78d04982d69972d444a8e14a94f87a2334dd3855cc80348ea8e240aa0df2d`.
+Top-level MIT metadata therefore does not approve the complete package.
+No package was installed, imported or built; no XCodec2 real-weight job was
+started. The legacy isolated-build backend remains unbound/unapproved.
+
+The live coverage classification remains 136 code/artifact-full and 58
+unresolved public rows. No source regression result above promotes an
+independent-reference or Apple gate, and no public artifact was uploaded.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
