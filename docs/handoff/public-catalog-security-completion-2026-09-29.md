@@ -1139,6 +1139,44 @@ The independently verified Mimi ELU HEAD `336de430` was pushed unchanged as
 pending at this readback; newer attention/LayerScale candidates are not part
 of that PR or its VAST verdict. No PR was merged and no artifact was uploaded.
 
+### Reviewed CPU-attention and Metal LayerScale candidates (11:32 UTC)
+
+The CPU visible-window attention candidate is committed and clean at
+`1dacaa14c77b07eba75df5d3ad4539d2ccf5afc6`, based on the red `9950e896`
+run above. CPU full-forward QK and probability-times-V now use the same
+one-row visible-window GEMM geometry as the incremental path, with checked
+reusable scratch allocated outside query loops. Non-CPU batched dispatch is
+unchanged. The original eight-frame seed and strict equality are unchanged;
+additional synthetic context/window self-consistency coverage and the Clippy
+trace-reborrow fix are included. Formatting, diff hygiene and five static
+gates pass. Compilation and default-AVX2/scalar reruns are still pending;
+this commit does not yet close the measured failure or establish independent
+upstream or real-weight parity.
+
+The distinct Mimi LayerScale candidate is committed and clean at
+`e49ca0c51244d9bc47e7af0797ddc376f2747525`, based on `6328ad62`. Its learned
+channel-scale/residual update dispatches through a checked Compute seam and
+a dedicated Metal kernel, with complete shape and dimension checks before
+caller-output mutation and explicit errors for uncovered backends. CPU
+operand order is preserved, including immediate empty-shape no-ops. The
+Mimi coverage registry requires the new operation; synthetic CPU shape and
+operand-order tests and Apple-device-gated tests are added. Formatting, diff
+hygiene and five static gates pass. Linux regression, Apple execution,
+independent reference and speed measurements remain pending. Neither this
+HEAD nor the attention parent is included in PR #185 or its `336de430` VAST
+verdict; RVQ encoder and other host paths remain open.
+
+At the latest PR #185 readback, Linux/macOS/Windows test jobs have passed,
+while Metal and other CI jobs are still running. The PR remains draft and
+unmerged. VAST has no retained worker from the preceding runs. New controllers
+are under review, not yet rented. No model row or artifact is promoted.
+
+The user's GPU preference applies to future work when the selected backend
+is correct and faster end-to-end, including transfer/setup costs. It does not
+authorize replacing required CPU ISA parity or Apple CPU/Metal/no-fallback
+checks with a GPU result, inventing a speedup, silently falling back to CPU,
+or executing models on the maintainer PC.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
