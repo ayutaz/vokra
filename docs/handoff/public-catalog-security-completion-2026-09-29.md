@@ -2327,6 +2327,52 @@ outputs. Official hidden-prefix caches and native projected K/V caches are
 different representations; no direct raw-cache parity or Torch tie-order
 equivalence is inferred. The 58 unresolved public rows remain in scope.
 
+### Docs PR merged; strict FireRed controller accepted offline (18:34 UTC)
+
+Root re-read the attachment and canonical campaign boundaries: all 194 public
+rows remain in scope, including the 58 unresolved code/artifact rows, public
+artifact/provenance repairs and the reference-environment security campaign.
+The owner's GPU preference applies only after same-input/same-precision
+correctness and transfer-inclusive timing; mandatory CPU and Apple
+CPU/Metal/no-fallback gates remain unchanged.
+
+[PR #188](https://github.com/ayutaz/vokra/pull/188) completed at exact head
+`4b434bbeb6a2076b5ef0f5deabb6d26c0ed7bd97` with 63 successful checks,
+four intentional skips and no pending or failed check. Root independently
+matched all 16 strict branch-protection contexts to their required application
+IDs on that head, then squash-merged with an exact-head guard. GitHub records
+the merge at 18:33:21 UTC as `b6589befecf189f942ca35abf3b4d967c079b605`.
+This documentation-only merge does not verify subsequent native candidates.
+
+The standalone post-merge FireRed controller is frozen at SHA-256
+`0cd58dc9cde57bad913fbdf5f01ade6c04f467b54e63f15d7ddb5658826fd286`,
+targeting `0f016bc5c7f167c5315ee4b97fbfc05cf1abe00b`. Root reviewed the
+local and generated-remote gates and independently passed Bash syntax,
+ShellCheck and the complete offline mock/self-test. The focused FireRed gate
+requires exactly one result summary, success for each required test, unique
+names for all selected tests, the correct namespace and exact agreement
+between actual success lines and the claimed count. Local and remote negative
+fixtures reject missing/hash/zero/skip/duplicate/namespace/summary/failure
+and count tampering. This is controller evidence, not a Cargo, real-model or
+hardware verdict. A separate controller is being prepared to recover the
+frozen source-cache probe on the same disposable worker; its blocked
+source/license result must remain separate from the seventeen Rust/static
+verification legs.
+
+Root reviewed the next FireRed decoder/search observation diff and returned
+it for correction: the draft has a mutable-vector compile issue, a now
+test-only helper needing proper compilation gating, incomplete actual-decoder
+trace/no-trace tests and unaccounted metadata in its memory budget. That draft
+is not accepted, committed or remotely verified. No diagnostic observation is
+treated as independent upstream parity.
+
+A fresh all-pages VAST inventory returned an empty instance list and
+`next_token: null`; no resource was modified. Affordable 128-GB/16-core offers
+were observed, but none was rented. The first search mistakenly supplied the
+raw RAM number to a CLI field expressed in GB; root inspected the installed
+CLI conversion and repeated the read-only search with the correct units.
+No model payload, source-cache run, upload or Apple allocation occurred.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
