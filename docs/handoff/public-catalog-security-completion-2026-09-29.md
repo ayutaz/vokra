@@ -655,6 +655,69 @@ this evidence. No real weight, independent CPU reference, Apple CPU/Metal
 parity, GPU speed/quality comparison, or owner/legal sign-off was produced;
 the PR remains draft and no public artifact changed.
 
+## 2026-09-30 Catalog, security and verification readback (08:01 UTC)
+
+The read-only HF metadata/card audit at clean `main`
+`06240fe9b95bbd9ff3837c2d012c63e1b4abd148` still reports 194 public
+repositories, 193 with GGUFs and 198 GGUF files. CPU code/artifact status is
+136 full, 43 partial, 14 no-runtime-binder and one non-artifact; Metal is
+136 full, 57 blocked-by-cpu and one non-artifact. The recovered summary
+SHA-256 is
+`42efbeee107584ba481691e00b80d1a2853fc5a0ed4743cb2fa144f79ac6ae97`.
+No model payload was acquired or executed locally. All 58 unresolved rows
+remain in scope, and these source/artifact classifications do not certify
+real-weight CPU or Apple hardware parity.
+
+The paginated GitHub open-alert API returned 211 manifest alerts: 183 name a
+first patched version and 28 do not. Three are critical, all for
+`GHSA-53q9-r3pm-6pq6`: XCodec2 alert #159 and CosyVoice2/3 alerts #318/#340.
+This supersedes the earlier queue counts without dismissing an alert or
+attributing closure to an unmerged candidate. XCodec2's isolated integration
+candidate at `1c4eae72f118cc037bb1fe5e852906ae26e87e3b` incorporates this
+main head, preserves the decoder-only patched CPU dependency boundary and
+passes lock/documents-only checks. The recorded VAST import evidence remains
+the earlier `e3e90572` run, not a fresh integrated-HEAD replay; primary
+dependency/native-license review and real-weight parity remain open. The
+candidate is not pushed. CosyVoice2/3's full-reference closures remain blocked
+by their authenticated forbidden dependency path; version updates alone do
+not close the composite or legal boundary. The owner's protected CosyVoice2
+LLM manifest was not inspected or changed.
+
+The separate Realtime implementation candidate remains clean at
+`8dd161e1e9eb80d60fd2daeb42b4b336c0578b24`. Formatting, diff hygiene,
+first-party-only dependencies, forbidden-symbol, native-boundary and
+no-dynamic-loading gates pass. Its new real-packet consumer and Metal dispatch
+still require remote compilation and actual authorized parity execution.
+Default ignored tests, generic cache/API probes or compilation alone cannot
+supply those numerical or Apple verdicts.
+
+The reviewed single-rent controller (SHA-256
+`288e2a8449a0469cab588bea34326ad1881e859f06b3636ba2e48f8841ca2228`)
+created disposable worker `53492602`. Its API reported running, eight effective
+CPU cores and an explicit SSH port mapping. The SSH probe returned zero but
+did not emit its expected readiness marker. Bootstrap then stopped with
+connection closed by the remote host, before any valid Rust verification
+result. The controller's missing marker assertion is a diagnosed readiness
+check defect; the cause of the remote host closing the connection is not
+established. No test-pass count, Clippy, CUDA-feature, deny or audit result is
+claimed. Bootstrap-log SHA-256 is
+`4a0fdaafec585509a27ef7ba85194edd3adb2d7c60380728a702b84bcd129149`.
+The controller attempted log collection, which failed with connection refused,
+then destroyed this exact worker and its 200-GB storage. Destroy returned zero,
+and strict individual readback returned `instances: null`; readback SHA-256 is
+`817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057`.
+A subsequent all-pages account readback returned zero instances and no next
+page. No unrelated resource was operated on, and no automatic re-rent followed.
+Fix and prove the readiness marker contract before the next remote attempt.
+
+PR #138's refreshed head `0e74236ee04979471c129056ef1e47a1fb8b2fb3`
+was still open at the latest observation, with 65 successful checks, one skip
+and three pending checks. This is a dated queue observation, not a merge
+verdict. PR #139 is merged at the main head above. CPU/GPU selection remains
+based on unchanged same-input correctness plus whole-path measured speed;
+mandatory native CPU and Apple CPU/Metal/no-fallback evidence is not waived.
+No model artifact was published by this continuation.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
