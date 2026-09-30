@@ -778,8 +778,12 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
     use vokra_core::gguf::GgufBuilder;
+
+    static NEXT_TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
     fn contract() -> KyutaiSttStreamingContract {
         KyutaiSttStreamingContract::from_config(&super::super::KyutaiSttConfig::stt_2_6b_en())
@@ -1279,10 +1283,15 @@ mod tests {
 
     #[test]
     fn authenticated_mmap_rejects_length_and_hash_mismatch() {
+        let nonce = NEXT_TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "vokra-kyutai-pcm-auth-{}-{}",
+            "vokra-kyutai-pcm-auth-{}-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be after UNIX epoch")
+                .as_nanos(),
+            nonce,
         ));
         let mut builder = GgufBuilder::new();
         builder.add_string("test.key", "synthetic");

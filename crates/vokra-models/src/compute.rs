@@ -461,16 +461,12 @@ impl MimiHotOp {
 
     fn covered_by_backend(self, backend: BackendKind) -> bool {
         let _ = self;
-        match backend {
-            BackendKind::Cpu => true,
-            BackendKind::Metal => {
-                cfg!(all(
+        matches!(backend, BackendKind::Cpu)
+            || (matches!(backend, BackendKind::Metal)
+                && cfg!(all(
                     feature = "metal",
                     any(target_os = "macos", target_os = "ios")
-                ))
-            }
-            _ => false,
-        }
+                )))
     }
 }
 
