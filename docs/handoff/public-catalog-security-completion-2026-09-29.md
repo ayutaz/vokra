@@ -718,6 +718,43 @@ based on unchanged same-input correctness plus whole-path measured speed;
 mandatory native CPU and Apple CPU/Metal/no-fallback evidence is not waived.
 No model artifact was published by this continuation.
 
+## 2026-09-30 Merged security change and verification restart (08:13 UTC)
+
+This supersedes the PR/check and alert observations above without replacing
+their dated evidence. PR #138 merged at `2026-09-30T08:00:10Z` as
+`740cd3b38d2bdb659c4db74f9be0b4bb1bece2e2`; the remote `main` reference
+and local main now identify that commit. A later complete check-run readback
+for its head `0e74236ee04979471c129056ef1e47a1fb8b2fb3` found 69 successful
+checks, one skipped check and no unfinished check. The paginated open-alert
+readback now reports 209 manifest alerts: 182 with a first patched version,
+27 without, and three critical alerts. These are current queue observations,
+not proof of numerical compatibility or closure of unmerged candidates.
+
+The readiness controller was corrected and reviewed at SHA-256
+`8a6c583b9848e79b058abbd284dcd357b2e4c667514230577c59ad8b124e9bf2`.
+It now requires both a successful SSH exit and an exact remote nonce, then
+verifies the transferred bundle SHA-256 before bootstrap. Syntax, shellcheck
+and model-free mock checks passed; the mocks are not remote Rust evidence.
+The account inventory was empty before the separately reviewed, single-rent
+restart on disposable worker `53494404`. This different host reports 16
+effective CPU cores, and the controller sets `CARGO_BUILD_JOBS=16`. Its actual
+readiness nonce and bundle digest passed, and provision is running. The clean
+Rust target remains `8dd161e1e9eb80d60fd2daeb42b4b336c0578b24`; no Rust test,
+Clippy, CUDA-feature, deny, audit, real-weight or Apple verdict is yet claimed
+for this restart. The controller must recover bounded evidence and destroy
+the exact worker and its storage at termination. No model acquisition or
+publication is part of this job.
+
+The XCodec2 follow-up is a model-free license/native-evidence collector,
+not an execution approval. It must bind the actual Linux dependency closure,
+distribution hashes, primary license bytes and ELF payloads. Metadata-only
+MIT classifiers, another model's scoped NumPy exception, historical VAST
+imports, or a successful factual collection cannot clear its owner-review,
+real-weight parity or `NO_UPLOAD` boundary. The public catalog's 58 unresolved
+rows and the separate artifact/security/Apple work remain in scope. GPU
+selection still requires same-input correctness and a faster measured whole
+path; it does not waive the mandatory CPU or Apple/no-fallback checks.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
