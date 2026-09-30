@@ -1518,6 +1518,47 @@ source/Rust checks only, transfers no HF token, and destroys its owned worker
 and storage after recovery on either result. Public coverage remains 136/58;
 no new Apple or publication verdict is claimed.
 
+### Mimi compiler failure and reviewed correction (13:41 UTC)
+
+The six-leg verification of `d33ba0b9` above has finished with a genuine
+source failure. Focused Mimi tests, the singleton ABI test, model Clippy and
+workspace tests each exited 101: adjacent string literals inside `format!`
+are not valid Rust. Deny and advisory audit exited zero, but this does not
+make the implementation green. Root's prior formatting/static review missed
+the compile error. All 20 recovered file hashes match the unchanged packet;
+its manifest SHA-256 is
+`90c9b1c948080384dc99edf03e32f8467ff0898e92f4cdd29e56132598636bcb`.
+The parent controller exited one. Worker `53532437` and its 200-GB storage
+were destroyed; individual readback returned `instances: null` and the
+terminal all-pages account list contained zero instances.
+
+The implementer joined the error message into one valid format string.
+Root reviewed the single-file diff and committed it at
+`3d9fffbf7e05b623c6fb4919c73a39db3016b662`. Formatting, diff hygiene,
+zero-dependency and forbidden-symbol gates passed. No semantics, public ABI,
+capability coverage or backend behavior changed. This new head remains
+unverified remotely and unpushed; a separately reviewed fresh-head controller
+is being prepared, not a modification or restart of the failed worker.
+
+At this readback PR #152 has 70 successful checks and one skip, all terminal.
+Its draft status, package/native-license and real-weight gates remain open;
+CI alone is not an approval to execute or merge that candidate. PR #187's
+HTTP-500 tool-download failure was rerun only after its parent workflow
+finished. Attempt two succeeded at the same `27060dd2` head, and all 16
+required checks are successful. The remaining live checks still require
+terminal review before a merge decision. Neither PR establishes full-model
+or Apple parity.
+
+The owner's device-selection instruction is retained: choose GPU for a
+correctness-approved operation when its measured end-to-end time, including
+setup and transfer, is faster. Mandatory CPU/reference and Apple Metal
+verdicts are not replaced. Rust compilation and these source regression
+checks use CPU/RAM; GPU acceleration is not inferred for Cargo. Independent
+official Rust Mimi reference compatibility and its dependency/native-license
+closure remain under source-only investigation. No new model access, HF
+upload, Apple allocation or catalog completion is claimed; scope remains
+194 public rows, 136 code/artifact-full and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
