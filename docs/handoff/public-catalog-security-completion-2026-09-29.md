@@ -2536,6 +2536,61 @@ final Apple CPU/Metal/no-fallback gates remain mandatory; all 194 public
 rows, the 58 unresolved code/artifact rows and attachment security/provenance
 tasks remain in scope.
 
+### Source-builder acceptance and actual cleanup failure (19:50 UTC)
+
+Root accepted the separate FireRed source-instrumentation builder as
+`0dc33c2e422d4cbbf2e3d25da37c0d273d1f1ff0`, based on frozen v2 reader
+`e9b9b058b4802107aab56623062328ba7d98185c`. Root independently passed
+the authenticated official-source AST roundtrip and all eleven owned offline
+tests, plus diff, forbidden-symbol, zero-dependency, documentation-reference
+and runbook-citation gates. Builder, test and design SHA-256 values are
+respectively `106504cd323abbbdbe197ce4fc77342e3a420e5334215b61292630414b2aa882`,
+`0ec62a045a1bf839988a96579c5a20fda004a1697b2c5e78e793c8f877071db8`
+and `4ea28abdefa05e9aca05ec13da28969f332e4bf13c5ed765cbe0ab50a99082c8`.
+The twenty source-observed events include actual decoder-layer input,
+projected Q/K/V, search/cache lineage and termination/length-penalty locals.
+Removing only the inserted reserved-sink calls restores the original AST.
+Exclusive no-follow directory-descriptor writes and bounded process-owned
+descriptor diagnostics preserve failure evidence without reading a replaced
+path. A zero-iteration loop reports an absent final step instead of introducing
+an unbound-local error. These are source-builder tests, not upstream/model
+execution, real numerical parity, Rust compilation or hardware evidence.
+Actual capture, v1 digest binding, module-role registration and stage comparison
+remain open; the candidate has not been pushed or published.
+
+The combined controller's stronger test actually invoked the frozen driver
+through mock SSH/SCP and recorded the driver, executor, SSH and TERM-ignoring
+leaf PIDs. Parent-TERM/timeout cleanup did not prove all descendants gone;
+one recorded PID remained observable for twenty seconds. Process-state
+inspection was denied by the local sandbox, so the record does not invent a
+running-versus-zombie diagnosis. The old driver lacks direct-child wait/reap
+in its EXIT cleanup and uses a one-second grace period; this is a source-level
+cause candidate, not a verified fix. A separate versioned cleanup fork is
+under review. The failed evidence is retained and no worker is rented until
+the actual lifecycle and production destroy-order tests pass.
+
+The three previously identified Critical Torch alerts remain unresolved:
+CosyVoice2 #318, CosyVoice3 #340 and XCodec2 #159. The latter is an alert
+number, not the unrelated PR number. A separate inventory-only CosyVoice
+candidate is being prepared from merged main `97447185361a37af64c1b30fe87e8e2618d96e20`.
+The official [TorchAudio installation contract](https://docs.pytorch.org/audio/master/installation.html)
+states that its 2.11-and-later stable ABI supports PyTorch 2.11 and later;
+the [official PyTorch 2.13 instructions](https://pytorch.org/get-started/previous-versions/#v2130)
+provide a CPU wheel index. This supports investigating Torch 2.13/TorchAudio
+2.11, not declaring API compatibility or parity. The authenticated official
+frontend's forbidden soxr closure, primary package/native-license review,
+dependency lock, API smoke, independent CPU parity and Apple gates remain open.
+No local dependency installation, model acquisition or model execution occurs.
+
+The safe VAST wrapper's offline redaction/exit-status/destruction-confirmation
+self-test passed. A fresh read-only `show instances-v1 --all --raw` returned
+zero instances and `next_token=null` at 19:50 UTC; no separate volume audit is
+claimed. GPU selection remains conditional on setup/transfer-inclusive speed,
+complete supported backend coverage and unchanged precision/numerical bounds.
+Independent CPU reference and final Apple CPU/Metal/no-fallback validation
+remain mandatory. All 194 public rows, 58 unresolved code/artifact rows and
+the attachment's security/provenance/public-artifact work remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
