@@ -1425,6 +1425,49 @@ needed for current verification, and its controller will recover evidence
 then destroy it on both success and failure. No idle retained worker or HF
 token transfer was introduced. Scaleway has not been newly allocated.
 
+### Kyutai recovered results and Mimi API correction (13:12 UTC)
+
+The integrated Kyutai worker above is now terminal. At exact clean head
+`27060dd2b8eceb744fb338fb1783caab9c5717b8`, all six recovered verification
+exit files are zero. Default Avx2 and forced Scalar each report four passed,
+zero failed and zero ignored tests on the actual EPYC 7713. The serial
+workspace log contains 323 successful result summaries: 8,111 passed, zero
+failed and 105 ignored. Clippy, deny and advisory audit exited zero. Root
+independently matched all 20 recovered SHA-256 entries, final HEAD and empty
+observed status. The manifest SHA-256 is
+`cb0cc153ff04747f46913041aee1109f823c8d16d2b64143d6448372c80509a9`.
+
+The controller nevertheless exited one: both focused logs contain
+`focused_result_count=FAIL`. A test emits its ISA diagnostic between the
+test-name prefix and the following `ok` line, which the controller's
+same-line result parser does not accept. This is a verification-controller
+defect, not a waived Rust failure. Preserve the original controller and
+packet unchanged; a separately reviewed parser correction and offline
+readback are still required before claiming the integrated pipeline green.
+No rerun or new allocation is inferred from that review. Worker `53528022`
+and its 200-GB storage were destroyed after recovery; individual readback
+returned `instances: null`, and the terminal all-pages account list contained
+zero instances.
+
+Mimi's CI correction was reviewed and committed locally as clean head
+`d33ba0b9e0a8be06d390fe32fbfb1f8571888071`. It restores all 35 existing
+public `HotOp` variants and their original discriminants, moves the two new
+Mimi capabilities into a private fail-closed gate, preserves the unavailable
+Metal error, and documents the two unsafe Metal calls. Formatting,
+diff hygiene, zero-dependency and forbidden-symbol gates passed. An initial
+attempt to invoke a nonexistent `check-forbidden-deps.sh` exited 127; the
+actual repository gate `check-forbidden-symbols.sh` subsequently passed.
+No local Cargo compilation or model execution ran. This correction is not
+yet pushed or remotely tested; the older `a84817d4` Linux packet does not
+prove the new head, and PR #186 remains draft with its earlier CI failures.
+
+PR #152 at `35e4c70e830a675e3f9a124347e8fa3d23b77373` is also still
+draft. A fresh check readback contains 60 successes, one skip and nine
+in-progress jobs, not a final green verdict. Its package/native-license and
+real-weight gates remain open. No owner approval, Apple result or artifact
+upload is inferred; the public classification remains 136 code/artifact-full
+and 58 unresolved rows.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
