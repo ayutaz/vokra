@@ -90,6 +90,20 @@ The reference dumper also has a dependency-free `--self-test` for fixed token,
 source-identity, manifest-safety and source-inventory invariants; it never
 imports Torch/Transformers or creates model data.
 
+### Model-free VAST API-smoke evidence
+
+At exact candidate HEAD `54e51f6c7ebdb0ce8b63bda8fdc67bc805d1dbe9`, a disposable
+Linux x86_64 VAST worker completed the frozen `uv sync` and the model-free
+`--api-smoke` gate. The fixed source checkout was revision
+`3e9415df12633f8a74ac6f92418c7cd5c8c4bf0e`, 9,035 bytes, SHA-256
+`e68b87dae6718903337a08eff56afbd58ba261d829624ea5a00a343c8cefb7c1`.
+The API-smoke log SHA-256 is
+`093e7bfb3f91c3f2552a9cb28dfff8f0b90e5293dae1643215ad57b2f74abae4`.
+No model weights or GGUF were acquired, and this result is not real-weight
+parity, a license approval, or owner/legal sign-off. Worker instance `53454163`
+was destroyed; its individual readback returned `instances: null`, and the
+VAST inventory was empty (`[]`).
+
 After the VAST CPU gate passes, transfer model/reference data directly to a
 disposable Apple Silicon host and run:
 
