@@ -1791,6 +1791,40 @@ new focused suites along with full regression. It must not treat the source
 inventory's explicitly `OPEN` dependency/native/license status as parity or
 execution approval.
 
+### Integrated replay preparation and fresh readbacks (15:03 UTC)
+
+Root independently verified that the clean integrated head
+`a527c5c5a86e7eab16b36b3350039bfcbe2ffa5a` contains `00632846` and the
+three reviewed follow-up slices. Its scoped diff against `909c527b` has 13
+files, 5,127 additions and 93 deletions. An initial integration omitted the
+Mimi integration ancestor; that candidate was rejected and corrected before
+any rental or verification. The corrected head is still **not remotely
+verified or pushed**. The next eleven-leg replay must require all 17 source
+audit, 22 Rust-source audit and 18 PCM-control test names, plus the unchanged
+regression/audit gates and a complete 30-member authenticated packet.
+
+Review also caught nonportable self-test mutations, leaked shell tracing and
+a proposed hardcoded PCM source-hash log. These must be corrected before
+execution; remote evidence must measure the file hash, not print an expected
+constant. This preparation does not establish real-weight parity or Apple
+completion. The remaining reference dependency-activation binding and FireRed
+PCM composition are separate bounded work, not part of this frozen head.
+
+A fresh paginated GitHub read still reports 209 open Dependabot alerts:
+182 with a patched version and 27 without; severity is three critical,
+31 high, 82 medium and 93 low across 37 manifests. These counts do not mean
+the reference environments have been updated or numerically revalidated.
+A fresh unfiltered VAST read contains only unrelated running `53541309`,
+labelled `jtalm-gen_action_v051b`; it was not modified. No Vokra worker had
+been rented for this integrated replay at that readback.
+
+The user's device-selection instruction is preserved: use cloud GPU where
+it is faster end-to-end and satisfies the unchanged numerical guards.
+Rust compilation/source-contract tests remain CPU/RAM work; mandatory CPU
+and Apple CPU/Metal/no-fallback evidence cannot be replaced by CUDA results.
+No local model execution, new publication or row promotion occurred. Scope
+remains 194 public rows and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
