@@ -127,11 +127,14 @@ notices remain unaudited, and owner/legal approval is still absent.
 [transformers-license]: https://files.pythonhosted.org/packages/f7/5d/1df789ca27a436ce09de67c8fee6acd2a528d34c28685991f8203e5418ae/transformers-5.10.4.tar.gz
 [typer-license]: https://raw.githubusercontent.com/fastapi/typer/0.27.2/LICENSE
 
-The Transformers link and the two SHA-256 values above are an independently
-audited source-distribution/license-member record for the excluded
-`transformers==5.10.4` row. They are not an installed frozen-lock package
-record: the current `uv.lock` contains the impossible-marker/declared pin but
-does not record this sdist URL or either payload digest.
+The Transformers link and these independently audited digests describe the
+excluded `transformers==5.10.4` row: sdist SHA-256
+`de37741509e64ccb88f7f5708beaf5b1914df447f5fe659f9c0fd95950413168` and
+extracted `LICENSE` member SHA-256
+`77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049`. They
+are not an installed frozen-lock package record: the current `uv.lock`
+contains the impossible-marker/declared pin but does not record this sdist URL
+or either payload digest.
 
 The excluded `shellingham==1.5.4` remains recorded as
 `ISC_BLOCKED_BY_POLICY` because ISC is outside the repository's Apache/MIT/BSD
