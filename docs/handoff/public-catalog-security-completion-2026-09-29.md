@@ -1909,6 +1909,49 @@ alerts, and draft PR #186 at unchanged remote head `a84817d4` with 89
 successful, nine skipped and two failed old-head checks. No corrected code
 push, model acquisition, upload, Apple run or row promotion is claimed.
 
+### Authenticated source-only side probe and device policy (16:02 UTC)
+
+A separate source-only Moshi probe reused owned worker `53547744` without
+changing the frozen primary checkout, running models, building native code or
+renting another worker. The accepted probe controller SHA-256 is
+`f5a3df08f89aaa76254e4c91124f9a9a317540d4cd00b6ad49c1b0adc77e83f9`.
+It ran the metadata binder at exact Vokra head `76cd4175` against pinned
+Moshi `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`.
+
+The real `cargo metadata --locked --offline` command exited 101 because the
+isolated empty dependency cache did not contain `candle-core`. The binder
+reported `BLOCKED_METADATA_COMMAND`, and the outer probe exited 2. This is
+authenticated negative evidence, not metadata, license or parity approval.
+The recovered 502,485-byte packet contains 53 hashed members plus its
+manifest. All 53 checksums pass; the manifest SHA-256 is
+`ed09a0a5fdf6a0344a394c9090dc61cf5a781277d41699fe24b6fbd2f4694a25`.
+Both source checkouts retained their exact heads and empty before/after
+status; the original and copied lock remained byte-identical. The source
+inventory digest is
+`5556c249f038140993fe1482cbe507271912ddcdda124a9b93df935247be2ec5`.
+The next source-cache acquisition is a separate planned step, not an excuse
+to remove offline/locked binding or execute unreviewed native dependencies.
+
+Meanwhile, read-only primary evidence confirms Mimi 79 tests, ABI one test,
+PCM 18 tests, FireRed five tests and metadata-binding 15 tests passed; model
+Clippy also exited 0. Workspace and later regression legs are still pending
+at this snapshot, so the replay has no terminal green verdict or cleanup
+claim. The controller remains responsible for exact-instance destruction.
+
+Reviewed local commit `9d7fa408ec9b02b1411e72768e01d9ff7f482d77` adds a
+bounded, explicit-provenance, signed-int16 little-endian PCM packet to the
+independent FireRed reference. It preserves the upstream formula, model calls
+and numerical bound. Its six model-free wire tests are not yet run and this
+commit is not in the live primary replay; no push or real-weight verdict is
+claimed.
+
+The user's renewed GPU preference requires measured end-to-end improvement
+under unchanged accuracy/precision gates, including transfers. Rust builds
+and model-free tests remain CPU-parallel work. GPU reference/backend results
+must never replace mandatory native CPU or Apple CPU/Metal/no-fallback
+evidence. No local model execution, upload, legal approval or catalog-row
+promotion occurred; the 194-row scope and 58 unresolved rows are unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
