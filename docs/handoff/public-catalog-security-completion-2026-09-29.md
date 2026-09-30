@@ -2703,6 +2703,48 @@ independent CPU reference and final Apple CPU/Metal/no-fallback are mandatory.
 All 194 public rows, 58 unresolved code/artifact rows and attachment repair,
 provenance, legal and security tasks remain in scope.
 
+### Realtime dependency conflict resolution and resource readback (20:36 UTC)
+
+Root reviewed and committed the separate Realtime dependency candidate as
+`7901e95543bcd45fdf2b535f55db516e037dad8d`, on top of the accepted
+`0f204ea9575a210727c94a0480bf96c31baa8b28` inventory candidate. It resolves
+the earlier direct constraint conflict using `uv add --no-sync` with
+Diffusers 0.38.0 and safetensors 0.8.0. The original Vokra reference pins
+remain historical provenance, not independently authenticated Microsoft
+requirements. Torch, tokenizer, backend, source and precision constraints
+remain unchanged. No environment was installed or model executed.
+
+Root independently passed the six TOML/lock-only tests, the offline Realtime
+lock check (57 package records), zero-dependency, forbidden-symbol,
+documentation-reference and diff gates. The primary PyPI 0.8.0 JSON readback
+confirmed Python >=3.10, extras-gated Requires-Dist, the selected Linux wheel
+SHA-256 `fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774`
+(516,040 bytes), and sdist SHA-256
+`fabaf3e0f18a6618d9b36560682562157f77c2b71fcffc7b432be2baed9d753d`
+(325,846 bytes). Both PyPI license fields were null. This is package metadata,
+not a license grant or native-payload audit. The previous installed-closure
+audit is explicitly stale for the new lock. Release-specific primary license,
+API compatibility, independent real-weight CPU parity, Apple/no-fallback and
+alert closure remain open; no push or upload was performed.
+
+The source-only FireRed observer-envelope candidate remains unaccepted while
+Linux test portability, the actual preparation/output-path tests, malformed
+registry roles and accepted-builder identity binding are corrected. Its
+preparation-only envelope is not consumed by the Rust v2 reader and cannot
+substitute for real upstream capture or numerical parity. The integrated
+VAST controller likewise remains a preparation candidate until its actual
+CosyVoice/VibeVoice source-collection phases and small evidence packet are
+fully bound and reviewed. No worker was rented in this slice.
+
+An initial resource query without the task environment returned an invalid-key
+error and is not treated as inventory evidence. After silently loading the
+existing task `.env`, the authoritative all-pages VAST instance read returned
+`instances=[]`, `total_instances=0`, `success=true`, `next_token=null`; the
+separate `show volumes --type all --raw` read returned `[]`. Thus this
+readback found neither retained instances nor separate storage volumes. No
+credential was printed, passed as a CLI argument or transferred to a worker.
+The full 194-row scope and all 58 unresolved rows remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
