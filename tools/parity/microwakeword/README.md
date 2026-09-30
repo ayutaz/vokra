@@ -50,7 +50,7 @@ the runtime's stateful binder, but the evidence-only raw inventory remains
 unreviewed transport evidence and does not itself authorize binding. A
 production parity claim still requires the independent VAST fixture.
 
-Companion to the sister crate [`vokra-vad-micro`](../../crates/vokra-vad-micro),
+Companion to the sister crate [`vokra-vad-micro`](../../../crates/vokra-vad-micro),
 which does the same job for Silero VAD (M5-03 案 1). The two produce
 similarly-shaped GGUF (`vokra.silero.*` vs `vokra.kws.*` metadata
 prefix) that the same no_std `vokra_core::gguf::GgufFile::from_external`
