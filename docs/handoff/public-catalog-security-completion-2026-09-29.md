@@ -1825,6 +1825,52 @@ and Apple CPU/Metal/no-fallback evidence cannot be replaced by CUDA results.
 No local model execution, new publication or row promotion occurred. Scope
 remains 194 public rows and 58 unresolved.
 
+### Integrated replay terminal failure and cleanup (15:30 UTC)
+
+The eleven-leg replay at exact head
+`a527c5c5a86e7eab16b36b3350039bfcbe2ffa5a` finished with controller and
+remote-verification exit 1. The frozen controller SHA-256 was
+`984a64e49024e63c283116f1edb4d81ba00f2514cee6c4708f025c8eb54cdd59`.
+Root recovered all 30 packet members and independently verified their
+checksums; the packet manifest SHA-256 is
+`cbb53546df11f1c3eb3f7bf9a08819a5bc745217b29ad03eed732c0a3eb976a5`.
+The recovered final head matches the target; worktree status and diff-check
+output are empty. This is authenticated **failure evidence**, not a green
+regression result.
+
+The source-audit suite ran 17 tests and the Rust-source audit suite ran 22,
+both with `OK` and exit 0. Converter tests, converter Clippy, deny and audit
+also recorded exit 0. Mimi tests, ABI, PCM tests, model Clippy and workspace
+tests recorded exit 101: `E0599` identifies a call to the nonexistent
+`KyutaiSttAsr::from_component_gguf` in the new PCM constructor. No successful
+PCM execution or numerical result is claimed. The reviewed correction uses
+the existing strict `KyutaiSttWeights::from_component_gguf`, authenticated
+configuration and `KyutaiSttAsr::new`; blocked public loaders remain blocked.
+That correction requires a new clean-head replay before any code push.
+
+Owned worker `53544589`, including its 200-GB storage, was destroyed after
+small-evidence recovery. Saved and fresh individual readbacks return
+`instances: null`; the saved label readback contains no matching worker.
+The fresh unfiltered account read contains only unrelated running `53545562`,
+labelled `jtalm-train_action_v051`, which was not modified. No Vokra worker
+or retained storage remains from this replay.
+
+Separately reviewed local FireRed commit
+`43fc8e6ce7328b547f1ce262580261fd62c37e93` adds explicit PCM-to-native-beam
+composition and five structural/control tests. It is not included in this
+failed packet and has not been remotely compiled or pushed. The pinned
+official decoder allows immediate EOS with empty content, so that valid case
+is retained rather than rejected by an invented nonempty-output requirement.
+Its real-weight independent reference and Apple verification remain open.
+
+The renewed device instruction is to use GPU when it is faster end-to-end
+under unchanged numerical gates, with actual device/precision/timing recorded.
+Rust compilation and model-free control tests remain CPU/RAM work. GPU
+reference generation does not replace required native CPU or Apple
+CPU/Metal/no-fallback evidence. No local model execution, model upload,
+license approval or catalog-row promotion occurred; scope remains 194 public
+rows with 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
