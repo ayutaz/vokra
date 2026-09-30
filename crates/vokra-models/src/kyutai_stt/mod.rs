@@ -94,6 +94,10 @@ use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
 use crate::mimi::MimiNeuralConfig;
 use crate::strict_checkpoint::sha256_bytes;
 
+/// Incremental main-language-model KV state for one-frame STT decoding.
+pub mod streaming_lm;
+pub use streaming_lm::{KyutaiSttStreamingLm, KyutaiSttStreamingLmStep};
+
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
 /// (`vokra_core::compliance`) knows `kyutai-stt` / `kyutai-stt-2.6b-en` as
@@ -1611,6 +1615,39 @@ fn checked_add(label: &str, lhs: usize, rhs: usize) -> Result<usize> {
     })
 }
 
+/// Computes causal/sliding-window attention probabilities with the CPU's
+/// single-row softmax geometry.  The caller has already validated the model
+/// context and allocated the checked `frames × frames` buffers; this helper
+/// only exposes each query's visible contiguous slice to the existing
+/// `Compute` softmax and leaves every masked probability explicitly zero.
+///
+/// This is deliberately CPU-only.  GPU callers retain the existing batched
+/// backend dispatch because this helper must never become a hidden fallback.
+fn softmax_visible_context_cpu(
+    compute: &Compute,
+    scores: &[f32],
+    probs: &mut [f32],
+    frames: usize,
+    context: usize,
+) -> Result<()> {
+    debug_assert!(context > 0);
+    debug_assert_eq!(scores.len(), frames.saturating_mul(frames));
+    debug_assert_eq!(probs.len(), frames.saturating_mul(frames));
+    probs.fill(0.0);
+    for query in 0..frames {
+        let window_start = query.saturating_add(1).saturating_sub(context);
+        let window_end = query + 1;
+        let row_start = query * frames;
+        compute.softmax_f32(
+            &scores[row_start + window_start..row_start + window_end],
+            &mut probs[row_start + window_start..row_start + window_end],
+            1,
+            window_end - window_start,
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct KyutaiWeightShapes {
     d: usize,
@@ -2321,6 +2358,81 @@ pub struct KyutaiSttAsr {
     weights: KyutaiSttWeights,
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct KyutaiSttTrace {
+    entries: Vec<KyutaiSttTraceEntry>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct KyutaiSttTraceEntry {
+    layer: usize,
+    frame: usize,
+    head: Option<usize>,
+    stage: &'static str,
+    values: Vec<f32>,
+}
+
+#[cfg(test)]
+impl KyutaiSttTrace {
+    fn record(
+        &mut self,
+        layer: usize,
+        frame: usize,
+        head: Option<usize>,
+        stage: &'static str,
+        values: &[f32],
+    ) {
+        self.entries.push(KyutaiSttTraceEntry {
+            layer,
+            frame,
+            head,
+            stage,
+            values: values.to_vec(),
+        });
+    }
+
+    fn record_rows(
+        &mut self,
+        layer: usize,
+        head: Option<usize>,
+        stage: &'static str,
+        values: &[f32],
+        rows: usize,
+        width: usize,
+    ) {
+        debug_assert_eq!(values.len(), rows.saturating_mul(width));
+        for frame in 0..rows {
+            self.record(
+                layer,
+                frame,
+                head,
+                stage,
+                &values[frame * width..(frame + 1) * width],
+            );
+        }
+    }
+
+    pub(crate) fn find(
+        &self,
+        layer: usize,
+        frame: usize,
+        head: Option<usize>,
+        stage: &'static str,
+    ) -> Option<&[f32]> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.layer == layer
+                    && entry.frame == frame
+                    && entry.head == head
+                    && entry.stage == stage
+            })
+            .map(|entry| entry.values.as_slice())
+    }
+}
+
 impl KyutaiSttAsr {
     /// Assembles an engine from `cfg` and `weights`. Cross-checks the
     /// weight-store shapes against `cfg` (block count, audio-embedding
@@ -2427,6 +2539,13 @@ impl KyutaiSttAsr {
         self.weights.is_synthesized
     }
 
+    /// Creates an incremental main-language-model stream over this engine's
+    /// authenticated weights.  The stream owns bounded per-layer KV state;
+    /// it does not recompute a full prefix or claim PCM/Mimi composition.
+    pub fn streaming_lm(&self, backend: BackendKind) -> Result<KyutaiSttStreamingLm<'_>> {
+        KyutaiSttStreamingLm::new(self, backend)
+    }
+
     /// Runs the authenticated-shape **main decoder component** for the
     /// upstream `dep_q=0` STT variant.
     ///
@@ -2456,6 +2575,36 @@ impl KyutaiSttAsr {
         backend: BackendKind,
         text_tokens: &[u32],
         mimi_codes: &[u32],
+    ) -> Result<KyutaiSttTextLogits> {
+        #[cfg(test)]
+        {
+            self.forward_text_logits_inner(backend, text_tokens, mimi_codes, None)
+        }
+        #[cfg(not(test))]
+        {
+            self.forward_text_logits_inner(backend, text_tokens, mimi_codes)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forward_text_logits_with_trace(
+        &self,
+        backend: BackendKind,
+        text_tokens: &[u32],
+        mimi_codes: &[u32],
+    ) -> Result<(KyutaiSttTextLogits, KyutaiSttTrace)> {
+        let mut trace = KyutaiSttTrace::default();
+        let logits =
+            self.forward_text_logits_inner(backend, text_tokens, mimi_codes, Some(&mut trace))?;
+        Ok((logits, trace))
+    }
+
+    fn forward_text_logits_inner(
+        &self,
+        backend: BackendKind,
+        text_tokens: &[u32],
+        mimi_codes: &[u32],
+        #[cfg(test)] mut trace: Option<&mut KyutaiSttTrace>,
     ) -> Result<KyutaiSttTextLogits> {
         if self.cfg.dep_q != 0 {
             return Err(VokraError::InvalidArgument(format!(
@@ -2511,6 +2660,9 @@ impl KyutaiSttAsr {
         let frame_ffn_in = checked_product("frames*2*ffn_hidden", &[frames, 2, ffn])?;
         let head_matrix = checked_product("frames*head_dim", &[frames, head_dim])?;
         let head_transposed = checked_product("head_dim*frames", &[head_dim, frames])?;
+        let visible_capacity = frames.min(self.cfg.backbone.context);
+        let visible_k_matrix = checked_product("visible head K", &[head_dim, visible_capacity])?;
+        let visible_v_matrix = checked_product("visible head V", &[visible_capacity, head_dim])?;
         let inv_freqs = llama3_inv_freqs(head_dim, self.cfg.backbone.rope_max_period, None)?;
         let mut hidden = vec![0.0f32; frame_d];
         for frame in 0..frames {
@@ -2548,7 +2700,22 @@ impl KyutaiSttAsr {
         let mut head_k_transposed = vec![0.0f32; head_transposed];
         let mut head_v = vec![0.0f32; head_matrix];
         let mut head_weighted = vec![0.0f32; head_matrix];
-        for block in &self.weights.blocks {
+        // CPU full-sequence attention uses the same one-row geometry as the
+        // incremental path. These buffers are allocated once for the whole
+        // forward and reused across layers, heads, and queries; no query
+        // allocation or non-CPU fallback is introduced.
+        let mut visible_k = vec![0.0f32; visible_k_matrix];
+        let mut visible_v = vec![0.0f32; visible_v_matrix];
+        let mut visible_scores = vec![0.0f32; visible_capacity];
+        let mut visible_probs = vec![0.0f32; visible_capacity];
+        let mut visible_weighted = vec![0.0f32; head_dim];
+        #[cfg(test)]
+        let blocks = self.weights.blocks.iter().enumerate();
+        #[cfg(not(test))]
+        let blocks = self.weights.blocks.iter().map(|block| (0usize, block));
+        for (layer_index, block) in blocks {
+            #[cfg(not(test))]
+            let _ = layer_index;
             compute.rms_norm_f32(
                 &hidden,
                 &mut norm,
@@ -2557,6 +2724,10 @@ impl KyutaiSttAsr {
                 &block.attn_norm,
                 self.cfg.rms_norm_eps,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "attn_norm", &norm, frames, d);
+            }
             compute.gemm_f32(
                 frames,
                 checked_product("qkv width", &[3, d])?,
@@ -2566,6 +2737,10 @@ impl KyutaiSttAsr {
                 None,
                 &mut qkv,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "qkv", &qkv, frames, 3 * d);
+            }
             // This is the pinned Moshi `Transformer` layout: fused QKV is
             // split into contiguous Q/K/V widths, standard adjacent-pair
             // RoPE is applied to Q and K, and `ActivationGating` computes
@@ -2581,6 +2756,12 @@ impl KyutaiSttAsr {
             }
             apply_rope_heads(&mut q, frames, d, heads, head_dim, &inv_freqs)?;
             apply_rope_heads(&mut k, frames, d, heads, head_dim, &inv_freqs)?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "q_rope", &q, frames, d);
+                trace.record_rows(layer_index, None, "k_rope", &k, frames, d);
+                trace.record_rows(layer_index, None, "v", &v, frames, d);
+            }
             attn_input.fill(0.0);
             let scale = 1.0f32 / (head_dim as f32).sqrt();
             for head in 0..heads {
@@ -2589,23 +2770,57 @@ impl KyutaiSttAsr {
                     head_q[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
                     let source = &v[frame * d + head * head_dim..frame * d + (head + 1) * head_dim];
                     head_v[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
-                    for column in 0..head_dim {
-                        head_k_transposed[column * frames + frame] =
-                            k[frame * d + head * head_dim + column];
+                    if !matches!(backend, BackendKind::Cpu) {
+                        for column in 0..head_dim {
+                            head_k_transposed[column * frames + frame] =
+                                k[frame * d + head * head_dim + column];
+                        }
                     }
                 }
                 // QK^T is a learned projection product and must remain on
                 // the selected backend. The transposes above are scalar
                 // layout glue only; there is no CPU fallback here.
-                compute.gemm_f32(
-                    frames,
-                    frames,
-                    head_dim,
-                    &head_q,
-                    &head_k_transposed,
-                    None,
-                    &mut scores,
-                )?;
+                if matches!(backend, BackendKind::Cpu) {
+                    scores.fill(0.0);
+                    for query in 0..frames {
+                        let window_start = query
+                            .saturating_add(1)
+                            .saturating_sub(self.cfg.backbone.context);
+                        let window_end = query + 1;
+                        let visible_len = window_end - window_start;
+                        for column in 0..head_dim {
+                            for key in 0..visible_len {
+                                visible_k[column * visible_len + key] =
+                                    k[(window_start + key) * d + head * head_dim + column];
+                            }
+                        }
+                        compute.gemm_f32(
+                            1,
+                            visible_len,
+                            head_dim,
+                            &head_q[query * head_dim..(query + 1) * head_dim],
+                            &visible_k[..head_dim * visible_len],
+                            None,
+                            &mut visible_scores[..visible_len],
+                        )?;
+                        scores[query * frames + window_start..query * frames + window_end]
+                            .copy_from_slice(&visible_scores[..visible_len]);
+                    }
+                } else {
+                    compute.gemm_f32(
+                        frames,
+                        frames,
+                        head_dim,
+                        &head_q,
+                        &head_k_transposed,
+                        None,
+                        &mut scores,
+                    )?;
+                }
+                #[cfg(test)]
+                if let Some(trace) = trace.as_mut() {
+                    trace.record_rows(layer_index, Some(head), "qk_raw", &scores, frames, frames);
+                }
                 for query in 0..frames {
                     for key in 0..frames {
                         let visible = key <= query && query - key < self.cfg.backbone.context;
@@ -2616,19 +2831,88 @@ impl KyutaiSttAsr {
                         };
                     }
                 }
-                compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                #[cfg(test)]
+                if let Some(trace) = trace.as_mut() {
+                    trace.record_rows(
+                        layer_index,
+                        Some(head),
+                        "qk_scaled_masked",
+                        &scores,
+                        frames,
+                        frames,
+                    );
+                }
+                if matches!(backend, BackendKind::Cpu) {
+                    softmax_visible_context_cpu(
+                        &compute,
+                        &scores,
+                        &mut probs,
+                        frames,
+                        self.cfg.backbone.context,
+                    )?;
+                } else {
+                    compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                }
+                #[cfg(test)]
+                if let Some(trace) = trace.as_mut() {
+                    trace.record_rows(layer_index, Some(head), "softmax", &probs, frames, frames);
+                }
                 // The probability×V product is likewise dispatched as a
-                // learned matmul. Copying the per-head result back into the
-                // fused residual layout is scalar layout glue.
-                compute.gemm_f32(
-                    frames,
-                    head_dim,
-                    frames,
-                    &probs,
-                    &head_v,
-                    None,
-                    &mut head_weighted,
-                )?;
+                // learned matmul. CPU uses each query's contiguous visible
+                // V window, matching the incremental geometry; non-CPU keeps
+                // the existing full batched dispatch without a fallback.
+                if matches!(backend, BackendKind::Cpu) {
+                    head_weighted.fill(0.0);
+                    for query in 0..frames {
+                        let window_start = query
+                            .saturating_add(1)
+                            .saturating_sub(self.cfg.backbone.context);
+                        let window_end = query + 1;
+                        let visible_len = window_end - window_start;
+                        for key in 0..visible_len {
+                            let source_frame = window_start + key;
+                            visible_v[key * head_dim..(key + 1) * head_dim].copy_from_slice(
+                                &v[source_frame * d + head * head_dim
+                                    ..source_frame * d + (head + 1) * head_dim],
+                            );
+                        }
+                        visible_probs[..visible_len].copy_from_slice(
+                            &probs[query * frames + window_start..query * frames + window_end],
+                        );
+                        compute.gemm_f32(
+                            1,
+                            head_dim,
+                            visible_len,
+                            &visible_probs[..visible_len],
+                            &visible_v[..visible_len * head_dim],
+                            None,
+                            &mut visible_weighted,
+                        )?;
+                        head_weighted[query * head_dim..(query + 1) * head_dim]
+                            .copy_from_slice(&visible_weighted);
+                    }
+                } else {
+                    compute.gemm_f32(
+                        frames,
+                        head_dim,
+                        frames,
+                        &probs,
+                        &head_v,
+                        None,
+                        &mut head_weighted,
+                    )?;
+                }
+                #[cfg(test)]
+                if let Some(trace) = trace.as_mut() {
+                    trace.record_rows(
+                        layer_index,
+                        Some(head),
+                        "weighted_v",
+                        &head_weighted,
+                        frames,
+                        head_dim,
+                    );
+                }
                 for frame in 0..frames {
                     attn_input[frame * d + head * head_dim..frame * d + (head + 1) * head_dim]
                         .copy_from_slice(&head_weighted[frame * head_dim..(frame + 1) * head_dim]);
@@ -2643,8 +2927,23 @@ impl KyutaiSttAsr {
                 None,
                 &mut attn_output,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(
+                    layer_index,
+                    None,
+                    "attention_projection",
+                    &attn_output,
+                    frames,
+                    d,
+                );
+            }
             for (dst, &value) in hidden.iter_mut().zip(&attn_output) {
                 *dst += value;
+            }
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "attention_residual", &hidden, frames, d);
             }
 
             compute.rms_norm_f32(
@@ -2655,6 +2954,10 @@ impl KyutaiSttAsr {
                 &block.ffn_norm,
                 self.cfg.rms_norm_eps,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "ffn_norm", &norm, frames, d);
+            }
             compute.gemm_f32(
                 frames,
                 checked_product("gating width", &[2, ffn])?,
@@ -2664,6 +2967,10 @@ impl KyutaiSttAsr {
                 None,
                 &mut ffn_in,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "ffn_linear_in", &ffn_in, frames, 2 * ffn);
+            }
             for frame in 0..frames {
                 ffn_gate[frame * ffn..(frame + 1) * ffn]
                     .copy_from_slice(&ffn_in[frame * 2 * ffn..frame * 2 * ffn + ffn]);
@@ -2674,6 +2981,17 @@ impl KyutaiSttAsr {
             for (gate, &up) in ffn_activated.iter_mut().zip(&ffn_up) {
                 *gate *= up;
             }
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(
+                    layer_index,
+                    None,
+                    "ffn_activated",
+                    &ffn_activated,
+                    frames,
+                    ffn,
+                );
+            }
             compute.gemm_f32(
                 frames,
                 d,
@@ -2683,8 +3001,16 @@ impl KyutaiSttAsr {
                 None,
                 &mut ffn_output,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "ffn_output", &ffn_output, frames, d);
+            }
             for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
                 *dst += value;
+            }
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.record_rows(layer_index, None, "layer_output", &hidden, frames, d);
             }
         }
 
@@ -2696,6 +3022,17 @@ impl KyutaiSttAsr {
             &self.weights.final_norm,
             self.cfg.rms_norm_eps,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_mut() {
+            trace.record_rows(
+                self.weights.blocks.len(),
+                None,
+                "final_norm",
+                &norm,
+                frames,
+                d,
+            );
+        }
         let logits_len = checked_product("frames*text_card", &[frames, self.cfg.text_card])?;
         let mut logits = vec![0.0f32; logits_len];
         compute.gemm_f32(
@@ -2707,6 +3044,17 @@ impl KyutaiSttAsr {
             None,
             &mut logits,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_mut() {
+            trace.record_rows(
+                self.weights.blocks.len(),
+                None,
+                "logits",
+                &logits,
+                frames,
+                self.cfg.text_card,
+            );
+        }
         KyutaiSttTextLogits::new(frames, self.cfg.text_card, logits)
     }
 
@@ -2900,6 +3248,51 @@ mod tests {
         config
             .validate_for_forward()
             .expect("tiny config is well-formed");
+    }
+
+    /// Synthetic self-consistency only (not upstream numerical parity): the
+    /// CPU visible-window path must have the same exact values as direct
+    /// single-row `Compute` softmax calls, including context-1, pre-window,
+    /// and the sliding-window boundary. Masked columns are never allowed to
+    /// retain stale probabilities from the previous query.
+    #[test]
+    fn cpu_visible_context_softmax_matches_single_row_self_consistency() {
+        let compute = Compute::cpu();
+        for &(frames, context) in &[(5usize, 1usize), (5, 3), (11, 8), (11, 9), (11, 12)] {
+            let scores: Vec<f32> = (0..frames * frames)
+                .map(|index| (index as f32 - 7.0) / 3.0)
+                .collect();
+            let mut probs = vec![f32::NAN; frames * frames];
+            softmax_visible_context_cpu(&compute, &scores, &mut probs, frames, context)
+                .expect("CPU visible-window softmax");
+            for query in 0..frames {
+                let window_start = query.saturating_add(1).saturating_sub(context);
+                let window_end = query + 1;
+                let row_start = query * frames;
+                let mut expected = vec![0.0f32; window_end - window_start];
+                compute
+                    .softmax_f32(
+                        &scores[row_start + window_start..row_start + window_end],
+                        &mut expected,
+                        1,
+                        window_end - window_start,
+                    )
+                    .expect("direct CPU single-row softmax");
+                assert_eq!(
+                    &probs[row_start + window_start..row_start + window_end],
+                    expected.as_slice(),
+                    "visible row changed at frames={frames}, context={context}, query={query}"
+                );
+                for (column, &value) in probs[row_start..row_start + frames].iter().enumerate() {
+                    if column < window_start || column >= window_end {
+                        assert_eq!(
+                            value, 0.0,
+                            "masked probability is nonzero at frames={frames}, context={context}, query={query}, column={column}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

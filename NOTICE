@@ -124,6 +124,17 @@ runtime additionally surfaces a deployer-facing attribution string
 `vokra_model_attribution` / the vokra-cli banner) so downstream
 applications can meet the display obligation (FR-MD-09).
 
+The Kyutai STT incremental language-model component in
+`crates/vokra-models/src/kyutai_stt/streaming_lm.rs` is an original
+first-party Rust reimplementation of the published Moshi `LMGen` streaming
+semantics at commit `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`; no literal
+upstream source code is copied.  The pinned Moshi source package is
+MIT-licensed (pinned `moshi/LICENSE`).  This attribution records the source of the
+implementation's semantics; it does not claim that a license attaches to
+mathematical semantics.  This component does not by itself grant
+redistribution rights for Kyutai STT weights, Mimi assets, or a complete
+speech pipeline.
+
 This attribution is separate from the EU AI Act §50 AI-generated-audio
 disclosure obligation. The disclosure obligation is enforced at output
 time by the runtime's `WatermarkConfig` API and is orthogonal to this
