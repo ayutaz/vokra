@@ -38,6 +38,54 @@ pub struct VibeVoiceRealtimeTtsOutput {
     pub eos_logit: f32,
 }
 
+/// One caller-owned Realtime Qwen2 KV-cache layer in Vokra's native layout.
+///
+/// The buffers are post-RoPE, row-major `[position, kv-head, head-dim]`
+/// values.  This type deliberately carries no framework-layout tag: a
+/// foreign cache with the same element count cannot be distinguished from a
+/// native snapshot here.  The authenticated preset bridge must establish the
+/// transpose and post-RoPE contract before constructing this value.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+pub(crate) struct VibeVoiceRealtimeKvCacheLayer<'a> {
+    /// Post-RoPE keys in `[position, kv-head, head-dim]` order.
+    pub(crate) keys: &'a [f32],
+    /// Values in `[position, kv-head, head-dim]` order.
+    pub(crate) values: &'a [f32],
+}
+
+/// Caller-owned snapshot for one Realtime Qwen2 stack.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+pub(crate) struct VibeVoiceRealtimeKvCacheSnapshot<'a> {
+    /// Number of cached positions represented by every layer.
+    pub(crate) position: usize,
+    /// Exactly one layer entry per configured Qwen2 decoder layer.
+    pub(crate) layers: &'a [VibeVoiceRealtimeKvCacheLayer<'a>],
+}
+
+/// The text/TTS cache pair used by one official Realtime generation branch.
+///
+/// The pair is imported transactionally: invalid text or TTS input leaves both
+/// existing stacks unchanged.  The negative branch uses its own pair for the
+/// official `neg_lm`/`neg_tts_lm` outputs.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+pub(crate) struct VibeVoiceRealtimeLanguageKvCachePair<'a> {
+    /// Native-layout text LM snapshot.
+    pub(crate) text: VibeVoiceRealtimeKvCacheSnapshot<'a>,
+    /// Native-layout TTS LM snapshot.
+    pub(crate) tts: VibeVoiceRealtimeKvCacheSnapshot<'a>,
+}
+
+#[derive(Debug, Clone)]
+struct VibeVoiceRealtimeLanguageShared {
+    embedding: Arc<Vec<f32>>,
+    tts_input_types: Arc<Vec<f32>>,
+    eos_fc1: Arc<Dense>,
+    eos_fc2: Arc<Dense>,
+}
+
 /// An independently cached Realtime TTS language-model branch.
 ///
 /// The official streaming generator keeps positive and negative TTS
@@ -49,10 +97,8 @@ pub struct VibeVoiceRealtimeTtsOutput {
 #[derive(Debug, Clone)]
 pub struct VibeVoiceRealtimeTtsBranch {
     backend: BackendKind,
+    shared: Arc<VibeVoiceRealtimeLanguageShared>,
     tts_lm: Qwen2Runtime,
-    tts_input_types: Vec<f32>,
-    eos_fc1: Dense,
-    eos_fc2: Dense,
 }
 
 #[derive(Debug, Clone)]
@@ -253,12 +299,9 @@ fn apply_eos_classifier(compute: &Compute, fc1: &Dense, fc2: &Dense, input: &[f3
 #[derive(Debug, Clone)]
 pub struct VibeVoiceRealtimeLanguage {
     backend: BackendKind,
-    embedding: Arc<Vec<f32>>,
+    shared: Arc<VibeVoiceRealtimeLanguageShared>,
     text_lm: Qwen2Runtime,
     tts_lm: Qwen2Runtime,
-    tts_input_types: Vec<f32>,
-    eos_fc1: Dense,
-    eos_fc2: Dense,
 }
 
 impl VibeVoiceRealtimeLanguage {
@@ -306,14 +349,17 @@ impl VibeVoiceRealtimeLanguage {
             "vibevoice realtime EOS classifier",
         )?;
         let _ = Compute::for_backend(backend, VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS)?;
+        let shared = Arc::new(VibeVoiceRealtimeLanguageShared {
+            embedding,
+            tts_input_types: Arc::new(tts_input_types),
+            eos_fc1: Arc::new(eos_fc1),
+            eos_fc2: Arc::new(eos_fc2),
+        });
         Ok(Self {
             backend,
-            embedding,
+            shared,
             text_lm,
             tts_lm,
-            tts_input_types,
-            eos_fc1,
-            eos_fc2,
         })
     }
 
@@ -331,6 +377,21 @@ impl VibeVoiceRealtimeLanguage {
     pub fn reset(&mut self) {
         self.text_lm.reset();
         self.tts_lm.reset();
+    }
+
+    /// Imports the text and TTS KV snapshots as one atomic operation.
+    ///
+    /// The caller owns the source buffers; this method only borrows them and
+    /// the Qwen2 importer copies them after validating the native shape.  No
+    /// framework cache ordering is inferred, and a same-count foreign layout
+    /// remains caller-side contract data.  If either snapshot is malformed,
+    /// both existing caches and positions remain unchanged.
+    #[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+    pub(crate) fn import_kv_cache_pair(
+        &mut self,
+        pair: VibeVoiceRealtimeLanguageKvCachePair<'_>,
+    ) -> Result<()> {
+        import_kv_cache_pair(&mut self.text_lm, &mut self.tts_lm, pair)
     }
 
     /// Runs the four-layer text LM with no final normalization.
@@ -392,18 +453,18 @@ impl VibeVoiceRealtimeLanguage {
     ) -> Result<VibeVoiceRealtimeTtsOutput> {
         let embeddings = prepare_tts_embeddings(
             input_ids,
-            &self.embedding,
+            self.shared.embedding.as_slice(),
             151_936,
             HIDDEN,
             lm_last_hidden_state,
-            &self.tts_input_types,
+            self.shared.tts_input_types.as_slice(),
             tts_text_masks,
         )?;
         run_tts_prefill(
             &mut self.tts_lm,
             self.backend,
-            &self.eos_fc1,
-            &self.eos_fc2,
+            self.shared.eos_fc1.as_ref(),
+            self.shared.eos_fc2.as_ref(),
             &embeddings,
             input_ids.len(),
         )
@@ -423,18 +484,18 @@ impl VibeVoiceRealtimeLanguage {
     ) -> Result<VibeVoiceRealtimeTtsOutput> {
         let embedding = prepare_tts_step_embedding(
             input_id,
-            &self.embedding,
+            self.shared.embedding.as_slice(),
             151_936,
             HIDDEN,
             lm_last_hidden_state,
-            &self.tts_input_types,
+            self.shared.tts_input_types.as_slice(),
             is_text,
         )?;
         run_tts_step(
             &mut self.tts_lm,
             self.backend,
-            &self.eos_fc1,
-            &self.eos_fc2,
+            self.shared.eos_fc1.as_ref(),
+            self.shared.eos_fc2.as_ref(),
             &embedding,
         )
     }
@@ -451,10 +512,8 @@ impl VibeVoiceRealtimeLanguage {
     pub fn fork_tts_lm_branch(&self) -> VibeVoiceRealtimeTtsBranch {
         VibeVoiceRealtimeTtsBranch {
             backend: self.backend,
+            shared: Arc::clone(&self.shared),
             tts_lm: self.tts_lm.clone(),
-            tts_input_types: self.tts_input_types.clone(),
-            eos_fc1: self.eos_fc1.clone(),
-            eos_fc2: self.eos_fc2.clone(),
         }
     }
 
@@ -466,10 +525,22 @@ impl VibeVoiceRealtimeLanguage {
     pub fn fork_empty_tts_lm_branch(&self) -> VibeVoiceRealtimeTtsBranch {
         VibeVoiceRealtimeTtsBranch {
             backend: self.backend,
+            shared: Arc::clone(&self.shared),
             tts_lm: self.tts_lm.fork_empty_cache(),
-            tts_input_types: self.tts_input_types.clone(),
-            eos_fc1: self.eos_fc1.clone(),
-            eos_fc2: self.eos_fc2.clone(),
+        }
+    }
+
+    /// Creates an empty text+TTS branch sharing immutable authenticated
+    /// weights.  The branch has independent caches for the official negative
+    /// `neg_lm` and `neg_tts_lm` outputs.
+    #[must_use]
+    #[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+    pub(crate) fn fork_empty_language_branch(&self) -> Self {
+        Self {
+            backend: self.backend,
+            shared: Arc::clone(&self.shared),
+            text_lm: self.text_lm.fork_empty_cache(),
+            tts_lm: self.tts_lm.fork_empty_cache(),
         }
     }
 }
@@ -501,21 +572,20 @@ impl VibeVoiceRealtimeTtsBranch {
         lm_last_hidden_state: &[f32],
         tts_text_masks: &[bool],
     ) -> Result<VibeVoiceRealtimeTtsOutput> {
-        let base_embedding = self.tts_lm.shared_embedding();
         let embeddings = prepare_tts_embeddings(
             input_ids,
-            base_embedding.as_slice(),
+            self.shared.embedding.as_slice(),
             151_936,
             HIDDEN,
             lm_last_hidden_state,
-            &self.tts_input_types,
+            self.shared.tts_input_types.as_slice(),
             tts_text_masks,
         )?;
         run_tts_prefill(
             &mut self.tts_lm,
             self.backend,
-            &self.eos_fc1,
-            &self.eos_fc2,
+            self.shared.eos_fc1.as_ref(),
+            self.shared.eos_fc2.as_ref(),
             &embeddings,
             input_ids.len(),
         )
@@ -528,24 +598,55 @@ impl VibeVoiceRealtimeTtsBranch {
         lm_last_hidden_state: &[f32],
         is_text: bool,
     ) -> Result<VibeVoiceRealtimeTtsOutput> {
-        let base_embedding = self.tts_lm.shared_embedding();
         let embedding = prepare_tts_step_embedding(
             input_id,
-            base_embedding.as_slice(),
+            self.shared.embedding.as_slice(),
             151_936,
             HIDDEN,
             lm_last_hidden_state,
-            &self.tts_input_types,
+            self.shared.tts_input_types.as_slice(),
             is_text,
         )?;
         run_tts_step(
             &mut self.tts_lm,
             self.backend,
-            &self.eos_fc1,
-            &self.eos_fc2,
+            self.shared.eos_fc1.as_ref(),
+            self.shared.eos_fc2.as_ref(),
             &embedding,
         )
     }
+}
+
+#[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+fn import_kv_cache_pair(
+    text_lm: &mut Qwen2Runtime,
+    tts_lm: &mut Qwen2Runtime,
+    pair: VibeVoiceRealtimeLanguageKvCachePair<'_>,
+) -> Result<()> {
+    // Stage both imports on empty-cache forks.  Qwen2 validates every layer
+    // before replacing a staged cache, so an invalid second snapshot cannot
+    // mutate either live stack.  Successful assignment only moves the fully
+    // validated staged runtimes into place.
+    let mut staged_text = text_lm.fork_empty_cache();
+    import_kv_cache_snapshot(&mut staged_text, pair.text)?;
+    let mut staged_tts = tts_lm.fork_empty_cache();
+    import_kv_cache_snapshot(&mut staged_tts, pair.tts)?;
+    *text_lm = staged_text;
+    *tts_lm = staged_tts;
+    Ok(())
+}
+
+#[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+fn import_kv_cache_snapshot(
+    runtime: &mut Qwen2Runtime,
+    snapshot: VibeVoiceRealtimeKvCacheSnapshot<'_>,
+) -> Result<()> {
+    let layers: Vec<(&[f32], &[f32])> = snapshot
+        .layers
+        .iter()
+        .map(|layer| (layer.keys, layer.values))
+        .collect();
+    runtime.import_kv_cache_snapshot_parts(snapshot.position, &layers)
 }
 
 fn run_tts_step(
@@ -602,6 +703,176 @@ mod tests {
         assert_eq!(text.num_key_value_heads, 2);
         assert_eq!(text.intermediate_size, 4_864);
         assert_eq!(text.max_position_embeddings, 8_192);
+    }
+
+    #[test]
+    fn language_cache_pair_import_is_atomic_across_text_and_tts() {
+        let mut language = test_language();
+        let text_keys = [1.0_f32, 2.0];
+        let text_values = [3.0_f32, 4.0];
+        let tts_keys = [5.0_f32, 6.0];
+        let tts_values = [7.0_f32, 8.0];
+        let text_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &text_keys,
+            values: &text_values,
+        }];
+        let tts_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &tts_keys,
+            values: &tts_values,
+        }];
+        let pair = VibeVoiceRealtimeLanguageKvCachePair {
+            text: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &text_layers,
+            },
+            tts: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &tts_layers,
+            },
+        };
+        language.import_kv_cache_pair(pair).unwrap();
+        assert_eq!(language.text_lm.test_position(), 1);
+        assert_eq!(language.tts_lm.test_position(), 1);
+
+        let mut expected = language.clone();
+        let invalid_tts_values = [9.0_f32];
+        let invalid_tts_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &tts_keys,
+            values: &invalid_tts_values,
+        }];
+        let invalid_pair = VibeVoiceRealtimeLanguageKvCachePair {
+            text: pair.text,
+            tts: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &invalid_tts_layers,
+            },
+        };
+        assert!(language.import_kv_cache_pair(invalid_pair).is_err());
+        assert_eq!(language.text_lm.test_position(), 1);
+        assert_eq!(language.tts_lm.test_position(), 1);
+
+        let text_input = [0.2_f32, 0.3, 0.4, 0.5];
+        let expected_text = expected.text_lm.step_embedding(&text_input).unwrap();
+        let actual_text = language.text_lm.step_embedding(&text_input).unwrap();
+        assert_eq!(actual_text, expected_text);
+        let tts_input = [0.5_f32, 0.4, 0.3, 0.2];
+        let expected_tts = expected.tts_lm.step_embedding(&tts_input).unwrap();
+        let actual_tts = language.tts_lm.step_embedding(&tts_input).unwrap();
+        assert_eq!(actual_tts, expected_tts);
+    }
+
+    #[test]
+    fn empty_language_branch_has_independent_text_and_tts_caches() {
+        let mut positive = test_language();
+        let mut negative = positive.fork_empty_language_branch();
+        assert!(Arc::ptr_eq(&positive.shared, &negative.shared));
+
+        let positive_keys = [1.0_f32, 2.0];
+        let positive_values = [3.0_f32, 4.0];
+        let positive_text_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &positive_keys,
+            values: &positive_values,
+        }];
+        let positive_tts_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &positive_keys,
+            values: &positive_values,
+        }];
+        let positive_pair = VibeVoiceRealtimeLanguageKvCachePair {
+            text: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &positive_text_layers,
+            },
+            tts: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &positive_tts_layers,
+            },
+        };
+        let negative_keys = [9.0_f32, 10.0];
+        let negative_values = [11.0_f32, 12.0];
+        let negative_text_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &negative_keys,
+            values: &negative_values,
+        }];
+        let negative_tts_layers = [VibeVoiceRealtimeKvCacheLayer {
+            keys: &negative_keys,
+            values: &negative_values,
+        }];
+        let negative_pair = VibeVoiceRealtimeLanguageKvCachePair {
+            text: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &negative_text_layers,
+            },
+            tts: VibeVoiceRealtimeKvCacheSnapshot {
+                position: 1,
+                layers: &negative_tts_layers,
+            },
+        };
+        positive.import_kv_cache_pair(positive_pair).unwrap();
+        negative.import_kv_cache_pair(negative_pair).unwrap();
+
+        let positive_text_input = [0.2_f32, 0.3, 0.4, 0.5];
+        let positive_tts_input = [0.5_f32, 0.4, 0.3, 0.2];
+        let expected_positive_text = positive
+            .clone()
+            .text_lm
+            .step_embedding(&positive_text_input)
+            .unwrap();
+        let expected_positive_tts = positive
+            .clone()
+            .tts_lm
+            .step_embedding(&positive_tts_input)
+            .unwrap();
+        negative
+            .text_lm
+            .step_embedding(&[0.2, 0.3, 0.4, 0.5])
+            .unwrap();
+        negative
+            .tts_lm
+            .step_embedding(&[0.5, 0.4, 0.3, 0.2])
+            .unwrap();
+        assert_eq!(
+            positive
+                .text_lm
+                .step_embedding(&positive_text_input)
+                .unwrap(),
+            expected_positive_text
+        );
+        assert_eq!(
+            positive.tts_lm.step_embedding(&positive_tts_input).unwrap(),
+            expected_positive_tts
+        );
+        assert_eq!(positive.text_lm.test_position(), 2);
+        assert_eq!(positive.tts_lm.test_position(), 2);
+        assert_eq!(negative.text_lm.test_position(), 2);
+        assert_eq!(negative.tts_lm.test_position(), 2);
+    }
+
+    fn test_language() -> VibeVoiceRealtimeLanguage {
+        let text_lm = Qwen2Runtime::test_fixture_runtime();
+        let embedding = text_lm.shared_embedding();
+        let tts_lm = Qwen2Runtime::test_fixture_runtime();
+        let shared = Arc::new(VibeVoiceRealtimeLanguageShared {
+            embedding,
+            tts_input_types: Arc::new(vec![0.0; 8]),
+            eos_fc1: Arc::new(Dense {
+                weight: vec![0.0; 16],
+                bias: vec![0.0; 4],
+                in_features: 4,
+                out_features: 4,
+            }),
+            eos_fc2: Arc::new(Dense {
+                weight: vec![0.0; 4],
+                bias: vec![0.0],
+                in_features: 4,
+                out_features: 1,
+            }),
+        });
+        VibeVoiceRealtimeLanguage {
+            backend: BackendKind::Cpu,
+            shared,
+            text_lm,
+            tts_lm,
+        }
     }
 
     #[test]
