@@ -270,11 +270,31 @@ def api_smoke(source_file: Path) -> int:
     method_parameters = tuple(inspect.signature(release_class._apply_chat_template).parameters)
     if method_parameters != ("self", "ref_codes", "ref_text", "input_text"):
         die(f"official NeuTTSAir._apply_chat_template signature drifted: {method_parameters}")
-    # Exercise argument acceptance against a deliberately absent local path.
-    # local_files_only prevents any network or checkpoint access; a missing
-    # config is the expected terminal error after Transformers parses kwargs.
+    # Exercise argument acceptance against a tiny local Qwen2 config with no
+    # weight file. local_files_only prevents network access; the expected
+    # missing-weight error proves config/class/loader dispatch without loading
+    # a checkpoint or running a forward/generation step.
     with tempfile.TemporaryDirectory(prefix="neutts-air-api-smoke-") as directory:
-        missing = Path(directory) / "absent-checkpoint"
+        missing = Path(directory) / "config-only"
+        missing.mkdir()
+        (missing / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen2ForCausalLM"],
+                    "model_type": "qwen2",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 32,
+                    "max_position_embeddings": 32,
+                    "rms_norm_eps": 1.0e-6,
+                    "rope_theta": 10_000.0,
+                }
+            ),
+            encoding="utf-8",
+        )
         try:
             AutoModelForCausalLM.from_pretrained(
                 str(missing),

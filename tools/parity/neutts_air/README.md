@@ -75,7 +75,8 @@ uv run --project tools/parity/neutts_air --frozen --no-sync --python 3.12 \
 The smoke binds Transformers 5.10.4, the official `from_pretrained` keyword
 seam, and the fixed `_apply_chat_template(self, ref_codes, ref_text,
 input_text)` signature. It uses `local_files_only=True` against an absent
-checkpoint and never loads weights. A production VAST wrapper must invoke this
+checkpoint weight file with a tiny config-only directory; it never loads
+weights or runs a forward/generation step. A production VAST wrapper must invoke this
 gate after sync/source checkout and before model acquisition.
 
 The VAST worker is fail-closed behind the standard-library-only
