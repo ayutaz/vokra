@@ -699,7 +699,7 @@ def run(project: Path, full_output: Path, compact_output: Path) -> int:
 
 def self_test() -> int:
     assert normalized_name("Foo_bar") == "foo-bar"
-    assert identity("torch", "2.4.1+CPU") == "torch==2.4.1+cpu"
+    assert identity("torch", "2.13.0+CPU") == "torch==2.13.0+cpu"
     assert compare_multiset(["a==1"], ["a==1"])["exact"]
     mismatch = compare_multiset(["a==1"], ["a==2"])
     assert mismatch["missing"] == ["a==1"] and mismatch["unexpected"] == ["a==2"]
