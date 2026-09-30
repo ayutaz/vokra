@@ -11,9 +11,11 @@ keeps third-party Python runtime dependencies at zero.
 `9efcd16eb63b857f48fc00d0b83d1113defd578b` (110 successful checks / 13
 expected skips / 0 failures) and the generated C header.
 
-The workspace is `0.3.0` development with no Git tag or published release;
-the package metadata remains `0.1.0.dev0` for unpublished source wheels. This
-checkout must not be documented as an installed `vokra==0.1.0` release. The source tree exports `Session`,
+The workspace is `0.3.0`. The `v0.3.0` GitHub source release (2026-09-20)
+attaches the four platform wheels (`vokra-0.3.0-py3-none-*.whl`) as release
+assets; nothing is published on PyPI or TestPyPI. Source checkouts keep the
+development metadata `0.1.0.dev0` (release builds set `VOKRA_BUILD_VERSION`).
+This checkout must not be documented as an installed `vokra==0.1.0` release. The source tree exports `Session`,
 `Stream`, `Event`, and the typed `VokraError` hierarchy without loading the
 native library at import time. `vokra.__abi_version__` is not exposed: the C
 header has a runtime version function, not a separately versioned ABI symbol.
@@ -80,7 +82,12 @@ the failing native call.
 
 ## Development setup
 
-Use uv for all Python work. From the repository root:
+Use uv for all Python work. `uv sync` installs the package in editable mode,
+which runs the same build hook as a wheel build, so the host native library
+must already be present under `bindings/python/src/vokra/_lib/` (see
+[Building an unpublished development wheel](#building-an-unpublished-development-wheel));
+otherwise the sync fails with "Vokra wheel build requires a non-empty native
+library". Then, from the repository root:
 
 ```sh
 uv sync --python 3.12 --project bindings/python --extra dev
