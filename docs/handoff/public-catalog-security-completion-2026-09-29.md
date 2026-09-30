@@ -2848,6 +2848,70 @@ The fresh all-pages VAST readback returned `success=true`, `instances=[]`,
 `show volumes --type all --raw` read returned `[]`. No VAST worker was rented
 in this slice and no retained compute or separate storage volume was found.
 
+### Projected-K/V review and stale Canary closure (21:20 UTC)
+
+Root accepted the two-file FireRed projected-K/V preparation change as
+`26e583347ae7fd51e45cdb9d6ff304d76d879483`, based on
+`4678f40f4667971a5649e5a71abcf56967fe3ce1`. The reader validates the
+authenticated source rank-four `[N*B, heads, prefix, head_dim]` axes and
+explicit source row/last-prefix selection before flattening the selected
+head-major row to the native observation. Real packets bind the existing
+authenticated 20-head decoder configuration; smaller schema-only fixtures
+cannot authorize the real leg. The parser retains and checks projected head
+geometry across rows and layers. An unconditional OPEN abort before model
+opening is unchanged.
+
+Review corrected an ambiguous helper lifetime, a prospective eight-argument
+Clippy warning, a non-finite negative that previously broke shape before
+reaching the finite-value guard, and an overflow negative whose first product
+still fit in `usize`. Its first revised value also overflowed the fixture's
+signed JSON encoding rather than the intended multiplication. The accepted
+fixture uses representable dimensions and checks the exact multiplication
+overflow diagnostic without allocating a large payload; NaN/infinity tests
+now retain valid nested geometry and check the actual finite-value diagnostic.
+Distinct multi-head values and unequal prefix/head axes exercise ordering.
+Root independently passed formatting, forbidden-symbol, zero-dependency,
+documentation-reference and diff checks, and counted 32 test declarations:
+30 non-ignored and two ignored. Those are source counts, not executed Rust
+test results. Rust compilation, Clippy and real-weight numerical/Apple checks
+remain pending. This commit is intentionally not added to frozen integrated
+head `58177c040625f8cb714d2f8689c697e4a441cbe5`; nothing was pushed.
+
+Read-only review of the Canary Flash/v2 and SpeechBrain Lang-ID replacement
+paths found no new VAST-ready real-weight row. Existing Canary dependency
+facts contain primary license/native evidence for NumPy, SciPy and soxr, but
+remain blocked by their recorded forbidden-license signals and pending exact
+owner/legal decisions. These are historical facts for audited head
+`87da78dc7709075d9dc23b797fc978b9c678c777`, not the current closure: the
+manifest's source snapshot binds project SHA-256
+`31c002238c213d64f78f38f68f613f168d12991df6b3aac48dd95662da85245e`
+and lock SHA-256
+`004f0b4d60ba51caf655789eff6e02afb3fa896f837f8d4def909b5cce33b730`,
+whereas the current checkout has project
+`473d101eb8ac955cba98c605dd41715899c21b6e4e57292685edd2edcbd57838`
+and lock
+`8daa624c8f8f37dedb553aed7af4a0fc52e8161e95f1525727359c921796fbe3`.
+The current project pins Torch 2.13.0. Fresh exact-closure audit/API evidence
+is therefore needed before those older package facts can support an execution
+decision. The recorded Lightning/OneLogger import incompatibility remains a
+separate historical blocked result, not a fresh probe of the changed lock.
+No license exception, model execution or approval is inferred.
+
+The integrated controller's fixed collector-source AST pin binding and stale
+base correction were reviewed. Its production recovery path still allowed
+recursive source SCP after a failed remote size/count guard, and the remote
+enumeration skipped report-size and directory-symlink hazards. Further bounded
+pre-transfer rejection and regression coverage were delegated before rent;
+agent-reported offline success is not acceptance of that production path.
+The full 194-row catalog and attachment scope remain open, with no new
+real-weight, Apple or publication verdict in this slice.
+
+The subsequent all-pages `show instances-v1 --all --raw` read returned
+`success=true`, `instances=[]`, `total_instances=0` and `next_token=null`;
+the independent volume read returned `[]`. No worker was rented in this
+slice. Documentation-reference, runbook-path, forbidden-symbol,
+zero-dependency and diff gates passed for this management update.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
