@@ -2150,6 +2150,29 @@ legal/source blockers and outstanding independent real-weight CPU and Apple
 CPU/Metal/no-fallback verdicts are unchanged. No new instance was rented,
 artifact uploaded or unresolved public row promoted by the merge.
 
+### FireRed primary-source trace correction identified (17:28 UTC)
+
+Root read the official FireRed source tree at revision
+`834635e4cf277ed8ca92049fc375b17c3dc20748` and authenticated the
+12,651-byte `conformer_encoder.py` Git blob
+`b41e68e6eb2bed90611e65c6bc5e2025dc6753df` by recomputing its Git-blob SHA-1.
+Its SHA-256 is
+`ea6412fdffc33b558a610d67143fd3211b76fc5a7a9ccac88ae2110f1fd3d320`.
+The [fixed official implementation](https://github.com/FireRedTeam/FireRedASR/blob/834635e4cf277ed8ca92049fc375b17c3dc20748/fireredasr/models/module/conformer_encoder.py)
+returns the centered relative-position tensor from `RelPositionalEncoding`;
+it does not return a tuple containing the hidden stream. Consequently the
+uncommitted trace draft's hidden-stream positional tap is incorrect and is
+not accepted, committed or numerically tested. Its correction must observe
+the actual native positional slice, not a recomputed reference mirror.
+
+The same source pads six zero-valued time frames before encoder subsampling
+by default, retains the original input lengths, and constructs a downsampled
+validity mask from those original lengths. The existing native route's
+padding/mask equivalence is under investigation; no numerical verdict or
+tolerance change is inferred. Source inspection does not execute a model or
+establish new license/operator approval. Decoder/beam and real-weight CPU and
+Apple gates remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
