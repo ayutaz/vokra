@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
+#!/usr/bin/env -S uv run --project tools/parity/nsnet2_reference --frozen --python 3.12 python
 """Dump an independent Microsoft NSNet2 ONNX reference waveform.
 
 This tool deliberately does not mirror the Rust model implementation. It runs
@@ -13,7 +13,7 @@ Pinned source revision:
 
 Run only through the repository's uv-managed Python 3.12 environment::
 
-    uv run --project tools/parity --python 3.12 python \
+    uv run --project tools/parity/nsnet2_reference --python 3.12 python \
         tools/parity/nsnet2_dump_reference.py \
         --onnx /path/to/nsnet2-20ms-baseline.onnx \
         --input-wav tests/parity/silero_vad/test_16k.wav \
@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import json
 import os
+import struct
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -38,7 +39,6 @@ from typing import Callable
 import numpy as np
 import onnx
 from onnx.reference import ReferenceEvaluator
-import soundfile as sf
 
 
 PINNED_ONNX_SHA256 = "88429b6253600be840ab816f46f466811d20078142fb12bff8cafe2b27bd4ca9"
@@ -109,6 +109,88 @@ def publish_no_replace(path: Path, writer: Callable[[Path], None], label: str) -
                 os.unlink(temporary_name)
             except FileNotFoundError:
                 pass
+
+
+def read_float32_wav(path: Path) -> tuple[np.ndarray, int]:
+    """Read the narrow IEEE_FLOAT32 WAV contract used by the Rust verifier.
+
+    The parser is intentionally independent of platform audio libraries. It
+    accepts a little-endian RIFF/WAVE file with one mono 32-bit IEEE float
+    data stream, while checking every RIFF/chunk bound before interpreting
+    bytes as samples.
+    """
+
+    raw = path.read_bytes()
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        raise ValueError("WAV must start with a RIFF/WAVE header")
+    riff_size = struct.unpack_from("<I", raw, 4)[0]
+    if riff_size != len(raw) - 8:
+        raise ValueError("RIFF size does not match the file length")
+
+    fmt: bytes | None = None
+    data: bytes | None = None
+    offset = 12
+    limit = len(raw)
+    while offset < limit:
+        if limit - offset < 8:
+            raise ValueError("truncated RIFF chunk header")
+        chunk_id = raw[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", raw, offset + 4)[0]
+        chunk_start = offset + 8
+        chunk_end = chunk_start + chunk_size
+        padded_end = chunk_end + (chunk_size & 1)
+        if chunk_end < chunk_start or padded_end < chunk_end or padded_end > limit:
+            raise ValueError("RIFF chunk exceeds file bounds")
+        chunk = raw[chunk_start:chunk_end]
+        if chunk_id == b"fmt ":
+            if fmt is not None:
+                raise ValueError("WAV contains duplicate fmt chunks")
+            fmt = chunk
+        elif chunk_id == b"data":
+            if data is not None:
+                raise ValueError("WAV contains duplicate data chunks")
+            data = chunk
+        offset = padded_end
+    if offset != limit:
+        raise ValueError("RIFF chunk table does not end at the file boundary")
+    if fmt is None or len(fmt) != 16:
+        raise ValueError("WAV fmt chunk is missing or not the canonical 16-byte form")
+    if data is None or not data:
+        raise ValueError("WAV data chunk is missing or empty")
+
+    audio_format, channels, sample_rate, byte_rate, block_align, bits = struct.unpack_from(
+        "<HHIIHH", fmt, 0
+    )
+    if (audio_format, channels, bits) != (3, 1, 32):
+        raise ValueError("WAV must be mono IEEE_FLOAT32")
+    if sample_rate != SAMPLE_RATE:
+        raise ValueError(f"WAV must be {SAMPLE_RATE} Hz, got {sample_rate} Hz")
+    if (block_align, byte_rate) != (4, SAMPLE_RATE * 4):
+        raise ValueError("WAV fmt byte rate or block alignment is inconsistent")
+    if len(data) % block_align:
+        raise ValueError("WAV data is not aligned to float32 samples")
+    signal = np.frombuffer(data, dtype="<f4").copy()
+    if signal.size == 0:
+        raise ValueError("WAV contains no samples")
+    return signal, sample_rate
+
+
+def write_float32_wav(path: Path, signal: np.ndarray, sample_rate: int) -> None:
+    """Write the canonical 44-byte mono IEEE_FLOAT32 RIFF/WAVE form."""
+
+    samples = np.asarray(signal, dtype=np.float32)
+    if samples.ndim != 1 or samples.size == 0:
+        raise ValueError("WAV output must be a non-empty one-dimensional signal")
+    if sample_rate != SAMPLE_RATE:
+        raise ValueError(f"WAV output must be {SAMPLE_RATE} Hz, got {sample_rate} Hz")
+    payload = samples.astype("<f4", copy=False).tobytes()
+    riff_size = 36 + len(payload)
+    if riff_size > 0xFFFFFFFF:
+        raise ValueError("WAV output exceeds the RIFF size limit")
+    header = b"RIFF" + struct.pack("<I", riff_size) + b"WAVE"
+    header += b"fmt " + struct.pack("<IHHIIHH", 16, 3, 1, sample_rate, sample_rate * 4, 4, 32)
+    header += b"data" + struct.pack("<I", len(payload))
+    path.write_bytes(header + payload)
 
 
 def official_stft(signal: np.ndarray) -> np.ndarray:
@@ -182,6 +264,21 @@ def main() -> None:
     args = parse_args()
     if args.self_test:
         with tempfile.TemporaryDirectory(prefix="vokra-nsnet2-dump-selftest-", dir=Path.cwd()) as root:
+            root_path = Path(root)
+            wav = root_path / "roundtrip.wav"
+            samples = np.array([-0.75, 0.0, 0.25, 1.0], dtype=np.float32)
+            write_float32_wav(wav, samples, SAMPLE_RATE)
+            roundtrip, rate = read_float32_wav(wav)
+            if rate != SAMPLE_RATE or not np.array_equal(roundtrip, samples):
+                raise SystemExit("nsnet2_dump_reference: self-test failed: WAV roundtrip")
+            malformed = root_path / "malformed.wav"
+            malformed.write_bytes(wav.read_bytes()[:43])
+            try:
+                read_float32_wav(malformed)
+            except ValueError:
+                pass
+            else:
+                raise SystemExit("nsnet2_dump_reference: self-test failed: malformed WAV accepted")
             output = Path(root) / "nested" / "reference.wav"
             publish_no_replace(output, lambda path: path.write_bytes(b"fixture"), "output WAV")
             if output.read_bytes() != b"fixture":
@@ -221,13 +318,10 @@ def main() -> None:
             f"sha256={onnx_sha}, expected={PINNED_ONNX_SHA256}"
         )
 
-    signal, sample_rate = sf.read(args.input_wav, dtype="float32", always_2d=False)
-    if sample_rate != SAMPLE_RATE:
-        raise SystemExit(f"input must be {SAMPLE_RATE} Hz, got {sample_rate} Hz")
-    if signal.ndim != 1:
-        raise SystemExit(f"input must be mono, got shape {signal.shape}")
-    if signal.size == 0:
-        raise SystemExit("input WAV is empty")
+    try:
+        signal, sample_rate = read_float32_wav(args.input_wav)
+    except ValueError as exc:
+        raise SystemExit(f"invalid input WAV: {exc}") from exc
 
     spectrum = official_stft(signal)
     feature = np.log10(np.maximum(np.abs(spectrum) ** 2, 1e-12))
@@ -246,7 +340,7 @@ def main() -> None:
 
     publish_no_replace(
         args.output_wav,
-        lambda path: sf.write(path, enhanced.astype(np.float32), SAMPLE_RATE, subtype="FLOAT"),
+        lambda path: write_float32_wav(path, enhanced, SAMPLE_RATE),
         "output WAV",
     )
     if args.dump_npz is not None:

@@ -142,6 +142,7 @@ if ((self_test)); then
   fi
   for needle in "$DISTIL_REPO" "$DISTIL_REVISION" "$KOTOBA_REPO" "$KOTOBA_REVISION" \
     "$AUDIO_SHA256" "$AUDIO_BYTES" "dump_reference.py" "NO_UPLOAD" \
+    "--api-self-test" "api-self-test.log" "api_self_test_log_sha256" \
     "--work-dir" "evidence" "git rev-parse HEAD" "tar -czf" \
     "cargo test --release -p vokra-models" "--locked" "CARGO_BUILD_JOBS=1" \
     "verify_file_identity" "verify_license_signoffs" "DISTIL_MODEL_SHA256" \
@@ -153,6 +154,13 @@ if ((self_test)); then
     "CARGO_BUILD_JOBS=1"; do
     grep -Fq -- "$needle" "$0" || die "self-test missing $needle"
   done
+  sync_line="$(awk '/^uv sync --frozen --project tools\/parity\/whisper_extras 2>&1/ { print NR; exit }' "$0")"
+  api_line="$(awk '/dump_reference\.py --api-self-test 2>&1/ { print NR; exit }' "$0")"
+  build_line="$(awk '/^cargo build --release -p vokra-cli 2>&1/ { print NR; exit }' "$0")"
+  [[ "$sync_line" =~ ^[0-9]+$ && "$api_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] \
+    || die "self-test cannot locate sync/API/build sequence"
+  (( sync_line < api_line && api_line < build_line )) \
+    || die "self-test requires API self-test after uv sync and before Cargo build"
   verify_license_signoffs
   ! grep -Eq 'git[[:space:]]+push|publish-one\.sh|upload\.sh' "$0" || die "publication command present"
   echo "run_vast_validation self-test: OK"
@@ -194,6 +202,11 @@ git rev-parse HEAD > "$evidence/git-head.txt"
 } > "$evidence/input-sha256.txt"
 
 uv sync --frozen --project tools/parity/whisper_extras 2>&1 | tee "$evidence/setup.log"
+uv run --frozen --project tools/parity/whisper_extras python \
+  tools/parity/whisper_extras/dump_reference.py --api-self-test 2>&1 \
+  | tee "$evidence/api-self-test.log"
+api_self_test_log_sha256="$(sha256sum "$evidence/api-self-test.log" | awk '{print $1}')"
+printf 'api_self_test_log_sha256=%s\n' "$api_self_test_log_sha256" >> "$evidence/input-sha256.txt"
 cargo build --release -p vokra-cli 2>&1 | tee -a "$evidence/setup.log"
 
 download() {

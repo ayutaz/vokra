@@ -40,6 +40,22 @@ pub const VIBEVOICE_TOKENIZER_HOT_OPS: &[HotOp] = &[
     HotOp::RmsNorm,
 ];
 
+/// Learned operations used by the causal acoustic decoder.
+///
+/// Keep this registry separate from [`VIBEVOICE_TOKENIZER_HOT_OPS`]: the
+/// encoder has no transposed-convolution path, while every decoder upsample
+/// stage dispatches through `Compute::conv_transpose1d_f32`.  Reusing the
+/// encoder registry would let an uncovered backend pass decoder preflight and
+/// only fail after partial execution (or, worse, invite a CPU fallback).
+pub const VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS: &[HotOp] = &[
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::ConvTranspose1d,
+    HotOp::Gemm,
+    HotOp::Gelu,
+    HotOp::RmsNorm,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenizerKind {
     Acoustic,
@@ -151,6 +167,12 @@ pub struct VibeVoiceAcousticDecoderStream {
     decoder: VibeVoiceAcousticDecoder,
     caches: Vec<Vec<f32>>,
 }
+
+/// The authenticated Realtime checkpoint has exactly this many tensors in
+/// `model.acoustic_tokenizer.decoder.*`.  Keep this separate from the
+/// 1.5B checkpoint manifest: the two model identities must never be
+/// interchangeable merely because their decoder topology is compatible.
+pub(crate) const REALTIME_DECODER_TENSOR_COUNT: usize = 276;
 
 impl VibeVoiceTokenizerEncoder {
     /// Loads the authenticated acoustic tokenizer encoder.
@@ -377,6 +399,27 @@ impl VibeVoiceAcousticDecoder {
     /// Loads the strict acoustic decoder from an authenticated GGUF.
     pub fn from_gguf(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         super::VibeVoiceCheckpoint::from_gguf(file)?;
+        Self::from_decoder_tensors(file, backend)
+    }
+
+    /// Loads the decoder half of an authenticated Realtime GGUF.
+    ///
+    /// The Realtime wrapper performs the composite checkpoint gate before
+    /// calling this helper.  This method intentionally does not invoke the
+    /// 1.5B `VibeVoiceCheckpoint` gate: doing so would misidentify a valid
+    /// Realtime checkpoint as the 1.5B model.
+    pub(crate) fn from_realtime_tensors(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        let prefix = "model.acoustic_tokenizer.decoder.";
+        let count = file
+            .tensors()
+            .iter()
+            .filter(|info| info.name.starts_with(prefix))
+            .count();
+        validate_realtime_decoder_tensor_count(count)?;
+        Self::from_decoder_tensors(file, backend)
+    }
+
+    fn from_decoder_tensors(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         let prefix = "model.acoustic_tokenizer.decoder";
         let stem = load_conv(
             file,
@@ -420,7 +463,7 @@ impl VibeVoiceAcousticDecoder {
             head,
         };
         validate_decoder_weights(&weights)?;
-        let _ = Compute::for_backend(backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        let _ = Compute::for_backend(backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS)?;
         Ok(Self {
             weights: Arc::new(weights),
             backend,
@@ -441,7 +484,7 @@ impl VibeVoiceAcousticDecoder {
             ));
         }
         finite("vibevoice acoustic decoder latents", latents)?;
-        let compute = Compute::for_backend(self.backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        let compute = Compute::for_backend(self.backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS)?;
         let input = transpose_tc_to_ct(latents, frames, 64)?;
         let output = decode_channel_major(&compute, &input, frames, &self.weights)?;
         if output.len() != decoder_pcm_len(frames)? {
@@ -502,7 +545,8 @@ impl VibeVoiceAcousticDecoderStream {
         frames: usize,
         caches: &mut [Vec<f32>],
     ) -> Result<Vec<f32>> {
-        let compute = Compute::for_backend(self.decoder.backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        let compute =
+            Compute::for_backend(self.decoder.backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS)?;
         let input = transpose_tc_to_ct(latents, frames, 64)?;
         let mut cursor = 0;
         let mut time = frames;
@@ -545,6 +589,15 @@ impl VibeVoiceAcousticDecoderStream {
         finite("vibevoice acoustic decoder stream PCM", &output)?;
         Ok(output)
     }
+}
+
+fn validate_realtime_decoder_tensor_count(count: usize) -> Result<()> {
+    if count != REALTIME_DECODER_TENSOR_COUNT {
+        return Err(VokraError::ModelLoad(format!(
+            "vibevoice-realtime acoustic decoder: found {count} tensors under `model.acoustic_tokenizer.decoder.*`, expected exactly {REALTIME_DECODER_TENSOR_COUNT}"
+        )));
+    }
+    Ok(())
 }
 
 fn decoder_pcm_len(frames: usize) -> Result<usize> {
@@ -1331,6 +1384,14 @@ mod tests {
     }
 
     #[test]
+    fn realtime_decoder_tensor_count_gate_is_fail_closed() {
+        assert!(validate_realtime_decoder_tensor_count(276).is_ok());
+        let error = validate_realtime_decoder_tensor_count(275).unwrap_err();
+        assert!(error.to_string().contains("expected exactly 276"));
+        assert!(validate_realtime_decoder_tensor_count(277).is_err());
+    }
+
+    #[test]
     fn conv_transpose_matches_independent_scalar_and_layout_oracle() {
         let conv = TransposeConv {
             // Raw PyTorch layout [input, output, kernel].
@@ -1423,6 +1484,36 @@ mod tests {
     #[test]
     fn decoder_backend_registry_is_explicit() {
         assert!(Compute::for_backend(BackendKind::Cpu, VIBEVOICE_TOKENIZER_HOT_OPS).is_ok());
+        assert_eq!(
+            VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS,
+            &[
+                HotOp::Conv1d,
+                HotOp::GroupedConv1d,
+                HotOp::ConvTranspose1d,
+                HotOp::Gemm,
+                HotOp::Gelu,
+                HotOp::RmsNorm,
+            ]
+        );
+        assert!(!VIBEVOICE_TOKENIZER_HOT_OPS.contains(&HotOp::ConvTranspose1d));
+        assert!(Compute::for_backend(BackendKind::Cpu, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS).is_ok());
+    }
+
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn decoder_registry_rejects_cuda_without_cpu_fallback() {
+        let result = Compute::for_backend(BackendKind::Cuda, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS);
+        match result {
+            Err(VokraError::UnsupportedOp(message)) => {
+                assert!(
+                    message.contains("GroupedConv1d") || message.contains("ConvTranspose1d"),
+                    "unexpected CUDA coverage error: {message}"
+                );
+                assert!(message.contains("does not silently run the uncovered ops on the CPU"));
+            }
+            Err(other) => panic!("expected explicit CUDA coverage error, got {other:?}"),
+            Ok(_) => panic!("decoder CUDA preflight must reject uncovered ops"),
+        }
     }
 
     #[test]
