@@ -184,7 +184,7 @@ fn read_npy_f32(path: &Path) -> NpyF32 {
     );
     let version = (bytes[6], bytes[7]);
     let (header_start, header_len) = match version {
-        (1, 0) => (10, u16::from_le_bytes([bytes[8], bytes[9]]) as usize),
+        (1, 0) => (10usize, u16::from_le_bytes([bytes[8], bytes[9]]) as usize),
         (2, 0) | (3, 0) => {
             assert!(
                 bytes.len() >= 12,
@@ -192,7 +192,7 @@ fn read_npy_f32(path: &Path) -> NpyF32 {
                 path.display()
             );
             (
-                12,
+                12usize,
                 u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize,
             )
         }
