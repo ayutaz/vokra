@@ -2209,6 +2209,56 @@ same-input/same-precision, transfer-inclusive measurement; required CPU and
 Apple CPU/Metal/no-fallback gates remain mandatory. The 194-row scope and
 58 unresolved classifications are not promoted by these source changes.
 
+### FireRed encoder repair integrated; GPU selection remains measured (18:04 UTC)
+
+The source-grounded six-frame encoder padding and validity-mask correction
+was reviewed and committed as `35214a8`. It derives the padded output shape
+from total input length separately from the original valid-prefix length,
+retains the official masked-convolution residual and final LayerNorm behavior,
+and passes the resulting memory mask into both native decoding routes. Root
+passed formatting, diff hygiene, zero-dependency and forbidden-symbol gates;
+these are static results, not a numerical or compilation verdict.
+
+The clean post-merge follow-up checkout now ends at
+`0f016bc5c7f167c5315ee4b97fbfc05cf1abe00b`, based on squash-merged main
+`91a7ebcebf6a643a2235040e133c767a78b8f8b3`. Root verified its tree matches
+the reviewed pre-restack encoder-repair tree. Its pending remote controller
+adds a focused native FireRed test leg to the previous sixteen-leg contract;
+no rental or execution is inferred from controller preparation.
+
+Public HTTPS metadata at the fixed FireRed model revision
+`e57f5960d03cff1071ff7acbb409314d1e70ed3d` declares `apache-2.0` and lists
+eight repository files, with no separate license file. The 989-byte metadata
+response has SHA-256
+`c0724d432e2604003a253869a137d8d32da882095157d72a2d9c8ad650665872`;
+the 1,177-byte tree response has SHA-256
+`9aa71a99642f927a9cb8620262c3b758c173aeaf8d2524555e72714c593e19d0`.
+The tree confirms `config.yaml` is zero bytes. Root also authenticated the
+6,458-byte [fixed model card](https://huggingface.co/FireRedTeam/FireRedASR-AED-L/blob/e57f5960d03cff1071ff7acbb409314d1e70ed3d/README.md)
+against Git blob `5baa221616743b808a12ba7bfb25e8ba28e1689f`; its SHA-256 is
+`a5a905edac140af027719a5ba6bab2f34f21ae5bfd279725d536519ddc00cf8a`.
+Only metadata and text were acquired. These declarations do not close the
+dependency/training-provenance review or manufacture an operator approval.
+
+The [fixed official decoder](https://github.com/FireRedTeam/FireRedASR/blob/834635e4cf277ed8ca92049fc375b17c3dc20748/fireredasr/models/module/transformer_decoder.py)
+was authenticated as the 11,033-byte Git blob
+`2088b0832b84da4421883e2dc7b518f734c3e0b2`, SHA-256
+`f0dd5d0ba224ec0be9d2778d3d4ae514ef5ab24c879436aad756353b81f4eedb`.
+Its fixed-width beam rows, finite inactive/finished sentinels, cache-parent
+selection and PAD key masking differ from the current native route. A separate
+bounded repair is delegated without changing the frozen verification head or
+the reference oracle. Decoder-stage/beam parity and real-weight CPU parity
+remain open.
+
+Following the owner's GPU preference, routing must use same-input,
+same-precision correctness checks and transfer-inclusive elapsed time. The
+FireRed CUDA backend currently lacks required Conv2d, Relu and Silu operations
+and must fail explicitly rather than fall back to CPU. Apple Metal is a
+candidate for the final measured comparison, not a demonstrated speedup.
+The fixed FireRed reference environment remains CPU-only; required CPU and
+Apple CPU/Metal/no-fallback verdicts are not waived. No model execution,
+upload, new cloud allocation or public-row promotion occurred in this step.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
