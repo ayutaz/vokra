@@ -28,7 +28,7 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MANIFEST_KEYS = {
     "gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows",
     "package_review_rows_sha256", "identities", "required_package_rows", "forbidden_dependencies",
-    "license_rows", "license_rows_sha256", "virtual_project_evidence", "audit_evidence", "approval_scope_sha256", "publication", "approval",
+    "license_rows", "license_rows_sha256", "virtual_project_evidence", "audit_evidence", "approval_scope_sha256", "publication", "approval", "dependency_refresh",
 }
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
@@ -51,11 +51,12 @@ VIRTUAL_PROJECT_EVIDENCE_KEYS = {
 VIRTUAL_PROJECT_ROW_ID = "vokra-bigvgan-parity@0.1.0"
 REVIEW_PLACEHOLDERS = {"", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo", "null", "none"}
 DARWIN_MARKER = "platform_machine == 'arm64' and sys_platform == 'darwin'"
-DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
-DARWIN_TORCH_HASH = "sha256:7b4f8b2b83bd08f7d399025a9a7b323bdbb53d20566f1e0d584689bb92d82f9a"
-DARWIN_TORCH_UPLOAD_TIME = "2025-06-03T18:28:06Z"
+DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl"
+DARWIN_TORCH_HASH = "sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027"
+DARWIN_TORCH_UPLOAD_TIME = "2026-07-08T12:26:18Z"
 AUDIT_EVIDENCE_KEYS = {
     "schema",
+    "status",
     "linux",
     "arm64-darwin",
     "publication",
@@ -75,6 +76,7 @@ PLATFORM_AUDIT_KEYS = {
 }
 EXPECTED_AUDIT_EVIDENCE = {
     "schema": "bigvgan-multi-platform-closure-evidence-v1",
+    "status": "STALE_SUPERSEDED_BY_TORCH_2_13",
     "linux": {
         "candidate_schema": "bigvgan-linux-closure-candidate-v1",
         "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
@@ -167,10 +169,25 @@ def validate_artifact(
 def is_authenticated_darwin_torch_row(package: dict[str, Any], registry: str) -> bool:
     return (
         package.get("name") == "torch"
-        and package.get("version") == "2.7.1"
+        and package.get("version") == "2.13.0"
         and registry == "https://download.pytorch.org/whl/cpu"
         and package.get("resolution-markers") == [DARWIN_MARKER]
     )
+
+
+def validate_current_audit_binding(
+    audit_evidence: dict[str, Any],
+    expected_audit_evidence: dict[str, Any],
+    actual_lock_sha256: str,
+) -> None:
+    if audit_evidence.get("status") != "CURRENT_REVIEWED":
+        fail("CURRENT_REVIEWED dependency refresh requires CURRENT_REVIEWED audit evidence")
+    if expected_audit_evidence.get("status") != "CURRENT_REVIEWED":
+        fail("CURRENT_REVIEWED dependency refresh is unavailable until reviewed VAST audit evidence is recorded")
+    for platform in ("linux", "arm64-darwin"):
+        platform_evidence = audit_evidence.get(platform)
+        if not isinstance(platform_evidence, dict) or platform_evidence.get("lock_sha256") != actual_lock_sha256:
+            fail(f"CURRENT_REVIEWED audit evidence does not bind the current lock for {platform}")
 
 
 def validate_metadata(value: Any, label: str) -> None:
@@ -340,6 +357,7 @@ def approval_scope(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         "license_rows": manifest.get("license_rows"),
         "license_rows_sha256": manifest.get("license_rows_sha256"),
         "audit_evidence": manifest.get("audit_evidence"),
+        "dependency_refresh": manifest.get("dependency_refresh"),
         "publication": manifest.get("publication"),
         "expected_decision": "APPROVED",
         "expected_status": "OWNER_SIGNOFF_APPROVED",
@@ -355,6 +373,7 @@ def run(
     model_revision: str | None = None,
     checkpoint_sha256: str | None = None,
     config_sha256: str | None = None,
+    expected_audit_evidence: dict[str, Any] | None = None,
 ) -> None:
     if not regular_file(lock_path) or not regular_file(project_path) or not regular_file(manifest_path):
         fail("lock, pyproject, or gate manifest is missing")
@@ -366,6 +385,21 @@ def run(
         fail("unsupported gate manifest version")
     if set(manifest) != MANIFEST_KEYS:
         fail("gate manifest top-level schema drifted")
+    dependency_refresh = manifest.get("dependency_refresh")
+    if (
+        not isinstance(dependency_refresh, dict)
+        or set(dependency_refresh) != {"status", "previous_lock_sha256", "current_lock_sha256", "required_action"}
+        or dependency_refresh.get("status") not in {"TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW", "CURRENT_REVIEWED"}
+        or not isinstance(dependency_refresh.get("previous_lock_sha256"), str)
+        or not HEX64.fullmatch(dependency_refresh["previous_lock_sha256"])
+        or not isinstance(dependency_refresh.get("current_lock_sha256"), str)
+        or not HEX64.fullmatch(dependency_refresh["current_lock_sha256"])
+        or not isinstance(dependency_refresh.get("required_action"), str)
+        or not dependency_refresh["required_action"].strip()
+    ):
+        fail("Torch 2.13 dependency refresh state is malformed")
+    pending_refresh = dependency_refresh["status"] == "TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW"
+    expected_audit = EXPECTED_AUDIT_EVIDENCE if expected_audit_evidence is None else expected_audit_evidence
     audit_evidence = manifest.get("audit_evidence")
     if (
         not isinstance(audit_evidence, dict)
@@ -375,13 +409,21 @@ def run(
             or set(audit_evidence[platform]) != PLATFORM_AUDIT_KEYS
             for platform in ("linux", "arm64-darwin")
         )
-        or audit_evidence != EXPECTED_AUDIT_EVIDENCE
     ):
         fail("model-free VAST audit evidence is missing or drifted")
     lock_bytes = lock_path.read_bytes()
     project_bytes = project_path.read_bytes()
-    if digest_bytes(lock_bytes) != manifest.get("lock_sha256"):
+    actual_lock_sha256 = digest_bytes(lock_bytes)
+    if actual_lock_sha256 != manifest.get("lock_sha256"):
         fail("uv.lock SHA-256 does not match the reviewed lock digest")
+    if dependency_refresh["current_lock_sha256"] != actual_lock_sha256:
+        fail("Torch 2.13 dependency refresh does not bind the current uv.lock digest")
+    if pending_refresh and dependency_refresh["previous_lock_sha256"] != "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e":
+        fail("Torch 2.13 dependency refresh does not identify the superseded Torch 2.7.1 lock")
+    if dependency_refresh["status"] == "CURRENT_REVIEWED":
+        validate_current_audit_binding(audit_evidence, expected_audit, actual_lock_sha256)
+    if audit_evidence != expected_audit:
+        fail("model-free VAST audit evidence is missing or drifted")
     if digest_bytes(project_bytes) != manifest.get("project_sha256"):
         fail("pyproject.toml SHA-256 does not match the reviewed project digest")
     try:
@@ -432,8 +474,12 @@ def run(
     package_ids = [f"{row['name']}@{row['version']}" for row in rows]
     if [item.get("id") for item in package_reviews if isinstance(item, dict)] != package_ids:
         fail("package review row identities drifted")
+    refresh_status = manifest.get("dependency_refresh", {}).get("status") if isinstance(manifest.get("dependency_refresh"), dict) else None
+    allowed_package_review_statuses = {"REVIEWED"}
+    if refresh_status == "TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW":
+        allowed_package_review_statuses |= {"STALE", "PENDING_NATIVE_BUNDLED_REVIEW"}
     for item in package_reviews:
-        if not isinstance(item, dict) or set(item) != {"id", "status", "license", "native_bundled_review"} or item["status"] != "REVIEWED" or not reviewed(item["license"]) or not reviewed(item["native_bundled_review"]):
+        if not isinstance(item, dict) or set(item) != {"id", "status", "license", "native_bundled_review"} or item["status"] not in allowed_package_review_statuses or not reviewed(item["license"]) or not reviewed(item["native_bundled_review"]):
             fail("package license/native/bundled review is unresolved")
 
     forbidden = manifest.get("forbidden_dependencies", [])
@@ -455,6 +501,17 @@ def run(
     approval_scope_sha256 = manifest.get("approval_scope_sha256")
     if not isinstance(approval_scope_sha256, str) or not HEX64.fullmatch(approval_scope_sha256) or approval_scope_sha256 != scope:
         fail("approval scope is not bound to the fixed identities, platform evidence, and NO_UPLOAD decision")
+    if pending_refresh:
+        if manifest.get("audit_evidence", {}).get("status") != "STALE_SUPERSEDED_BY_TORCH_2_13":
+            fail("superseded Torch 2.7.1 audit evidence is not explicitly marked stale")
+        stale_license_rows = {
+            row.get("id"): row.get("status")
+            for row in manifest.get("license_rows", [])
+            if isinstance(row, dict)
+        }
+        if stale_license_rows.get("python-cpu-closure-native-bundled") != "STALE_SUPERSEDED_BY_TORCH_2_13":
+            fail("superseded Torch 2.7.1 license evidence is not explicitly marked stale")
+        fail("Torch 2.13 dependency/native closure review is pending; old approval evidence is stale")
     reviewed_identities = manifest.get("identities")
     if not isinstance(reviewed_identities, dict):
         fail("reviewed model/source identities are missing from the manifest")
@@ -687,14 +744,14 @@ publication = "NO_UPLOAD"
                 raise SystemExit(f"bigvgan license gate self-test accepted {label} artifact")
         darwin_package = {
             "name": "torch",
-            "version": "2.7.1",
+            "version": "2.13.0",
             "resolution-markers": [DARWIN_MARKER],
         }
         assert is_authenticated_darwin_torch_row(
             darwin_package, "https://download.pytorch.org/whl/cpu"
         )
         assert not is_authenticated_darwin_torch_row(
-            dict(darwin_package, version="2.7.1+cpu"),
+            dict(darwin_package, version="2.13.0+cpu"),
             "https://download.pytorch.org/whl/cpu",
         )
         darwin_artifact = {
@@ -711,7 +768,7 @@ publication = "NO_UPLOAD"
         for label, mutate in {
             "Darwin-size-present": lambda value: value.update(size=1),
             "Darwin-hash-tampered": lambda value: value.update(hash="sha256:" + "0" * 64),
-            "Darwin-upload-time-tampered": lambda value: value.update(**{"upload-time": "2025-06-03T18:28:07Z"}),
+            "Darwin-upload-time-tampered": lambda value: value.update(**{"upload-time": "2026-07-08T12:26:19Z"}),
         }.items():
             candidate = dict(darwin_artifact)
             mutate(candidate)
@@ -798,6 +855,7 @@ source = { registry = 'https://pypi.org/simple' }
             "lock_sha256": digest_bytes(lock.read_bytes()),
             "project_sha256": digest_bytes(project.read_bytes()),
             "package_rows_sha256": canonical_digest(rows),
+            "dependency_refresh": {"status": "CURRENT_REVIEWED", "previous_lock_sha256": "0" * 64, "current_lock_sha256": digest_bytes(lock.read_bytes()), "required_action": "self-test closure is current"},
             "required_package_rows": [{"name": "vokra-bigvgan-parity", "version": "0.1.0"}],
             "package_review_rows": [{"id": VIRTUAL_PROJECT_ROW_ID, "status": "REVIEWED", "license": "MIT", "native_bundled_review": "self-test closure review"}],
             "package_review_rows_sha256": canonical_digest([{"id": VIRTUAL_PROJECT_ROW_ID, "status": "REVIEWED", "license": "MIT", "native_bundled_review": "self-test closure review"}]),
@@ -828,6 +886,16 @@ source = { registry = 'https://pypi.org/simple' }
         manifest["approval"]["signer"] = "different-self-test-signer"
         assert approval_scope(manifest, rows) == signer_independent_scope
         manifest["approval"]["signer"] = "self-test-signer"
+        synthetic_current_audit = json.loads(json.dumps(EXPECTED_AUDIT_EVIDENCE))
+        synthetic_current_audit["status"] = "CURRENT_REVIEWED"
+        synthetic_lock_sha256 = digest_bytes(lock.read_bytes())
+        synthetic_current_audit["linux"]["lock_sha256"] = synthetic_lock_sha256
+        synthetic_current_audit["arm64-darwin"]["lock_sha256"] = synthetic_lock_sha256
+        synthetic_current_expected = json.loads(json.dumps(synthetic_current_audit))
+        validate_current_audit_binding(synthetic_current_audit, synthetic_current_expected, synthetic_lock_sha256)
+        manifest["audit_evidence"] = synthetic_current_audit
+        manifest["approval_scope_sha256"] = approval_scope(manifest, rows)
+        manifest["approval"]["digest"] = manifest["approval_scope_sha256"]
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         expected_evidence = {
             "schema": "bigvgan-approval-evidence-v1",
@@ -897,7 +965,7 @@ source = { registry = 'https://pypi.org/simple' }
             candidate_path = project_dir / f"{label}.manifest.json"
             candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
             try:
-                run(lock, project, candidate_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64)
+                run(lock, project, candidate_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_current_expected)
             except SystemExit as exc:
                 if exc.code != 2:
                     raise SystemExit(f"bigvgan license gate self-test: {label} returned {exc.code}") from exc
@@ -911,7 +979,7 @@ source = { registry = 'https://pypi.org/simple' }
             mutate(candidate)
             evidence_path.write_text(json.dumps(candidate), encoding="utf-8")
             try:
-                run(lock, project, manifest_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64)
+                run(lock, project, manifest_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_current_expected)
             except SystemExit as exc:
                 if exc.code != 2:
                     raise SystemExit(f"bigvgan license gate self-test: {label} returned {exc.code}") from exc
@@ -919,7 +987,7 @@ source = { registry = 'https://pypi.org/simple' }
                 raise SystemExit(f"bigvgan license gate self-test: {label} was accepted")
 
         try:
-            run(lock, project, manifest_path, None, expected_source, "b" * 40, "c" * 64, "d" * 64)
+            run(lock, project, manifest_path, None, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_current_expected)
         except SystemExit as exc:
             if exc.code != 2:
                 raise SystemExit("bigvgan license gate self-test: missing evidence did not exit 2") from exc
@@ -936,11 +1004,12 @@ source = { registry = 'https://pypi.org/simple' }
             "b" * 40,
             "c" * 64,
             "d" * 64,
+            expected_audit_evidence=synthetic_current_expected,
         )
         duplicate_manifest = project_dir / "duplicate-manifest.json"
         duplicate_manifest.write_text('{"approval": 1, "approval": 2}', encoding="utf-8")
         try:
-            run(lock, project, duplicate_manifest, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64)
+            run(lock, project, duplicate_manifest, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_current_expected)
         except SystemExit as exc:
             if exc.code != 2:
                 raise SystemExit("bigvgan license gate self-test: duplicate manifest did not exit 2") from exc
@@ -951,7 +1020,7 @@ source = { registry = 'https://pypi.org/simple' }
         duplicate_evidence = project_dir / "duplicate-evidence.json"
         duplicate_evidence.write_text('{"signer": 1, "signer": 2}', encoding="utf-8")
         try:
-            run(lock, project, manifest_path, duplicate_evidence, expected_source, "b" * 40, "c" * 64, "d" * 64)
+            run(lock, project, manifest_path, duplicate_evidence, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_current_expected)
         except SystemExit as exc:
             if exc.code != 2:
                 raise SystemExit("bigvgan license gate self-test: duplicate evidence did not exit 2") from exc
@@ -962,6 +1031,9 @@ source = { registry = 'https://pypi.org/simple' }
         expect_manifest_blocked("required-package-missing", lambda value: value["required_package_rows"].pop())
         expect_manifest_blocked("required-package-extra", lambda value: value["required_package_rows"].append({"name": "extra", "version": "1"}))
         expect_manifest_blocked("required-package-duplicate", lambda value: value["required_package_rows"].append(dict(value["required_package_rows"][0])))
+        expect_manifest_blocked("new-lock-digest", lambda value: value.update(lock_sha256="0" * 64))
+        expect_manifest_blocked("new-current-lock-digest", lambda value: value["dependency_refresh"].update(current_lock_sha256="0" * 64))
+        expect_manifest_blocked("new-package-rows-digest", lambda value: value.update(package_rows_sha256="0" * 64))
         expect_manifest_blocked("license-row-nondict", lambda value: value["license_rows"].__setitem__(0, "malformed"))
         expect_manifest_blocked("license-row-missing", lambda value: value["license_rows"][0].pop("review"))
         expect_manifest_blocked("license-row-extra", lambda value: value["license_rows"][0].update(extra="unexpected"))
@@ -970,6 +1042,16 @@ source = { registry = 'https://pypi.org/simple' }
         expect_manifest_blocked("audit-evidence-tamper", lambda value: value["audit_evidence"]["linux"].update(native_payload_count=143))
         expect_manifest_blocked("identity-tamper", lambda value: value["identities"].update(model_revision="e" * 40))
         expect_manifest_blocked("audit-evidence-missing", lambda value: value.pop("audit_evidence"))
+        expect_manifest_blocked("dependency-refresh-missing", lambda value: value.pop("dependency_refresh"))
+        expect_manifest_blocked("dependency-refresh-status", lambda value: value["dependency_refresh"].update(status="TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW"))
+        def current_refresh_with_stale_audit(value: dict[str, Any]) -> None:
+            value["dependency_refresh"]["status"] = "CURRENT_REVIEWED"
+            value["audit_evidence"]["status"] = "STALE_SUPERSEDED_BY_TORCH_2_13"
+            value["audit_evidence"]["linux"]["lock_sha256"] = "0" * 64
+            value["audit_evidence"]["arm64-darwin"]["lock_sha256"] = "0" * 64
+            value["approval_scope_sha256"] = approval_scope(value, rows)
+            value["approval"]["digest"] = value["approval_scope_sha256"]
+        expect_manifest_blocked("current-refresh-stale-audit", current_refresh_with_stale_audit)
         expect_manifest_blocked("audit-evidence-platform-missing", lambda value: value["audit_evidence"].pop("arm64-darwin"))
         expect_manifest_blocked("audit-evidence-platform-extra", lambda value: value["audit_evidence"].update(windows=dict(EXPECTED_AUDIT_EVIDENCE["linux"])))
         expect_manifest_blocked("approval-scope-tamper", lambda value: value.update(approval_scope_sha256="0" * 64))

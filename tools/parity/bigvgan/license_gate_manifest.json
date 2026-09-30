@@ -1,10 +1,11 @@
 {
   "gate_version": 1,
-  "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
-  "project_sha256": "f0e853084910c83f62f84478bcda3e3dd2292b14f8b86b8b5b8c9f6947c46585",
-  "package_rows_sha256": "97e41503dbbf18718264c4d531a626c910c181eab1b3b4f4145db0e44bfed0d9",
-  "package_review_rows": [{"id":"filelock@3.32.4","status":"REVIEWED","license":"MIT","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"fsspec@2026.7.0","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"jinja2@3.1.6","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"markupsafe@3.0.3","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"PRESENT: Linux 1 native .so (markupsafe/_speedups.cpython-312-x86_64-linux-gnu.so, SHA-256 f4a31de071c565959002db29bf36c6f8d35ae7929f64700adeeba46fa4f90daf); arm64-Darwin 1 native .so (markupsafe/_speedups.cpython-312-darwin.so, SHA-256 0f035fed894535b6c7a8a4302eb89545a90a7c82e0b8c57dc08a4fb118e04ca1); platform-specific extension difference is explicit"},{"id":"mpmath@1.3.0","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"networkx@3.6.1","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"setuptools@84.0.0","status":"REVIEWED","license":"MIT (setuptools); LGPL-3.0-only (vendored autocommand); Apache-2.0 (vendored importlib_metadata); MIT (vendored backports.tarfile, jaraco.*, platformdirs, tomli, wheel, zipp, more_itertools); Apache-2.0 OR BSD-2-Clause (vendored packaging); MPL-2.0 + BSD-3-Clause (validate-pyproject/fastjsonschema notices)","native_bundled_review":"BLOCKED_PUBLIC_DISTRIBUTION: Linux and arm64-Darwin each carry 8 Windows .exe payloads (cli/gui 32/64/arm64); 17 license/NOTICE records plus 2 notice records captured; target platforms do not load these .exe files, but vendored LGPL-3.0-only autocommand requires owner/legal disposition and keeps publication blocked"},{"id":"sympy@1.14.0","status":"REVIEWED","license":"BSD-3-Clause (SymPy); MIT (captured latex2sympy license payload)","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"torch@2.7.1","status":"REVIEWED","license":"BSD-3-Clause (package); Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, BSL-1.0, HPND, Public Domain, Apache-2.0 with exception, and MIT with exception (captured torch license/notice text)","native_bundled_review":"PRESENT: arm64-Darwin CPU wheel has 12 native payloads (including libtorch*.dylib, libomp.dylib, and CPython extensions); Linux uses the separate +cpu row with 133 payloads; platform-specific native closure is not interchangeable; no GPL/LGPL text appears in the supplied torch LICENSE/NOTICE"},{"id":"torch@2.7.1+cpu","status":"REVIEWED","license":"BSD-3-Clause (package); Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, BSL-1.0, HPND, Public Domain, Apache-2.0 with exception, and MIT with exception (captured torch license/notice text)","native_bundled_review":"PRESENT: x86_64-Linux CPU wheel has 133 native payloads (including libtorch*.so, libgomp.so.1, CPython extension, tools, and tests); arm64-Darwin uses the separate 2.7.1 row with 12 payloads; platform-specific native closure is not interchangeable; no GPL/LGPL text appears in the supplied torch LICENSE/NOTICE"},{"id":"typing-extensions@4.16.0","status":"REVIEWED","license":"PSF-2.0; Zero-Clause BSD for documentation examples as stated in the captured license","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"vokra-bigvgan-parity@0.1.0","status":"REVIEWED","license":"Apache-2.0 (root LICENSE; 11,337 bytes; SHA-256 e1fef339bc7071bae13a31ca873f95e3157665d68342f558e1dd4974ca5a4cee)","native_bundled_review":"NONE: package=false virtual project; not installed; no registry/wheel/native payload is claimed; primary project evidence is bound separately"}],
-  "package_review_rows_sha256": "898ce5b3319c6cec9f3dd2dca4de920a6d5acb4cd7c20d4d2b6fcc604978a3c5",
+  "lock_sha256": "f78c791e43d089cc9ddf2175cd29929a2c905f3b55d6aaf7ea32c885281edfda",
+  "project_sha256": "66caa1eea376a26391e49b9b726627f2a19dd1a6b1ddb57a10ecae8af14637ce",
+  "package_rows_sha256": "58ad5d94a418da3a96ec85b4c1920c82b688ab00f994e656c87f4c1a8e05117b",
+  "dependency_refresh": {"status":"TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW","previous_lock_sha256":"80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e","current_lock_sha256":"f78c791e43d089cc9ddf2175cd29929a2c905f3b55d6aaf7ea32c885281edfda","required_action":"Re-capture Linux and arm64-Darwin Torch 2.13.0 native/bundled closure on VAST, refresh package review rows, and obtain owner/legal sign-off before parity."},
+  "package_review_rows": [{"id":"filelock@3.32.4","status":"REVIEWED","license":"MIT","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"fsspec@2026.7.0","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"jinja2@3.1.6","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"markupsafe@3.0.3","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"PRESENT: Linux 1 native .so (markupsafe/_speedups.cpython-312-x86_64-linux-gnu.so, SHA-256 f4a31de071c565959002db29bf36c6f8d35ae7929f64700adeeba46fa4f90daf); arm64-Darwin 1 native .so (markupsafe/_speedups.cpython-312-darwin.so, SHA-256 0f035fed894535b6c7a8a4302eb89545a90a7c82e0b8c57dc08a4fb118e04ca1); platform-specific extension difference is explicit"},{"id":"mpmath@1.3.0","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"networkx@3.6.1","status":"REVIEWED","license":"BSD-3-Clause","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"setuptools@84.0.0","status":"REVIEWED","license":"MIT (setuptools); LGPL-3.0-only (vendored autocommand); Apache-2.0 (vendored importlib_metadata); MIT (vendored backports.tarfile, jaraco.*, platformdirs, tomli, wheel, zipp, more_itertools); Apache-2.0 OR BSD-2-Clause (vendored packaging); MPL-2.0 + BSD-3-Clause (validate-pyproject/fastjsonschema notices)","native_bundled_review":"BLOCKED_PUBLIC_DISTRIBUTION: Linux and arm64-Darwin each carry 8 Windows .exe payloads (cli/gui 32/64/arm64); 17 license/NOTICE records plus 2 notice records captured; target platforms do not load these .exe files, but vendored LGPL-3.0-only autocommand requires owner/legal disposition and keeps publication blocked"},{"id":"sympy@1.14.0","status":"REVIEWED","license":"BSD-3-Clause (SymPy); MIT (captured latex2sympy license payload)","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"torch@2.13.0","status":"PENDING_NATIVE_BUNDLED_REVIEW","license":"PENDING: Torch 2.13.0 package license evidence must be recaptured","native_bundled_review":"PENDING_NATIVE_BUNDLED_REVIEW: old Torch 2.7.1 native closure is stale; recapture Linux and arm64-Darwin payloads on VAST"},{"id":"torch@2.13.0+cpu","status":"PENDING_NATIVE_BUNDLED_REVIEW","license":"PENDING: Torch 2.13.0 package license evidence must be recaptured","native_bundled_review":"PENDING_NATIVE_BUNDLED_REVIEW: old Torch 2.7.1 native closure is stale; recapture Linux and arm64-Darwin payloads on VAST"},{"id":"typing-extensions@4.16.0","status":"REVIEWED","license":"PSF-2.0; Zero-Clause BSD for documentation examples as stated in the captured license","native_bundled_review":"NONE: Linux and arm64-Darwin selected wheels are py3-none-any; no native/bundled payloads captured"},{"id":"vokra-bigvgan-parity@0.1.0","status":"REVIEWED","license":"Apache-2.0 (root LICENSE; 11,337 bytes; SHA-256 e1fef339bc7071bae13a31ca873f95e3157665d68342f558e1dd4974ca5a4cee)","native_bundled_review":"NONE: package=false virtual project; not installed; no registry/wheel/native payload is claimed; primary project evidence is bound separately"}],
+  "package_review_rows_sha256": "c15c3200fbcaf08c8de08ceb1d8a75bb8d5b55fc92620708e63278fc7bb2aa28",
   "identities": {
     "source_revision": "7d2b454564a6c7d014227f635b7423881f14bdac",
     "source_license_blob_sha256": "5c7f573db5f807a9adc2a755c4901e203ea067f73c7a20fa6b703da7e77d7b35",
@@ -14,7 +15,7 @@
     "config_sha256": "885553969751bfd87f1980017364e968917cd34347376ed08238db673ea5b46b"
   },
   "required_package_rows": [
-    {"name":"filelock","version":"3.32.4"},{"name":"fsspec","version":"2026.7.0"},{"name":"jinja2","version":"3.1.6"},{"name":"markupsafe","version":"3.0.3"},{"name":"mpmath","version":"1.3.0"},{"name":"networkx","version":"3.6.1"},{"name":"setuptools","version":"84.0.0"},{"name":"sympy","version":"1.14.0"},{"name":"torch","version":"2.7.1"},{"name":"torch","version":"2.7.1+cpu"},{"name":"typing-extensions","version":"4.16.0"},{"name":"vokra-bigvgan-parity","version":"0.1.0"}
+    {"name":"filelock","version":"3.32.4"},{"name":"fsspec","version":"2026.7.0"},{"name":"jinja2","version":"3.1.6"},{"name":"markupsafe","version":"3.0.3"},{"name":"mpmath","version":"1.3.0"},{"name":"networkx","version":"3.6.1"},{"name":"setuptools","version":"84.0.0"},{"name":"sympy","version":"1.14.0"},{"name":"torch","version":"2.13.0"},{"name":"torch","version":"2.13.0+cpu"},{"name":"typing-extensions","version":"4.16.0"},{"name":"vokra-bigvgan-parity","version":"0.1.0"}
   ],
   "forbidden_dependencies": ["librosa", "soxr", "soundfile", "triton", "nvidia-cuda"],
   "license_rows": [
@@ -46,7 +47,7 @@
     },
     {
       "id": "python-cpu-closure-native-bundled",
-      "status": "REVIEWED_APPROVAL_PENDING",
+      "status": "STALE_SUPERSEDED_BY_TORCH_2_13",
       "component": "torch CPU wheel and transitive native/bundled closure",
       "source": "tools/parity/bigvgan/uv.lock",
       "license": "MIXED_REVIEWED: MIT, LGPL-3.0-only, Apache-2.0, BSD-3-Clause, and other captured permissive notices; public redistribution remains blocked by vendored LGPL",
@@ -55,15 +56,15 @@
       "approval_schema": "v1",
       "approval_signer": null,
       "approval_digest": null,
-      "review": "VAST evidence archive SHA-256 56572d0ad60586dfb1f405c082b1495f82d462b3dddf6ee60108afc737cd008b captures both Linux torch@2.7.1+cpu and arm64-Darwin torch@2.7.1 plus all 10 registry package metadata/LICENSE/NOTICE records. The package rows are technically reviewed; setuptools contains vendored LGPL-3.0-only autocommand and MPL-2.0 validate-pyproject material, so owner/legal disposition is still required. No source/model approval, signer, digest, execution release, or upload authorization is inferred."
+      "review": "STALE_PENDING_TORCH_2_13_RECAPTURE: VAST evidence archive SHA-256 56572d0ad60586dfb1f405c082b1495f82d462b3dddf6ee60108afc737cd008b captures the superseded Linux torch@2.7.1+cpu and arm64-Darwin torch@2.7.1 closure plus all 10 registry package metadata/LICENSE/NOTICE records. Torch 2.13.0 native/bundled payloads and license evidence must be recaptured on VAST; setuptools still contains vendored LGPL-3.0-only autocommand and MPL-2.0 validate-pyproject material, so owner/legal disposition remains required. No source/model approval, signer, digest, execution release, or upload authorization is inferred."
     }
   ],
-  "license_rows_sha256": "29ffd900469840b73f4a2d57b96fc526159439dbac01aa85203c17a75fdd4637",
+  "license_rows_sha256": "e6717c7b58320a2e876e6c9694b2e290ee687425611caccd0f04ebf71ba5e1d8",
   "virtual_project_evidence": {
     "row_id": "vokra-bigvgan-parity@0.1.0",
     "project_path": "tools/parity/bigvgan/pyproject.toml",
-    "project_bytes": 978,
-    "project_sha256": "f0e853084910c83f62f84478bcda3e3dd2292b14f8b86b8b5b8c9f6947c46585",
+    "project_bytes": 979,
+    "project_sha256": "66caa1eea376a26391e49b9b726627f2a19dd1a6b1ddb57a10ecae8af14637ce",
     "license_path": "LICENSE",
     "license_bytes": 11337,
     "license_sha256": "e1fef339bc7071bae13a31ca873f95e3157665d68342f558e1dd4974ca5a4cee",
@@ -77,6 +78,7 @@
   },
   "audit_evidence": {
     "schema": "bigvgan-multi-platform-closure-evidence-v1",
+    "status": "STALE_SUPERSEDED_BY_TORCH_2_13",
     "linux": {
       "candidate_schema": "bigvgan-linux-closure-candidate-v1",
       "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
@@ -105,7 +107,7 @@
     },
     "publication": "NO_UPLOAD"
   },
-  "approval_scope_sha256": "a309d81b63d6567070c59782ddd9bcd852addad1c970c735f0d782a2a576cadf",
+  "approval_scope_sha256": "d9bf49c5394266d225b6d56e99f411f5803ff38c4728014b921a27e43b600769",
   "publication": "NO_UPLOAD",
   "approval": {"status":"OWNER_SIGNOFF_REQUIRED","signer":null,"digest":null}
 }
