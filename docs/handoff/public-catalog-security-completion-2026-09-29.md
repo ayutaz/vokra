@@ -975,6 +975,51 @@ stage-trace run remains pending. Production arithmetic, strict equality and
 numerical bounds are unchanged. Neither slice closes an unresolved public
 row or an Apple/Metal/publication gate; the unresolved denominator remains 58.
 
+### Actual Kyutai first-stage readback (10:22 UTC)
+
+The clean candidate `a987c7a16ae5f9c5400db3a0efad73637f80956f` was
+diagnosed on disposable EPYC 7713 worker `53509305`, with 16 build jobs.
+For the same synthetic fixture and compiled binary, default `Avx2` again
+reported two passes and one strict failure; `Scalar` reported three passes
+and no failures or ignores. The actual full/streaming taps now locate the
+first differing operation at frame 1, layer 0, head 1 softmax. Its visible
+probabilities were `[0.74857235, 0.25142762]` and
+`[0.74857235, 0.25142765]`; the second element differs by one ULP,
+`2.9802322e-8` (`0x3e80bb1f` versus `0x3e80bb20`). The replay-integrity
+checks did not report drift. Earlier compared QKV/cache/QK/masked-score
+stages matched for this fixture. This replaces the earlier operation-shape
+hypothesis with a measured first-stage observation, not independent
+real-weight parity or proof that all other inputs have identical GEMMs.
+
+The existing AVX2 softmax uses vector exponentials/reduction for a full
+eight-column row and scalar tails for a two-column streaming row. That is
+a candidate explanation, not a measurement separating the exponential
+approximation from reduction order. Strict equality, numerical bounds and
+production arithmetic are unchanged in this diagnostic head. The separate
+all-feature Clippy leg exited 101 with hygiene lints, including test-only
+trace borrowing and production-only unused enumeration; it was not green.
+
+All 12 recovered manifest entries passed local SHA-256 checks. Actual final
+HEAD matched the target and Git status was empty. Default/scalar log hashes
+are respectively
+`63c48e5ab2d345f2c33b65c1187641003c6de5581e6621138c346f4865ef29cf`
+and `2079359927b9124f90483a3c55b188de6405e8214d5488a06ff6467f8278a2dc`;
+the checksum-list hash is
+`71c2d8674314e259699b2338bd82e4672d5c3cf2c2c6ada60db3619672653e`.
+The worker and 200-GB disk were destroyed; strict individual readback returned
+`instances: null`, and the all-pages account readback reported zero instances
+with no next page. Diagnostic-controller success is not a passing-test or
+Clippy verdict. No model payload, upstream reference, actual GPU/Metal run or
+publication occurred.
+
+The XCodec2 collection-mechanics follow-up is separately committed, clean
+and unpushed at `6185ea8e63382964d9b93be35b06be38d5c83383`. Model-free
+tests verify hash/size-bound archive reuse, partial-download cleanup and root
+publisher-RECORD selection without discarding vendored RECORD payloads. Its
+next VAST collection remains pending. Source-built payload identity, wheel
+`.data` relocation, the Torch archive bound and owner/license decisions
+remain blocked; no collection or model row is promoted by the local tests.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
