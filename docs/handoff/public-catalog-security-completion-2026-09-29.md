@@ -1978,6 +1978,27 @@ later FireRed wire/consumer slices are outside this packet.
 No real-weight parity, Apple run, owner decision, model upload or public-row
 completion is claimed; the full 194-row scope and 58 unresolved rows remain.
 
+### Post-push platform-specific CI failures (16:24 UTC)
+
+New PR #186 CI is bound to `76cd4175`, not the previous remote head. Fresh
+GitHub readback reports two failed jobs and keeps merging blocked. The
+[Windows test job](https://github.com/ayutaz/vokra/actions/runs/36742668157/job/109980803877)
+fails in `authenticated_mmap_rejects_length_and_hash_mismatch`: its temporary
+filename includes the Rust test thread's namespace separators, which Windows
+rejects with OS error 123. The
+[Metal job](https://github.com/ayutaz/vokra/actions/runs/36742667914/job/109980803790)
+builds successfully, then fails Clippy's `match_like_matches_macro` check in
+`MimiHotOp::covered_by_backend` when the Apple/Metal configuration makes its
+capability predicate constant. These are authenticated platform-specific
+failures; the green Linux VAST replay does not supersede them.
+
+Bounded source repairs are delegated, preserving backend capability and
+length/hash-rejection semantics. They are not yet reviewed, committed or
+verified. Do not rerun unchanged failures, weaken checks, or merge until the
+corrected exact head passes the required CI. FireRed wire/real-consumer and
+Moshi source-cache follow-ups remain separate, unverified work. There is no
+new worker, model execution, artifact upload or catalog-row promotion.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
