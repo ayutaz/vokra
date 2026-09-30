@@ -16,6 +16,56 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## Fixed Carter preset cache bridge (inspection-only)
+
+`export_preset_cache.py` is a VAST/Linux x86_64-only exporter for the fixed
+official demo preset `demo/voices/streaming_model/en-Carter_man.pt`. Before
+importing `torch` or `safetensors`, it requires the clean Microsoft source
+checkout at `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, the authenticated
+4,256,002-byte Git blob
+`1d795ef667e6641eecb8b22452bb853b089bfdbe`, and payload SHA-256
+`a7bfdf1cd4939c22469bcfc6f427ae9c4467b3df46c2c14303a39c294cfc6897`.
+The sparse VAST source checkout may use a separately staged fixed file through
+`--preset-path`; its filename, size, Git blob, and payload hash remain fixed.
+
+The load is exactly the upstream demo's `weights_only=True` operation with
+only `BaseModelOutputWithPast` and `DynamicCache` safe globals. The exporter
+does not construct a model, run a forward pass, decode audio, download, or
+upload. It writes a new `cache.safetensors` and deterministic `manifest.json`
+with classification `INSPECTION_ONLY` / `NO_UPLOAD`, preserving all four
+outputs (`lm`, `tts_lm`, `neg_lm`, `neg_tts_lm`). Source KV tensors are checked
+as `[batch,kv_head,position,head_dim]` (the observed source tensors are
+BFLOAT16) and explicitly transposed to native
+`[position,kv_head,head_dim]`; the observed hidden/cache lengths are
+`lm=108/108`, `tts_lm=316/316`, and both negative branches `1/1`. These are
+schema facts, not synthesis or voice-consent evidence. A
+historical `DynamicCache` shape/API that cannot be inspected through these
+explicit lists is a loud refusal, not a compatibility shim.
+
+The native `vokra_models::vibevoice_streaming::preset` parser requires an
+external expected manifest SHA-256, checks exact tensor names/shapes/F32
+payload hashes/finiteness, and stages positive and negative paired imports on
+empty language branches. This is a structural cache bridge only: voice
+consent/redistribution rights, independent waveform CPU/Metal gates, and
+production synthesis/parity remain unproved.
+
+Model-free self-test (stdlib-only):
+
+```text
+uv run --no-project --python 3.12 python \
+  tools/parity/vibevoice_realtime_0_5b_reference/export_preset_cache.py --self-test
+```
+
+Controlled VAST export (source-only inspection; no model construction or
+forward):
+
+```text
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
+  tools/parity/vibevoice_realtime_0_5b_reference/export_preset_cache.py \
+  --source-root /root/VibeVoice --preset-path /root/en-Carter_man.pt \
+  --output-dir /root/realtime-carter-preset
+```
+
 ## 2026-09-30 VAST narrow-reference receipts
 
 Both runs used the exact checkpoint/source contract above and three timed
