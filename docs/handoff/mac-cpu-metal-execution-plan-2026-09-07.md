@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-09-30 execution supersession:** the live metadata audit at `main`
+> `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` remains 136 code/artifact-full
+> and 58 unresolved public rows, not a hardware-completion verdict. Preserve
+> all remaining source, dependency/license, independent reference, real-weight
+> CPU, Apple CPU/Metal/no-fallback and publication gates. The
+> [latest dated readback](public-catalog-security-completion-2026-09-29.md#2026-09-30-catalog-security-and-verification-readback-0801-utc)
+> records a remote setup failure before Rust verification and confirmed
+> disposable-worker destruction; no pending gate is promoted by that attempt.
+> The 63-row starting scope and measurements below remain historical evidence.
+
 > **2026-09-11 execution update:** PR #79 was merged as
 > `1787818e702bdaba488d52aa1666fd5f08c5ae16`; the bounded, authorized
 > post-merge VAST and Scaleway results are recorded in

@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-09-30 metadata-audit supersession:** the read-only public inventory
+> at `main` `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` remains 194
+> repositories, 193 with GGUFs and 198 GGUF files: CPU code/artifact status is
+> 136 full, 43 partial, 14 no-runtime-binder and one non-artifact; Metal is
+> 136 full, 57 blocked-by-cpu and one non-artifact. The live unresolved count
+> is 58; the 63-row tables below retain their historical scope. These counts
+> are not independent real-weight or Apple parity verdicts. The latest
+> [catalog/security readback](public-catalog-security-completion-2026-09-29.md#2026-09-30-catalog-security-and-verification-readback-0801-utc)
+> records pending implementation validation, security residuals and disposable
+> worker cleanup. No further row completion or publication is inferred.
+
 > **2026-09-11 post-PR #79 execution note:** PR #79 was merged as
 > `1787818e702bdaba488d52aa1666fd5f08c5ae16`. The subsequently authorized,
 > bounded VAST and Scaleway batch is recorded in
