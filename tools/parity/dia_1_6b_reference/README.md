@@ -55,15 +55,15 @@ decision, a separately reviewed change must replace this guard and refresh
 the adapter's lock binding before real-weight CPU parity is allowed.
 
 A fresh exact-head VAST dependency/native collector at checkout
-`3a6d1d95` recorded report SHA-256
-`bbb11630a98d8cae7f43074a7ba9871c25d43d0f23b762f35ba147f963776dde` and
+`f9e095f7` recorded report SHA-256
+`0697b2beb83b6385a9dda3476f7a14bac3ebcedfb4ff1727d30b3629863a9881` and
 preparation SHA-256
-`04dac5e91eac4de5401571889f81e7535e4c80bb7a87cfc49371b78e2d19993e2`:
+`f54032397a24f5a701290e6928a3a6123aefff7308d28452c9492edd02b595f3`:
 27 active packages, exact closure, 147 publisher-license file records with raw
-bytes captured, 164 native files, and no collection failures.  Scope generation
-from these facts remains
-pending the next exact-head collector run; the intended result is an unsigned
-`PENDING_OWNER_REVIEW` scope with publication `NO_UPLOAD`.
+bytes captured, 164 native files, and no collection failures.  It generated
+unsigned owner-scope SHA-256
+`651a186c62c4d381f2bec6400b54acf0c3bb7f9ed4afa12ca30193d9f79d3214`, with
+status `PENDING_OWNER_REVIEW` and publication `NO_UPLOAD`.
 
 The historical 2.6.0 26-package VAST audit and owner scope below are
 superseded for this candidate.  They must not be rehashed, relabeled, or used
