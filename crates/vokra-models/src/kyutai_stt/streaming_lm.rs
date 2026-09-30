@@ -579,6 +579,11 @@ mod tests {
 
     #[test]
     fn step_matches_full_component_before_and_after_context_boundary() {
+        eprintln!(
+            "kyutai-stt streaming diagnostic environment: active_isa={:?} VOKRA_CPU_ISA={:?}",
+            vokra_backend_cpu::active_isa(),
+            std::env::var("VOKRA_CPU_ISA").ok(),
+        );
         let (asr, config) = fixture();
         let frames = 8;
         let text: Vec<u32> = (0..frames)
