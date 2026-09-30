@@ -54,12 +54,21 @@ Torch/TorchAudio compatibility facts, and the owner has made an exact
 decision, a separately reviewed change must replace this guard and refresh
 the adapter's lock binding before real-weight CPU parity is allowed.
 
-The historical 2.6.0 VAST audit and owner scope below are intentionally stale
-for this candidate.  They must not be rehashed, relabeled, or used for
-approval.  The protected license manifest remains bound to that historical
-closure, so publication and execution stay fail-closed until a fresh exact
-HEAD VAST collector produces new dependency/native evidence and owner/legal
-reviews it.
+A fresh exact-head VAST dependency/native collector at checkout
+`3a6d1d95` recorded report SHA-256
+`bbb11630a98d8cae7f43074a7ba9871c25d43d0f23b762f35ba147f963776dde` and
+preparation SHA-256
+`04dac5e91eac4de5401571889f81e7535e4c80bb7a87cfc49371b78e2d19993e2`:
+27 active packages, exact closure, 147 publisher license bytes, 164 native
+files, and no collection failures.  Scope generation from these facts remains
+pending the next exact-head collector run; the intended result is an unsigned
+`PENDING_OWNER_REVIEW` scope with publication `NO_UPLOAD`.
+
+The historical 2.6.0 26-package VAST audit and owner scope below are
+superseded for this candidate.  They must not be rehashed, relabeled, or used
+for approval.  The protected license manifest remains bound to that historical
+closure, so publication and execution stay fail-closed until owner/legal
+reviews the fresh exact-head evidence.
 
 The Dia reference worker keeps the generated dependency audit fail-closed:
 `BLOCKED_UNREVIEWED_TRANSITIVE` and `NO_UPLOAD` remain factual properties of

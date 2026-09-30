@@ -19,8 +19,8 @@ APPROVAL_SCHEMA = "vokra-dia-dependency-owner-approval-v1"
 GATE = "BLOCKED_UNREVIEWED_TRANSITIVE"
 PUBLICATION = "NO_UPLOAD"
 PROJECT = Path(__file__).parent
-LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+LOCK_SHA256 = "06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+PYPROJECT_SHA256 = "4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 HEAD_RE = re.compile(r"[0-9a-f]{40}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -71,11 +71,11 @@ def require_audit(report: dict[str, Any]) -> None:
     if not isinstance(contract, dict) or contract.get("gate_status") != GATE or contract.get("uv_lock_sha256") != LOCK_SHA256 or contract.get("pyproject_sha256") != PYPROJECT_SHA256:
         raise ScopeError("audit contract identity is stale or not fail-closed")
     closure = report.get("closure")
-    if not isinstance(closure, dict) or closure.get("exact") is not True or closure.get("missing") != [] or closure.get("unexpected") != [] or closure.get("duplicate_identities") != [] or len(closure.get("expected", [])) != 26 or closure.get("expected") != sorted(closure.get("expected", [])) or closure.get("expected") != closure.get("installed"):
-        raise ScopeError("audit is not the exact 26-package Linux closure")
+    if not isinstance(closure, dict) or closure.get("exact") is not True or closure.get("missing") != [] or closure.get("unexpected") != [] or closure.get("duplicate_identities") != [] or len(closure.get("expected", [])) != 27 or closure.get("expected") != sorted(closure.get("expected", [])) or closure.get("expected") != closure.get("installed"):
+        raise ScopeError("audit is not the exact 27-package Linux closure")
     packages = report.get("packages")
-    if not isinstance(packages, list) or len(packages) != 26:
-        raise ScopeError("audit package inventory is not exactly 26 rows")
+    if not isinstance(packages, list) or len(packages) != 27:
+        raise ScopeError("audit package inventory is not exactly 27 rows")
     identities = []
     for item in packages:
         lock = item.get("lock") if isinstance(item, dict) else None
@@ -86,14 +86,14 @@ def require_audit(report: dict[str, Any]) -> None:
         if installed["identity"] != lock_identity:
             raise ScopeError("installed package identity differs from its lock row")
         identities.append(lock_identity)
-    if len(identities) != 26 or len(set(identities)) != 26 or sorted(identities) != closure["expected"]:
+    if len(identities) != 27 or len(set(identities)) != 27 or sorted(identities) != closure["expected"]:
         raise ScopeError("audit package identities are incomplete or duplicated")
     license_facts = report.get("license_facts")
-    if not isinstance(license_facts, dict) or license_facts.get("packages") != 26 or license_facts.get("publisher_license_evidence_missing") != [] or license_facts.get("publisher_bytes_recorded") != 50:
-        raise ScopeError("publisher license evidence does not match the factual d9 report")
+    if not isinstance(license_facts, dict) or license_facts.get("packages") != 27 or license_facts.get("publisher_license_evidence_missing") != [] or license_facts.get("publisher_bytes_recorded") != 147:
+        raise ScopeError("publisher license evidence does not match the fresh 27-package report")
     native = report.get("native_facts")
-    if not isinstance(native, dict) or not isinstance(native.get("files"), list):
-        raise ScopeError("native/bundled inventory is missing")
+    if not isinstance(native, dict) or not isinstance(native.get("files"), list) or len(native["files"]) != 164:
+        raise ScopeError("native/bundled inventory is not the exact 164-file report")
     if report.get("failures") != []:
         raise ScopeError("audit contains collection failures")
 
@@ -104,8 +104,9 @@ def require_preparation(preparation: dict[str, Any]) -> None:
     build = preparation.get("build")
     if not isinstance(build, dict) or build.get("isolation") != "no-build-isolation; builder venv preinstalled from hash-pinned constraints":
         raise ScopeError("preparation isolation fact drifted")
-    if preparation.get("runtime", {}).get("soundfile_installed") is not False or preparation.get("runtime", {}).get("torchaudio_installed") is not False:
-        raise ScopeError("optional audio distributions were not proven absent")
+    runtime = preparation.get("runtime", {})
+    if runtime.get("soundfile_installed") is not False or runtime.get("torchaudio_installed") is not True or runtime.get("torchaudio_version") != "2.11.0+cpu":
+        raise ScopeError("preparation does not prove the candidate TorchAudio 2.11.0+cpu runtime")
 
 
 def build_scope(report_path: Path, preparation_path: Path, expected_head: str) -> dict[str, Any]:
@@ -142,7 +143,7 @@ def build_scope(report_path: Path, preparation_path: Path, expected_head: str) -
         "dependency_license_audit": GATE,
         "publication": PUBLICATION,
         "owner_review": {"decision": None, "required": "owner/legal must classify every package and native/bundled payload", "approval_schema": APPROVAL_SCHEMA},
-        "audit": {"report_sha256": digest_bytes(report_path), "report_bytes": report_path.stat().st_size, "expected_head": expected_head, "project_lock_sha256": LOCK_SHA256, "project_pyproject_sha256": PYPROJECT_SHA256, "package_count": 26, "package_identities": package_identities, "package_evidence_sha256": package_evidence_sha256, "publisher_bytes_recorded": 50, "publisher_evidence_sha256": publisher_evidence_sha256, "native_file_count": len(native_rows), "native_inventory_sha256": native_evidence_sha256, "native_evidence_sha256": native_evidence_sha256, "failures": []},
+        "audit": {"report_sha256": digest_bytes(report_path), "report_bytes": report_path.stat().st_size, "expected_head": expected_head, "project_lock_sha256": LOCK_SHA256, "project_pyproject_sha256": PYPROJECT_SHA256, "package_count": 27, "package_identities": package_identities, "package_evidence_sha256": package_evidence_sha256, "publisher_bytes_recorded": 147, "publisher_evidence_sha256": publisher_evidence_sha256, "native_file_count": len(native_rows), "native_inventory_sha256": native_evidence_sha256, "native_evidence_sha256": native_evidence_sha256, "failures": []},
         "native_inventory": native_rows,
         "preparation": {"evidence_sha256": digest_bytes(preparation_path), "schema": preparation["schema"], "status": preparation["status"], "publication": preparation["publication"]},
     }
@@ -166,7 +167,6 @@ def validate_scope(scope: dict[str, Any], report_path: Path, preparation_path: P
 
 
 def self_test() -> int:
-    global LOCK_SHA256, PYPROJECT_SHA256
     assert SCHEMA.endswith("v1") and APPROVAL_SCHEMA.endswith("v1")
     for unsafe in (Path("relative.json"), Path("/tmp/../owner.json"), Path("/")):
         try: require_output(unsafe)
@@ -179,16 +179,10 @@ def self_test() -> int:
         try: require_output(root / "link-alias" / "scope.json")
         except ScopeError: pass
         else: raise AssertionError("symlinked owner scope output accepted")
-        # Keep the production constants historical; these in-memory values
-        # only let the tamper tests exercise the unchanged scope logic.
-        historical_lock_sha256, historical_pyproject_sha256 = LOCK_SHA256, PYPROJECT_SHA256
-        assert digest_bytes(PROJECT / "uv.lock") != historical_lock_sha256
-        assert digest_bytes(PROJECT / "pyproject.toml") != historical_pyproject_sha256
-        LOCK_SHA256 = digest_bytes(PROJECT / "uv.lock")
-        PYPROJECT_SHA256 = digest_bytes(PROJECT / "pyproject.toml")
-        identities = sorted(f"p{i}==1" for i in range(26))
-        report = {"schema": "vokra-dia-dependency-audit-v1", "status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": GATE, "publication": PUBLICATION, "repository": {"head": "0" * 40, "clean": True}, "contract": {"gate_status": GATE, "uv_lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256}, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": identities, "installed": identities}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(26)], "license_facts": {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}, "native_facts": {"files": [{"package_identity": "p0==1", "sha256": "a" * 64, "path": "x.so"}]}, "failures": []}
-        preparation = {"schema": "vokra-dia-reference-preparation-v1", "status": "PREPARED_NO_BLAS", "publication": PUBLICATION, "build": {"isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"}, "runtime": {"soundfile_installed": False, "torchaudio_installed": False}}
+        identities = sorted(f"p{i}==1" for i in range(27))
+        native_files = [{"package_identity": "p0==1", "sha256": "a" * 64, "path": f"x{i}.so"} for i in range(164)]
+        report = {"schema": "vokra-dia-dependency-audit-v1", "status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": GATE, "publication": PUBLICATION, "repository": {"head": "0" * 40, "clean": True}, "contract": {"gate_status": GATE, "uv_lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256}, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": identities, "installed": identities}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(27)], "license_facts": {"packages": 27, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 147}, "native_facts": {"files": native_files}, "failures": []}
+        preparation = {"schema": "vokra-dia-reference-preparation-v1", "status": "PREPARED_NO_BLAS", "publication": PUBLICATION, "build": {"isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"}, "runtime": {"soundfile_installed": False, "torchaudio_installed": True, "torchaudio_version": "2.11.0+cpu"}}
         report_path, preparation_path = root / "report.json", root / "preparation.json"
         report_path.write_text(json.dumps(report), encoding="utf-8"); preparation_path.write_text(json.dumps(preparation), encoding="utf-8")
         scope = build_scope(report_path, preparation_path, "0" * 40)
@@ -226,8 +220,7 @@ def self_test() -> int:
         try: validate_scope(broken, report_path, preparation_path, "0" * 40)
         except ScopeError: pass
         else: raise AssertionError("unsigned VAST_READY scope accepted")
-        LOCK_SHA256, PYPROJECT_SHA256 = historical_lock_sha256, historical_pyproject_sha256
-    print("dia owner-review scope: self-test PASS (historical scope remains stale/fail-closed)")
+    print("dia owner-review scope: self-test PASS (fresh 27-package scope, unsigned, NO_UPLOAD)")
     return 0
 
 
