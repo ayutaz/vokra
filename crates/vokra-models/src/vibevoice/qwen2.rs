@@ -592,6 +592,32 @@ impl Qwen2Runtime {
         Ok(())
     }
 
+    /// Imports a native-layout snapshot supplied as borrowed key/value pairs.
+    ///
+    /// This narrow bridge keeps the authenticated Qwen2 snapshot validator as
+    /// the single implementation while allowing sibling composite modules to
+    /// keep their own pair/snapshot types.  It never infers or transposes a
+    /// framework layout; the slices must already be post-RoPE and flattened as
+    /// `[position, kv-head, head-dim]`.
+    #[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+    pub(crate) fn import_kv_cache_snapshot_parts(
+        &mut self,
+        position: usize,
+        layers: &[(&[f32], &[f32])],
+    ) -> Result<()> {
+        let snapshot_layers: Vec<_> = layers
+            .iter()
+            .map(|layer| Qwen2KvCacheLayer {
+                keys: layer.0,
+                values: layer.1,
+            })
+            .collect();
+        self.import_kv_cache_snapshot(Qwen2KvCacheSnapshot {
+            position,
+            layers: &snapshot_layers,
+        })
+    }
+
     /// Runs a complete causal prompt matrix and returns one hidden row per
     /// input row. The resulting KV cache can be continued with [`Self::step`]
     /// or [`Self::step_embedding`].
@@ -1210,9 +1236,77 @@ fn apply_rope(values: &mut [f32], position: usize, theta: f32, head_dim: usize) 
 }
 
 #[cfg(test)]
+/// Small model-free runtime shared by the Qwen2 and Realtime language tests.
+pub(crate) fn test_fixture_runtime() -> Qwen2Runtime {
+    let config = Qwen2RuntimeConfig {
+        hidden_size: 4,
+        vocab_size: 8,
+        num_layers: 1,
+        num_attention_heads: 2,
+        num_key_value_heads: 1,
+        intermediate_size: 8,
+        rope_theta: 1.0e6,
+        rms_norm_eps: 1.0e-6,
+        max_position_embeddings: 16,
+    };
+    let layer = Layer {
+        q: test_identity_linear(4, 4, true),
+        k: test_identity_linear(4, 2, true),
+        v: test_identity_linear(4, 2, true),
+        o: test_identity_linear(4, 4, false),
+        input_norm: vec![1.0; 4],
+        post_norm: vec![1.0; 4],
+        gate: test_identity_linear(4, 8, false),
+        up: test_identity_linear(4, 8, false),
+        down: test_identity_linear(8, 4, false),
+    };
+    let embedding = (0..config.vocab_size * config.hidden_size)
+        .map(|index| (index % config.hidden_size) as f32 * 0.1 + 0.1)
+        .collect();
+    Qwen2Runtime::new(
+        Qwen2Weights {
+            config,
+            embedding: Arc::new(embedding),
+            layers: vec![layer],
+            final_norm: Some(vec![1.0; 4]),
+        },
+        BackendKind::Cpu,
+    )
+    .expect("test Qwen2 fixture must bind")
+}
+
+#[cfg(test)]
+fn test_identity_linear(input: usize, output: usize, with_bias: bool) -> Linear {
+    let mut weight = vec![0.0; input * output];
+    for index in 0..input.min(output) {
+        weight[index * output + index] = 1.0;
+    }
+    Linear {
+        weight,
+        bias: with_bias.then(|| vec![0.0; output]),
+        in_features: input,
+        out_features: output,
+    }
+}
+
+#[cfg(test)]
+impl Qwen2Runtime {
+    /// Shares the module-level model-free fixture with sibling tests.
+    pub(crate) fn test_fixture_runtime() -> Self {
+        test_fixture_runtime()
+    }
+
+    /// Exposes only the cache position for model-free composite tests.
+    pub(crate) fn test_position(&self) -> usize {
+        self.position
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use super::test_fixture_runtime as fixture_runtime;
     use super::*;
 
     #[test]
@@ -1515,57 +1609,6 @@ mod tests {
                 .iter()
                 .all(|layer| { layer.keys.is_empty() && layer.values.is_empty() })
         );
-    }
-
-    fn fixture_runtime() -> Qwen2Runtime {
-        let config = Qwen2RuntimeConfig {
-            hidden_size: 4,
-            vocab_size: 8,
-            num_layers: 1,
-            num_attention_heads: 2,
-            num_key_value_heads: 1,
-            intermediate_size: 8,
-            rope_theta: 1.0e6,
-            rms_norm_eps: 1.0e-6,
-            max_position_embeddings: 16,
-        };
-        let layer = Layer {
-            q: identity_linear(4, 4, true),
-            k: identity_linear(4, 2, true),
-            v: identity_linear(4, 2, true),
-            o: identity_linear(4, 4, false),
-            input_norm: vec![1.0; 4],
-            post_norm: vec![1.0; 4],
-            gate: identity_linear(4, 8, false),
-            up: identity_linear(4, 8, false),
-            down: identity_linear(8, 4, false),
-        };
-        let embedding = (0..config.vocab_size * config.hidden_size)
-            .map(|index| (index % config.hidden_size) as f32 * 0.1 + 0.1)
-            .collect();
-        Qwen2Runtime::new(
-            Qwen2Weights {
-                config,
-                embedding: Arc::new(embedding),
-                layers: vec![layer],
-                final_norm: Some(vec![1.0; 4]),
-            },
-            BackendKind::Cpu,
-        )
-        .unwrap()
-    }
-
-    fn identity_linear(input: usize, output: usize, with_bias: bool) -> Linear {
-        let mut weight = vec![0.0; input * output];
-        for index in 0..input.min(output) {
-            weight[index * output + index] = 1.0;
-        }
-        Linear {
-            weight,
-            bias: with_bias.then(|| vec![0.0; output]),
-            in_features: input,
-            out_features: output,
-        }
     }
 
     // Deliberately independent scalar oracle: unlike `prefill`, this walks a
