@@ -59,6 +59,7 @@ TOKENIZER_FILES = {
 }
 FORMAT = "vokra-vibevoice-realtime-streaming-reference-v1"
 SCOPE_SCHEMA = "vokra-vibevoice-realtime-streaming-execution-v1"
+COMPATIBILITY_ROUTE = "TRUSTED_RUN_REFERENCE_COMPATIBILITY_AND_OFFICIAL_DYNAMICCACHE_DDP_CACHE_DATA"
 NO_UPLOAD = "NO_UPLOAD"
 CUDA_ATOL = 5e-2  # provisional device-selection guard, not a waveform release bound
 MAX_TEXT_BYTES = 16_384
@@ -340,7 +341,7 @@ def _validate_scope(
     runtime = scope.get("runtime")
     if not isinstance(runtime, dict) or runtime.get("reference_script_sha256") != script_sha256 or runtime.get("uv_lock_sha256") != uv_lock_sha256 or runtime.get("trusted_runner_sha256") != trusted_runner_sha256:
         raise RuntimeError("owner scope runtime hash binding mismatch")
-    if runtime.get("compatibility_route") != "TRUSTED_RUN_REFERENCE_COMPATIBILITY_AND_OFFICIAL_ENSURE_CACHE_HAS_LAYERS":
+    if runtime.get("compatibility_route") != COMPATIBILITY_ROUTE:
         raise RuntimeError("owner scope compatibility route mismatch")
     if runtime.get("seed") != 1234 or runtime.get("noise_policy") != "CONTROLLED_CPU_TAPE" or runtime.get("device_selection_policy") != "CUDA_IF_FULL_TRACE_GUARD_AND_MEDIAN_FASTER":
         raise RuntimeError("owner scope noise/device policy mismatch")
@@ -453,22 +454,25 @@ class _Trace:
             self.record(stage + ".hidden", hidden)
         cache = getattr(output, "past_key_values", None)
         if cache is not None:
-            key_cache = getattr(cache, "key_cache", None)
-            value_cache = getattr(cache, "value_cache", None)
+            layers = getattr(cache, "layers", None)
+            if not isinstance(layers, list):
+                raise RuntimeError(f"trace {stage}.cache has no official layer list")
             lengths = []
-            if not isinstance(key_cache, (list, tuple)) or not isinstance(value_cache, (list, tuple)):
-                raise RuntimeError(f"trace {stage}.cache has no inspectable key/value layers")
-            if len(key_cache) != len(value_cache) or any(
-                not self.torch.is_tensor(key) or not self.torch.is_tensor(value)
-                or key.ndim != 4 or value.ndim != 4
-                for key, value in zip(key_cache, value_cache, strict=True)
-            ):
-                raise RuntimeError(f"trace {stage}.cache has an invalid cache layer")
-            lengths = [int(key.shape[2]) for key in key_cache]
+            for layer in layers:
+                key = getattr(layer, "keys", None)
+                value = getattr(layer, "values", None)
+                if (
+                    not self.torch.is_tensor(key)
+                    or not self.torch.is_tensor(value)
+                    or key.ndim != 4
+                    or value.ndim != 4
+                ):
+                    raise RuntimeError(f"trace {stage}.cache has an invalid official cache layer")
+                lengths.append(int(key.shape[2]))
             cache_stage = stage + ".cache"
             ordinal = self.counters.get(cache_stage, 0)
             self.counters[cache_stage] = ordinal + 1
-            self.records.append({"stage": cache_stage, "ordinal": ordinal, "cache_layers": len(key_cache) if isinstance(key_cache, (list, tuple)) else 0, "cache_lengths": lengths})
+            self.records.append({"stage": cache_stage, "ordinal": ordinal, "cache_layers": len(layers), "cache_lengths": lengths})
 
 
 @contextlib.contextmanager
@@ -557,8 +561,69 @@ def _controlled_noise(torch: Any, tape: _NoiseTape):
         torch.randn = original
 
 
+def _migrate_legacy_cache(cache: Any, branch: str, torch: Any, DynamicCache: Any) -> Any:
+    """Migrate legacy pickle lists through Transformers' public constructor.
+
+    The pinned Microsoft helper only adds ``layers`` wrappers whose API is not
+    complete for Transformers 5.10.4 (notably it lacks ``get_seq_length`` and
+    ``keys``/``values``).  This route never invents a cache class or tensor
+    layout: ``DynamicCache(ddp_cache_data=...)`` is the official constructor,
+    and every source tensor is compared after construction.
+    """
+
+    key_cache = getattr(cache, "key_cache", None)
+    value_cache = getattr(cache, "value_cache", None)
+    if not isinstance(key_cache, (list, tuple)) or not isinstance(value_cache, (list, tuple)):
+        raise RuntimeError(f"{branch} preset cache lacks legacy key_cache/value_cache lists")
+    if len(key_cache) != len(value_cache) or not key_cache:
+        raise RuntimeError(f"{branch} preset cache has no complete legacy layer pairs")
+    before: list[tuple[Any, Any]] = []
+    for index, (key, value) in enumerate(zip(key_cache, value_cache, strict=True)):
+        if (
+            not torch.is_tensor(key)
+            or not torch.is_tensor(value)
+            or key.ndim != 4
+            or value.ndim != 4
+            or key.shape != value.shape
+            or key.dtype != value.dtype
+        ):
+            raise RuntimeError(f"{branch} legacy cache layer {index} has invalid shape or dtype")
+        before.append((key.detach().clone(), value.detach().clone()))
+    try:
+        migrated = DynamicCache(ddp_cache_data=tuple(before))
+    except Exception as error:
+        raise RuntimeError(f"{branch} official DynamicCache ddp_cache_data migration failed") from error
+    layers = getattr(migrated, "layers", None)
+    if not isinstance(layers, list) or len(layers) != len(before):
+        raise RuntimeError(f"{branch} official DynamicCache migration changed layer count")
+    for index, (old_key, old_value) in enumerate(before):
+        layer = layers[index]
+        key = getattr(layer, "keys", None)
+        value = getattr(layer, "values", None)
+        required = ("update", "get_mask_sizes", "get_seq_length", "get_max_cache_shape")
+        if any(not callable(getattr(layer, name, None)) for name in required):
+            raise RuntimeError(f"{branch} official DynamicCache layer {index} lacks required API")
+        if (
+            not torch.is_tensor(key)
+            or not torch.is_tensor(value)
+            or key.shape != old_key.shape
+            or value.shape != old_value.shape
+            or key.dtype != old_key.dtype
+            or value.dtype != old_value.dtype
+            or not torch.equal(key, old_key)
+            or not torch.equal(value, old_value)
+        ):
+            raise RuntimeError(f"{branch} official DynamicCache migration changed tensor values/shape/dtype")
+        expected_length = int(old_key.shape[2])
+        if int(migrated.get_seq_length(index)) != expected_length:
+            raise RuntimeError(f"{branch} official DynamicCache migration changed sequence length")
+        mask_sizes = migrated.get_mask_sizes(0, index)
+        if tuple(mask_sizes) != (expected_length, 0):
+            raise RuntimeError(f"{branch} official DynamicCache migration returned incompatible mask sizes")
+    return migrated
+
+
 def _load_preset(path: Path, device: str, torch: Any, BaseModelOutputWithPast: Any, DynamicCache: Any) -> dict[str, Any]:
-    from vibevoice.modular.modeling_vibevoice_streaming_inference import _ensure_cache_has_layers
 
     with torch.serialization.safe_globals([BaseModelOutputWithPast, DynamicCache]):
         loaded = torch.load(path, map_location=device, weights_only=True)
@@ -566,29 +631,7 @@ def _load_preset(path: Path, device: str, torch: Any, BaseModelOutputWithPast: A
         raise RuntimeError("Carter preset does not contain exactly four official branches")
     for branch, output in loaded.items():
         cache = getattr(output, "past_key_values", None)
-        before = []
-        key_cache = getattr(cache, "key_cache", None)
-        value_cache = getattr(cache, "value_cache", None)
-        if not isinstance(key_cache, (list, tuple)) or not isinstance(value_cache, (list, tuple)):
-            raise RuntimeError(f"{branch} preset cache lacks official key_cache/value_cache lists")
-        for key, value in zip(key_cache, value_cache, strict=True):
-            before.append((key.detach().clone(), value.detach().clone()))
-        before_lengths = [int(key.shape[2]) for key in key_cache if torch.is_tensor(key) and key.ndim == 4]
-        # This is Microsoft's own compatibility helper from the pinned source;
-        # no compatibility class or guessed pickle reconstruction is allowed.
-        _ensure_cache_has_layers(cache)
-        layers = getattr(cache, "layers", None)
-        if not isinstance(layers, list) or len(layers) != len(before):
-            raise RuntimeError(f"{branch} preset cache cannot expose official layers")
-        for index, (key, value) in enumerate(zip(cache.key_cache, cache.value_cache, strict=True)):
-            old_key, old_value = before[index]
-            if not torch.equal(key, old_key) or not torch.equal(value, old_value):
-                raise RuntimeError(f"{branch} official cache compatibility helper changed tensor values")
-            if not hasattr(layers[index], "get_mask_sizes") or not hasattr(layers[index], "update"):
-                raise RuntimeError(f"{branch} official cache layer API is incomplete")
-        after_lengths = [int(key.shape[2]) for key in cache.key_cache if torch.is_tensor(key) and key.ndim == 4]
-        if after_lengths != before_lengths:
-            raise RuntimeError(f"{branch} official cache compatibility helper changed position lengths")
+        output.past_key_values = _migrate_legacy_cache(cache, branch, torch, DynamicCache)
     return loaded
 
 
@@ -604,20 +647,26 @@ def _cast_preset_to_f32(loaded: dict[str, Any], torch: Any) -> dict[str, Any]:
             raise RuntimeError(f"{branch} BF16->F32 hidden cast failed lossless round-trip")
         output.last_hidden_state = hidden_f32
         cache = output.past_key_values
-        for index, (key, value) in enumerate(zip(cache.key_cache, cache.value_cache, strict=True)):
+        layers = getattr(cache, "layers", None)
+        if not isinstance(layers, list):
+            raise RuntimeError(f"{branch} preset cache has no official layer list after migration")
+        for index, layer in enumerate(layers):
+            key = getattr(layer, "keys", None)
+            value = getattr(layer, "values", None)
             for tensor in (key, value):
                 if not torch.is_tensor(tensor) or not bool(torch.isfinite(tensor).all().item()):
                     raise RuntimeError(f"{branch} preset cache tensor is not finite")
                 cast = tensor.to(dtype=torch.float32)
                 if not torch.equal(cast.to(dtype=tensor.dtype), tensor):
                     raise RuntimeError(f"{branch} BF16->F32 cast failed lossless round-trip at layer {index}")
-            cache.key_cache[index] = key.to(dtype=torch.float32)
-            cache.value_cache[index] = value.to(dtype=torch.float32)
-        # The official helper's layer wrappers point at the lists, so refresh
-        # their views after the safe cast without replacing the cache object.
-        for index, layer in enumerate(cache.layers):
-            layer.key_cache = cache.key_cache[index]
-            layer.value_cache = cache.value_cache[index]
+            layer.keys = key.to(dtype=torch.float32)
+            layer.values = value.to(dtype=torch.float32)
+            # DynamicLayer stores these derived attributes during lazy
+            # initialization; keep them synchronized after the safe cast.
+            layer.dtype = layer.keys.dtype
+            layer.device = layer.keys.device
+            if layer.dtype != torch.float32 or layer.device != layer.keys.device:
+                raise RuntimeError(f"{branch} official cache layer metadata is stale after F32 cast")
     return loaded
 
 
@@ -903,7 +952,7 @@ def _self_test() -> None:
             "execution": {"model_forward": "APPROVED", "audio_generation": "APPROVED", "max_new_tokens": 1, "ddpm_steps": 20, "cfg_scale": 3.0, "benchmark_warmups": 1, "benchmark_repeats": 3},
             "dependencies": {"uv_lock_sha256": lock_sha, "license_audit": "APPROVED_FOR_REFERENCE_EXECUTION", "security_disposition": "APPROVED_FOR_REFERENCE_EXECUTION", "use": "REFERENCE_ONLY_NO_RUNTIME_REUSE", "evidence_reference": "synthetic-model-free-test", "evidence_sha256": "b" * 64},
             "input": {"text_sha256": _sha256_bytes(b"hello"), "sample_rate": 24_000},
-            "runtime": {"reference_script_sha256": script_sha, "uv_lock_sha256": lock_sha, "trusted_runner_sha256": helper_sha, "compatibility_route": "TRUSTED_RUN_REFERENCE_COMPATIBILITY_AND_OFFICIAL_ENSURE_CACHE_HAS_LAYERS", "seed": 1234, "noise_policy": "CONTROLLED_CPU_TAPE", "device_selection_policy": "CUDA_IF_FULL_TRACE_GUARD_AND_MEDIAN_FASTER", "vokra_head": "a" * 40, "vokra_tree_sha1": "b" * 40},
+            "runtime": {"reference_script_sha256": script_sha, "uv_lock_sha256": lock_sha, "trusted_runner_sha256": helper_sha, "compatibility_route": COMPATIBILITY_ROUTE, "seed": 1234, "noise_policy": "CONTROLLED_CPU_TAPE", "device_selection_policy": "CUDA_IF_FULL_TRACE_GUARD_AND_MEDIAN_FASTER", "vokra_head": "a" * 40, "vokra_tree_sha1": "b" * 40},
         }
         scope["scope_sha256"] = _sha256_bytes(_canonical_json(scope))
         scope_path = root / "scope.json"

@@ -48,14 +48,18 @@ execution remains closed.
 ## Cache compatibility and dtype
 
 The Carter `.pt` is loaded with the upstream demo's `weights_only=True` safe
-globals (`BaseModelOutputWithPast` and `DynamicCache`). The pinned official
-source helper `_ensure_cache_has_layers` is then applied to each of the four
-legacy cache objects. The runner verifies that every key/value tensor is
-unchanged byte-for-byte at the tensor-value level, that layer counts and
-position lengths are unchanged, and that the official layer `update` and
-`get_mask_sizes` API is present. It does not create an ad-hoc pickle shim or
-reconstruct a cache from guessed shapes. If this official compatibility route
-fails, the run stops as `SOURCE_COMPATIBILITY_OPEN`.
+globals (`BaseModelOutputWithPast` and `DynamicCache`). Static inspection of
+the pinned Microsoft `_ensure_cache_has_layers` helper shows that its legacy
+wrapper exposes `update` and `get_mask_sizes`, but not the complete
+Transformers 5.10.4 layer contract (`keys`/`values`, `get_seq_length`, and
+`get_max_cache_shape`). The runner therefore does not pass that incomplete
+wrapper into official attention. It migrates each of the four legacy branches
+through the public Transformers constructor
+`DynamicCache(ddp_cache_data=...)`, then verifies every key/value tensor's
+value, shape, dtype, layer count, sequence length, and `get_mask_sizes` result.
+No ad-hoc cache class, pickle shim, guessed shape, or sampler is introduced.
+If the official constructor or any check fails, the run stops as
+`SOURCE_COMPATIBILITY_OPEN`.
 
 The authenticated BF16 hidden/KV tensors are cast to F32 for the F32 model
 replay only after a BF16 round-trip equality check. The original preset is not
@@ -63,14 +67,19 @@ rewritten. The packet records the cast and every initial diffusion draw.
 
 Static inspection of the pinned upstream source shows that its
 `_init_cache_for_generation` deliberately returns `None` when the installed
-`DynamicCache` constructor exposes `config`, and its own
-`_ensure_cache_has_layers` adapter supplies the layer interface used by the
-official model. The fixed 5.10.4 environment has already loaded the four
-legacy cache lists through the safe loader, but full `generate` compatibility
-is still an execution-time gate. The runner therefore records the trusted
-`run_reference.py` and lock hashes and remains `SOURCE_COMPATIBILITY_OPEN`
-until the disposable VAST replay proves the official helper preserves all
-four cache values/lengths and the official forward accepts the resulting API.
+`DynamicCache` constructor exposes `config`. The fixed 5.10.4 wheel's public
+`DynamicCache` API accepts `ddp_cache_data`, stores official `CacheLayer`
+objects in `.layers`, and exposes `get_seq_length`/`get_mask_sizes` on the
+container. The fixed wheel hash is authenticated by `uv.lock`; the separate
+model-free VAST probe exercises only this public constructor/API with synthetic
+tensors. The fixed wheel is `transformers==5.10.4`, SHA-256
+`8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e`.
+The wheel's `transformers/cache_utils.py` source SHA-256 is
+`7827cec593e6e6fa2ea123abce94eb422424d30a3391f15b38414684d0bbcd33`; the
+remote probe verifies the installed module against that source hash.
+Full `generate` compatibility remains an execution-time gate: no
+owner scope or model run is claimed until the disposable VAST replay proves
+the migration and official forward accept the resulting API.
 
 ## Observational traces and device choice
 
