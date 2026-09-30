@@ -171,7 +171,7 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
         raise AuditError("uv.lock must contain exactly one virtual root")
 
 
-def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes, bytes]:
+def _contract(project: Path, *, allow_unbound_evidence: bool = False) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes, bytes]:
     project_path, lock_path, manifest_path = (project / name for name in ("pyproject.toml", "uv.lock", "license_gate_manifest.json"))
     if not all(regular_file(path) for path in (project_path, lock_path, manifest_path)):
         raise AuditError("Ultravox pyproject.toml, uv.lock, or manifest is missing/symlinked")
@@ -191,30 +191,31 @@ def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, 
     if sha256_bytes(project_bytes) != manifest["project_sha256"] or sha256_bytes(lock_bytes) != manifest["lock_sha256"]:
         raise AuditError("pyproject.toml/uv.lock bytes differ from the reviewed contract")
     evidence_ref = manifest["dependency_audit_evidence"]
-    if (
-        not isinstance(evidence_ref, dict)
-        or set(evidence_ref) != {"schema", "path", "sha256", "full_audit_sha256", "status", "approval_scope_sha256"}
-        or evidence_ref["schema"] != license_gate.COMPACT_SCHEMA
-        or evidence_ref["path"] != "dependency_audit_evidence.json"
-        or evidence_ref["status"] != "PENDING_OWNER_APPROVAL"
-        or not isinstance(evidence_ref["sha256"], str)
-        or not license_gate.HEX64.fullmatch(evidence_ref["sha256"])
-        or evidence_ref["full_audit_sha256"] != license_gate.FULL_AUDIT_SHA256
-        or not isinstance(evidence_ref["approval_scope_sha256"], str)
-        or not license_gate.HEX64.fullmatch(evidence_ref["approval_scope_sha256"])
-        or not isinstance(manifest.get("approval_scope_sha256"), str)
-        or not license_gate.HEX64.fullmatch(manifest["approval_scope_sha256"])
-        or evidence_ref["approval_scope_sha256"] != manifest["approval_scope_sha256"]
-        or license_gate.canonical_digest(license_gate.approval_scope(manifest)) != manifest["approval_scope_sha256"]
-    ):
-        raise AuditError("Ultravox compact dependency evidence contract is malformed or unbound")
-    evidence_path = project / evidence_ref["path"]
-    if not regular_file(evidence_path) or sha256_bytes(evidence_path.read_bytes()) != evidence_ref["sha256"]:
-        raise AuditError("Ultravox compact dependency evidence is missing or hash-mismatched")
-    try:
-        license_gate.validate_dependency_audit_evidence(evidence_path, evidence_ref, manifest)
-    except SystemExit as exc:
-        raise AuditError("Ultravox compact dependency evidence failed strict validation") from exc
+    if not allow_unbound_evidence:
+        if (
+            not isinstance(evidence_ref, dict)
+            or set(evidence_ref) != {"schema", "path", "sha256", "full_audit_sha256", "status", "approval_scope_sha256"}
+            or evidence_ref["schema"] != license_gate.COMPACT_SCHEMA
+            or evidence_ref["path"] != "dependency_audit_evidence.json"
+            or evidence_ref["status"] != "PENDING_OWNER_APPROVAL"
+            or not isinstance(evidence_ref["sha256"], str)
+            or not license_gate.HEX64.fullmatch(evidence_ref["sha256"])
+            or evidence_ref["full_audit_sha256"] != license_gate.FULL_AUDIT_SHA256
+            or not isinstance(evidence_ref["approval_scope_sha256"], str)
+            or not license_gate.HEX64.fullmatch(evidence_ref["approval_scope_sha256"])
+            or not isinstance(manifest.get("approval_scope_sha256"), str)
+            or not license_gate.HEX64.fullmatch(manifest["approval_scope_sha256"])
+            or evidence_ref["approval_scope_sha256"] != manifest["approval_scope_sha256"]
+            or license_gate.canonical_digest(license_gate.approval_scope(manifest)) != manifest["approval_scope_sha256"]
+        ):
+            raise AuditError("Ultravox compact dependency evidence contract is malformed or unbound")
+        evidence_path = project / evidence_ref["path"]
+        if not regular_file(evidence_path) or sha256_bytes(evidence_path.read_bytes()) != evidence_ref["sha256"]:
+            raise AuditError("Ultravox compact dependency evidence is missing or hash-mismatched")
+        try:
+            license_gate.validate_dependency_audit_evidence(evidence_path, evidence_ref, manifest)
+        except SystemExit as exc:
+            raise AuditError("Ultravox compact dependency evidence failed strict validation") from exc
     try:
         _validate_lock_shape(lock_data, project_data)
     except (KeyError, TypeError, ValueError, AuditError) as exc:
@@ -1083,8 +1084,8 @@ def audit_model_licenses(
     return files, metadata, failures
 
 
-def audit_environment(project: Path, fetch_model_licenses: bool = True, sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
-    project_data, lock, manifest, project_bytes, lock_bytes = _contract(project)
+def audit_environment(project: Path, fetch_model_licenses: bool = True, sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None, *, allow_unbound_evidence: bool = False) -> dict[str, Any]:
+    project_data, lock, manifest, project_bytes, lock_bytes = _contract(project, allow_unbound_evidence=allow_unbound_evidence)
     active_rows, inactive_rows = classify_rows(lock)
     records = _distribution_records(); expected_ids = [identity(row["name"], row["version"]) for row in active_rows]
     # The virtual and inactive alternatives are intentionally excluded from installed closure expectations.
@@ -1106,8 +1107,8 @@ def audit_environment(project: Path, fetch_model_licenses: bool = True, sdist_fe
     return {"schema": SCHEMA, "status": "BLOCKED" if failures else "PASS", "publication_permitted": False, "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "model_code_imported": False, "cargo_invoked": False, "readelf_required": True}, "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_bytes": len(project_bytes), "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)}, "manifest_reviews": _manifest_reviews(manifest), "approval_blockers": sorted(set(_approval_blockers(manifest))), "lock_rows": {"accounted_rows": len(lock["package"]), "active_linux_installed": active_rows, "inactive_or_virtual": inactive_rows, "all_rows_accounted": len(active_rows) + len(inactive_rows) == len(lock["package"])}, "closure": closure, "packages": packages, "dependency_acquisition": _dependency_acquisition(packages), "fixed_source_model_companion_identities": _fixed_license_items(manifest), "model_license_files": model_files, "model_license_metadata": model_metadata, "model_acquisition": {"scope": "fixed source/model/Meta companion LICENSE paths plus exact HF model-info metadata fallback", "policy": "allow-listed exact primary-source LICENSE-only fetch; 401/404 model LICENSE failures may use exact-revision HF cardData.license and sibling-name metadata", "requested_files": [item["requested_url"] for item in model_files], "requested_metadata": [item["requested_url"] for item in model_metadata], "non_license_requests": [], "non_license_files": [], "proof": "bounded metadata only; no README/card text retention and no model-weight acquisition"}, "failures": sorted(set(failures))}
 
 
-def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
-    try: report = audit_environment(project, fetch_model_licenses)
+def run(project: Path, output: Path, fetch_model_licenses: bool, *, allow_unbound_evidence: bool = False) -> int:
+    try: report = audit_environment(project, fetch_model_licenses, allow_unbound_evidence=allow_unbound_evidence)
     except (AuditError, OSError, UnicodeError, ValueError) as exc: report = {"schema": SCHEMA, "status": "BLOCKED", "publication_permitted": False, "environment": {"model_code_imported": False, "cargo_invoked": False}, "dependency_acquisition": {"requests": [], "out_of_scope_requests": [], "model_files": []}, "model_acquisition": {"requested_files": [], "non_license_requests": [], "non_license_files": []}, "failures": [str(exc)]}
     output.parent.mkdir(parents=True, exist_ok=True); output.write_text(canonical_json(report) + "\n", encoding="utf-8")
     if report["failures"]: print("ultravox dependency audit: BLOCKED: " + "; ".join(report["failures"]), file=sys.stderr); return 2
@@ -1420,12 +1421,12 @@ def self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--project", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--fetch-model-licenses", action="store_true"); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--project", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--fetch-model-licenses", action="store_true"); parser.add_argument("--refresh-evidence", action="store_true"); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
     if args.self_test:
-        if args.project is not None or args.output is not None or args.fetch_model_licenses: parser.error("--self-test accepts no project/output/fetch arguments")
+        if args.project is not None or args.output is not None or args.fetch_model_licenses or args.refresh_evidence: parser.error("--self-test accepts no project/output/fetch/refresh arguments")
         return self_test()
     if args.project is None or args.output is None: parser.error("--project and --output are required")
-    return run(args.project, args.output, args.fetch_model_licenses)
+    return run(args.project, args.output, args.fetch_model_licenses, allow_unbound_evidence=args.refresh_evidence)
 
 
 if __name__ == "__main__":

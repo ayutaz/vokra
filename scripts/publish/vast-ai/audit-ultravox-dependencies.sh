@@ -80,7 +80,7 @@ run_audit() {
   require_absent_output "$output" || return 2
   mkdir -p "$(dirname "$output")" || return 2
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 \
-    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses
+    python "$AUDIT" --project "$PARITY_PROJECT" --output "$output" --fetch-model-licenses --refresh-evidence
 }
 
 self_test() {
