@@ -2698,8 +2698,12 @@ impl KyutaiSttAsr {
         let mut head_v = vec![0.0f32; head_matrix];
         let mut head_weighted = vec![0.0f32; head_matrix];
         #[cfg(test)]
-        let mut layer_index = 0usize;
-        for block in &self.weights.blocks {
+        let blocks = self.weights.blocks.iter().enumerate();
+        #[cfg(not(test))]
+        let blocks = self.weights.blocks.iter().map(|block| (0usize, block));
+        for (layer_index, block) in blocks {
+            #[cfg(not(test))]
+            let _ = layer_index;
             compute.rms_norm_f32(
                 &hidden,
                 &mut norm,
@@ -2932,10 +2936,6 @@ impl KyutaiSttAsr {
             #[cfg(test)]
             if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "layer_output", &hidden, frames, d);
-            }
-            #[cfg(test)]
-            {
-                layer_index += 1;
             }
         }
 
