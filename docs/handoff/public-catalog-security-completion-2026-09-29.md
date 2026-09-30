@@ -1652,6 +1652,41 @@ unrelated instance. An initial read-only attempt using unsupported
 `--all-pages` exited two; the correct `--all` query succeeded with no next
 page. Catalog scope remains 194 rows, 136 code/artifact-full and 58 unresolved.
 
+### Integrated Mimi nine-leg verification started (14:22 UTC)
+
+Root reviewed the frozen controller for clean integrated HEAD
+`00632846da5b11b3225c2864b7f75b41d1b9a4f3`, based on merged `main`
+`909c527b65c2a1308848450652962df42244753d`. The controller SHA-256 is
+`a6ea375471e32048d70832a6dbf6e3d801c2683788e9804f9c2cfaba2e884ea9`.
+Root independently passed shell syntax, ShellCheck and offline controller
+self-tests, including source-hash and re-signed failure/absent/duplicate-test
+rejections. The source checkout passed formatting, diff hygiene,
+zero-dependency and forbidden-symbol checks. These checks are not remote
+test results or model parity.
+
+The single owned disposable worker is `53537966`, labelled
+`vokra-mimi-metal-integration-006-full-verify-00632846-20260930T141851Z-26604`.
+Its readback reports 16 effective CPUs and 200 GB rented storage; the reviewed
+offer advertised approximately 128 GB host RAM. Bootstrap is in progress.
+The parent lifecycle will run the 16-test standard-library source-audit suite,
+Mimi focused tests, the single ABI pin, converter focused tests, converter
+Clippy, model Clippy, workspace tests, deny and advisory audit. Its 26-member
+packet and nine zero exit files must be recovered and authenticated before
+a green result is recorded. No competing side collector is used; destruction
+of this exact worker and its data follows evidence recovery on either result.
+
+The user requested GPU use when it is faster. Model execution may choose a
+GPU only after correctness within unchanged numerical gates and end-to-end
+time, including setup and transfers, justify that choice. Mandatory CPU and
+Apple Metal/no-fallback legs remain separate. This batch is Rust regression
+and model-free audit work, so a GPU does not accelerate its selected commands.
+No model runs on the maintainer Mac. Official Rust Mimi reference closure,
+checkpoint compatibility and full PCM-to-text composition remain open; no
+new checkpoint, publication or Apple allocation is authorized by this note.
+The unfiltered pre-rent account read still showed unrelated `53535326`;
+it was not modified. Scope remains 194 public rows, 136 code/artifact-full
+and 58 unresolved, with the nine-leg verdict pending.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
