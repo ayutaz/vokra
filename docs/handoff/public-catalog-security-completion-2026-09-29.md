@@ -880,6 +880,51 @@ including the local-model, memory and protected-path guards. The active
 maintainer hook was not changed by this preparation. Account-wide VAST
 readback reports zero instances and no next page; no worker was retained.
 
+### Same-worker Kyutai ISA diagnosis (09:50 UTC)
+
+The frozen, clean candidate
+`107de0b30ff06389da1681f11c4ae634bab913a4` was diagnosed on one
+disposable AMD EPYC 7713 VAST worker, `53505648`, with 16 build jobs.
+Both focused processes used the same compiled test binary and synthetic
+fixture; the ordinary process explicitly unset `VOKRA_CPU_ISA`, and the
+second process set it to `scalar`. Actual runtime observations were `Avx2`
+and `Scalar`, respectively. The recorded feature tree includes the CPU
+default, parallel and SIMD-transcendental features.
+
+The ordinary path exited 101: two tests passed and the strict full-versus-step
+test failed. Its first differing logit was frame 1, index 0:
+`-1.3057351` (`0xbfa72254`) versus `-1.305735` (`0xbfa72253`), a one-ULP
+difference with absolute delta `1.1920929e-7`. The scalar path exited zero:
+three tests passed, none failed or were ignored. This narrows the synthetic
+self-consistency defect to an ISA-sensitive route; it does not identify the
+first divergent operation, justify relaxing equality, or establish independent
+real-weight parity. QKV, QK, softmax, weighted-V and output-stage taps remain
+the next diagnostic work. Production arithmetic and the assertion are unchanged.
+
+All ten recovered packet files matched their remote SHA-256 values. Final
+HEAD matched the target and observed worktree status was empty. Default and
+scalar log SHA-256 values are, respectively,
+`b0d2d1c8b32e548732c8ff306fb380cc55d678fd75763a7924140402f9197b43`
+and `5b6f6b8d4dd230e0d95662eaed78ee5eb73d0086a02bc8fdc8394005adcef181`;
+the remote checksum-list SHA-256 is
+`b6698ebb5294f5a55f486b0b07f42aeb5b399fef45a5267a5a4b78225613db5d`.
+The worker and 200-GB storage were destroyed. Individual readback returned
+`instances: null`; account-wide readback reported zero instances and no next
+page. Controller success means diagnosis, recovery and cleanup completed,
+not that both test paths passed. No model payload, GPU execution, upstream
+reference, Apple run or upload occurred.
+
+The separate reviewed Mimi ELU slice is committed, clean and unpushed at
+`336de430e4c9d40bb81906cd09381b43797c22de`, based on merged main
+`ef64003b453840cf23516567d13beef7ac1f53e4`. It preserves the existing CPU
+`exp_m1()` bit behavior and dispatches non-CPU activation through the existing
+Compute ELU seam, with preallocated scratch and explicit unsupported errors.
+Static checks passed; Rust compilation/tests and Metal device execution remain
+pending. QK, weighted-V, RVQ and other host arithmetic are not closed by this
+slice. The catalog denominator remains 58 unresolved rows. The GPU execution
+policy still requires same-input correctness and faster measured whole-path
+time, including transfers; mandatory CPU and Apple/no-fallback gates remain.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
