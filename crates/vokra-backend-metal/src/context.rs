@@ -4176,6 +4176,10 @@ impl MetalContext {
         // Mimi RVQ encode is intentionally compiled in a separate library
         // with MTLCompileOptions.fastMathEnabled = false. Do not alter the
         // shared library's long-standing math mode for unrelated kernels.
+        // SAFETY: `device` is the non-null MTLDevice retained by the enclosing
+        // `MetalContext::build` call, and `compile_precise_library` uses only
+        // the documented Objective-C class/selector ABI while its +1 options
+        // object remains alive through library creation.
         let rvq_encode_lib =
             unsafe { compile_precise_library(device, MIMI_RVQ_ENCODE_MSL, "mimi_rvq_encode") }?;
         // SAFETY: device is valid and the dedicated library owns these functions.
@@ -7134,6 +7138,12 @@ impl MetalContext {
         )?;
 
         let mut codes = vec![0u32; frames];
+        // SAFETY: `codes_buf` is a shared-storage output buffer allocated for
+        // exactly `frames * size_of::<u32>()` bytes, and the completed argmin
+        // command has initialized every element before this read. `contents`
+        // is the documented MTLBuffer selector; Metal's shared-buffer contents
+        // are suitably aligned for scalar elements, and the returned pointer
+        // is checked for null before the aligned `u32` copy below.
         let code_ptr = unsafe { sys::send_ptr(codes_buf.0, sys::sel(b"contents\0")) } as *const u32;
         if code_ptr.is_null() {
             return Err(VokraError::BackendUnavailable(

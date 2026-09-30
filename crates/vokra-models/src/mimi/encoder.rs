@@ -51,11 +51,13 @@ use super::nn::{
 use crate::compute::{Compute, HotOp};
 use crate::csm::backbone::xavier_uniform;
 
-/// Hot ops the Mimi neural chain dispatches (im2col-GEMM convolutions +
-/// transformer GEMM/softmax/LayerNorm/GELU + the learned LayerScale residual
-/// update). RVQ nearest-codebook search is included through the dedicated
-/// batch seam; remaining host-layout glue is still outside this registry. This
-/// is not a claim of full Metal residency or GPU speedup.
+/// Public hot ops the Mimi neural chain dispatches (im2col-GEMM convolutions +
+/// transformer GEMM/softmax/LayerNorm/GELU). Mimi's two model-specific learned
+/// capabilities are checked by [`Compute::for_mimi_backend`], rather than
+/// being added to the public exhaustive `HotOp` enum. RVQ nearest-codebook
+/// search is included through that dedicated seam; remaining host-layout glue
+/// is still outside this registry. This is not a claim of full Metal
+/// residency or GPU speedup.
 pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Gemv,
@@ -63,8 +65,6 @@ pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::LayerNorm,
     HotOp::Gelu,
     HotOp::Elu,
-    HotOp::ResidualScaleAdd,
-    HotOp::MimiRvqEncode,
 ];
 
 /// One SEANet residual block (assembled).
@@ -512,7 +512,7 @@ impl MimiEncoder {
     }
 
     fn compute(&self) -> Result<Compute> {
-        Compute::for_backend(self.backend, MIMI_HOT_OPS)
+        Compute::for_mimi_backend(self.backend, MIMI_HOT_OPS)
     }
 
     /// Fresh streaming state accepting up to `frames_cap` frames per
@@ -1321,9 +1321,8 @@ mod tests {
     #[test]
     fn mimi_backend_gate_declares_elu_and_refuses_uncovered_backend() {
         assert!(MIMI_HOT_OPS.contains(&HotOp::Elu));
-        assert!(MIMI_HOT_OPS.contains(&HotOp::ResidualScaleAdd));
-        assert!(MIMI_HOT_OPS.contains(&HotOp::MimiRvqEncode));
-        assert!(Compute::for_backend(BackendKind::Vulkan, MIMI_HOT_OPS).is_err());
+        assert!(Compute::for_mimi_backend(BackendKind::Cpu, MIMI_HOT_OPS).is_ok());
+        assert!(Compute::for_mimi_backend(BackendKind::Vulkan, MIMI_HOT_OPS).is_err());
     }
 
     fn encoder() -> MimiEncoder {

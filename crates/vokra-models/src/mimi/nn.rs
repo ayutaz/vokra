@@ -1631,10 +1631,7 @@ mod tests {
         // Vulkan has no Compute seam arm in this slice. Requiring the actual
         // learned contractions pins selection as an explicit error rather
         // than allowing a coverage-empty CPU fallback.
-        let result = Compute::for_backend(
-            BackendKind::Vulkan,
-            &[HotOp::Gemm, HotOp::Softmax, HotOp::ResidualScaleAdd],
-        );
+        let result = Compute::for_mimi_backend(BackendKind::Vulkan, &[HotOp::Gemm, HotOp::Softmax]);
         assert!(result.is_err(), "unsupported backend must fail explicitly");
     }
 
@@ -1661,15 +1658,9 @@ mod tests {
         let mut rng = SplitMix64::new(19);
         let tf = tiny_transformer_with_context(&mut rng, 8, 2, 16, 2);
         let cpu = compute();
-        let metal = match Compute::for_backend(
+        let metal = match Compute::for_mimi_backend(
             BackendKind::Metal,
-            &[
-                HotOp::Gemm,
-                HotOp::Softmax,
-                HotOp::LayerNorm,
-                HotOp::Gelu,
-                HotOp::ResidualScaleAdd,
-            ],
+            &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Gelu],
         ) {
             Ok(compute) => compute,
             Err(error) => {

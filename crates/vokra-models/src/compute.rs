@@ -117,16 +117,6 @@ pub enum HotOp {
     /// explicitly uncovered; a model listing this op is rejected before
     /// execution on those backends rather than silently running it on CPU.
     Elu,
-    /// Mimi's learned LayerScale residual update:
-    /// `dst[row, channel] += scale[channel] * src[row, channel]`.
-    ///
-    /// The CPU arm preserves the transformer loop's operand order exactly.
-    /// Metal uses a dedicated vector-scale/add kernel after validating the
-    /// complete `[rows, channels]` shape. CUDA, Vulkan, WebGPU, and delegates
-    /// remain explicitly uncovered; a Mimi model therefore fails its backend
-    /// coverage gate instead of silently running this learned operation on the
-    /// host (FR-EX-08).
-    ResidualScaleAdd,
     /// Element-wise hyperbolic tangent. SpeechT5's four activated postnet
     /// convolution blocks require this exact nonlinearity. CPU dispatches the
     /// existing portable kernel and Metal has a dedicated MSL kernel; other
@@ -189,12 +179,6 @@ pub enum HotOp {
     /// `metal_coverage_is_consistent` / `vulkan_coverage_is_consistent` tests
     /// pin this table to the `Compute` method arms.
     MimiRvq,
-    /// Mimi residual-vector-quantizer encoder: batched FP32 L2 nearest-row
-    /// search, deterministic lowest-index argmin, and residual subtraction.
-    /// This is deliberately distinct from [`HotOp::MimiRvq`], which is the
-    /// decoder gather/fold operation.  Only CPU and the dedicated Metal
-    /// implementation are covered; other backends reject it explicitly.
-    MimiRvqEncode,
     /// DAC (Descript) factorized residual VQ codec decode
     /// (`dac_rvq_decode`) — M4-04, FR-OP-30. Same heterogeneous-signature /
     /// heap-returning shape as [`HotOp::MimiRvq`] plus the per-quantizer
@@ -462,6 +446,34 @@ pub enum HotOp {
     CausalHifiGan,
 }
 
+/// Mimi-only backend capabilities that are intentionally not part of the
+/// public exhaustive [`HotOp`] enum.  Keeping these model-specific seams here
+/// preserves the historical `HotOp` discriminants while retaining a single
+/// fail-closed coverage gate for the Mimi encoder/transformer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MimiHotOp {
+    ResidualScaleAdd,
+    MimiRvqEncode,
+}
+
+impl MimiHotOp {
+    const ALL: [Self; 2] = [Self::ResidualScaleAdd, Self::MimiRvqEncode];
+
+    fn covered_by_backend(self, backend: BackendKind) -> bool {
+        let _ = self;
+        match backend {
+            BackendKind::Cpu => true,
+            BackendKind::Metal => {
+                cfg!(all(
+                    feature = "metal",
+                    any(target_os = "macos", target_os = "ios")
+                ))
+            }
+            _ => false,
+        }
+    }
+}
+
 impl HotOp {
     /// Whether the Metal backend's imperative [`Compute`] seam covers this op.
     ///
@@ -483,9 +495,6 @@ impl HotOp {
     /// host-side per-index bound check upstream — FR-EX-08). The AudioCraft
     /// waveform-decode wave (2026-08-26) wires [`HotOp::EncodecRvq`] through
     /// that same shape-generic Mimi kernel with EnCodec-specific validation.
-    /// `HotOp::MimiRvqEncode` is separately covered by the precise-math
-    /// three-pass Metal encoder; device-gated parity remains required and this
-    /// slice makes no real-weight or speed claim.
     /// CUDA sibling (M3-06 T15 NVRTC kernel) is on the vast.ai owner track and
     /// remains uncovered here. (The *graph* backend
     /// `MetalBackend::supports` / `eval_op` is a separate path and still
@@ -520,7 +529,6 @@ impl HotOp {
                 | HotOp::GeluNew
                 | HotOp::Relu
                 | HotOp::Elu
-                | HotOp::ResidualScaleAdd
                 | HotOp::Tanh
                 | HotOp::Silu
                 | HotOp::OuveSde
@@ -532,7 +540,6 @@ impl HotOp {
                 | HotOp::FirResample2d
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
-                | HotOp::MimiRvqEncode
                 | HotOp::DacRvq
                 | HotOp::EncodecRvq
                 | HotOp::WavTokenizerVq
@@ -775,6 +782,38 @@ impl Compute {
             compute.cpu_isa = Some(IsaPath::Scalar);
         }
         Ok(compute)
+    }
+
+    /// Builds a Mimi dispatcher after checking its two model-specific learned
+    /// capabilities in addition to the ordinary [`HotOp`] requirements.
+    /// These capabilities stay out of the public exhaustive enum so adding a
+    /// Mimi seam cannot renumber existing public variants. Unsupported
+    /// backends still fail explicitly; this helper never partitions work onto
+    /// the CPU.
+    pub(crate) fn for_mimi_backend(kind: BackendKind, required: &[HotOp]) -> Result<Self> {
+        // An unavailable Metal build must retain `for_backend`'s precise
+        // BackendUnavailable result. On every other uncovered backend, reject
+        // the Mimi-specific capabilities before probing or constructing a
+        // device context.
+        if kind == BackendKind::Metal
+            && !cfg!(all(
+                feature = "metal",
+                any(target_os = "macos", target_os = "ios")
+            ))
+        {
+            return Self::for_backend(kind, required);
+        }
+        if let Some(capability) = MimiHotOp::ALL
+            .iter()
+            .copied()
+            .find(|capability| !capability.covered_by_backend(kind))
+        {
+            return Err(VokraError::UnsupportedOp(format!(
+                "{kind:?} backend does not cover Mimi capability {capability:?}; Vokra does not "
+                "silently run it on the CPU"
+            )));
+        }
+        Self::for_backend(kind, required)
     }
 
     /// Builds a dispatcher for `kind`, requiring it to cover every op in
@@ -5932,7 +5971,7 @@ mod tests {
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn metal_mimi_rvq_encode_dispatches_and_preserves_shape_errors() {
-        let compute = match Compute::for_backend(BackendKind::Metal, &[HotOp::MimiRvqEncode]) {
+        let compute = match Compute::for_mimi_backend(BackendKind::Metal, &[]) {
             Ok(compute) => compute,
             Err(VokraError::BackendUnavailable(_)) => {
                 eprintln!("no Metal device; Mimi RVQ encode component test skipped");
@@ -6562,7 +6601,6 @@ mod tests {
             HotOp::GeluNew,
             HotOp::Relu,
             HotOp::Elu,
-            HotOp::ResidualScaleAdd,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::OuveSde,
@@ -6574,7 +6612,6 @@ mod tests {
             HotOp::FirResample2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
-            HotOp::MimiRvqEncode,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -6591,6 +6628,82 @@ mod tests {
         ];
         let c = Compute::for_backend(BackendKind::Cpu, &all).expect("cpu covers all");
         assert_eq!(c.backend_name(), "cpu");
+    }
+
+    #[test]
+    fn public_hot_op_discriminants_match_main_81d72f23() {
+        let discriminants = [
+            HotOp::Gemm as usize,
+            HotOp::Gemv as usize,
+            HotOp::Softmax as usize,
+            HotOp::LayerNorm as usize,
+            HotOp::RmsNorm as usize,
+            HotOp::ScaleNorm as usize,
+            HotOp::GroupNorm as usize,
+            HotOp::Gelu as usize,
+            HotOp::GeluNew as usize,
+            HotOp::Relu as usize,
+            HotOp::Elu as usize,
+            HotOp::Tanh as usize,
+            HotOp::Silu as usize,
+            HotOp::OuveSde as usize,
+            HotOp::Conv1d as usize,
+            HotOp::Conv1dDilation as usize,
+            HotOp::ConvTranspose1d as usize,
+            HotOp::Conv2d as usize,
+            HotOp::ConvTranspose2d as usize,
+            HotOp::FirResample2d as usize,
+            HotOp::MimiRvq as usize,
+            HotOp::DacRvq as usize,
+            HotOp::EncodecRvq as usize,
+            HotOp::WavTokenizerVq as usize,
+            HotOp::Xcodec2Fsq as usize,
+            HotOp::GroupFsq as usize,
+            HotOp::SnakeActivation as usize,
+            HotOp::SnacDecode as usize,
+            HotOp::DenoiseApplyMask as usize,
+            HotOp::Qwen3TtsCodec as usize,
+            HotOp::SnakeBeta as usize,
+            HotOp::SinegenDeterministic as usize,
+            HotOp::AntiAliasedUpsample as usize,
+            HotOp::GroupedConv1d as usize,
+            HotOp::CausalHifiGan as usize,
+        ];
+        for (actual, expected) in discriminants.into_iter().enumerate() {
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn mimi_capabilities_keep_backend_gate_explicit() {
+        for capability in MimiHotOp::ALL {
+            assert!(capability.covered_by_backend(BackendKind::Cpu));
+            assert_eq!(
+                capability.covered_by_backend(BackendKind::Metal),
+                cfg!(all(
+                    feature = "metal",
+                    any(target_os = "macos", target_os = "ios")
+                ))
+            );
+            assert!(!capability.covered_by_backend(BackendKind::Cuda));
+            assert!(!capability.covered_by_backend(BackendKind::Vulkan));
+            assert!(!capability.covered_by_backend(BackendKind::WebGpu));
+            assert!(!capability.covered_by_backend(BackendKind::CoreMl));
+            assert!(!capability.covered_by_backend(BackendKind::Qnn));
+        }
+        assert!(Compute::for_mimi_backend(BackendKind::Cpu, &[]).is_ok());
+        for backend in [
+            BackendKind::Cuda,
+            BackendKind::Vulkan,
+            BackendKind::WebGpu,
+            BackendKind::CoreMl,
+            BackendKind::Qnn,
+        ] {
+            assert!(matches!(
+                Compute::for_mimi_backend(backend, &[]),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+        }
     }
 
     #[test]
@@ -6650,7 +6763,6 @@ mod tests {
             HotOp::GeluNew,
             HotOp::Relu,
             HotOp::Elu,
-            HotOp::ResidualScaleAdd,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -6660,7 +6772,6 @@ mod tests {
             HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
-            HotOp::MimiRvqEncode,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -6825,7 +6936,7 @@ mod tests {
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn residual_scale_add_metal_matches_cpu_when_device_is_available() {
-        let metal = match Compute::for_backend(BackendKind::Metal, &[HotOp::ResidualScaleAdd]) {
+        let metal = match Compute::for_mimi_backend(BackendKind::Metal, &[]) {
             Ok(compute) => compute,
             Err(VokraError::BackendUnavailable(message)) => {
                 eprintln!("no Metal device; residual_scale_add parity is device-gated: {message}");
@@ -6913,7 +7024,7 @@ mod tests {
              if it has just landed, flip `HotOp::covered_by_cuda` for MimiRvq and update this \
              test.",
         );
-        assert!(!HotOp::MimiRvqEncode.covered_by_cuda());
+        assert!(!MimiHotOp::MimiRvqEncode.covered_by_backend(BackendKind::Cuda));
         // Same deferred posture for the M4-04 RVQ siblings, the M4-16 FSQ
         // family, the Vocoder wave WF2 SnakeActivation, and the Vocoder wave
         // WF5 SnacDecode / DenoiseApplyMask (lock-step with the CUDA arms of
@@ -6948,7 +7059,6 @@ mod tests {
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
-            HotOp::ResidualScaleAdd,
         ] {
             assert!(
                 !op.covered_by_cuda(),
@@ -7022,7 +7132,6 @@ mod tests {
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
-            HotOp::MimiRvqEncode,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -7037,7 +7146,6 @@ mod tests {
             HotOp::AntiAliasedUpsample,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
-            HotOp::ResidualScaleAdd,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -7092,7 +7200,6 @@ mod tests {
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
-            HotOp::MimiRvqEncode,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -7107,7 +7214,6 @@ mod tests {
             HotOp::AntiAliasedUpsample,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
-            HotOp::ResidualScaleAdd,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),
@@ -7404,7 +7510,6 @@ mod tests {
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::MimiRvq,
-            HotOp::MimiRvqEncode,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -7422,7 +7527,6 @@ mod tests {
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
-            HotOp::ResidualScaleAdd,
         ] {
             assert!(
                 !op.covered_by_webgpu(),
