@@ -14,6 +14,8 @@
 //! be sampled by the caller and supplied as `Some(token)` on the next call;
 //! subsequent calls use that token and the current audio frame directly.
 
+#[cfg(test)]
+use super::KyutaiSttTrace;
 use super::{
     KYUTAI_STT_HOT_OPS, KyutaiSttAsr, KyutaiSttBlockWeights, KyutaiSttConfig, KyutaiSttTextLogits,
 };
@@ -165,6 +167,33 @@ impl<'a> KyutaiSttStreamingLm<'a> {
         previous_text_token: Option<u32>,
         audio_codes: &[u32],
     ) -> Result<KyutaiSttStreamingLmStep> {
+        #[cfg(test)]
+        {
+            self.step_frame_inner(previous_text_token, audio_codes, None)
+        }
+        #[cfg(not(test))]
+        {
+            self.step_frame_inner(previous_text_token, audio_codes)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn step_frame_with_trace(
+        &mut self,
+        previous_text_token: Option<u32>,
+        audio_codes: &[u32],
+    ) -> Result<(KyutaiSttStreamingLmStep, KyutaiSttTrace)> {
+        let mut trace = KyutaiSttTrace::default();
+        let step = self.step_frame_inner(previous_text_token, audio_codes, Some(&mut trace))?;
+        Ok((step, trace))
+    }
+
+    fn step_frame_inner(
+        &mut self,
+        previous_text_token: Option<u32>,
+        audio_codes: &[u32],
+        #[cfg(test)] mut trace: Option<&mut KyutaiSttTrace>,
+    ) -> Result<KyutaiSttStreamingLmStep> {
         if self.poisoned {
             return Err(VokraError::InvalidArgument(
                 "kyutai-stt streaming LM is poisoned; call reset before reuse".to_owned(),
@@ -211,6 +240,14 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             Ok(compute) => compute,
             Err(error) => return self.poison_error(error),
         };
+        #[cfg(test)]
+        let result = self.step_inner(
+            &compute,
+            previous_text_token,
+            audio_codes,
+            trace.as_deref_mut(),
+        );
+        #[cfg(not(test))]
         let result = self.step_inner(&compute, previous_text_token, audio_codes);
         match result {
             Ok(logits) => {
@@ -231,6 +268,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
         compute: &Compute,
         previous_text_token: Option<u32>,
         audio_codes: &[u32],
+        #[cfg(test)] mut trace: Option<&mut KyutaiSttTrace>,
     ) -> Result<KyutaiSttTextLogits> {
         let cfg = &self.asr.cfg;
         let d = cfg.backbone.d_model;
@@ -252,14 +290,30 @@ impl<'a> KyutaiSttStreamingLm<'a> {
         ensure_finite("streaming input embedding", &hidden)?;
 
         for (index, block) in self.asr.weights.blocks.iter().enumerate() {
-            hidden = forward_layer(
-                compute,
-                cfg,
-                block,
-                &mut self.layers[index],
-                hidden,
-                self.position,
-            )?;
+            #[cfg(test)]
+            {
+                hidden = forward_layer(
+                    compute,
+                    cfg,
+                    block,
+                    &mut self.layers[index],
+                    hidden,
+                    self.position,
+                    trace.as_deref_mut(),
+                    index,
+                )?;
+            }
+            #[cfg(not(test))]
+            {
+                hidden = forward_layer(
+                    compute,
+                    cfg,
+                    block,
+                    &mut self.layers[index],
+                    hidden,
+                    self.position,
+                )?;
+            }
             #[cfg(test)]
             if self.fail_after_layer == Some(index) {
                 return Err(VokraError::ModelLoad(
@@ -276,6 +330,16 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             &self.asr.weights.final_norm,
             cfg.rms_norm_eps,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record(
+                self.asr.cfg.backbone.n_layer,
+                self.position,
+                None,
+                "final_norm",
+                &norm,
+            );
+        }
         ensure_finite("streaming final norm", &norm)?;
         let mut logits = vec![0.0_f32; cfg.text_card];
         compute.gemm_f32(
@@ -287,6 +351,16 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             None,
             &mut logits,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record(
+                self.asr.cfg.backbone.n_layer,
+                self.position,
+                None,
+                "logits",
+                &logits,
+            );
+        }
         KyutaiSttTextLogits::new(1, cfg.text_card, logits)
     }
 
@@ -318,6 +392,7 @@ fn ensure_finite(label: &str, values: &[f32]) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(test, allow(clippy::too_many_arguments))]
 fn forward_layer(
     compute: &Compute,
     cfg: &KyutaiSttConfig,
@@ -325,6 +400,8 @@ fn forward_layer(
     cache: &mut LayerKv,
     hidden: Vec<f32>,
     position: usize,
+    #[cfg(test)] mut trace: Option<&mut KyutaiSttTrace>,
+    #[cfg(test)] layer_index: usize,
 ) -> Result<Vec<f32>> {
     let d = cfg.backbone.d_model;
     let heads = cfg.backbone.n_head;
@@ -332,9 +409,17 @@ fn forward_layer(
     let ffn = cfg.backbone.ffn_hidden();
     let mut norm = vec![0.0_f32; d];
     compute.rms_norm_f32(&hidden, &mut norm, 1, d, &block.attn_norm, cfg.rms_norm_eps)?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "attn_norm", &norm);
+    }
     ensure_finite("attention norm", &norm)?;
     let mut qkv = vec![0.0_f32; 3 * d];
     compute.gemm_f32(1, 3 * d, d, &norm, &block.qkv_proj, None, &mut qkv)?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "qkv", &qkv);
+    }
     ensure_finite("QKV projection", &qkv)?;
     let mut q = qkv[..d].to_vec();
     let k = qkv[d..2 * d].to_vec();
@@ -343,6 +428,12 @@ fn forward_layer(
     apply_rope_row(&mut q, heads, head_dim, &inv_freqs, position)?;
     let mut rotated_k = k;
     apply_rope_row(&mut rotated_k, heads, head_dim, &inv_freqs, position)?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "q_rope", &q);
+        trace.record(layer_index, position, None, "k_rope", &rotated_k);
+        trace.record(layer_index, position, None, "v", &v);
+    }
     cache.append(position, &rotated_k, &v, cfg.backbone.context);
     let length = cache.positions.len();
     debug_assert!(length > 0 && length <= cfg.backbone.context);
@@ -350,6 +441,25 @@ fn forward_layer(
         return Err(VokraError::ModelLoad(
             "kyutai-stt streaming LM cache contains a future position".to_owned(),
         ));
+    }
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        for (row, &cached_position) in cache.positions.iter().enumerate() {
+            trace.record(
+                layer_index,
+                cached_position,
+                None,
+                "k_cache",
+                &cache.keys[row * d..(row + 1) * d],
+            );
+            trace.record(
+                layer_index,
+                cached_position,
+                None,
+                "v_cache",
+                &cache.values[row * d..(row + 1) * d],
+            );
+        }
     }
     let mut attention_input = vec![0.0_f32; d];
     let scale = 1.0_f32 / (head_dim as f32).sqrt();
@@ -365,11 +475,29 @@ fn forward_layer(
         }
         let mut scores = vec![0.0_f32; length];
         compute.gemm_f32(1, length, head_dim, q_head, &keys_t, None, &mut scores)?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record(layer_index, position, Some(head), "qk_raw", &scores);
+        }
         for score in &mut scores {
             *score *= scale;
         }
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record(
+                layer_index,
+                position,
+                Some(head),
+                "qk_scaled_masked",
+                &scores,
+            );
+        }
         let mut probabilities = vec![0.0_f32; length];
         compute.softmax_f32(&scores, &mut probabilities, 1, length)?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record(layer_index, position, Some(head), "softmax", &probabilities);
+        }
         let mut weighted = vec![0.0_f32; head_dim];
         compute.gemm_f32(
             1,
@@ -380,6 +508,10 @@ fn forward_layer(
             None,
             &mut weighted,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record(layer_index, position, Some(head), "weighted_v", &weighted);
+        }
         for column in 0..head_dim {
             attention_input[head * head_dim + column] = weighted[column];
         }
@@ -395,15 +527,37 @@ fn forward_layer(
         None,
         &mut attention_output,
     )?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(
+            layer_index,
+            position,
+            None,
+            "attention_projection",
+            &attention_output,
+        );
+    }
     let mut hidden = hidden;
     for (dst, &value) in hidden.iter_mut().zip(&attention_output) {
         *dst += value;
     }
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "attention_residual", &hidden);
+    }
     ensure_finite("attention residual", &hidden)?;
 
     compute.rms_norm_f32(&hidden, &mut norm, 1, d, &block.ffn_norm, cfg.rms_norm_eps)?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "ffn_norm", &norm);
+    }
     let mut ffn_input = vec![0.0_f32; 2 * ffn];
     compute.gemm_f32(1, 2 * ffn, d, &norm, &block.linear_in, None, &mut ffn_input)?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "ffn_linear_in", &ffn_input);
+    }
     ensure_finite("FFN projection", &ffn_input)?;
     let gate_input = ffn_input[..ffn].to_vec();
     let up = &ffn_input[ffn..];
@@ -413,10 +567,22 @@ fn forward_layer(
     for (gate_value, &up_value) in gate.iter_mut().zip(up) {
         *gate_value *= up_value;
     }
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "ffn_activated", &gate);
+    }
     let mut ffn_output = vec![0.0_f32; d];
     compute.gemm_f32(1, d, ffn, &gate, &block.linear_out, None, &mut ffn_output)?;
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "ffn_output", &ffn_output);
+    }
     for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
         *dst += value;
+    }
+    #[cfg(test)]
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.record(layer_index, position, None, "layer_output", &hidden);
     }
     ensure_finite("FFN residual", &hidden)?;
     Ok(hidden)
@@ -480,6 +646,169 @@ mod tests {
             .unwrap_or_else(|| "<unavailable>".to_owned())
     }
 
+    fn report_trace_difference(
+        label: &str,
+        layer: usize,
+        frame: usize,
+        head: Option<usize>,
+        full: Option<&[f32]>,
+        step: Option<&[f32]>,
+        first_stage: &mut Option<String>,
+    ) {
+        if first_stage.is_some() {
+            return;
+        }
+        let (Some(full), Some(step)) = (full, step) else {
+            *first_stage = Some(format!("{label} (missing trace entry)"));
+            eprintln!(
+                "  actual_stage_trace stage={label} layer={layer} frame={frame} head={head:?} missing full={} step={}",
+                full.is_some(),
+                step.is_some(),
+            );
+            return;
+        };
+        let Some(index) = (0..full.len().max(step.len()))
+            .find(|&index| full.get(index).copied() != step.get(index).copied())
+        else {
+            return;
+        };
+        *first_stage = Some(label.to_owned());
+        let full_value = full.get(index).copied();
+        let step_value = step.get(index).copied();
+        eprintln!(
+            "  actual_stage_trace stage={label} layer={layer} frame={frame} head={head:?} index={index} full_len={} step_len={} full={full_value:?} step={step_value:?}",
+            full.len(),
+            step.len(),
+        );
+        if let (Some(full_value), Some(step_value)) = (full_value, step_value) {
+            eprintln!(
+                "    full_bits=0x{:08x} step_bits=0x{:08x} abs_diff={:?} ulps={}",
+                full_value.to_bits(),
+                step_value.to_bits(),
+                (full_value - step_value).abs(),
+                ulp_distance(full_value, step_value),
+            );
+        }
+        eprintln!("    full_values={full:?}");
+        eprintln!("    step_values={step:?}");
+    }
+
+    fn select_positions(values: Option<&[f32]>, positions: &[usize]) -> Option<Vec<f32>> {
+        let values = values?;
+        positions
+            .iter()
+            .map(|&position| values.get(position).copied())
+            .collect()
+    }
+
+    fn compare_actual_stage_trace(
+        full_trace: &KyutaiSttTrace,
+        step_trace: &KyutaiSttTrace,
+        config: &KyutaiSttConfig,
+        frame: usize,
+    ) {
+        let context_start = frame
+            .saturating_add(1)
+            .saturating_sub(config.backbone.context);
+        let retained_positions: Vec<usize> = (context_start..=frame).collect();
+        let mut first_stage = None;
+
+        for layer in 0..config.backbone.n_layer {
+            for stage in ["attn_norm", "qkv", "q_rope", "k_rope", "v"] {
+                report_trace_difference(
+                    &format!("layer{layer} {stage}"),
+                    layer,
+                    frame,
+                    None,
+                    full_trace.find(layer, frame, None, stage),
+                    step_trace.find(layer, frame, None, stage),
+                    &mut first_stage,
+                );
+            }
+            for &position in &retained_positions {
+                report_trace_difference(
+                    &format!("layer{layer} k_cache"),
+                    layer,
+                    position,
+                    None,
+                    full_trace.find(layer, position, None, "k_rope"),
+                    step_trace.find(layer, position, None, "k_cache"),
+                    &mut first_stage,
+                );
+                report_trace_difference(
+                    &format!("layer{layer} v_cache"),
+                    layer,
+                    position,
+                    None,
+                    full_trace.find(layer, position, None, "v"),
+                    step_trace.find(layer, position, None, "v_cache"),
+                    &mut first_stage,
+                );
+            }
+            for head in 0..config.backbone.n_head {
+                for stage in ["qk_raw", "qk_scaled_masked", "softmax"] {
+                    let full = select_positions(
+                        full_trace.find(layer, frame, Some(head), stage),
+                        &retained_positions,
+                    );
+                    report_trace_difference(
+                        &format!("layer{layer} head{head} {stage}"),
+                        layer,
+                        frame,
+                        Some(head),
+                        full.as_deref(),
+                        step_trace.find(layer, frame, Some(head), stage),
+                        &mut first_stage,
+                    );
+                }
+                report_trace_difference(
+                    &format!("layer{layer} head{head} weighted_v"),
+                    layer,
+                    frame,
+                    Some(head),
+                    full_trace.find(layer, frame, Some(head), "weighted_v"),
+                    step_trace.find(layer, frame, Some(head), "weighted_v"),
+                    &mut first_stage,
+                );
+            }
+            for stage in [
+                "attention_projection",
+                "attention_residual",
+                "ffn_norm",
+                "ffn_linear_in",
+                "ffn_activated",
+                "ffn_output",
+                "layer_output",
+            ] {
+                report_trace_difference(
+                    &format!("layer{layer} {stage}"),
+                    layer,
+                    frame,
+                    None,
+                    full_trace.find(layer, frame, None, stage),
+                    step_trace.find(layer, frame, None, stage),
+                    &mut first_stage,
+                );
+            }
+        }
+        let final_layer = config.backbone.n_layer;
+        for stage in ["final_norm", "logits"] {
+            report_trace_difference(
+                &format!("final {stage}"),
+                final_layer,
+                frame,
+                None,
+                full_trace.find(final_layer, frame, None, stage),
+                step_trace.find(final_layer, frame, None, stage),
+                &mut first_stage,
+            );
+        }
+        eprintln!(
+            "  actual_stage_trace frame={frame} retained_positions={retained_positions:?} first_divergence={first_stage:?}"
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn report_logits_mismatch(
         frame: usize,
         actual: &[f32],
@@ -487,6 +816,10 @@ mod tests {
         stream: &KyutaiSttStreamingLm<'_>,
         config: &KyutaiSttConfig,
         frames: usize,
+        asr: &KyutaiSttAsr,
+        full_text: &[u32],
+        full_audio: &[u32],
+        stream_audio: &[u32],
     ) {
         let mismatch = (0..actual.len().max(expected.len())).find_map(|index| {
             (actual.get(index).copied() != expected.get(index).copied()).then_some(index)
@@ -530,7 +863,7 @@ mod tests {
             config.text_card,
         );
         eprintln!(
-            "  candidate stage shapes only (not a first-divergence finding or relaxed verdict): QKV full=[m={},n={},k={}] step=[m=1,n={},k={}]; QK full=[m={},n={},k={}] step=[m=1,n={},k={}]; softmax full=[rows={},cols={}] step=[rows=1,cols={}]; weighted-V full=[m={},n={},k={}] step=[m=1,n={},k={}]; final-logits full=[m={},n={},k={}] step=[m=1,n={},k={}]",
+            "  candidate stage shapes only (not a first-divergence finding or relaxed verdict): fused QKV full=[m={},n={},k={}] step=[m=1,n={},k={}]; QK full=[m={},n={},k={}] step=[m=1,n={},k={}]; softmax full=[rows={},cols={}] step=[rows=1,cols={}]; weighted-V full=[m={},n={},k={}] step=[m=1,n={},k={}]; final-logits full=[m={},n={},k={}] step=[m=1,n={},k={}]",
             frames,
             3 * config.backbone.d_model,
             config.backbone.d_model,
@@ -565,8 +898,66 @@ mod tests {
             .collect();
         eprintln!("  cache_positions={}", cache_positions.join(" "));
         eprintln!(
-            "  stage taps are not exposed by this production component; the shapes above are route candidates only, while exact assert_eq remains authoritative"
+            "  actual stage taps are copied from the full/step production paths; no diagnostic recomputation or relaxed verdict is used"
         );
+
+        let Ok((full_logits, full_trace)) =
+            asr.forward_text_logits_with_trace(BackendKind::Cpu, full_text, full_audio)
+        else {
+            eprintln!("  actual_stage_trace unavailable: full production trace failed");
+            return;
+        };
+        let traced_expected =
+            &full_logits.as_slice()[frame * config.text_card..(frame + 1) * config.text_card];
+        if traced_expected != expected {
+            let index = (0..traced_expected.len().max(expected.len()))
+                .find(|&index| traced_expected.get(index) != expected.get(index));
+            eprintln!(
+                "  actual_stage_trace replay drift: traced full logits differ from the original full output at index={index:?}; refusing stage interpretation"
+            );
+            return;
+        }
+        let mut traced_stream = match asr.streaming_lm(BackendKind::Cpu) {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!("  actual_stage_trace unavailable: stream construction failed: {error}");
+                return;
+            }
+        };
+        let zero_audio = vec![0_u32; config.n_q];
+        let mut step_trace = None;
+        for replay_frame in 0..=frame {
+            let previous = (replay_frame != 0).then(|| full_text[replay_frame]);
+            let audio_start = replay_frame * config.n_q;
+            let current_audio = if replay_frame == 0 {
+                zero_audio.as_slice()
+            } else {
+                &stream_audio[audio_start..audio_start + config.n_q]
+            };
+            let Ok((step, trace)) = traced_stream.step_frame_with_trace(previous, current_audio)
+            else {
+                eprintln!(
+                    "  actual_stage_trace unavailable: replay failed at frame={replay_frame}"
+                );
+                return;
+            };
+            if replay_frame == frame {
+                if step.logits().as_slice() != actual {
+                    let index = (0..step.logits().as_slice().len().max(actual.len()))
+                        .find(|&index| step.logits().as_slice().get(index) != actual.get(index));
+                    eprintln!(
+                        "  actual_stage_trace replay drift: traced step logits differ from the original streaming output at index={index:?}; refusing stage interpretation"
+                    );
+                    return;
+                }
+                step_trace = Some(trace);
+            }
+        }
+        if let Some(step_trace) = step_trace {
+            compare_actual_stage_trace(&full_trace, &step_trace, config, frame);
+        } else {
+            eprintln!("  actual_stage_trace unavailable: no target-frame trace");
+        }
     }
 
     fn fixture() -> (KyutaiSttAsr, KyutaiSttConfig) {
@@ -627,6 +1018,10 @@ mod tests {
                     &stream,
                     &config,
                     frames,
+                    &asr,
+                    &full_text,
+                    &full_audio,
+                    &audio,
                 );
             }
             assert_eq!(step.logits().as_slice(), expected);

@@ -2325,6 +2325,81 @@ pub struct KyutaiSttAsr {
     weights: KyutaiSttWeights,
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct KyutaiSttTrace {
+    entries: Vec<KyutaiSttTraceEntry>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct KyutaiSttTraceEntry {
+    layer: usize,
+    frame: usize,
+    head: Option<usize>,
+    stage: &'static str,
+    values: Vec<f32>,
+}
+
+#[cfg(test)]
+impl KyutaiSttTrace {
+    fn record(
+        &mut self,
+        layer: usize,
+        frame: usize,
+        head: Option<usize>,
+        stage: &'static str,
+        values: &[f32],
+    ) {
+        self.entries.push(KyutaiSttTraceEntry {
+            layer,
+            frame,
+            head,
+            stage,
+            values: values.to_vec(),
+        });
+    }
+
+    fn record_rows(
+        &mut self,
+        layer: usize,
+        head: Option<usize>,
+        stage: &'static str,
+        values: &[f32],
+        rows: usize,
+        width: usize,
+    ) {
+        debug_assert_eq!(values.len(), rows.saturating_mul(width));
+        for frame in 0..rows {
+            self.record(
+                layer,
+                frame,
+                head,
+                stage,
+                &values[frame * width..(frame + 1) * width],
+            );
+        }
+    }
+
+    pub(crate) fn find(
+        &self,
+        layer: usize,
+        frame: usize,
+        head: Option<usize>,
+        stage: &'static str,
+    ) -> Option<&[f32]> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.layer == layer
+                    && entry.frame == frame
+                    && entry.head == head
+                    && entry.stage == stage
+            })
+            .map(|entry| entry.values.as_slice())
+    }
+}
+
 impl KyutaiSttAsr {
     /// Assembles an engine from `cfg` and `weights`. Cross-checks the
     /// weight-store shapes against `cfg` (block count, audio-embedding
@@ -2468,6 +2543,36 @@ impl KyutaiSttAsr {
         text_tokens: &[u32],
         mimi_codes: &[u32],
     ) -> Result<KyutaiSttTextLogits> {
+        #[cfg(test)]
+        {
+            self.forward_text_logits_inner(backend, text_tokens, mimi_codes, None)
+        }
+        #[cfg(not(test))]
+        {
+            self.forward_text_logits_inner(backend, text_tokens, mimi_codes)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forward_text_logits_with_trace(
+        &self,
+        backend: BackendKind,
+        text_tokens: &[u32],
+        mimi_codes: &[u32],
+    ) -> Result<(KyutaiSttTextLogits, KyutaiSttTrace)> {
+        let mut trace = KyutaiSttTrace::default();
+        let logits =
+            self.forward_text_logits_inner(backend, text_tokens, mimi_codes, Some(&mut trace))?;
+        Ok((logits, trace))
+    }
+
+    fn forward_text_logits_inner(
+        &self,
+        backend: BackendKind,
+        text_tokens: &[u32],
+        mimi_codes: &[u32],
+        #[cfg(test)] mut trace: Option<&mut KyutaiSttTrace>,
+    ) -> Result<KyutaiSttTextLogits> {
         if self.cfg.dep_q != 0 {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai-stt dep_q=0 decoder requires dep_q=0, got {}",
@@ -2559,7 +2664,9 @@ impl KyutaiSttAsr {
         let mut head_k_transposed = vec![0.0f32; head_transposed];
         let mut head_v = vec![0.0f32; head_matrix];
         let mut head_weighted = vec![0.0f32; head_matrix];
-        for block in &self.weights.blocks {
+        for (_block_index, block) in self.weights.blocks.iter().enumerate() {
+            #[cfg(test)]
+            let layer_index = _block_index;
             compute.rms_norm_f32(
                 &hidden,
                 &mut norm,
@@ -2568,6 +2675,10 @@ impl KyutaiSttAsr {
                 &block.attn_norm,
                 self.cfg.rms_norm_eps,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "attn_norm", &norm, frames, d);
+            }
             compute.gemm_f32(
                 frames,
                 checked_product("qkv width", &[3, d])?,
@@ -2577,6 +2688,10 @@ impl KyutaiSttAsr {
                 None,
                 &mut qkv,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "qkv", &qkv, frames, 3 * d);
+            }
             // This is the pinned Moshi `Transformer` layout: fused QKV is
             // split into contiguous Q/K/V widths, standard adjacent-pair
             // RoPE is applied to Q and K, and `ActivationGating` computes
@@ -2592,6 +2707,12 @@ impl KyutaiSttAsr {
             }
             apply_rope_heads(&mut q, frames, d, heads, head_dim, &inv_freqs)?;
             apply_rope_heads(&mut k, frames, d, heads, head_dim, &inv_freqs)?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "q_rope", &q, frames, d);
+                trace.record_rows(layer_index, None, "k_rope", &k, frames, d);
+                trace.record_rows(layer_index, None, "v", &v, frames, d);
+            }
             attn_input.fill(0.0);
             let scale = 1.0f32 / (head_dim as f32).sqrt();
             for head in 0..heads {
@@ -2617,6 +2738,10 @@ impl KyutaiSttAsr {
                     None,
                     &mut scores,
                 )?;
+                #[cfg(test)]
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.record_rows(layer_index, Some(head), "qk_raw", &scores, frames, frames);
+                }
                 for query in 0..frames {
                     for key in 0..frames {
                         let visible = key <= query && query - key < self.cfg.backbone.context;
@@ -2627,7 +2752,22 @@ impl KyutaiSttAsr {
                         };
                     }
                 }
+                #[cfg(test)]
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.record_rows(
+                        layer_index,
+                        Some(head),
+                        "qk_scaled_masked",
+                        &scores,
+                        frames,
+                        frames,
+                    );
+                }
                 compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                #[cfg(test)]
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.record_rows(layer_index, Some(head), "softmax", &probs, frames, frames);
+                }
                 // The probability×V product is likewise dispatched as a
                 // learned matmul. Copying the per-head result back into the
                 // fused residual layout is scalar layout glue.
@@ -2640,6 +2780,17 @@ impl KyutaiSttAsr {
                     None,
                     &mut head_weighted,
                 )?;
+                #[cfg(test)]
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.record_rows(
+                        layer_index,
+                        Some(head),
+                        "weighted_v",
+                        &head_weighted,
+                        frames,
+                        head_dim,
+                    );
+                }
                 for frame in 0..frames {
                     attn_input[frame * d + head * head_dim..frame * d + (head + 1) * head_dim]
                         .copy_from_slice(&head_weighted[frame * head_dim..(frame + 1) * head_dim]);
@@ -2654,8 +2805,23 @@ impl KyutaiSttAsr {
                 None,
                 &mut attn_output,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(
+                    layer_index,
+                    None,
+                    "attention_projection",
+                    &attn_output,
+                    frames,
+                    d,
+                );
+            }
             for (dst, &value) in hidden.iter_mut().zip(&attn_output) {
                 *dst += value;
+            }
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "attention_residual", &hidden, frames, d);
             }
 
             compute.rms_norm_f32(
@@ -2666,6 +2832,10 @@ impl KyutaiSttAsr {
                 &block.ffn_norm,
                 self.cfg.rms_norm_eps,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "ffn_norm", &norm, frames, d);
+            }
             compute.gemm_f32(
                 frames,
                 checked_product("gating width", &[2, ffn])?,
@@ -2675,6 +2845,10 @@ impl KyutaiSttAsr {
                 None,
                 &mut ffn_in,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "ffn_linear_in", &ffn_in, frames, 2 * ffn);
+            }
             for frame in 0..frames {
                 ffn_gate[frame * ffn..(frame + 1) * ffn]
                     .copy_from_slice(&ffn_in[frame * 2 * ffn..frame * 2 * ffn + ffn]);
@@ -2685,6 +2859,17 @@ impl KyutaiSttAsr {
             for (gate, &up) in ffn_activated.iter_mut().zip(&ffn_up) {
                 *gate *= up;
             }
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(
+                    layer_index,
+                    None,
+                    "ffn_activated",
+                    &ffn_activated,
+                    frames,
+                    ffn,
+                );
+            }
             compute.gemm_f32(
                 frames,
                 d,
@@ -2694,8 +2879,16 @@ impl KyutaiSttAsr {
                 None,
                 &mut ffn_output,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "ffn_output", &ffn_output, frames, d);
+            }
             for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
                 *dst += value;
+            }
+            #[cfg(test)]
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.record_rows(layer_index, None, "layer_output", &hidden, frames, d);
             }
         }
 
@@ -2707,6 +2900,17 @@ impl KyutaiSttAsr {
             &self.weights.final_norm,
             self.cfg.rms_norm_eps,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record_rows(
+                self.weights.blocks.len(),
+                None,
+                "final_norm",
+                &norm,
+                frames,
+                d,
+            );
+        }
         let logits_len = checked_product("frames*text_card", &[frames, self.cfg.text_card])?;
         let mut logits = vec![0.0f32; logits_len];
         compute.gemm_f32(
@@ -2718,6 +2922,17 @@ impl KyutaiSttAsr {
             None,
             &mut logits,
         )?;
+        #[cfg(test)]
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.record_rows(
+                self.weights.blocks.len(),
+                None,
+                "logits",
+                &logits,
+                frames,
+                self.cfg.text_card,
+            );
+        }
         KyutaiSttTextLogits::new(frames, self.cfg.text_card, logits)
     }
 
