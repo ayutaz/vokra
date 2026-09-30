@@ -2660,6 +2660,9 @@ impl KyutaiSttAsr {
         let frame_ffn_in = checked_product("frames*2*ffn_hidden", &[frames, 2, ffn])?;
         let head_matrix = checked_product("frames*head_dim", &[frames, head_dim])?;
         let head_transposed = checked_product("head_dim*frames", &[head_dim, frames])?;
+        let visible_capacity = frames.min(self.cfg.backbone.context);
+        let visible_k_matrix = checked_product("visible head K", &[head_dim, visible_capacity])?;
+        let visible_v_matrix = checked_product("visible head V", &[visible_capacity, head_dim])?;
         let inv_freqs = llama3_inv_freqs(head_dim, self.cfg.backbone.rope_max_period, None)?;
         let mut hidden = vec![0.0f32; frame_d];
         for frame in 0..frames {
@@ -2697,6 +2700,15 @@ impl KyutaiSttAsr {
         let mut head_k_transposed = vec![0.0f32; head_transposed];
         let mut head_v = vec![0.0f32; head_matrix];
         let mut head_weighted = vec![0.0f32; head_matrix];
+        // CPU full-sequence attention uses the same one-row geometry as the
+        // incremental path. These buffers are allocated once for the whole
+        // forward and reused across layers, heads, and queries; no query
+        // allocation or non-CPU fallback is introduced.
+        let mut visible_k = vec![0.0f32; visible_k_matrix];
+        let mut visible_v = vec![0.0f32; visible_v_matrix];
+        let mut visible_scores = vec![0.0f32; visible_capacity];
+        let mut visible_probs = vec![0.0f32; visible_capacity];
+        let mut visible_weighted = vec![0.0f32; head_dim];
         #[cfg(test)]
         let blocks = self.weights.blocks.iter().enumerate();
         #[cfg(not(test))]
@@ -2758,23 +2770,53 @@ impl KyutaiSttAsr {
                     head_q[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
                     let source = &v[frame * d + head * head_dim..frame * d + (head + 1) * head_dim];
                     head_v[frame * head_dim..(frame + 1) * head_dim].copy_from_slice(source);
-                    for column in 0..head_dim {
-                        head_k_transposed[column * frames + frame] =
-                            k[frame * d + head * head_dim + column];
+                    if !matches!(backend, BackendKind::Cpu) {
+                        for column in 0..head_dim {
+                            head_k_transposed[column * frames + frame] =
+                                k[frame * d + head * head_dim + column];
+                        }
                     }
                 }
                 // QK^T is a learned projection product and must remain on
                 // the selected backend. The transposes above are scalar
                 // layout glue only; there is no CPU fallback here.
-                compute.gemm_f32(
-                    frames,
-                    frames,
-                    head_dim,
-                    &head_q,
-                    &head_k_transposed,
-                    None,
-                    &mut scores,
-                )?;
+                if matches!(backend, BackendKind::Cpu) {
+                    scores.fill(0.0);
+                    for query in 0..frames {
+                        let window_start = query
+                            .saturating_add(1)
+                            .saturating_sub(self.cfg.backbone.context);
+                        let window_end = query + 1;
+                        let visible_len = window_end - window_start;
+                        for column in 0..head_dim {
+                            for key in 0..visible_len {
+                                visible_k[column * visible_len + key] =
+                                    k[(window_start + key) * d + head * head_dim + column];
+                            }
+                        }
+                        compute.gemm_f32(
+                            1,
+                            visible_len,
+                            head_dim,
+                            &head_q[query * head_dim..(query + 1) * head_dim],
+                            &visible_k[..head_dim * visible_len],
+                            None,
+                            &mut visible_scores[..visible_len],
+                        )?;
+                        scores[query * frames + window_start..query * frames + window_end]
+                            .copy_from_slice(&visible_scores[..visible_len]);
+                    }
+                } else {
+                    compute.gemm_f32(
+                        frames,
+                        frames,
+                        head_dim,
+                        &head_q,
+                        &head_k_transposed,
+                        None,
+                        &mut scores,
+                    )?;
+                }
                 #[cfg(test)]
                 if let Some(trace) = trace.as_mut() {
                     trace.record_rows(layer_index, Some(head), "qk_raw", &scores, frames, frames);
@@ -2816,17 +2858,50 @@ impl KyutaiSttAsr {
                     trace.record_rows(layer_index, Some(head), "softmax", &probs, frames, frames);
                 }
                 // The probability×V product is likewise dispatched as a
-                // learned matmul. Copying the per-head result back into the
-                // fused residual layout is scalar layout glue.
-                compute.gemm_f32(
-                    frames,
-                    head_dim,
-                    frames,
-                    &probs,
-                    &head_v,
-                    None,
-                    &mut head_weighted,
-                )?;
+                // learned matmul. CPU uses each query's contiguous visible
+                // V window, matching the incremental geometry; non-CPU keeps
+                // the existing full batched dispatch without a fallback.
+                if matches!(backend, BackendKind::Cpu) {
+                    head_weighted.fill(0.0);
+                    for query in 0..frames {
+                        let window_start = query
+                            .saturating_add(1)
+                            .saturating_sub(self.cfg.backbone.context);
+                        let window_end = query + 1;
+                        let visible_len = window_end - window_start;
+                        for key in 0..visible_len {
+                            let source_frame = window_start + key;
+                            visible_v[key * head_dim..(key + 1) * head_dim].copy_from_slice(
+                                &v[source_frame * d + head * head_dim
+                                    ..source_frame * d + (head + 1) * head_dim],
+                            );
+                        }
+                        visible_probs[..visible_len].copy_from_slice(
+                            &probs[query * frames + window_start..query * frames + window_end],
+                        );
+                        compute.gemm_f32(
+                            1,
+                            head_dim,
+                            visible_len,
+                            &visible_probs[..visible_len],
+                            &visible_v[..visible_len * head_dim],
+                            None,
+                            &mut visible_weighted,
+                        )?;
+                        head_weighted[query * head_dim..(query + 1) * head_dim]
+                            .copy_from_slice(&visible_weighted);
+                    }
+                } else {
+                    compute.gemm_f32(
+                        frames,
+                        head_dim,
+                        frames,
+                        &probs,
+                        &head_v,
+                        None,
+                        &mut head_weighted,
+                    )?;
+                }
                 #[cfg(test)]
                 if let Some(trace) = trace.as_mut() {
                     trace.record_rows(

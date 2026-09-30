@@ -294,7 +294,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
                     &mut self.layers[index],
                     hidden,
                     self.position,
-                    trace.as_mut().map(|trace| &mut **trace),
+                    trace.as_deref_mut(),
                     index,
                 )?;
             }
@@ -1027,6 +1027,64 @@ mod tests {
                 assert_eq!(positions.len(), frame + 1 - expected_start);
                 assert_eq!(positions.first().copied(), Some(expected_start));
                 assert_eq!(positions.last().copied(), Some(frame));
+            }
+        }
+    }
+
+    /// Synthetic self-consistency only (not upstream numerical parity): CPU
+    /// full attention must use the same visible QK and weighted-V geometry as
+    /// the incremental cache for short windows, pre-window queries, and
+    /// context lengths around the native width boundary.
+    #[test]
+    fn cpu_visible_attention_stream_self_consistency_context_windows() {
+        for context in [1usize, 3, 8, 9, 12] {
+            let mut config = KyutaiSttConfig::tiny_for_tests();
+            config.backbone.context = context;
+            let weights = KyutaiSttWeights::synthesized(&config, 0x0517_EA11).expect("weights");
+            let asr = KyutaiSttAsr::new(config.clone(), weights).expect("asr");
+            let frames = 11;
+            let text: Vec<u32> = (0..frames)
+                .map(|frame| (frame % config.text_card) as u32)
+                .collect();
+            let audio: Vec<u32> = (0..frames * config.n_q)
+                .map(|index| {
+                    ((index / config.n_q + index % config.n_q + 1) % config.audio_card) as u32
+                })
+                .collect();
+            let mut full_text = Vec::with_capacity(frames);
+            let mut full_audio = Vec::with_capacity(frames * config.n_q);
+            full_text.push(config.text_card as u32);
+            full_audio.extend(std::iter::repeat_n(config.audio_card as u32, config.n_q));
+            for frame in 1..frames {
+                full_text.push(text[frame - 1]);
+                full_audio.extend_from_slice(&audio[frame * config.n_q..(frame + 1) * config.n_q]);
+            }
+            let text_before = full_text.clone();
+            let audio_before = full_audio.clone();
+            let full = asr
+                .forward_text_logits(BackendKind::Cpu, &full_text, &full_audio)
+                .expect("full component");
+            assert_eq!(full_text, text_before, "full text input mutated");
+            assert_eq!(full_audio, audio_before, "full audio input mutated");
+            let mut stream = asr.streaming_lm(BackendKind::Cpu).expect("stream");
+            for frame in 0..frames {
+                let previous = (frame > 0).then(|| text[frame - 1]);
+                let step = stream
+                    .step_frame(
+                        previous,
+                        &audio[frame * config.n_q..(frame + 1) * config.n_q],
+                    )
+                    .expect("stream step");
+                let expected =
+                    &full.as_slice()[frame * config.text_card..(frame + 1) * config.text_card];
+                assert_eq!(
+                    step.logits().as_slice(),
+                    expected,
+                    "context={context}, frame={frame}"
+                );
+                let window_start = (frame + 1).saturating_sub(context);
+                let positions = stream.layer_cache_positions(0).expect("layer");
+                assert_eq!(positions, &(window_start..=frame).collect::<Vec<_>>());
             }
         }
     }
