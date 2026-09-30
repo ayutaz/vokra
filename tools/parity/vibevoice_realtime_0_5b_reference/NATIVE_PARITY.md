@@ -1,0 +1,121 @@
+# Native Realtime parity consumer
+
+crates/vokra-models/tests/parity_vibevoice_realtime_streaming.rs is the
+VAST-only consumer for a real packet emitted by
+run_streaming_reference.py. It is ignored by default and has no committed
+model, preset, text, tokenizer, or waveform fixture. A missing packet is
+therefore a correct skip condition, not a synthetic PASS.
+
+The official packet is an independent caller of Microsoft's pinned
+VibeVoiceStreamingForConditionalGenerationInference.generate path. Its
+reference.json records the source revision, the fixed checkpoint identity,
+the Carter preset identity, the authenticated text hash, the Vokra HEAD, and
+the CPU packet. The CPU packet contains:
+
+- traces: ordered records for the four prefilled outputs (`lm.positive`,
+  `lm.negative`, `tts.positive`, and `tts.negative`), LM/TTS cache
+  updates, diffusion predictions, sampled latent calls, acoustic connector and
+  decoder calls, and EOS-classifier calls;
+- diffusion_initial_noise: the exact [2, 64] tensors drawn by the official
+  CFG call. The native sampler consumes the first [64] row, matching the
+  official speech[:len(speech)//2] return boundary. The consumer also
+  authenticates `noise_draws`, `noise_matching`, and each record's declared
+  shape against the actual NPY shape. `noise_hashes` are the official raw
+  float32 payload digests; they are checked separately from each TensorRecord
+  SHA, which covers the complete NPY file.
+- pcm: the official concatenated [1, time] float32 waveform.
+
+Before native execution the test rejects duplicate JSON keys, verifies the
+external packet and GGUF SHA-256 values, checks every trace/noise/PCM NPY hash
+and shape, binds the exact four-output Carter safetensors cache through
+VibeVoiceRealtimePresetCache, binds the four fixed Qwen sidecars through
+VibeVoiceRealtimeTokenizer, and verifies the input text hash against the
+packet. The official source, checkpoint, Carter payload, and Vokra HEAD must
+match the fixed/external identities; publication remains NO_UPLOAD.
+
+The current run_streaming_reference.py packet schema records the owner-scope
+digest but does not copy cfg_scale, max_new_tokens, or ddpm_steps into
+reference.json. The consumer therefore requires the same authenticated
+owner-scope JSON used by the runner, its externally supplied file SHA-256, and
+an externally reviewed canonical scope SHA-256. It binds the packet's two
+owner-scope fields to those digests, then reads cfg_scale, max_new_tokens, and
+ddpm_steps from the scope itself. A scope's self-declared digest is never used
+alone as provenance.
+
+`VOKRA_VIBEVOICE_REALTIME_MAX_SPEECH_STEPS` is a separate native caller
+budget, not an official VibeVoice setting. It must cover the observed tape but
+is not required to equal `speech_count`: EOS may stop generation early, and
+`speech_count` is not evidence from which a caller budget may be inferred. The
+consumer does not claim that this native control has been recorded by the
+official runner.
+
+The native VibeVoiceRealtimeRuntime::step API exposes PCM chunks, generated
+positions, draining events, and the terminal reason, but it does not expose
+intermediate hidden states, sampled latents, connector outputs, EOS logits, or
+cache snapshots. The consumer therefore performs the strongest honest
+comparison available without changing the runtime API:
+
+- stage names, ordinals, counts, inference-step count, and all cache-layer
+  lengths are checked against the official trace. The observed LM text-window
+  prefix may be shorter than the full authenticated input plan when the
+  official run reaches EOS or max length; a non-prefix or empty observation is
+  rejected as an unsupported packet. With `S` sampled speech steps, `U` in
+  `{0,1}` uncached max-length terminal chunks, and `W` observed text windows,
+  the expected positive TTS counts are `W + S - U`, while negative TTS and EOS
+  counts are `S - U`;
+- native `session.generated_positions()` values are checked against the
+  official positive TTS cache positions after subtracting the authenticated
+  preset's initial position, negative cache progression, noise-tape
+  consumption, EOS step, and source-faithful EOS drain count. A source
+  max-length terminal audio chunk is recognized separately because the
+  official implementation decodes/connects it without appending a TTS cache
+  row.
+- native PCM length and finiteness are checked, and max-absolute/RMSE waveform
+  differences are printed as MEASURED_NOT_GATED.
+
+No full-waveform bound is registered here. The result must not be described as
+numerical PCM parity, production synthesis completion, voice-consent approval,
+or Apple CPU/Metal parity. A future bound needs independent evidence and
+manager/owner review; widening a default FP32 gate from one packet would be
+fail-closed incorrectly.
+
+## VAST packet contract
+
+The ignored test requires all of the following environment variables:
+
+    VOKRA_PUBLISH_ON_VAST=1
+    VOKRA_VIBEVOICE_REALTIME_GGUF
+    VOKRA_VIBEVOICE_REALTIME_GGUF_SHA256
+    VOKRA_VIBEVOICE_REALTIME_REFERENCE_DIR
+    VOKRA_VIBEVOICE_REALTIME_REFERENCE_SHA256
+    VOKRA_VIBEVOICE_REALTIME_PRESET_DIR
+    VOKRA_VIBEVOICE_REALTIME_PRESET_MANIFEST_SHA256
+    VOKRA_VIBEVOICE_REALTIME_PRESET_SAFETENSORS_SHA256
+    VOKRA_VIBEVOICE_TOKENIZER_DIR
+    VOKRA_VIBEVOICE_REALTIME_INPUT_TEXT_FILE
+    VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_HEAD
+    VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE
+    VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE_SHA256
+    VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE_CANONICAL_SHA256
+    VOKRA_VIBEVOICE_REALTIME_MAX_SPEECH_STEPS
+
+VOKRA_VIBEVOICE_REALTIME_REFERENCE_DIR contains the official reference.json
+and its cpu/*.npy records. VOKRA_VIBEVOICE_REALTIME_PRESET_DIR contains the
+exporter's cache.safetensors and manifest.json. The manifest SHA-256 is
+supplied externally because the manifest's self-declared provenance is not
+accepted as proof. The actual checkpoint is not loaded by this consumer; its
+fixed upstream SHA-256 is checked in reference.json, while the converted GGUF
+is authenticated separately by its externally supplied digest.
+
+The VAST command is:
+
+    CARGO_BUILD_JOBS=1 cargo test -p vokra-models \
+      --test parity_vibevoice_realtime_streaming \
+      -- --ignored --nocapture \
+      vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagnostic
+
+This command is intentionally not a local-Mac command. It executes the native
+CPU runtime on real weights and remains subject to the VAST lifecycle,
+license/owner gates, and final instance destruction. No model download,
+publication, waveform promotion, or consent claim follows from a green
+structural run.

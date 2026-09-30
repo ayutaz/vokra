@@ -1141,6 +1141,19 @@ does not settle them. The bridge record retains `INSPECTION_ONLY`,
 complete independent waveform reference, real-weight native CPU parity and
 Apple CPU/Metal/no-fallback gates also remain open.
 
+### 2026-09-30 Realtime native composition candidate
+
+The native composition candidate at
+`a0babe96415c5596ac217457fdb4404151bc5ec3` sequences the existing first-party
+language, diffusion, connector and acoustic components around the authenticated
+four-output preset. This implementation does not resolve the Carter voice
+consent/distribution questions above or approve the Python reference dependency
+closure. Complete independent waveform reference, real-weight native CPU
+parity and Apple CPU/Metal/no-fallback evidence remain open. The composite
+currently rejects unsupported GPU backends explicitly; no fallback or model
+execution is implied by its model-free sequencing tests. Existing MIT weight
+history is retained without a new sign-off. Publication remains `NO_UPLOAD`.
+
 ## 10. 定期監査
 
 - **四半期ごと**: 全依存の最新版でライセンス変更がないかチェック (Piper が MIT → GPL-3.0 化した precedent)
