@@ -37,6 +37,25 @@ MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024
 GIT_TIMEOUT_SECONDS = 20
 
 
+def _reap_and_close_process(process: subprocess.Popen[bytes]) -> None:
+    """Ensure a bounded git child and both Python pipe wrappers are closed."""
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait()
+        except OSError:
+            pass
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
 def _safe_absolute(value: str | Path, label: str) -> Path:
     raw = os.fspath(value)
     if not raw.startswith("/") or "\x00" in raw or "//" in raw or "/./" in raw or "/../" in raw or raw.endswith(("/.", "/..")):
@@ -153,6 +172,8 @@ def _git(root: Path, *args: str) -> str:
     finally:
         if selector is not None:
             selector.close()
+        if process is not None:
+            _reap_and_close_process(process)
 
 
 def _validate_origin(origin: str) -> str:

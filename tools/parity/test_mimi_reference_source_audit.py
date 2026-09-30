@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -195,8 +197,15 @@ class StaticSourceAuditTests(unittest.TestCase):
             fake_git.chmod(0o755)
             with patch.dict(os.environ, {"PATH": f"{root}:{os.environ.get('PATH', '')}"}):
                 with patch.object(audit, "MAX_GIT_OUTPUT_BYTES", 32):
-                    with self.assertRaises(ValueError):
-                        audit._git(root, "status")
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", ResourceWarning)
+                        with self.assertRaises(ValueError):
+                            audit._git(root, "status")
+                        gc.collect()
+                    self.assertEqual(
+                        [warning for warning in caught if warning.category is ResourceWarning],
+                        [],
+                    )
 
     def test_git_timeout_rejected_with_fake_subprocess(self) -> None:
         with _tempdir() as directory:
@@ -206,8 +215,31 @@ class StaticSourceAuditTests(unittest.TestCase):
             fake_git.chmod(0o755)
             with patch.dict(os.environ, {"PATH": f"{root}:{os.environ.get('PATH', '')}"}):
                 with patch.object(audit, "GIT_TIMEOUT_SECONDS", 0.05):
-                    with self.assertRaises(ValueError):
-                        audit._git(root, "status")
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", ResourceWarning)
+                        with self.assertRaises(ValueError):
+                            audit._git(root, "status")
+                        gc.collect()
+                    self.assertEqual(
+                        [warning for warning in caught if warning.category is ResourceWarning],
+                        [],
+                    )
+
+    def test_git_pipe_wrappers_close_under_resource_warning_guard(self) -> None:
+        with _tempdir() as directory:
+            root = Path(directory)
+            fake_git = root / "git"
+            fake_git.write_text("#!/bin/sh\nprintf 'ok'\n", encoding="utf-8")
+            fake_git.chmod(0o755)
+            with patch.dict(os.environ, {"PATH": f"{root}:{os.environ.get('PATH', '')}"}):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", ResourceWarning)
+                    self.assertEqual(audit._git(root, "status"), "ok")
+                    gc.collect()
+                self.assertEqual(
+                    [warning for warning in caught if warning.category is ResourceWarning],
+                    [],
+                )
 
     def test_temporary_replacement_is_not_cleaned_as_owned(self) -> None:
         with _tempdir() as directory:
