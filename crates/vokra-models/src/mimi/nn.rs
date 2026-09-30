@@ -48,6 +48,35 @@ pub(crate) fn elu_inplace(x: &mut [f32]) {
     }
 }
 
+/// Applies Mimi's ELU through the selected backend without changing the
+/// established CPU bit pattern.  The pre-seam CPU implementation uses
+/// `exp_m1()` only for values strictly below zero; [`Compute::elu_f32`]
+/// intentionally has a different shared-kernel boundary (`<= 0`) and must
+/// therefore never replace the CPU path.  GPU dispatch is out-of-place into
+/// caller-owned scratch, then copied back so an aliased input/output slice
+/// cannot silently force a host fallback.
+pub(crate) fn elu_with_compute(
+    compute: &Compute,
+    x: &mut [f32],
+    scratch: &mut [f32],
+) -> Result<()> {
+    if scratch.len() < x.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "mimi elu scratch len {} < input len {}",
+            scratch.len(),
+            x.len()
+        )));
+    }
+    if compute.is_cpu() {
+        elu_inplace(x);
+        return Ok(());
+    }
+    let out = &mut scratch[..x.len()];
+    compute.elu_f32(x, out)?;
+    x.copy_from_slice(out);
+    Ok(())
+}
+
 /// Causal left-pad fill mode (upstream `StreamingConv1d.pad_mode`,
 /// `moshi/modules/conv.py` — only these two values are asserted upstream).
 ///
@@ -1126,6 +1155,8 @@ fn window_positions(pos: usize, window: usize) -> impl Iterator<Item = usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    use crate::compute::HotOp;
     use vokra_core::BackendKind;
     use vokra_core::rng::SplitMix64;
 
@@ -1135,6 +1166,69 @@ mod tests {
 
     fn rnd(rng: &mut SplitMix64, n: usize) -> Vec<f32> {
         (0..n).map(|_| rng.next_unit_f32() * 2.0 - 1.0).collect()
+    }
+
+    #[test]
+    fn mimi_cpu_elu_preserves_pre_seam_bits_near_zero_and_signed_zero() {
+        let compute = compute();
+        let mut x = [-0.0f32, -f32::from_bits(1), -1.0e-7, 0.0, 1.0];
+        let before = x;
+        let mut scratch = [0.0f32; 5];
+        elu_with_compute(&compute, &mut x, &mut scratch).unwrap();
+        assert_eq!(x[0].to_bits(), before[0].to_bits());
+        assert_eq!(x[1].to_bits(), before[1].exp_m1().to_bits());
+        assert_eq!(x[2].to_bits(), before[2].exp_m1().to_bits());
+        assert_eq!(x[3].to_bits(), before[3].to_bits());
+        assert_eq!(x[4].to_bits(), before[4].to_bits());
+    }
+
+    #[test]
+    fn mimi_elu_rejects_undersized_scratch_before_mutation() {
+        let compute = compute();
+        let before = [-0.5f32, 0.0, 0.5];
+        let mut x = before;
+        let mut scratch = [9.0f32; 2];
+        assert!(elu_with_compute(&compute, &mut x, &mut scratch).is_err());
+        assert_eq!(x, before);
+        assert_eq!(scratch, [9.0f32; 2]);
+    }
+
+    /// This is intentionally device-gated: a successful test result requires
+    /// a Metal device, while a host without one is a skip rather than a
+    /// synthetic claim that the backend ran.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn mimi_elu_metal_synthetic_is_device_gated() {
+        let compute = match Compute::for_backend(BackendKind::Metal, &[HotOp::Elu]) {
+            Ok(compute) => compute,
+            Err(error) => {
+                eprintln!("SKIP Mimi Metal ELU: no usable Metal device ({error})");
+                return;
+            }
+        };
+        assert!(!compute.is_cpu(), "Metal request must not select CPU");
+        let input = [-4.0f32, -1.0, -1.0e-7, -0.0, 0.0, 1.0, 4.0];
+        let mut expected = input;
+        elu_inplace(&mut expected);
+        let mut x = input;
+        let mut scratch = [0.0f32; 7];
+        elu_with_compute(&compute, &mut x, &mut scratch).expect("Metal ELU dispatch");
+        for (index, (actual, reference)) in x.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                actual.is_finite() && reference.is_finite(),
+                "Metal ELU produced a non-finite value at {index}: actual={actual:?}, reference={reference:?}"
+            );
+        }
+        let max_delta = x
+            .iter()
+            .zip(expected.iter())
+            .map(|(actual, reference)| (actual - reference).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("Mimi Metal ELU vs CPU: max|Δ|={max_delta:.3e} (NFR-QL-01 atol 0.01)");
+        assert!(
+            max_delta <= 0.01,
+            "Metal ELU delta {max_delta} exceeds NFR-QL-01"
+        );
     }
 
     #[test]

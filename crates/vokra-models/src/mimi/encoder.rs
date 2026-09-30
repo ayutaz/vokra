@@ -46,7 +46,7 @@ use vokra_ops::mimi_rvq::CodebookTable;
 use super::config::MimiNeuralConfig;
 use super::nn::{
     CausalConv1d, ConvState, MimiTransformer, MimiTransformerLayer, MimiTransformerState, PadMode,
-    elu_inplace,
+    elu_with_compute,
 };
 use crate::compute::{Compute, HotOp};
 use crate::csm::backbone::xavier_uniform;
@@ -59,6 +59,7 @@ pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::Softmax,
     HotOp::LayerNorm,
     HotOp::Gelu,
+    HotOp::Elu,
 ];
 
 /// One SEANet residual block (assembled).
@@ -137,6 +138,8 @@ pub struct MimiEncoderState {
     tf_rows: Vec<f32>,
     proj: Vec<f32>,
     residual: Vec<f32>,
+    /// Maximum activation width for out-of-place GPU ELU dispatch.
+    elu: Vec<f32>,
     /// `[frames_cap, q_dim]` batch residual buffers for the codebook-outer
     /// RVQ sweep (M5-14 Wave-2 T19).
     proj_all: Vec<f32>,
@@ -178,6 +181,7 @@ impl MimiEncoderState {
         self.tf_rows.fill(0.0);
         self.proj.fill(0.0);
         self.residual.fill(0.0);
+        self.elu.fill(0.0);
         self.proj_all.fill(0.0);
         self.rest_all.fill(0.0);
     }
@@ -549,6 +553,13 @@ impl MimiEncoder {
         let frame_down_state = self.frame_down.state(t);
         let frames = t / self.frame_down.stride;
         bufs.push(vec![0.0f32; dim * frames]);
+        let elu_cap = bufs
+            .iter()
+            .chain(tmp.iter())
+            .chain(mid.iter())
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
         Ok(MimiEncoderState {
             frames_cap,
             init: self.init.state(frames_cap * hop),
@@ -562,6 +573,7 @@ impl MimiEncoder {
             tf_rows,
             proj: vec![0.0; self.config.quantizer.dimension],
             residual: vec![0.0; self.config.quantizer.dimension],
+            elu: vec![0.0; elu_cap],
             proj_all: vec![0.0; frames_cap * self.config.quantizer.dimension],
             rest_all: vec![0.0; frames_cap * self.config.quantizer.dimension],
         })
@@ -623,7 +635,11 @@ impl MimiEncoder {
                 let hidden = block.conv1.out_ch;
                 let x = &mut state.bufs[edge];
                 state.tmp[si][..ch * t].copy_from_slice(&x[..ch * t]);
-                elu_inplace(&mut state.tmp[si][..ch * t]);
+                elu_with_compute(
+                    compute,
+                    &mut state.tmp[si][..ch * t],
+                    &mut state.elu[..ch * t],
+                )?;
                 block.conv1.process_into(
                     compute,
                     &mut block_states[bi].0,
@@ -631,7 +647,11 @@ impl MimiEncoder {
                     t,
                     &mut state.mid[si][..hidden * t],
                 )?;
-                elu_inplace(&mut state.mid[si][..hidden * t]);
+                elu_with_compute(
+                    compute,
+                    &mut state.mid[si][..hidden * t],
+                    &mut state.elu[..hidden * t],
+                )?;
                 block.conv2.process_into(
                     compute,
                     &mut block_states[bi].1,
@@ -645,7 +665,11 @@ impl MimiEncoder {
                 }
             }
             state.tmp[si][..ch * t].copy_from_slice(&state.bufs[edge][..ch * t]);
-            elu_inplace(&mut state.tmp[si][..ch * t]);
+            elu_with_compute(
+                compute,
+                &mut state.tmp[si][..ch * t],
+                &mut state.elu[..ch * t],
+            )?;
             let t_out = t / stage.down.stride;
             let out_ch = stage.down.out_ch;
             stage.down.process_into(
@@ -663,7 +687,7 @@ impl MimiEncoder {
         // ELU → final conv → latent [dim, t].
         {
             let x = &mut state.bufs[edge];
-            elu_inplace(&mut x[..ch * t]);
+            elu_with_compute(compute, &mut x[..ch * t], &mut state.elu[..ch * t])?;
         }
         let dim = self.final_conv.out_ch;
         {
@@ -1260,8 +1284,29 @@ mod tests {
     use super::*;
     use vokra_ops::mimi_rvq::{MimiRvqAttrs, mimi_rvq_decode};
 
+    #[test]
+    fn mimi_backend_gate_declares_elu_and_refuses_uncovered_backend() {
+        assert!(MIMI_HOT_OPS.contains(&HotOp::Elu));
+        assert!(Compute::for_backend(BackendKind::Vulkan, MIMI_HOT_OPS).is_err());
+    }
+
     fn encoder() -> MimiEncoder {
         MimiEncoder::synthesized(&MimiNeuralConfig::tiny_for_tests(), 5).expect("encoder")
+    }
+
+    #[test]
+    fn encoder_elu_scratch_covers_every_activation_source() {
+        let enc = encoder();
+        let state = enc.state(3).expect("state");
+        let max_source = state
+            .bufs
+            .iter()
+            .chain(state.tmp.iter())
+            .chain(state.mid.iter())
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
+        assert!(state.elu.len() >= max_source);
     }
 
     fn sine_pcm(n: usize) -> Vec<f32> {
