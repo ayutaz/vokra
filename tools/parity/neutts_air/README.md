@@ -54,12 +54,29 @@ the same audit immediately after its frozen sync and before model download or
 Cargo. Missing publisher evidence or unresolved fixed LICENSE facts remains a
 blocker; no license class is inferred from raw bytes.
 
-The reference route does not declare Accelerate. The official Transformers
+The reference route pins Transformers 5.10.4, above the security floor
+5.10.0 for the current Transformers<5.10.0 advisory. It does not declare
+Accelerate. The official Transformers
 `from_pretrained` call uses `low_cpu_mem_usage=False`, keeping loading on the
 torch-only path and avoiding the open Accelerate advisory (#249, vulnerable
 through 1.14.0 with no patched release). This is dependency/API-scope only;
 it does not authorize model acquisition, execution, parity, or license
 approval.
+
+After the frozen VAST environment sync and fixed Neuphonic source checkout,
+run this model-free API gate before acquiring any upstream snapshot or weight:
+
+```sh
+uv run --project tools/parity/neutts_air --frozen --no-sync --python 3.12 \
+  python tools/parity/neutts_air/dump_reference.py --api-smoke \
+  --source-file /absolute/path/to/neuttsair/neutts.py
+```
+
+The smoke binds Transformers 5.10.4, the official `from_pretrained` keyword
+seam, and the fixed `_apply_chat_template(self, ref_codes, ref_text,
+input_text)` signature. It uses `local_files_only=True` against an absent
+checkpoint and never loads weights. A production VAST wrapper must invoke this
+gate after sync/source checkout and before model acquisition.
 
 The VAST worker is fail-closed behind the standard-library-only
 `preflight_gate.py`. Its 37-row lock (34 active Linux x86_64 distributions,

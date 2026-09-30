@@ -6,7 +6,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy>=1.26,<3",
     "torch==2.13.0",
-    "transformers==5.5.0",
+    "transformers==5.10.4",
 ]
 
 [tool.uv]

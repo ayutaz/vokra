@@ -1,14 +1,14 @@
 {
   "gate_version": 1,
-  "lock_sha256": "3c1a5542895a25a8d5add41f05105318e9f4c50ac6c6e0d00b60d5a761e3cd5c",
-  "pyproject_sha256": "0d4b10e3120f1c30287e96e07446ac64c014383bc779291f70d78ad4bb7bd8f1",
-  "package_rows_sha256": "5528140d9aa9fb111cc17f731d80f4be048fd583e1c861b8e24dfa4fd6d4f6b6",
-  "review_rows_sha256": "81f0686da46df00aa6782762154fac5a5991e3440f3c6ded2c4f53c0a9b766fd",
+  "lock_sha256": "041f340b4d445eaabe07ff53f647cbb30e2edb53ccdeda8157c207cb00ad27db",
+  "pyproject_sha256": "ab18e53222ff64a16b75d734395b75de944119618db5096055b129b134f5e38a",
+  "package_rows_sha256": "670ef05aa23a1d0f53b7d9192b7f083eef116f926c9920a13b743875ccc59aa4",
+  "review_rows_sha256": "3082eea337621aeced3b842644b7ae0407bce8743be515fe2439d3b842db67e2",
   "public_identity": {"repo":"vokra/neutts-air","revision":"df2b47ec81862f0e3a19eb2638a6a2bcd2f13b8c","file":"neutts-air.gguf","bytes":1495883328,"sha256":"f6caf559e919b16d77ac28177e59ee5427a5de92bdeedd719ecab00b4afbb754","license":"Apache-2.0"},
   "companion_identity": {"repo":"vokra/distill-neucodec","revision":"1471e4d9b82bfb98ae201f02e746fca346c3eb56","file":"model.gguf","bytes":1025417504,"sha256":"15e60e7e5f7242255b18e1386b26c2a8f872c77a56ca241ee82c8aa5d8b6327f","license":"Apache-2.0"},
   "upstream_identity": {"repo":"neuphonic/neutts-air","revision":"3b58b776406b62fdc137e31ea53d728f5c22a4ed","files":[{"name":"config.json","bytes":null,"sha256":null},{"name":"generation_config.json","bytes":null,"sha256":null},{"name":"model.safetensors","bytes":null,"sha256":null},{"name":"special_tokens_map.json","bytes":null,"sha256":null},{"name":"tokenizer.json","bytes":null,"sha256":null},{"name":"tokenizer_config.json","bytes":null,"sha256":null},{"name":"vocab.json","bytes":null,"sha256":null}],"license":null},
   "source_identity": {"repo":"https://github.com/neuphonic/neutts.git","revision":"3e9415df12633f8a74ac6f92418c7cd5c8c4bf0e","path":"neuttsair/neutts.py","bytes":9035,"sha256":"e68b87dae6718903337a08eff56afbd58ba261d829624ea5a00a343c8cefb7c1","license":null},
-  "reference_route": {"entrypoint":"Qwen2ForCausalLM","transformers":"5.5.0","torch":"2.13.0+cpu","device":"cpu","dtype":"float32","vocab_size":217652,"fp32_atol":0.01,"greedy_ids":"exact","upload":"NO_UPLOAD"},
+  "reference_route": {"entrypoint":"Qwen2ForCausalLM","transformers":"5.10.4","transformers_security_floor":"5.10.0","transformers_security_policy":"REJECT_VERSIONS_BELOW_5.10.0","torch":"2.13.0+cpu","device":"cpu","dtype":"float32","vocab_size":217652,"fp32_atol":0.01,"greedy_ids":"exact","upload":"NO_UPLOAD"},
   "publication": "NO_UPLOAD",
   "model_reviews": [
     {"id":"public-gguf:vokra/neutts-air@df2b47ec81862f0e3a19eb2638a6a2bcd2f13b8c","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
@@ -50,7 +50,7 @@
     {"id":"torch@2.13.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"torch@2.13.0+cpu","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"tqdm@4.70.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
-    {"id":"transformers@5.5.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
+    {"id":"transformers@5.10.4","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"typer@0.27.1","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"typing-extensions@4.16.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"vokra-neutts-air-parity@0.1.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null}

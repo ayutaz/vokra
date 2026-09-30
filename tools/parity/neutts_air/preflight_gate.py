@@ -23,8 +23,8 @@ from typing import Any
 import tomllib
 
 GATE_VERSION = 1
-LOCK_SHA256 = "3c1a5542895a25a8d5add41f05105318e9f4c50ac6c6e0d00b60d5a761e3cd5c"
-PYPROJECT_SHA256 = "0d4b10e3120f1c30287e96e07446ac64c014383bc779291f70d78ad4bb7bd8f1"
+LOCK_SHA256 = "041f340b4d445eaabe07ff53f647cbb30e2edb53ccdeda8157c207cb00ad27db"
+PYPROJECT_SHA256 = "ab18e53222ff64a16b75d734395b75de944119618db5096055b129b134f5e38a"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 REVIEW_PLACEHOLDERS = {
@@ -80,7 +80,9 @@ MODEL_REVIEW_IDS = [
 ]
 REFERENCE_ROUTE = {
     "entrypoint": "Qwen2ForCausalLM",
-    "transformers": "5.5.0",
+    "transformers": "5.10.4",
+    "transformers_security_floor": "5.10.0",
+    "transformers_security_policy": "REJECT_VERSIONS_BELOW_5.10.0",
     "torch": "2.13.0+cpu",
     "device": "cpu",
     "dtype": "float32",
