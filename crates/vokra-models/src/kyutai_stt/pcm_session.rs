@@ -16,8 +16,9 @@ use crate::mimi::{MimiEncoder, MimiEncoderState, MimiNeuralConfig};
 use crate::strict_checkpoint::sha256_bytes;
 
 use super::{
-    KYUTAI_STT_MIMI_BYTES, KYUTAI_STT_MIMI_SHA256, KyutaiSttAsr, KyutaiSttStreamingContract,
-    KyutaiSttStreamingLm, KyutaiSttTextLogits, KyutaiSttTokenizer,
+    KYUTAI_STT_MIMI_BYTES, KYUTAI_STT_MIMI_SHA256, KyutaiSttAsr, KyutaiSttConfig,
+    KyutaiSttStreamingContract, KyutaiSttStreamingLm, KyutaiSttTextLogits, KyutaiSttTokenizer,
+    KyutaiSttWeights,
 };
 
 const KEY_MIMI_CHECKPOINT_BYTES: &str = "vokra.provenance.checkpoint_bytes";
@@ -104,7 +105,13 @@ impl KyutaiSttPcmEngine {
         let mimi_gguf = open_authenticated_gguf(mimi_gguf_path, "Mimi GGUF", &digests.mimi_gguf)?;
         authenticate_raw_mimi(raw_mimi_path)?;
 
-        let asr = KyutaiSttAsr::from_component_gguf(&decoder)?;
+        let config = KyutaiSttConfig::from_gguf(&decoder).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "kyutai STT PCM composite: decoder config is not authenticated: {error}"
+            ))
+        })?;
+        let weights = KyutaiSttWeights::from_component_gguf(&decoder)?;
+        let asr = KyutaiSttAsr::new(config, weights)?;
         let contract = KyutaiSttStreamingContract::from_config(asr.config())?;
         let tokenizer = KyutaiSttTokenizer::from_gguf(&tokenizer)?;
         let mimi_config = MimiNeuralConfig::from_gguf(&mimi_gguf).map_err(|error| {
