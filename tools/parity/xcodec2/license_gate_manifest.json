@@ -1,0 +1,31 @@
+{
+  "schema": "vokra-xcodec2-license-gate-v1",
+  "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+  "publication": "NO_UPLOAD",
+  "project": {
+    "path": "tools/parity/xcodec2",
+    "python": "==3.12.*",
+    "platform": "linux-x86_64",
+    "pyproject_sha256": "289c96a0775a7e013dccc579810a4b18fcf573d79536fdd84e05db3ea4733bcc",
+    "uv_lock_sha256": "d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4",
+    "dependency_audit_sha256": "b0a050df788c6fcdaaed0016971f07b056d55b95250d06627020323f3549c5f3"
+  },
+  "dependency_audit": {
+    "rows_file": "dependency_audit.json",
+    "collector": "collect_dependency_evidence.py",
+    "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+    "owner_review_required": true
+  },
+  "policy": {
+    "license_classification": "UNRESOLVED_PRIMARY_BYTES",
+    "native_payload": "UNRESOLVED_PRIMARY_BYTES_AND_NEEDED",
+    "numpy_runtime": "UNRESOLVED_GPL_GCC_LGPL_OR_OTHER",
+    "automatic_exceptions": false,
+    "no_upload": true
+  },
+  "blockers": [
+    "clean expected HEAD must be supplied at collection time as an exact lowercase 40-hex value",
+    "all 62 external Linux closure artifacts must be bound to installed versions and locked archive SHA-256 values",
+    "literal LICENSE/NOTICE bytes and native ELF NEEDED evidence are candidate facts only until owner/legal review"
+  ]
+}

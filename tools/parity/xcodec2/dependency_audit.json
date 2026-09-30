@@ -1,0 +1,21 @@
+{
+  "schema": "vokra-xcodec2-dependency-audit-v1",
+  "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+  "publication": "NO_UPLOAD",
+  "python": "==3.12.*",
+  "platform": "linux-x86_64",
+  "pyproject_sha256": "289c96a0775a7e013dccc579810a4b18fcf573d79536fdd84e05db3ea4733bcc",
+  "uv_lock_sha256": "d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4",
+  "expected_linux_closure_rows": 63,
+  "expected_linux_external_rows": 62,
+  "package_rows": [],
+  "license_rows": [],
+  "native_rows": [],
+  "blockers": [
+    "primary LICENSE/NOTICE bytes and hashes are not collected for the 62 external Linux closure distributions",
+    "xcodec2==0.1.5 has no verified primary LICENSE bytes in the candidate evidence",
+    "NumPy wheel GPL/GCC/LGPL runtime components remain explicitly unresolved until the selected Linux artifact and ELF dependencies are inspected",
+    "native payloads and readelf NEEDED results require owner review",
+    "owner/legal approval and publication remain absent"
+  ]
+}

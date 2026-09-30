@@ -42,11 +42,22 @@ API is compatible. TorchAudio's official compatibility guide states that its
 This is a model-free dependency candidate. No GGUF was downloaded or executed,
 and no real-weight CPU/Metal parity was run. The lock resolves the patched CPU
 pair from the explicit PyTorch index and removes the old CUDA wheel closure.
+For the target Linux x86_64 / CPython 3.12 environment, the marker- and
+activated-extra-aware lock closure is 63 rows: one virtual project row and 62
+external distributions. The earlier 57-row tally was incomplete: it included
+the two macOS-only resolution rows `torch==2.13.0` and
+`torchaudio==2.11.0`, while omitting the eight `fsspec[http]` / `aiohttp`
+subgraph rows (`aiohttp`, `aiohappyeyeballs`, `aiosignal`, `attrs`,
+`frozenlist`, `multidict`, `propcache`, and `yarl`). The Linux rows are
+`torch==2.13.0+cpu` and `torchaudio==2.11.0+cpu`.
+The committed `dependency_audit.json` and `license_gate_manifest.json` bind
+those counts and remain `BLOCKED_PENDING_PRIMARY_BYTES` / `NO_UPLOAD`; they
+are evidence contracts, not owner/legal approval.
 For Torch 2.13.0 / 2.13.0+cpu and TorchAudio 2.11.0 / 2.11.0+cpu, the
 versioned official wheel metadata was checked for the license expression and
 classifier shown below. The LICENSE text and bundled third-party notices were
-not audited in this candidate; this tree has no owner/legal approval manifest,
-so neither row is a commercial or publication sign-off.
+not audited in this candidate; the candidate gate manifest contains no
+owner/legal approval or publication sign-off.
 
 The decoder-only reference path previously imported successfully with
 `transformers` blocked from import under the original Torch 2.5.0 / TorchAudio
@@ -82,6 +93,56 @@ only the official decoder source/API contract. A successful documents-only
 guard does not certify ABI compatibility on a target host, the full model API,
 real-weight execution, or CPU/Metal parity; those require the recorded VAST
 follow-up.
+
+## Candidate dependency evidence collector
+
+`dependency_audit.py` performs only model-free lock/document checks. The
+separate `collect_dependency_evidence.py` collector is intended for the
+frozen Linux x86_64 / CPython 3.12 environment after an exact clean HEAD is
+provided. It records installed versions, locked archive URLs and SHA-256
+values, literal archive/installed LICENSE or NOTICE bytes, and native ELF
+`readelf -d` NEEDED entries. It does not import Torch or XCodec2, acquire a
+model, execute weights, or grant a license decision. Even a complete factual
+collection is emitted as `BLOCKED_OWNER_REVIEW` with `NO_UPLOAD`; missing
+primary bytes, xcodec2's primary license, and NumPy GPL/GCC/LGPL runtime
+components remain explicit blockers. For a selected wheel, the collector
+parses the publisher `RECORD` inventory, then streams and compares archive
+bytes/SHA-256 with the installed LICENSE, METADATA, and native payload files.
+It independently inventories archive LICENSE/native/METADATA members and
+rejects any such member omitted from publisher `RECORD` or the installed
+payload inventory.
+The installed `RECORD` itself is not compared byte-for-byte because installers
+rewrite it; `RECORD`, `WHEEL`, `INSTALLER`, `REQUESTED`, and generated `.pyc`
+files are explicitly excluded from the payload proof. The result is scoped as
+`PAYLOAD_SCOPED_VERIFIED`, while full installed-build identity remains
+`UNVERIFIED`. A locked sdist is also marked `UNVERIFIED` and remains factually
+blocked until an authenticated build/RECORD proof exists. Wheel `.data`
+relocation is explicitly unsupported by this collector; any such publisher
+path is bounded as a factual blocker rather than being treated as a general
+wheel-install mapping.
+
+Local documents-only checks (no environment sync) are:
+
+```bash
+cd tools/parity/xcodec2
+uv run --no-project --python 3.12 python dependency_audit.py --self-test
+uv run --no-project --python 3.12 python collect_dependency_evidence.py --self-test
+uv run --no-project --python 3.12 python -m unittest discover -s . -p 'test_*.py'
+```
+
+The bounded collector itself is a VAST-only operation and must use a clean
+checkout whose expected HEAD is supplied explicitly:
+
+```bash
+uv sync --frozen --python 3.12
+uv run --frozen python collect_dependency_evidence.py \
+  --project /abs/checkout/tools/parity/xcodec2 \
+  --output /tmp/xcodec2-dependency-evidence.json \
+  --expected-head <exact-clean-lowercase-40-hex>
+```
+
+The output is an audit packet only. It must not be uploaded or used as a
+publication/sign-off record without separate owner/legal review.
 
 ## VAST model-free replay
 
