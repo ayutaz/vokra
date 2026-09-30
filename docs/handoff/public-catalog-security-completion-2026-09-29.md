@@ -1952,6 +1952,32 @@ must never replace mandatory native CPU or Apple CPU/Metal/no-fallback
 evidence. No local model execution, upload, legal approval or catalog-row
 promotion occurred; the 194-row scope and 58 unresolved rows are unchanged.
 
+### Terminal reviewed-repair replay and code publication (16:13 UTC)
+
+The primary controller completed with exit 0 at exact clean head
+`76cd41757be011ddf35bc66d49690bfeed90a4b6`. Root independently checked all
+34 recovered packet hashes against the remote manifest; its SHA-256 is
+`2a8641463367bd48608e14aca322a0b96847767dd577c2b4a23a9f4005d8af44`.
+The final head matches, and observed status and diff-check output are empty.
+All thirteen regression/audit exit files contain 0. Focused counts are
+17 source-audit, 22 Rust-source, 15 metadata-binding, 79 Mimi, one public ABI,
+18 PCM and five FireRed tests. Workspace output records 323 suites, 8,145
+passed, zero failed and 105 ignored. Ignored tests are not numerical or
+hardware evidence; the actual offline metadata cache failure above remains
+valid negative evidence.
+
+Owned worker `53547744`, including 200-GB storage, was destroyed after
+evidence recovery. Both saved and fresh individual API readbacks return
+`instances: null`; saved label recovery and fresh account listing find no
+owned worker. No unrelated instance was modified. This terminal record
+supersedes the live/pending replay snapshots above, not their historical
+facts. The reviewed `76cd4175` was fast-forward pushed to the existing PR
+#186 branch, replacing `a84817d4`; no unverified follow-up or unrelated hook
+change was transferred. New required PR CI and review remain pending; the
+later FireRed wire/consumer slices are outside this packet.
+No real-weight parity, Apple run, owner decision, model upload or public-row
+completion is claimed; the full 194-row scope and 58 unresolved rows remain.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
