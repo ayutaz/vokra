@@ -600,6 +600,43 @@ no alert closure is attributed to them here. VAST's instance-list readback was
 empty before allocating any new verification worker. All 58 unresolved public
 rows remain in the completion queue, and publication remains separate.
 
+## 2026-09-30 Cache API pass and compile correction (07:13 UTC)
+
+The disposable VAST replay of `961d24db8e00ae617d4d0987e2ea2d93178898a8`
+passed the model-free DynamicCache probe using the patched CPU environment
+at `b690f93ad9a476bc102dbb134c78043645ef9c52`. Its lock SHA-256 is
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e`.
+The installed Transformers source matched the previously recorded wheel and
+cache-utils hashes. All four generic official cache branches preserved values,
+dtype metadata, sequence positions and positive-length masks through the
+production migration/cast helpers; an actual cache update advanced length
+two to three. The result is strictly `API_ONLY_NO_MODEL_EXECUTION`:
+no checkpoint/preset/voice acquisition, model forward or publication occurred.
+The recovered API result SHA-256 is
+`70f2d2089f84b0cdbd94aff415bd5d1451a29ae363d8348dc69c6b0a082bdce1`.
+
+The streaming self-test and remote cargo-deny/cargo-audit passed, but workspace
+tests stopped at compile time: three regression-test module paths incorrectly
+resolved sibling modules through `super`. The workspace log SHA-256 is
+`d85985ae27eacf08bbe84a09edd491cdc2a37dadf589775ad10f8091fc86840b`.
+Clippy and the CUDA-feature test leg were not reached. The reviewed correction
+at `38279725ca3df5a429c8cd540eef7b98b4129ca4` uses absolute crate paths;
+formatting, diff, forbidden-symbol and zero-dependency gates pass, while its
+remote compile/test replay remains pending. No green workspace result is
+claimed for either candidate.
+
+Setup contract `53486809` was destroyed after an instance-response parser
+failure before verification. Verification contract `53487020` was destroyed
+after small-log recovery, including its storage; individual readback returned
+`instances: null`, and a subsequent instance-list readback was empty.
+No cloud resource is being retained merely to wait for CI.
+
+PRs #138/#139 still have auto-merge enabled and no observed failing checks:
+#138 has 52 successes, one skip and 16 pending checks; #139 has 53 successes,
+one skip and 15 pending checks. These are dated queue observations, not merge
+or alert-closure evidence. Real-weight native parity, whole-path CPU/GPU timing,
+Apple CPU/Metal/no-fallback and the remaining public rows stay open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
