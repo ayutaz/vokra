@@ -1559,6 +1559,51 @@ closure remain under source-only investigation. No new model access, HF
 upload, Apple allocation or catalog completion is claimed; scope remains
 194 public rows, 136 code/artifact-full and 58 unresolved.
 
+### Kyutai merge and Linux source-audit portability failure (13:56 UTC)
+
+PR #187 finished with 77 successful checks, five intentional skips and zero
+failures at `27060dd2`. All 16 strict required checks passed, and root
+reviewed the clean merge state and protection rules before marking the
+bounded component change ready. It was squash-merged at 13:50:37 UTC as
+`909c527b65c2a1308848450652962df42244753d`, now the reviewed GitHub
+`main`. Full PCM-to-text ASR, independent real-weight reference and Apple
+verdicts remain pending; the merge does not change public-row classification.
+
+The source-audit collector's independent Linux replay did not pass. At exact
+clean `592bf0ca`, the standard-library suite ran 16 tests: one passed and 15
+errored because its temporary-directory helper hard-coded macOS
+`/private/tmp`, which does not exist on the worker. Root verified all 14
+recovered evidence hashes, the final head and clean status, and both tool
+hashes. The original test exit and side-controller exit are one. No fake
+macOS directory was created to mask this portability defect. The failed
+packet remains unchanged. The reviewed portable helper correction was
+committed separately at `b34739839715bc482212793fae99e3215edab79a`;
+its test-file SHA-256 is
+`69191653382e78e9622afb736de0373ce073d3aea69710383f9ac1456801bcd0`.
+No independent test pass is recorded for this new head yet.
+
+The Mimi `3d9fffbf` six-leg controller is actively using its single owned
+worker `53534094`, with effective 16 CPUs, approximately 128 GB host RAM
+and 200 GB rented storage. Its recovered-to-date focused log reports
+79 passed, zero failed and zero ignored; the separate ABI and Clippy exits
+are also zero. Workspace verification is still live, so no overall green
+result or final packet is claimed. The side audit used a distinct checkout
+and does not own this worker's destruction. The parent will recover small
+evidence and destroy the worker and storage on either final result. No
+idle retained instance is introduced.
+
+To preserve that frozen verification, root integrated new `main` into a
+different clean checkout, producing
+`0dca06f2d6e585c698f9dc61c2961e5fcbf193ea`. The four Mimi implementation
+files remain byte-identical to `3d9fffbf`; formatting, diff hygiene,
+zero-dependency and forbidden-symbol gates passed. Its new-base remote
+verification is still pending and will not start another worker while the
+current lifecycle is live. Official Rust core-only reference licensing,
+checkpoint compatibility and converted-Mimi provenance binding remain
+separate source/real-weight gates. No HF token, artifact upload or new Apple
+allocation occurred; scope remains 136 code/artifact-full and 58 unresolved
+out of 194 public rows.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
