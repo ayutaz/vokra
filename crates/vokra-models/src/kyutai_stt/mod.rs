@@ -1615,6 +1615,39 @@ fn checked_add(label: &str, lhs: usize, rhs: usize) -> Result<usize> {
     })
 }
 
+/// Computes causal/sliding-window attention probabilities with the CPU's
+/// single-row softmax geometry.  The caller has already validated the model
+/// context and allocated the checked `frames × frames` buffers; this helper
+/// only exposes each query's visible contiguous slice to the existing
+/// `Compute` softmax and leaves every masked probability explicitly zero.
+///
+/// This is deliberately CPU-only.  GPU callers retain the existing batched
+/// backend dispatch because this helper must never become a hidden fallback.
+fn softmax_visible_context_cpu(
+    compute: &Compute,
+    scores: &[f32],
+    probs: &mut [f32],
+    frames: usize,
+    context: usize,
+) -> Result<()> {
+    debug_assert!(context > 0);
+    debug_assert_eq!(scores.len(), frames.saturating_mul(frames));
+    debug_assert_eq!(probs.len(), frames.saturating_mul(frames));
+    probs.fill(0.0);
+    for query in 0..frames {
+        let window_start = query.saturating_add(1).saturating_sub(context);
+        let window_end = query + 1;
+        let row_start = query * frames;
+        compute.softmax_f32(
+            &scores[row_start + window_start..row_start + window_end],
+            &mut probs[row_start + window_start..row_start + window_end],
+            1,
+            window_end - window_start,
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct KyutaiWeightShapes {
     d: usize,
@@ -2763,7 +2796,17 @@ impl KyutaiSttAsr {
                         frames,
                     );
                 }
-                compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                if matches!(backend, BackendKind::Cpu) {
+                    softmax_visible_context_cpu(
+                        &compute,
+                        &scores,
+                        &mut probs,
+                        frames,
+                        self.cfg.backbone.context,
+                    )?;
+                } else {
+                    compute.softmax_f32(&scores, &mut probs, frames, frames)?;
+                }
                 #[cfg(test)]
                 if let Some(trace) = trace.as_mut() {
                     trace.record_rows(layer_index, Some(head), "softmax", &probs, frames, frames);
@@ -3130,6 +3173,51 @@ mod tests {
         config
             .validate_for_forward()
             .expect("tiny config is well-formed");
+    }
+
+    /// Synthetic self-consistency only (not upstream numerical parity): the
+    /// CPU visible-window path must have the same exact values as direct
+    /// single-row `Compute` softmax calls, including context-1, pre-window,
+    /// and the sliding-window boundary. Masked columns are never allowed to
+    /// retain stale probabilities from the previous query.
+    #[test]
+    fn cpu_visible_context_softmax_matches_single_row_self_consistency() {
+        let compute = Compute::cpu();
+        for &(frames, context) in &[(5usize, 1usize), (5, 3), (11, 8), (11, 9), (11, 12)] {
+            let scores: Vec<f32> = (0..frames * frames)
+                .map(|index| (index as f32 - 7.0) / 3.0)
+                .collect();
+            let mut probs = vec![f32::NAN; frames * frames];
+            softmax_visible_context_cpu(&compute, &scores, &mut probs, frames, context)
+                .expect("CPU visible-window softmax");
+            for query in 0..frames {
+                let window_start = query.saturating_add(1).saturating_sub(context);
+                let window_end = query + 1;
+                let row_start = query * frames;
+                let mut expected = vec![0.0f32; window_end - window_start];
+                compute
+                    .softmax_f32(
+                        &scores[row_start + window_start..row_start + window_end],
+                        &mut expected,
+                        1,
+                        window_end - window_start,
+                    )
+                    .expect("direct CPU single-row softmax");
+                assert_eq!(
+                    &probs[row_start + window_start..row_start + window_end],
+                    expected.as_slice(),
+                    "visible row changed at frames={frames}, context={context}, query={query}"
+                );
+                for (column, &value) in probs[row_start..row_start + frames].iter().enumerate() {
+                    if column < window_start || column >= window_end {
+                        assert_eq!(
+                            value, 0.0,
+                            "masked probability is nonzero at frames={frames}, context={context}, query={query}, column={column}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
