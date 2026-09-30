@@ -406,6 +406,47 @@ evidence. No real-weight waveform parity, independent acoustic waveform
 reference, Metal parity, or complete synthesis claim follows from this
 boundary.
 
+## Native composite execution boundary (unpromoted)
+
+`vokra_models::vibevoice_streaming::runtime` now composes the authenticated
+language stages, diffusion CFG sampler, acoustic connector, and causal
+acoustic decoder into a borrow-scoped
+`VibeVoiceRealtimeSynthesisSession`. The runtime imports the four official
+`lm`, `tts_lm`, `neg_lm`, and `neg_tts_lm` preset branches first. After import,
+text uses only incremental LM/TTS-LM steps; the negative text LM is not
+advanced. Each source five-token text window is followed by up to six speech
+steps, including the source zero-text continuation.
+
+For every speech step the caller supplies a fresh finite 64-wide noise vector.
+The native order is CFG sampling, acoustic decoding, and then the acoustic
+connector receives the original sampled scaled latent (not the decoder's
+unscaled latent). The connector result is sent to both positive and negative
+TTS branches with token `1` and `is_text = false`; both hidden rows are kept as
+the next independent CFG conditions, and the positive EOS classifier is
+checked afterwards.
+
+The session keeps the source's terminal details explicit. A decoded final
+chunk is retained before the strict `max_length` check; when appending the
+next TTS position would exceed the bounded `max_new_tokens` budget, neither
+TTS cache is advanced. After positive EOS, the remaining source six-step
+inner-loop cache updates are drained while their audio chunks are suppressed;
+the caller receives `Draining` steps until the session reports `Finished`.
+`max_new_tokens`, a separate finite speech control budget, and an external stop
+are distinct terminal conditions. An explicit external stop or exhausted
+caller speech budget takes precedence over an incomplete EOS drain and is
+reported consistently by both the step result and `stop_reason()`. Any
+operational error resets the positive, negative, and acoustic mutable state and
+poisons the session so a partial cache cannot be reused.
+
+The composite is currently CPU-only because its sampler and causal acoustic
+decoder do not have a GPU implementation. Unsupported Metal/CUDA requests are
+rejected before weight binding; there is no silent CPU fallback. This section
+records source-ordered native composition and model-free sequencing tests only.
+Independent real-weight CPU parity, an independent waveform reference, a
+caller noise packet, Apple CPU/Metal parity, voice rights/consent and other
+owner/legal decisions remain open. The CLI and public model status must not be
+promoted from this boundary, and no completion or publication claim follows.
+
 ## Verification boundary
 
 Run only the model-free checks:
