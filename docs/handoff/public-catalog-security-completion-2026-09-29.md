@@ -2127,6 +2127,29 @@ training and was not modified. No new rental, model acquisition, upload,
 Scaleway run or catalog-row promotion occurred. The full scope remains
 194 public rows with 58 unresolved.
 
+### PR #186 merged after all CI completed (17:25 UTC)
+
+The same Unity packaging job completed successfully at 17:24:22 UTC.
+Final pre-merge readback for exact HEAD `ecf0990` reports 92 successful
+checks, ten intentional skips, zero pending checks and zero failures, with
+`CLEAN` / `MERGEABLE`. All sixteen required contexts and the Metal job were
+checked separately above. The earlier `UNSTABLE` readback is superseded for
+this head; it was not bypassed or reinterpreted as a completed run.
+
+PR #186 was squash-merged at 17:25:59 UTC as
+`91a7ebcebf6a643a2235040e133c767a78b8f8b3`. The initial normal-merge attempt
+was rejected without changing the PR because repository policy permits only
+squash merging. Root read back that policy, used the allowed method with
+the exact-head match guard, and confirmed `MERGED` plus the merge-commit ID.
+The live main ref now points to that merge commit. The tested PR head and
+merged main are distinct identities; no exact-main VAST replay is invented.
+
+Unverified FireRed wire/consumer/encoder-trace and Moshi source-cache transport
+work remain separate from this merged implementation. The catalog scope,
+legal/source blockers and outstanding independent real-weight CPU and Apple
+CPU/Metal/no-fallback verdicts are unchanged. No new instance was rented,
+artifact uploaded or unresolved public row promoted by the merge.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
