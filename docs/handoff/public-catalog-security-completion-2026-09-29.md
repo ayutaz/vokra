@@ -2173,6 +2173,42 @@ tolerance change is inferred. Source inspection does not execute a model or
 establish new license/operator approval. Decoder/beam and real-weight CPU and
 Apple gates remain open.
 
+### FireRed trace accepted and padded-mask execution review (17:44 UTC)
+
+The corrected encoder diagnostic trace was fully reviewed and committed as
+`72b94b8`: it observes the actual centered positional tensor and all sixteen
+native layer results through the same arithmetic path as ordinary execution.
+Root independently passed formatting, diff hygiene, the first-party lock gate
+and forbidden-symbol gate. No local model or Cargo compilation/test was run;
+the model-free trace tests and real nineteen-stage parity remain unexecuted
+on this head.
+
+A separate clean follow-up checkout now starts from the live squash-merged
+main `91a7ebcebf6a643a2235040e133c767a78b8f8b3`. Its three reviewed PCM-wire,
+consumer and trace commits end at
+`a20f8e275b02455cc39f47d93952a19f9a7ac9d4`; root confirmed its tree matches
+the pre-restack trace head. This is an integration identity, not a new remote
+verification verdict. The maintainer's management branch was left intact.
+
+Root re-fetched and re-authenticated the same official Conformer source blob
+named above. Review of the pending six-frame padding/mask repair found that
+the actual padded tensor length must be derived from the full input length,
+independently of the valid-prefix length. The official convolution masks its
+computed branch but preserves the residual at invalid rows, and the official
+block does not zero rows after final LayerNorm. The existing native masking
+differs at both boundaries; source-grounded corrections and focused
+model-free regressions are delegated, with numerical bounds unchanged.
+
+The source-cache transport driver's third revision independently passed its
+eight offline tests, syntax and ShellCheck. It is still not accepted for a
+rental: its normal watchdog cancellation, portable local deadlines and
+truthful incomplete-run evidence require further correction. No real SSH,
+source-cache acquisition, model acquisition, upload or new cloud allocation
+occurred in this continuation. Faster GPU routing must be established by
+same-input/same-precision, transfer-inclusive measurement; required CPU and
+Apple CPU/Metal/no-fallback gates remain mandatory. The 194-row scope and
+58 unresolved classifications are not promoted by these source changes.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
