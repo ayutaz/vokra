@@ -1687,6 +1687,51 @@ The unfiltered pre-rent account read still showed unrelated `53535326`;
 it was not modified. Scope remains 194 public rows, 136 code/artifact-full
 and 58 unresolved, with the nine-leg verdict pending.
 
+### Official Rust reference source-archive readback (14:30 UTC)
+
+The e6 Moshi core-only source plan is now frozen at SHA-256
+`76d11bc0cc0166e890a4115c310a0aed198d476430ab2abf1d750e8d4216b703`.
+It distinguishes the 166-record static lock candidate graph from an activated
+Linux CPU graph. An isolated audit workspace must preserve inherited package
+and dependency declarations; full-workspace feature unification, an unbound
+derived lock, or an unbound metadata JSON cannot establish that CPU closure.
+No Cargo resolution, build, model/header acquisition or reference execution
+was performed while preparing this plan.
+
+Root acquired three official registry source archives only, totalling 675,933
+compressed bytes, and independently matched their hashes to the e6 lock:
+
+| Archive | Bytes | SHA-256 |
+|---|---:|---|
+| `candle-core-0.9.1.crate` | 239065 | `a9f51e2ecf6efe9737af8f993433c839f956d2b6ed4fd2dd4a7c6d8b0fa667ff` |
+| `candle-nn-0.9.1.crate` | 67671 | `c1980d53280c8f9e2c6cbe1785855d7ff8010208b46e21252b978badf13ad69d` |
+| `candle-transformers-0.9.1.crate` | 369197 | `186cb80045dbe47e0b387ea6d3e906f02fb3056297080d9922984c90e90a72b0` |
+
+The normalized manifests declare empty default features and `build = false`.
+All three archive VCS records identify Candle commit
+`cd96fa80da255e34f7b16b4ff98b6a31d557201b`, with their respective package
+paths. The core archive bundles an Apache-2.0 `LICENSE`; the other two do not
+bundle a `LICENSE`/`COPYING`/`NOTICE` under those exact names. Root also read
+the [primary Apache license](https://github.com/huggingface/candle/blob/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-APACHE)
+and [primary MIT license](https://github.com/huggingface/candle/blob/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-MIT)
+at that immutable commit. Their hashes are respectively
+`c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`
+and `23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3`;
+the bundled core license matches the former. These are direct source facts,
+not a transitive/native license closure, owner signature or execution approval.
+No package was extracted, installed, built or imported on the maintainer Mac.
+
+Root reviewed the initial native Kyutai PCM composite and Rust-core audit
+tool drafts and requested corrections before accepting either. The PCM draft
+has an actual step/logits type mismatch and needs production-path control,
+poison/reset and provenance-negative tests; the audit draft needs corrected
+workspace construction, repository placement, pinned snapshot authentication,
+root-reachable metadata binding and bounded archive handling. Neither draft
+has a verified commit or numerical verdict. The integrated `00632846` VAST
+regression remains separate and live, with six observed zero exits and
+workspace verification pending. Final packet authentication and destruction
+are not yet claimed. Scope remains 194 public rows and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
