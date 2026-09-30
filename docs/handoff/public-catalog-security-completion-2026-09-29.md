@@ -529,6 +529,39 @@ Torch 2.13.0 / TorchAudio 2.11.0 CPU candidate: model-free source imports
 pass, while upstream-version compatibility, owner review and real-weight
 parity remain open. These changes do not promote a public model row.
 
+## 2026-09-30 Realtime native composition review (06:20 UTC)
+
+[Draft PR #181](https://github.com/ayutaz/vokra/pull/181), at
+`378329a6bc7d72ca7b2ef73d330067b1d254be3f`, authenticated the four-output
+preset import boundary. Its disposable VAST replay recorded 8,129 workspace
+tests passed, zero failed and 107 ignored; workspace Clippy, cargo-deny and
+cargo-audit passed. The separate ignored real-preset parser test passed.
+This was cache inspection/parser evidence, not model-forward or waveform
+parity. Instance `53475665` was destroyed with its storage after small-log
+recovery; its individual readback returned `instances: null`.
+
+The native composition candidate at `a0babe96415c5596ac217457fdb4404151bc5ec3`
+now connects authenticated preset import, incremental positive text LM/TTS,
+independent negative TTS, CFG sampling, causal acoustic decode and the original
+scaled-latent connector input. Manager review corrected both next-step CFG
+conditions, repeated-EOS audio suppression, six-step cache draining and the
+strict maximum-length boundary. Caller stop/control limits remain explicit;
+operation failures reset mutable state and poison the session. Model-free
+regressions were added, but this candidate's Rust tests have not yet run.
+Formatting, diff checks, forbidden-symbol and zero-dependency gates passed.
+
+The complete composition currently rejects Metal/CUDA before binding because
+the sampler and acoustic decoder are CPU-only. The independent official
+streaming caller is being reviewed separately. It must preserve exact source,
+weights, tokenizer, preset, dependency and execution-scope identities and use
+the same initial noise for CPU/CUDA comparison. A faster GPU may be selected
+only after its correctness guard passes; this does not waive native CPU,
+Apple CPU/Metal or no-fallback evidence. Voice consent, dependency/license
+closure, independent real-weight waveform reference and native CPU parity
+remain open. No model execution, upload, CLI promotion or public-row completion
+is claimed by this candidate. The public code/artifact baseline remains
+136 full and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
