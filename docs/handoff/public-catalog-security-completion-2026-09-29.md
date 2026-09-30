@@ -1604,6 +1604,54 @@ separate source/real-weight gates. No HF token, artifact upload or new Apple
 allocation occurred; scope remains 136 code/artifact-full and 58 unresolved
 out of 194 public rows.
 
+### Mimi six-leg pass and collection-race correction (14:10 UTC)
+
+The exact clean `3d9fffbf` verification above is now terminal and successful:
+all six exit files are zero. Root independently matched all 20 packet hashes,
+final HEAD, source/base and empty status. Focused Mimi tests report 79 passed,
+zero failed and zero ignored; the ABI selection is one passed with no failure
+or ignore. The serial workspace has 323 successful summaries, 8,116 passed,
+zero failed and 105 ignored. Model Clippy, deny and advisory audit passed.
+The manifest SHA-256 is
+`2ef2c09046ee9583be2094fba3322f6fd852708a3a55076d25e67d36e2e1b1fe`.
+The reviewed parent exited zero after recovery and strict destruction of
+worker `53534094` and its 200-GB storage; individual readback is null.
+This is Rust regression evidence, not independent full-model or Apple parity.
+
+The portable `b347398` source-audit attempt is not a recovered pass. Root
+reviewed its separate controller, SHA-256
+`99af1a51640c6778ebeffb56311b321e1b3b4b73d1899dac4e8ad1830b5afaf5`,
+including independently passing, re-signed positive/negative packet tests.
+The remote work command completed, but the parent's normal destruction raced
+the side packet collection. Only setup evidence was recovered; remaining SSH
+connections were refused. The side controller correctly exited one. Neither
+the 16-test verdict nor its final HEAD can be certified from that incomplete
+packet. Do not restart or retain the destroyed worker. The next batch will
+put this standard-library suite inside the parent lifecycle so all required
+evidence is recovered before destruction, rather than use a competing side
+collector. The original failed and incomplete packets remain unchanged.
+
+Root also reviewed and committed measured Mimi input identity at
+`cd7fcde72ae00fd588dea616dd6744b5766b1d4e`: the converter hashes its
+actual input buffer and emits the existing checkpoint SHA-256/byte-count keys.
+It guesses no origin, revision, filename or sign-off and cannot self-embed an
+output whole-file digest. Its synthetic tests inspect both converted GGUF
+stamps, including a valid input-byte mutation. Formatting and static gates
+passed; execution remains pending. The new-base batch now has clean head
+`00632846da5b11b3225c2864b7f75b41d1b9a4f3`, combining current `main`,
+reviewed Mimi changes and the source-audit/portable-test commits. This head is
+not yet remotely verified or pushed. No publication or Apple verdict follows.
+
+A fresh unfiltered terminal `instances-v1 --all` read at 14:10 UTC contains
+one unrelated running instance, `53535326`, labelled
+`jtalm-gen_action_v051`. It was not created by this Vokra lifecycle and was
+not modified. The prior controller's empty list was filtered by its owned
+label, not an unfiltered account-wide zero. Vokra owns no retained worker or
+storage; do not infer that the entire account is empty or destroy the
+unrelated instance. An initial read-only attempt using unsupported
+`--all-pages` exited two; the correct `--all` query succeeded with no next
+page. Catalog scope remains 194 rows, 136 code/artifact-full and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
