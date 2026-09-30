@@ -31,9 +31,10 @@ SOURCE_PYPROJECT_BLOB = "dd844dd2fb0ab0c016520c4b070beaa7c159e3e1"
 UPSTREAM_TORCH_PIN = "2.6.0"
 UPSTREAM_TORCHAUDIO_PIN = "2.6.0"
 CANDIDATE_TORCH_PIN = "2.13.0"
-CANDIDATE_TORCHAUDIO_IN_LOCK = False
-CANDIDATE_LOCK_SHA256 = "f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7"
-CANDIDATE_PYPROJECT_SHA256 = "1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48"
+CANDIDATE_TORCHAUDIO_PIN = "2.11.0"
+CANDIDATE_TORCHAUDIO_IN_LOCK = True
+CANDIDATE_LOCK_SHA256 = "06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+CANDIDATE_PYPROJECT_SHA256 = "4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 SCHEMA = "vokra-dia-upstream-compatibility-probe-v1"
 MIN_VAST_MEM_KIB = 60_000_000
 
@@ -188,7 +189,10 @@ def candidate_identity(project: Path) -> dict[str, Any]:
     torch_rows = [row for row in lock_data.get("package", []) if row.get("name") == "torch"]
     if {row.get("version") for row in torch_rows} != {"2.13.0", "2.13.0+cpu"}:
         raise ProbeError("candidate lock does not contain both expected Torch 2.13.0 platform rows")
-    return {"pyproject_sha256": CANDIDATE_PYPROJECT_SHA256, "uv_lock_sha256": CANDIDATE_LOCK_SHA256, "torch": CANDIDATE_TORCH_PIN, "torchaudio": "ABSENT_FROM_CANDIDATE_LOCK"}
+    torchaudio_rows = [row for row in lock_data.get("package", []) if row.get("name") == "torchaudio"]
+    if {row.get("version") for row in torchaudio_rows} != {CANDIDATE_TORCHAUDIO_PIN, f"{CANDIDATE_TORCHAUDIO_PIN}+cpu"}:
+        raise ProbeError("candidate lock does not contain both expected Torchaudio 2.11.0 platform rows")
+    return {"pyproject_sha256": CANDIDATE_PYPROJECT_SHA256, "uv_lock_sha256": CANDIDATE_LOCK_SHA256, "torch": CANDIDATE_TORCH_PIN, "torchaudio": CANDIDATE_TORCHAUDIO_PIN}
 
 
 def classify_runtime_probe(payload: dict[str, Any]) -> dict[str, str]:
@@ -289,7 +293,7 @@ class Dia:
     assert UPSTREAM_TORCH_PIN != CANDIDATE_TORCH_PIN
     assert SOURCE_REPOSITORY.removesuffix(".git").endswith("nari-labs/dia")
     assert classify_runtime_probe({"module_status": "PASS_SOURCE_IMPORT", "torch_status": "PASS_TORCH_IMPORT", "torchaudio_status": "BLOCKED_TORCHAUDIO_IMPORT"}) == {"status": "BLOCKED_TORCH_TORCHAUDIO_CLOSURE", "closure_status": "BLOCKED_TORCH_TORCHAUDIO_CLOSURE"}
-    assert classify_runtime_probe({"module_status": "PASS_SOURCE_IMPORT", "torch_status": "PASS_TORCH_IMPORT", "torchaudio_status": "PASS_TORCHAUDIO_IMPORT"}) == {"status": "BLOCKED_TORCH_TORCHAUDIO_CLOSURE", "closure_status": "BLOCKED_TORCH_TORCHAUDIO_CLOSURE"}
+    assert classify_runtime_probe({"module_status": "PASS_SOURCE_IMPORT", "torch_status": "PASS_TORCH_IMPORT", "torchaudio_status": "PASS_TORCHAUDIO_IMPORT"}) == {"status": "PASS_SOURCE_IMPORT_TORCH_TORCHAUDIO", "closure_status": "PASS_TORCH_TORCHAUDIO_CLOSURE"}
     tempfile = __import__("tempfile")
     temp_parent = "/private/tmp" if Path("/private/tmp").is_dir() and not Path("/private/tmp").is_symlink() else None
     with tempfile.TemporaryDirectory(prefix="dia-compat-probe-", dir=temp_parent) as directory:
@@ -365,7 +369,7 @@ def run(source: Path, project: Path, output: Path | None) -> int:
         "candidate": candidate,
         "source_signature": {"status": signature_status, "expected": EXPECTED_SIGNATURES, "observed": signatures},
         "runtime_import": runtime,
-        "compatibility": {"upstream_torch": UPSTREAM_TORCH_PIN, "upstream_torchaudio": UPSTREAM_TORCHAUDIO_PIN, "candidate_torch": CANDIDATE_TORCH_PIN, "candidate_torchaudio": "ABSENT_FROM_CANDIDATE_LOCK", "decision": "BLOCKED_UNTIL_VAST_API_AND_OWNER_APPROVED_CPU_PARITY"},
+        "compatibility": {"upstream_torch": UPSTREAM_TORCH_PIN, "upstream_torchaudio": UPSTREAM_TORCHAUDIO_PIN, "candidate_torch": CANDIDATE_TORCH_PIN, "candidate_torchaudio": CANDIDATE_TORCHAUDIO_PIN, "decision": "BLOCKED_UNTIL_VAST_API_AND_OWNER_APPROVED_CPU_PARITY"},
     }
     if output is not None:
         write_json(output, result)

@@ -46,8 +46,8 @@ COMPACT_SCHEMA = "vokra-dia-dependency-audit-compact-v1"
 PROJECT_NAME = "vokra-dia-1-6b-reference"
 PROJECT_VERSION = "0.1.0"
 LOCK_SCHEMA = "uv-lock-v1-python312"
-LOCK_SHA256 = "f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7"
-PYPROJECT_SHA256 = "1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48"
+LOCK_SHA256 = "06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+PYPROJECT_SHA256 = "4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 GATE_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 PUBLICATION = "NO_UPLOAD"
 ALLOWED_REGISTRIES = {
@@ -61,6 +61,7 @@ EXPECTED_DIRECT_DEPENDENCIES = {
     "numpy": "2.2.5",
     "pydantic": "2.11.3",
     "torch": "2.13.0",
+    "torchaudio": "2.11.0",
 }
 EXPECTED_LINUX_DIRECT_IDS = {
     "einops==0.8.2",
@@ -69,6 +70,7 @@ EXPECTED_LINUX_DIRECT_IDS = {
     "numpy==2.2.5",
     "pydantic==2.11.3",
     "torch==2.13.0+cpu",
+    "torchaudio==2.11.0+cpu",
 }
 LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".a"}
@@ -789,8 +791,8 @@ def self_test() -> int:
     assert synthetic_report["dependency_license_audit"] == GATE_STATUS
     assert isinstance(synthetic_report["native_facts"]["files"], list)
     assert set(EXPECTED_LINUX_DIRECT_IDS).issubset({identity(row["name"], row["version"]) for row in active})
-    assert len(rows) == 29
-    assert len(active) == 26
+    assert len(rows) == 31
+    assert len(active) == 27
     assert "colorama==0.4.6" not in {identity(row["name"], row["version"]) for row in active}
     assert all(row["source"].get("registry") in ALLOWED_REGISTRIES for row in active)
     assert identity("Torch", "2.13.0+CPU") == "torch==2.13.0+cpu"

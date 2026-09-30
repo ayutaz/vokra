@@ -2,19 +2,22 @@
 
 ## 2026-09-30 Torch security-refresh candidate (blocked)
 
-The dedicated candidate lock now resolves CPU Torch `2.13.0` (and its
-platform-specific `2.13.0+cpu` wheel) from the explicit PyTorch CPU index.
+The dedicated candidate lock now resolves CPU Torch `2.13.0` and
+TorchAudio `2.11.0` (including their platform-specific `+cpu` Linux wheels)
+from the explicit PyTorch CPU index.  The TorchAudio version is a compatibility
+candidate only; the [official TorchAudio installation matrix](https://docs.pytorch.org/audio/main/installation.html)
+is the source for the stated PyTorch/TorchAudio compatibility claim.
 The exact candidate inputs are:
 
 ```text
-pyproject.toml  sha256=1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48
-uv.lock         sha256=f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7
+pyproject.toml  sha256=4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb
+uv.lock         sha256=06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449
 ```
 
 This is a security-refresh candidate, not a compatibility or parity result.
 The authenticated Dia source revision `2811af1c5f476b1f49f4744fabf56cf352be21e5`
 declares `torch==2.6.0` and `torchaudio==2.6.0`; it does not declare support
-for Torch 2.13.0.  No local Torch installation, model load, forward, or
+for the candidate Torch 2.13.0/TorchAudio 2.11.0 pair.  No local Torch installation, model load, forward, or
 weight acquisition was performed.  A VAST model-free API probe and an
 owner-approved real-weight CPU parity run are required before this candidate
 can replace the reference environment.
