@@ -63,44 +63,47 @@ AUDIT_EVIDENCE_KEYS = {
 }
 PLATFORM_AUDIT_KEYS = {
     "candidate_schema",
-    "candidate_sha256",
-    "license_evidence_schema",
-    "license_evidence_sha256",
+    "audit_json_sha256",
     "lock_sha256",
     "active_package_count",
     "license_payload_count",
     "native_payload_count",
     "audit_source_commit",
     "platform",
+    "decision",
+    "dependency_review",
+    "approval_status",
     "publication",
 }
 EXPECTED_AUDIT_EVIDENCE = {
     "schema": "bigvgan-multi-platform-closure-evidence-v1",
-    "status": "STALE_SUPERSEDED_BY_TORCH_2_13",
+    "status": "CURRENT_CANDIDATE_OWNER_REVIEW_REQUIRED",
     "linux": {
         "candidate_schema": "bigvgan-linux-closure-candidate-v1",
-        "candidate_sha256": "fd414613311cf1ca7da4504e85acbb79d43c200a4cb1dc221e2421fc67b26086",
-        "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
-        "license_evidence_sha256": "88f0a6e98b5000243f32471c6a9a1274db5c38bbbcad0d271c11cb7176ab7f9f",
-        "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
+        "audit_json_sha256": "8b204b7764bd621c7a761d64af434bf0ebefdde5af66669372a0aa28dd67b175",
+        "lock_sha256": "f78c791e43d089cc9ddf2175cd29929a2c905f3b55d6aaf7ea32c885281edfda",
         "active_package_count": 10,
-        "license_payload_count": 28,
-        "native_payload_count": 142,
-        "audit_source_commit": "1ce957dfdacc38be9530d0b0931bd92e99d447f2",
+        "license_payload_count": 124,
+        "native_payload_count": 145,
+        "audit_source_commit": "278c1f742ed90d466ab82b892a02b842afa90b84",
         "platform": "x86_64-linux",
+        "decision": "OWNER_REVIEW_REQUIRED",
+        "dependency_review": "BLOCKED_UNREVIEWED_TRANSITIVE",
+        "approval_status": "OWNER_SIGNOFF_REQUIRED",
         "publication": "NO_UPLOAD",
     },
     "arm64-darwin": {
         "candidate_schema": "bigvgan-darwin-closure-candidate-v1",
-        "candidate_sha256": "148e44365efa92c2cd95feeef156e327975be465aad21c6b20c979433f6d25fa",
-        "license_evidence_schema": "bigvgan-license-payload-evidence-v1",
-        "license_evidence_sha256": "cd1e28d9449dc4a1e6fac1a13f1611042bcb8dddf68bc53b50026a646cbd0e42",
-        "lock_sha256": "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e",
+        "audit_json_sha256": "3155caee92a46b6be9854df3a0633323a04bdcee258b84e17e2394b4ad1bd9f3",
+        "lock_sha256": "f78c791e43d089cc9ddf2175cd29929a2c905f3b55d6aaf7ea32c885281edfda",
         "active_package_count": 10,
-        "license_payload_count": 28,
-        "native_payload_count": 21,
-        "audit_source_commit": "e55a712add5df017a1c9b4e112ca0278905ed2df",
+        "license_payload_count": 135,
+        "native_payload_count": 20,
+        "audit_source_commit": "278c1f742ed90d466ab82b892a02b842afa90b84",
         "platform": "arm64-darwin",
+        "decision": "OWNER_REVIEW_REQUIRED",
+        "dependency_review": "BLOCKED_UNREVIEWED_TRANSITIVE",
+        "approval_status": "OWNER_SIGNOFF_REQUIRED",
         "publication": "NO_UPLOAD",
     },
     "publication": "NO_UPLOAD",
@@ -188,6 +191,27 @@ def validate_current_audit_binding(
         platform_evidence = audit_evidence.get(platform)
         if not isinstance(platform_evidence, dict) or platform_evidence.get("lock_sha256") != actual_lock_sha256:
             fail(f"CURRENT_REVIEWED audit evidence does not bind the current lock for {platform}")
+
+
+def validate_current_candidate_binding(
+    audit_evidence: dict[str, Any], actual_lock_sha256: str
+) -> None:
+    if audit_evidence.get("status") != "CURRENT_CANDIDATE_OWNER_REVIEW_REQUIRED":
+        fail("pending Torch 2.13 refresh requires a current owner-review candidate")
+    for platform in ("linux", "arm64-darwin"):
+        platform_evidence = audit_evidence.get(platform)
+        if not isinstance(platform_evidence, dict):
+            fail(f"current owner-review candidate is missing {platform} evidence")
+        if platform_evidence.get("lock_sha256") != actual_lock_sha256:
+            fail(f"current owner-review candidate does not bind the current lock for {platform}")
+        if platform_evidence.get("decision") != "OWNER_REVIEW_REQUIRED":
+            fail(f"current owner-review candidate decision is not owner-review-required for {platform}")
+        if platform_evidence.get("dependency_review") != "BLOCKED_UNREVIEWED_TRANSITIVE":
+            fail(f"current owner-review candidate dependency review is not blocked for {platform}")
+        if platform_evidence.get("approval_status") != "OWNER_SIGNOFF_REQUIRED":
+            fail(f"current owner-review candidate approval is not pending for {platform}")
+        if platform_evidence.get("publication") != "NO_UPLOAD":
+            fail(f"current owner-review candidate publication is not NO_UPLOAD for {platform}")
 
 
 def validate_metadata(value: Any, label: str) -> None:
@@ -422,6 +446,8 @@ def run(
         fail("Torch 2.13 dependency refresh does not identify the superseded Torch 2.7.1 lock")
     if dependency_refresh["status"] == "CURRENT_REVIEWED":
         validate_current_audit_binding(audit_evidence, expected_audit, actual_lock_sha256)
+    else:
+        validate_current_candidate_binding(audit_evidence, actual_lock_sha256)
     if audit_evidence != expected_audit:
         fail("model-free VAST audit evidence is missing or drifted")
     if digest_bytes(project_bytes) != manifest.get("project_sha256"):
@@ -502,16 +528,14 @@ def run(
     if not isinstance(approval_scope_sha256, str) or not HEX64.fullmatch(approval_scope_sha256) or approval_scope_sha256 != scope:
         fail("approval scope is not bound to the fixed identities, platform evidence, and NO_UPLOAD decision")
     if pending_refresh:
-        if manifest.get("audit_evidence", {}).get("status") != "STALE_SUPERSEDED_BY_TORCH_2_13":
-            fail("superseded Torch 2.7.1 audit evidence is not explicitly marked stale")
         stale_license_rows = {
             row.get("id"): row.get("status")
             for row in manifest.get("license_rows", [])
             if isinstance(row, dict)
         }
-        if stale_license_rows.get("python-cpu-closure-native-bundled") != "STALE_SUPERSEDED_BY_TORCH_2_13":
-            fail("superseded Torch 2.7.1 license evidence is not explicitly marked stale")
-        fail("Torch 2.13 dependency/native closure review is pending; old approval evidence is stale")
+        if stale_license_rows.get("python-cpu-closure-native-bundled") != "PENDING_NATIVE_BUNDLED_REVIEW":
+            fail("current Torch 2.13 closure candidate review is not explicitly pending")
+        fail("Torch 2.13 dependency/native closure owner/legal review is pending; publication remains blocked")
     reviewed_identities = manifest.get("identities")
     if not isinstance(reviewed_identities, dict):
         fail("reviewed model/source identities are missing from the manifest")
@@ -974,6 +998,28 @@ source = { registry = 'https://pypi.org/simple' }
             else:
                 raise SystemExit(f"bigvgan license gate self-test: {label} was accepted")
 
+        synthetic_pending_expected = json.loads(json.dumps(synthetic_current_expected))
+        synthetic_pending_expected["status"] = "CURRENT_CANDIDATE_OWNER_REVIEW_REQUIRED"
+
+        def expect_pending_manifest_blocked(label: str, mutate: Any) -> None:
+            candidate = json.loads(json.dumps(manifest))
+            candidate["dependency_refresh"]["status"] = "TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW"
+            candidate["dependency_refresh"]["previous_lock_sha256"] = "80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e"
+            candidate["audit_evidence"] = json.loads(json.dumps(synthetic_pending_expected))
+            candidate["license_rows"][2]["status"] = "PENDING_NATIVE_BUNDLED_REVIEW"
+            candidate["approval_scope_sha256"] = approval_scope(candidate, rows)
+            candidate["approval"]["digest"] = candidate["approval_scope_sha256"]
+            mutate(candidate)
+            candidate_path = project_dir / f"{label}.pending.manifest.json"
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            try:
+                run(lock, project, candidate_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_pending_expected)
+            except SystemExit as exc:
+                if exc.code != 2:
+                    raise SystemExit(f"bigvgan license gate self-test: {label} returned {exc.code}") from exc
+            else:
+                raise SystemExit(f"bigvgan license gate self-test: {label} was accepted")
+
         def expect_blocked(label: str, mutate: Any) -> None:
             candidate = json.loads(json.dumps(expected_evidence))
             mutate(candidate)
@@ -1044,6 +1090,16 @@ source = { registry = 'https://pypi.org/simple' }
         expect_manifest_blocked("audit-evidence-missing", lambda value: value.pop("audit_evidence"))
         expect_manifest_blocked("dependency-refresh-missing", lambda value: value.pop("dependency_refresh"))
         expect_manifest_blocked("dependency-refresh-status", lambda value: value["dependency_refresh"].update(status="TORCH_2_13_PENDING_NATIVE_BUNDLED_REVIEW"))
+        def pending_candidate_lock_tamper(value: dict[str, Any]) -> None:
+            value["audit_evidence"]["linux"]["lock_sha256"] = "0" * 64
+            value["approval_scope_sha256"] = approval_scope(value, rows)
+            value["approval"]["digest"] = value["approval_scope_sha256"]
+        expect_pending_manifest_blocked("pending-candidate-current-lock-tamper", pending_candidate_lock_tamper)
+        def pending_candidate_status_tamper(value: dict[str, Any]) -> None:
+            value["audit_evidence"]["status"] = "STALE_SUPERSEDED_BY_TORCH_2_13"
+            value["approval_scope_sha256"] = approval_scope(value, rows)
+            value["approval"]["digest"] = value["approval_scope_sha256"]
+        expect_pending_manifest_blocked("pending-candidate-status-tamper", pending_candidate_status_tamper)
         def current_refresh_with_stale_audit(value: dict[str, Any]) -> None:
             value["dependency_refresh"]["status"] = "CURRENT_REVIEWED"
             value["audit_evidence"]["status"] = "STALE_SUPERSEDED_BY_TORCH_2_13"
