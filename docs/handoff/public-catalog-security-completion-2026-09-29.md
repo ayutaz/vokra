@@ -2031,6 +2031,55 @@ CPU/Metal/no-fallback, license/owner and publication gates remain open where
 previously recorded. No model acquisition, upload or public-row promotion is
 claimed; the scope remains 194 rows with 58 unresolved.
 
+### Platform-fix replay closed and published (17:00 UTC)
+
+The existing controller session completed with exit 0 at exact clean HEAD
+`ecf0990db79047d142090220d2dbf1ac49623ce6`; it was not restarted. All thirteen
+regression/audit exit files are zero. Root independently verified all 34
+recovered packet-member hashes, the exact final HEAD, empty observed status,
+and the workspace totals: 323 suites, 8,145 passed, zero failed and 105 ignored.
+Packet-manifest SHA-256:
+`2902b5b55ac88810bd9014bbecc2c16c3897b3fc85e11ed1eb6d78a69b367e53`.
+The local evidence directory is
+`/private/tmp/vokra-mimi-pr186-platform-fix-verify-logs.fAQRfG/evidence`.
+
+Worker `53555925` and its 200-GB storage were destroyed after evidence
+recovery. Controller collection, destroy, individual readback and own-label
+readback all succeeded; strict individual readback is `instances: null` and
+the own-label result is empty. A separate fresh individual API read also
+returns `instances: null`. Unrelated training was not modified.
+
+The reviewed two-file repair was fast-forward pushed to PR #186, and its
+body was updated to the corrected-head packet and remaining limits. A fresh
+PR read confirms HEAD `ecf0990`, new Windows/Metal and other CI jobs pending,
+and merge state `BLOCKED`. Linux verification does not prove the repaired
+Windows or Apple/Metal jobs; all sixteen required contexts and the Metal job
+must pass at this exact head before merge.
+
+Separately, root ran the source-cache probe's actual helper/scanner fixtures:
+six tests with five passes and one Linux-only skip on the maintainer Mac,
+then six passes with no skips on the same VAST worker. The probe and test
+SHA-256 values were checked before remote execution:
+`c05de666fe12289cb0fbe5ed36e43c196d5ac7a57106aea52522fd0d9f204643`
+and `fff381f890e8be6f7be70ba40b8dfe1cd83791fee8c9d3811449f9f75f575e68`.
+These are model-free source-cache safeguards, outside the immutable primary
+packet; no actual dependency cache acquisition or native/model result is
+claimed.
+
+The separately reviewed FireRed wire and final-result consumer are committed
+and integrated at clean follow-up HEAD
+`ba61396cf51bf2bee889a002c36a201047a434bf`, not pushed to PR #186 and not yet
+Cargo-tested. The consumer fixes SHA-256 authentication and source-marker
+validation, adds external standard hash vectors and full synthetic-schema
+rejection tests, and keeps the actual model test ignored/VAST-only. Its
+source SHA-256 is
+`1ca1e55d517e3053be7ad62039a9f7a07eae5c542f3dce2d32ed0b495491d2ec`.
+Full per-layer/logit/beam-parent/timing parity remains open. No synthetic
+fixture, build, source inventory or CI result promotes a public model row.
+The catalog scope remains 194 rows with 58 unresolved; required independent
+CPU and Apple CPU/Metal/no-fallback checks are not replaced by faster GPU
+routing.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
