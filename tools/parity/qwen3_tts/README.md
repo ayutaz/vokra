@@ -197,15 +197,18 @@ and torchaudio's native libsox/libav inventory remain audit facts and are not
 embedded in Vokra runtime or GGUF publication payloads. No model bytes are
 committed or uploaded, and the publication decision remains `NO_UPLOAD`. The
 compact evidence records factual installed metadata only and is not an owner
-legal conclusion. The owner/operator gate remains blocked by the VAST audit's
-factual license/native blocker; the authorized real-weight smoke/parity
-sequence additionally requires its own execution result. The follow-on
+legal conclusion. The fresh dependency audit itself is complete as a factual
+inventory; the remaining dependency blocker is owner/legal review of the four
+`BLOCKED_UNRESOLVED_REVIEW` Torch/TorchAudio rows. The owner/operator gate
+therefore remains blocked, while the authorized real-weight API smoke/parity
+sequence separately requires its own VAST execution result. The follow-on
 Scaleway Apple CPU/Metal no-fallback check remains after those VAST gates.
 PR #109's historical 4/4 real-weight parity result was produced with the
 former TorchAudio/PyTorch dependency lock. It is not evidence for this
 `torch==2.13.0` / `torchaudio==2.11.0` lock and must not be reused; the new
-dependency/API route remains fail-closed until an authorized VAST run records
-fresh evidence.
+dependency/API route remains fail-closed until owner/legal review is resolved
+and the authorized VAST real-weight smoke/parity run records fresh execution
+evidence.
 Run its `--self-test` locally; do not run the production audit on the
 maintainer machine. The production audit can optionally emit the compact
 projection with `--compact-output <absent-path>` when a separately authorized
