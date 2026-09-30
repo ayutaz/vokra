@@ -562,6 +562,44 @@ remain open. No model execution, upload, CLI promotion or public-row completion
 is claimed by this candidate. The public code/artifact baseline remains
 136 full and 58 unresolved.
 
+## 2026-09-30 Realtime Metal and cache-API continuation (07:04 UTC)
+
+The earlier CPU-only composition note is superseded at source level by
+`6f8d89cff231d02669f79dfbabcc03b101bce068`. The Realtime wrapper now
+selects the existing Metal learned-operation paths for language, diffusion,
+connector and causal acoustic decode. A complete operation-registry preflight
+runs before tensor binding; unavailable Metal and unsupported CUDA remain loud
+errors, never an implicit CPU fallback. ConvTranspose is the established
+host layout transformation followed by the selected backend's Conv1d, and the
+64-element DPM scheduler is an explicit host-control stage. This is not an
+all-device-resident implementation, measured acceleration, Apple hardware pass,
+or real-weight parity verdict.
+
+The independent streaming caller at
+`9e9ff425a04d7ae26a89a8ff0a515f69227a6ccc` replaces the incomplete legacy
+cache wrapper with Transformers' public `DynamicCache(ddp_cache_data=...)`
+constructor. The pinned wheel SHA-256 is
+`8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e`;
+its `cache_utils.py` SHA-256 is
+`7827cec593e6e6fa2ea123abce94eb422424d30a3391f15b38414684d0bbcd33`.
+Both were checked against the primary wheel. The new model-free probe checks
+the installed source identity and exercises the production migration/cast
+helpers on four tiny synthetic official cache objects. It does not acquire a
+checkpoint, preset or voice, and its VAST result is still pending at this
+snapshot. Full official generation, voice rights, dependency disposition,
+native real-weight CPU parity and Apple CPU/Metal/no-fallback remain open.
+
+A fresh read-only HF audit on `main`
+`166dc18ec47ab06e1c130d9b70e64948a517e156` still reports 194 public
+repositories, 193 GGUF-bearing repositories and 198 files, with 136 full,
+43 partial, 14 without a runtime binder and one non-artifact. The GitHub API
+reports 215 open Dependabot alerts (187 patched-version available, 28 without)
+and three open Scorecard findings: `CIIBestPracticesID`, `CodeReviewID` and
+`VulnerabilitiesID`. PRs #138 and #139 await fresh CI with auto-merge enabled;
+no alert closure is attributed to them here. VAST's instance-list readback was
+empty before allocating any new verification worker. All 58 unresolved public
+rows remain in the completion queue, and publication remains separate.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
