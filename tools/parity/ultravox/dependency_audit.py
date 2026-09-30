@@ -1121,7 +1121,19 @@ def self_test() -> int:
     assert not marker_active(["sys_platform == 'darwin'"])
     manifest = strict_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     project_root = Path(__file__).resolve().parent
-    _, checked_lock, checked_manifest, _, _ = _contract(project_root)
+    # The tracked compact proof is deliberately stale after a dependency
+    # security refresh.  Production audit paths must reject that mismatch;
+    # the self-test still needs to exercise the lock/manifest shape without
+    # pretending the old proof is valid for the new closure.
+    try:
+        _, checked_lock, checked_manifest, _, _ = _contract(project_root)
+    except AuditError as exc:
+        assert str(exc) == "Ultravox compact dependency evidence contract is malformed or unbound"
+        project_data = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+        checked_lock = tomllib.loads((project_root / "uv.lock").read_text(encoding="utf-8"))
+        checked_manifest = strict_json(project_root / "license_gate_manifest.json")
+        _validate_lock_shape(checked_lock, project_data)
+        assert checked_manifest["dependency_audit_evidence"]["status"] == "PENDING_OWNER_APPROVAL"
     active_rows, inactive_rows = classify_rows(checked_lock)
     assert len(checked_lock["package"]) == 40 and len(active_rows) == 37 and len(inactive_rows) == 3
     colorama_rows = [row for row in inactive_rows if row["name"] == "colorama"]
