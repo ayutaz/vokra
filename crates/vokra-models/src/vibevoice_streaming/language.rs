@@ -18,6 +18,7 @@ use crate::strict_checkpoint::{embedding_rows, load_tensor};
 use crate::vibevoice::{Qwen2Runtime, Qwen2RuntimeConfig};
 
 use super::HIDDEN;
+use super::preset::VibeVoiceRealtimePresetCache;
 
 /// Hot operations used by the EOS classifier in addition to the Qwen2 path.
 pub const VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Relu];
@@ -392,6 +393,32 @@ impl VibeVoiceRealtimeLanguage {
         pair: VibeVoiceRealtimeLanguageKvCachePair<'_>,
     ) -> Result<()> {
         import_kv_cache_pair(&mut self.text_lm, &mut self.tts_lm, pair)
+    }
+
+    /// Imports all four official voice-preset outputs transactionally.
+    ///
+    /// The positive `lm`/`tts_lm` pair replaces this language object's empty
+    /// staging branch. The returned language object owns an independent
+    /// negative `neg_lm`/`neg_tts_lm` pair. Both sides are staged on empty
+    /// forks first, so a malformed negative snapshot cannot clobber the
+    /// caller's existing positive caches. Hidden rows remain available from
+    /// [`VibeVoiceRealtimePresetCache::output`]; this method only imports KV
+    /// state and does not imply synthesis, consent, or parity.
+    pub fn import_preset_cache(&mut self, preset: &VibeVoiceRealtimePresetCache) -> Result<Self> {
+        let mut staged_positive = self.fork_empty_language_branch();
+        preset.import_branch_into(
+            &mut staged_positive,
+            super::preset::VibeVoiceRealtimePresetBranch::Lm,
+            super::preset::VibeVoiceRealtimePresetBranch::TtsLm,
+        )?;
+        let mut staged_negative = self.fork_empty_language_branch();
+        preset.import_branch_into(
+            &mut staged_negative,
+            super::preset::VibeVoiceRealtimePresetBranch::NegLm,
+            super::preset::VibeVoiceRealtimePresetBranch::NegTtsLm,
+        )?;
+        *self = staged_positive;
+        Ok(staged_negative)
     }
 
     /// Runs the four-layer text LM with no final normalization.

@@ -30,6 +30,8 @@ pub mod diffusion;
 pub mod generation;
 /// Native staged text/TTS language-model path.
 pub mod language;
+/// Strict native bridge for the official four-output voice-preset cache.
+pub mod preset;
 /// Deterministic CPU-only classifier-free guidance diffusion sampler.
 pub mod sampler;
 /// Cached-prompt input and bookkeeping state for the staged streaming path.
@@ -55,6 +57,10 @@ pub use generation::{
 pub use language::{
     VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS, VibeVoiceRealtimeLanguage, VibeVoiceRealtimeLmOutput,
     VibeVoiceRealtimeTtsOutput,
+};
+pub use preset::{
+    VibeVoiceRealtimePresetBranch, VibeVoiceRealtimePresetCache, VibeVoiceRealtimePresetCacheLayer,
+    VibeVoiceRealtimePresetOutput,
 };
 pub use sampler::{
     VIBEVOICE_REALTIME_CONDITION_WIDTH, VIBEVOICE_REALTIME_INFERENCE_STEPS,
