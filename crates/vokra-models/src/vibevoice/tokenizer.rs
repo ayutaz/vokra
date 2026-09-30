@@ -40,6 +40,22 @@ pub const VIBEVOICE_TOKENIZER_HOT_OPS: &[HotOp] = &[
     HotOp::RmsNorm,
 ];
 
+/// Learned operations used by the causal acoustic decoder.
+///
+/// Keep this registry separate from [`VIBEVOICE_TOKENIZER_HOT_OPS`]: the
+/// encoder has no transposed-convolution path, while every decoder upsample
+/// stage dispatches through `Compute::conv_transpose1d_f32`.  Reusing the
+/// encoder registry would let an uncovered backend pass decoder preflight and
+/// only fail after partial execution (or, worse, invite a CPU fallback).
+pub const VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS: &[HotOp] = &[
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::ConvTranspose1d,
+    HotOp::Gemm,
+    HotOp::Gelu,
+    HotOp::RmsNorm,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenizerKind {
     Acoustic,
@@ -447,7 +463,7 @@ impl VibeVoiceAcousticDecoder {
             head,
         };
         validate_decoder_weights(&weights)?;
-        let _ = Compute::for_backend(backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        let _ = Compute::for_backend(backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS)?;
         Ok(Self {
             weights: Arc::new(weights),
             backend,
@@ -468,7 +484,7 @@ impl VibeVoiceAcousticDecoder {
             ));
         }
         finite("vibevoice acoustic decoder latents", latents)?;
-        let compute = Compute::for_backend(self.backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        let compute = Compute::for_backend(self.backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS)?;
         let input = transpose_tc_to_ct(latents, frames, 64)?;
         let output = decode_channel_major(&compute, &input, frames, &self.weights)?;
         if output.len() != decoder_pcm_len(frames)? {
@@ -529,7 +545,8 @@ impl VibeVoiceAcousticDecoderStream {
         frames: usize,
         caches: &mut [Vec<f32>],
     ) -> Result<Vec<f32>> {
-        let compute = Compute::for_backend(self.decoder.backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        let compute =
+            Compute::for_backend(self.decoder.backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS)?;
         let input = transpose_tc_to_ct(latents, frames, 64)?;
         let mut cursor = 0;
         let mut time = frames;
@@ -1467,6 +1484,36 @@ mod tests {
     #[test]
     fn decoder_backend_registry_is_explicit() {
         assert!(Compute::for_backend(BackendKind::Cpu, VIBEVOICE_TOKENIZER_HOT_OPS).is_ok());
+        assert_eq!(
+            VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS,
+            &[
+                HotOp::Conv1d,
+                HotOp::GroupedConv1d,
+                HotOp::ConvTranspose1d,
+                HotOp::Gemm,
+                HotOp::Gelu,
+                HotOp::RmsNorm,
+            ]
+        );
+        assert!(!VIBEVOICE_TOKENIZER_HOT_OPS.contains(&HotOp::ConvTranspose1d));
+        assert!(Compute::for_backend(BackendKind::Cpu, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS).is_ok());
+    }
+
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn decoder_registry_rejects_cuda_without_cpu_fallback() {
+        let result = Compute::for_backend(BackendKind::Cuda, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS);
+        match result {
+            Err(VokraError::UnsupportedOp(message)) => {
+                assert!(
+                    message.contains("GroupedConv1d") || message.contains("ConvTranspose1d"),
+                    "unexpected CUDA coverage error: {message}"
+                );
+                assert!(message.contains("does not silently run the uncovered ops on the CPU"));
+            }
+            Err(other) => panic!("expected explicit CUDA coverage error, got {other:?}"),
+            Ok(_) => panic!("decoder CUDA preflight must reject uncovered ops"),
+        }
     }
 
     #[test]
