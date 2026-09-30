@@ -2424,6 +2424,60 @@ running on this exact head, with no failure at the readback; it is not merged
 and pending checks are not green evidence. All 194 public rows, 58 unresolved
 code/artifact rows and attachment security/provenance tasks remain in scope.
 
+### GPU preference and source-only collector acceptance (19:14 UTC)
+
+The owner reaffirmed GPU-first execution when it is faster. Select GPU only
+for a supported complete path at unchanged precision and numerical gates,
+using setup/transfer-inclusive end-to-end timing; keep the independent CPU
+baseline and final Apple CPU/Metal/no-fallback legs. This is an execution
+preference, not permission to change a frozen reference device, loosen a
+bound, hide a CPU fallback, download/run models locally, or publish artifacts.
+The current FireRed CUDA coverage gaps remain unchanged.
+
+Root accepted and committed the bounded CosyVoice primary-source collector as
+`d5c6ccd5fb8b35823bd7dd2d5df8d203a1dd34f8` in its separate clean checkout.
+The three owned files are the collector, its offline tests, and its design
+record; their SHA-256 values are respectively
+`5eee79b03455ede6311c82e1665614446edc62582c23cf46f3834578d2fd86c0`,
+`fc5ce41429901c6b52e1426ff4791ec76d555a567e64312053b295953484e766`
+and `6336025aab814bcfcbefba168970c50807e6340535d5a2808b537dd7fd49eb86`.
+Root independently ran all 23 offline tests through UV/Python 3.12, with
+zero failures, and passed diff, dependency, forbidden-symbol and documentation
+gates. The collector authenticates a fixed 28-file, 405,766-byte source set
+with exact URL/Git-blob/SHA-256 identities, bounded aggregate/metadata size,
+hard read deadlines and exclusive no-follow output creation. Static AST/YAML
+facts do not approve dependency/license closure, execute upstream code or
+close the full PCM composite.
+
+The local acquisition command was stopped by the existing no-local-model
+guard before execution. No source packet or model payload was acquired by
+that attempt; the guard was not bypassed. Source acquisition is moved to the
+same disposable VAST verification worker after its reviewed controller is
+ready, rather than creating a separate retained instance.
+
+Root caught an obsolete design-record digest in the combined FireRed/source
+controller before renting a worker. The corrected draft targets frozen
+`a374eb004dcbfc028c12127171174e17a483b388` and checks fifteen actual
+checkout file digests, including design digest `f16755f...`. Root independently
+passed Bash syntax, ShellCheck and its offline self-test. Additional nested
+process/session cleanup and actual destroy-order proof were requested before
+live acceptance; those mock results are not remote Rust or model evidence.
+
+The separate v2 decoder-trace reader remains unaccepted. Review found missing
+constant imports, incomplete cache/type/resource checks, and an ignored
+consumer that discards intermediate trace values and compares only event
+counts plus final output. Corrections were returned to its implementer;
+no v2 capture, numerical trace parity, code push or hardware pass is claimed.
+The reviewed native `a374eb` checkout is unchanged.
+
+PR #189 remains on fixed head `c7af1357f69e6a5e1de495b31cfec043e59d15ce`.
+At the latest readback it had 54 successful checks, two in progress, one
+intentional full-history-gitleaks skip and no failures. Its sixteen strict
+required check/application pairs were read from branch protection, but pending
+checks are not a complete green verdict; no merge was performed in this slice.
+The 194-row scope, 58 unresolved code/artifact rows and attachment security,
+provenance and public-artifact work remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
