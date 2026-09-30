@@ -2302,6 +2302,31 @@ for this head, and the PR is not merged. Main and the frozen FireRed
 verification checkout remain unchanged. No VAST allocation or public-model
 row promotion occurred in this continuation.
 
+### FireRed beam/PAD repair committed for remote verification (18:21 UTC)
+
+Root reviewed the complete bounded native beam/PAD correction and committed
+the three-file slice as
+`961c4733efc9d3624d30aeb5c213749fcec92213` in the separate clean source
+checkout based on `0f016bc5`. Production and mechanism tests share one search
+driver: all B rows start with the official finite scores, finished rows still
+execute the decoder/cache callback, B×B slots are retained, selected parents'
+caches are gathered, and only EOS marks a row finished. PAD self-attention
+key validity is separate from query/residual validity. Strengthened tests use
+branch-specific cache markers and mutate actual current K/V projections
+through the shared layer call, so cache-parent swaps and ignored PAD masks
+are observable failures rather than untested assertions.
+
+Root independently passed formatting, diff hygiene, zero-dependency and
+forbidden-symbol gates. The commit is not pushed and has no compilation,
+model-free execution, real-weight or Apple parity verdict yet; synthetic
+mechanism tests are not independent reference evidence. The frozen `0f016bc5`
+verification checkout remains unchanged. Next diagnostic work must observe
+actual official decoder calls, preserve step/beam/parent/slot/cache lineage,
+and compare the official full-prefix last query with native current-query
+outputs. Official hidden-prefix caches and native projected K/V caches are
+different representations; no direct raw-cache parity or Torch tie-order
+equivalence is inferred. The 58 unresolved public rows remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
