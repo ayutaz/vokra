@@ -1121,6 +1121,43 @@ def self_test() -> int:
     assert not marker_active(["sys_platform == 'darwin'"])
     manifest = strict_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     project_root = Path(__file__).resolve().parent
+    project_path = project_root / "pyproject.toml"
+    lock_path = project_root / "uv.lock"
+    evidence_path = project_root / "dependency_audit_evidence.json"
+    project_bytes = project_path.read_bytes()
+    lock_bytes = lock_path.read_bytes()
+    checked_manifest = strict_json(project_root / "license_gate_manifest.json")
+    checked_lock = tomllib.loads(lock_bytes.decode("utf-8"))
+    checked_evidence = strict_json(evidence_path)
+    current_contract = {
+        "project_sha256": "f22f9f26ab490b3a3e5a0d545c69530ab2220c97c9170193b8c48b9a2f843b62",
+        "lock_sha256": "1a98b86cc71bf2ad8c84dae2ad53dc48369878c857fa756bb050260060d6da25",
+        "package_rows_sha256": "f6b33b6c58c8110bba2178503468e678a0f8d2af0dced7ee00c9de447bf7d407",
+        "license_rows_sha256": "62623143095ee2d9dfc422450d54299f95d19ada6f10c9aee82ce41c22911b16",
+    }
+    stale_evidence = {
+        "pyproject_sha256": "0f9cb64cc8f43a6e1fe8cd793f43909a2f9dbf4957ea963a03d929666c521f78",
+        "uv_lock_sha256": "56e14c7e85174b16b22bf33d6cbb4a1c4f21eb3714ebdee854dd3417f4194d45",
+        "package_review_rows_sha256": "9f2b262a39e7251e5ab23a27fd9535a83c709f12dc4246f5b4456497d0872a9c",
+        "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
+    }
+    assert {key: checked_manifest[key] for key in current_contract} == current_contract
+    assert sha256_bytes(project_bytes) == current_contract["project_sha256"]
+    assert sha256_bytes(lock_bytes) == current_contract["lock_sha256"]
+    assert license_gate.canonical_digest(license_gate.package_rows(checked_lock)) == current_contract["package_rows_sha256"]
+    assert checked_manifest["dependency_audit_evidence"] == {
+        "schema": license_gate.COMPACT_SCHEMA,
+        "path": "dependency_audit_evidence.json",
+        "sha256": "64fde03fcb8e8e770ba8cb51bc9963ab97efd56d530725eea304f0d542c91b03",
+        "full_audit_sha256": license_gate.FULL_AUDIT_SHA256,
+        "status": "PENDING_OWNER_APPROVAL",
+        "approval_scope_sha256": "978535af15b82610f06aa73fb62e839cd0e2af146ef7f4ecd57c7b296067ea34",
+    }
+    assert checked_evidence["inputs"] == stale_evidence
+    assert checked_evidence["schema"] == license_gate.COMPACT_SCHEMA
+    assert checked_evidence["full_audit_sha256"] == license_gate.FULL_AUDIT_SHA256
+    assert checked_manifest["approval_scope_sha256"] == "323925ba7ca401801dda5821ed00dc9c230a292d018b6568a821ad7adafd501b"
+    assert checked_manifest["approval_scope_sha256"] != checked_manifest["dependency_audit_evidence"]["approval_scope_sha256"]
     # The tracked compact proof is deliberately stale after a dependency
     # security refresh.  Production audit paths must reject that mismatch;
     # the self-test still needs to exercise the lock/manifest shape without
@@ -1129,9 +1166,7 @@ def self_test() -> int:
         _, checked_lock, checked_manifest, _, _ = _contract(project_root)
     except AuditError as exc:
         assert str(exc) == "Ultravox compact dependency evidence contract is malformed or unbound"
-        project_data = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
-        checked_lock = tomllib.loads((project_root / "uv.lock").read_text(encoding="utf-8"))
-        checked_manifest = strict_json(project_root / "license_gate_manifest.json")
+        project_data = tomllib.loads(project_bytes.decode("utf-8"))
         _validate_lock_shape(checked_lock, project_data)
         assert checked_manifest["dependency_audit_evidence"]["status"] == "PENDING_OWNER_APPROVAL"
     active_rows, inactive_rows = classify_rows(checked_lock)
