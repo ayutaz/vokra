@@ -1732,6 +1732,50 @@ regression remains separate and live, with six observed zero exits and
 workspace verification pending. Final packet authentication and destruction
 are not yet claimed. Scope remains 194 public rows and 58 unresolved.
 
+### Integrated `00632846` terminal readback (14:43 UTC)
+
+The primary nine-leg controller terminated with exit **1**, not a green
+verdict. Root independently authenticated all 26 recovered packet members;
+the manifest SHA-256 is
+`12828a079824ea648724d8564e6d262a3c8691536b712741d37cc806c56ba657`.
+The packet binds clean head
+`00632846da5b11b3225c2864b7f75b41d1b9a4f3` to base
+`909c527b65c2a1308848450652962df42244753d`; observed status and diff-check
+output are empty. Every command leg recorded exit 0:
+
+- source-audit unit tests: 16 ran, `OK`;
+- focused Mimi tests: 79 passed, zero failed or ignored;
+- public HotOp discriminant test: exactly one passed;
+- Mimi converter tests: seven passed, including all three required names;
+- converter Clippy and all-feature model Clippy: exit 0;
+- workspace tests: 8,122 passed, zero failed, 105 ignored across 323 summaries;
+- deny and audit: exit 0 (deny retains its unmatched fuzz-license-exception
+  warning).
+
+These command results do **not** override the controller failure. The source
+audit's output-limit and timeout tests emitted `ResourceWarning` for unclosed
+subprocess stdout/stderr streams. Those warnings split two named unittest
+result lines, so the unchanged strict sixteen-name result gate rejected the
+log. The next action is to close streams on every subprocess exit path and
+replay a new exact clean head; suppressing warnings, loosening the result
+matcher or pushing this head as fully verified is not accepted. This is a
+resource-cleanup defect, not evidence of numerical flakiness.
+
+Evidence collection and deletion succeeded independently of that verdict.
+Owned worker `53537966` and its 200-GB storage were destroyed; individual
+readback returned `instances: null`, and its exact label was absent. A fresh
+unfiltered account read showed only unrelated running `53535326`, labelled
+`jtalm-gen_action_v051`; it was not modified. No Vokra instance remains from
+this replay. PR #186 remains draft at remote head `a84817d4`, with 89 successful,
+nine skipped and two failed old-head checks; no corrected push is claimed.
+
+Root also found that the official e6 core directory `moshi-core` contains
+package **`moshi`**, inherited version `0.6.4`. The new Rust-reference audit
+draft must bind that actual manifest/lock identity, not the directory name.
+Further draft corrections remain under review and are not included in this
+authenticated packet. No model, independent real-weight parity, Apple run or
+upload was performed. Scope remains 194 public rows and 58 unresolved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
