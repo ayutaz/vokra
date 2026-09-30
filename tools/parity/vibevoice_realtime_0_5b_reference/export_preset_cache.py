@@ -43,6 +43,7 @@ LAYER_COUNTS = {"lm": 4, "neg_lm": 4, "tts_lm": 20, "neg_tts_lm": 20}
 FORMAT = "vokra-vibevoice-realtime-0.5b-preset-v1"
 CLASSIFICATION = "INSPECTION_ONLY"
 PUBLICATION = "NO_UPLOAD"
+CANONICAL_ORIGIN = "https://github.com/microsoft/VibeVoice.git"
 
 
 def _sha256(data: bytes) -> str:
@@ -92,7 +93,7 @@ def _source_identity(source_root: Path, preset_override: Path | None) -> tuple[d
     if status:
         raise RuntimeError("official source checkout is dirty; refusing unpinned source files")
     if origin not in {
-        "https://github.com/microsoft/VibeVoice.git",
+        CANONICAL_ORIGIN,
         "git@github.com:microsoft/VibeVoice.git",
         "ssh://git@github.com/microsoft/VibeVoice.git",
     }:
@@ -137,7 +138,9 @@ def _source_identity(source_root: Path, preset_override: Path | None) -> tuple[d
         "git_blob_sha1": blob,
         "payload_sha256": payload_sha256,
         "model_revision": MODEL_REVISION,
-        "origin": origin,
+        # Authentication accepts equivalent Git transports, but the manifest
+        # uses one canonical source identity consumed by the Rust gate.
+        "origin": CANONICAL_ORIGIN,
     }, preset, preset_bytes
 
 

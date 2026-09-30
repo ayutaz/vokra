@@ -751,6 +751,8 @@ mod tests {
         WrongShape,
         WrongHash,
         NonFinite,
+        DuplicateJsonKey,
+        WrongBinding,
     }
 
     #[test]
@@ -786,7 +788,8 @@ mod tests {
             let expected_cache_position = expected_hidden_rows - 1;
             assert_eq!(output.hidden_rows(), expected_hidden_rows);
             assert_eq!(output.cache_position(), expected_cache_position);
-            assert_eq!(output.hidden().len(), HIDDEN);
+            assert_eq!(output.hidden().len(), expected_hidden_rows * HIDDEN);
+            assert_eq!(output.hidden()[0], expected_hidden_rows as f32);
             assert_eq!(output.layers().len(), branch.layer_count());
         }
     }
@@ -799,6 +802,8 @@ mod tests {
             Mutation::WrongShape,
             Mutation::WrongHash,
             Mutation::NonFinite,
+            Mutation::DuplicateJsonKey,
+            Mutation::WrongBinding,
         ] {
             let (safetensors, manifest, expected) = synthetic_bundle(mutation);
             assert!(
@@ -931,15 +936,35 @@ mod tests {
             ));
         }
         let binding_json = "\"lm\":{\"cache_position\":1,\"hidden_rows\":2,\"layer_count\":4,\"native_layout\":\"[position,kv_head,head_dim]\",\"source_dtypes\":{\"cache\":[\"BFLOAT16\"],\"hidden\":\"BFLOAT16\"},\"source_layout\":\"[batch,kv_head,position,head_dim]\"},\"neg_lm\":{\"cache_position\":3,\"hidden_rows\":4,\"layer_count\":4,\"native_layout\":\"[position,kv_head,head_dim]\",\"source_dtypes\":{\"cache\":[\"BFLOAT16\"],\"hidden\":\"BFLOAT16\"},\"source_layout\":\"[batch,kv_head,position,head_dim]\"},\"neg_tts_lm\":{\"cache_position\":4,\"hidden_rows\":5,\"layer_count\":20,\"native_layout\":\"[position,kv_head,head_dim]\",\"source_dtypes\":{\"cache\":[\"BFLOAT16\"],\"hidden\":\"BFLOAT16\"},\"source_layout\":\"[batch,kv_head,position,head_dim]\"},\"tts_lm\":{\"cache_position\":2,\"hidden_rows\":3,\"layer_count\":20,\"native_layout\":\"[position,kv_head,head_dim]\",\"source_dtypes\":{\"cache\":[\"BFLOAT16\"],\"hidden\":\"BFLOAT16\"},\"source_layout\":\"[batch,kv_head,position,head_dim]\"}";
-        let manifest = format!(
+        let mut manifest = format!(
             "{{\"branch_bindings\":{{{binding_json}}},\"branches\":[\"lm\",\"tts_lm\",\"neg_lm\",\"neg_tts_lm\"],\"classification\":\"INSPECTION_ONLY\",\"execution\":\"NO_MODEL_FORWARD_NO_AUDIO\",\"format\":\"{FORMAT}\",\"output\":{{\"relative_path\":\"cache.safetensors\",\"sha256\":\"{output_sha}\"}},\"preset\":{{\"id\":\"en-Carter_man\",\"rights\":\"UNPROVEN\"}},\"publication\":\"NO_UPLOAD\",\"reference_lock\":{{\"relative_path\":\"tools/parity/vibevoice_realtime_0_5b_reference/uv.lock\",\"sha256\":\"{}\"}},\"source\":{{\"bytes\":{SOURCE_BYTES},\"git_blob_sha1\":\"{SOURCE_BLOB_SHA1}\",\"model_revision\":\"{MODEL_REVISION}\",\"origin\":\"https://github.com/microsoft/VibeVoice.git\",\"payload_sha256\":\"{}\",\"relative_path\":\"{SOURCE_PATH}\",\"repository\":\"microsoft/VibeVoice\",\"revision\":\"{SOURCE_REVISION}\"}},\"tensor_layout_contract\":{{\"framework_cache\":\"[1,2,position,64]\",\"hidden\":\"[1,hidden_rows,896] -> [hidden_rows,896]\",\"max_positions\":{MAX_POSITIONS},\"native_cache\":\"[position,2,64]\"}},\"tensors\":{{{tensor_json}}},\"voice_consent\":\"UNPROVEN\"}}\n",
-            binding_json,
             "0".repeat(64),
             SOURCE_PAYLOAD_SHA256
         )
         .into_bytes();
+        match mutation {
+            Mutation::DuplicateJsonKey => {
+                let end = manifest.len() - 2;
+                manifest.splice(
+                    end..end,
+                    b",\"format\":\"duplicate-root-key\"".iter().copied(),
+                );
+            }
+            Mutation::WrongBinding => {
+                replace_once(&mut manifest, b"\"hidden_rows\":2", b"\"hidden_rows\":99");
+            }
+            _ => {}
+        }
         let expected = hex_digest(&sha256_bytes(&manifest));
         (safetensors, manifest, expected)
+    }
+
+    fn replace_once(bytes: &mut Vec<u8>, needle: &[u8], replacement: &[u8]) {
+        let start = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("synthetic mutation needle");
+        bytes.splice(start..start + needle.len(), replacement.iter().copied());
     }
 
     fn make_safetensors(tensors: &BTreeMap<String, (Vec<u64>, Vec<u8>)>) -> Vec<u8> {
