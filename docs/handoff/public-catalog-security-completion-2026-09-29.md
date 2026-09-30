@@ -616,6 +616,20 @@ merely by completing the latest CodeQL job. The other four Scorecard findings
 remain unchanged. Do not attribute the missing historical commit to a cause
 without commit-level evidence.
 
+Draft [PR #152](https://github.com/ayutaz/vokra/pull/152) now stages a
+decoder-only XCodec2 dependency candidate that overrides the official
+`xcodec2==0.1.5` Torch/TorchAudio 2.5.0 hard pins to patched Torch 2.13.0
+and stable-ABI TorchAudio 2.11.0 from the explicit PyTorch CPU index. Its
+model-free VAST replay on instance `53434693` at clean code commit `e3e90572`
+and `uv.lock` SHA-256
+`d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4`
+passed frozen Python 3.12 sync, lock check, and the official decoder-only
+import guard. The instance and storage were destroyed; exact-ID lookup returned
+`instances: null` and the full list `[]`. Follow-up head `305be9b4` records
+this evidence. No real weight, independent CPU reference, Apple CPU/Metal
+parity, GPU speed/quality comparison, or owner/legal sign-off was produced;
+the PR remains draft and no public artifact changed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
