@@ -498,6 +498,37 @@ Retain the dated observations and add a supersession note when refreshing them.
    owner checklist. Never claim full catalog completion from code reachability
    alone.
 
+## 2026-09-30 catalog and security readback (05:35 UTC)
+
+The read-only HF audit on clean `main`
+`869cf6bda5ed103aa2174c0435d43b3ba2077d35` still reports 194 public
+repositories, 193 with GGUFs and 198 GGUF files. CPU code/artifact
+reachability remains 136 full, 43 partial, 14 without a runtime binder and
+one non-artifact. Metal remains 136 full, 57 blocked by CPU and one
+non-artifact. All 58 unresolved rows remain in scope; this classification
+does not establish independent real-weight or Apple parity.
+
+The current GitHub open-alert API reports 217 Dependabot alerts: 189 with a
+named patched version and 28 without one; severity is 3 critical, 32 high,
+85 medium and 97 low. This supersedes the older alert totals above as a
+current queue size. The open code-scanning API reports three Scorecard
+findings: `CIIBestPracticesID`, `CodeReviewID` and `VulnerabilitiesID`.
+Closed findings and alerts must still be reconciled with their individual
+GitHub records rather than attributed to an unmerged candidate.
+
+[PR #177](https://github.com/ayutaz/vokra/pull/177) merged at that main
+commit. [PR #175](https://github.com/ayutaz/vokra/pull/175) was updated
+to main and awaits its new CI with auto-merge enabled.
+[PR #138](https://github.com/ayutaz/vokra/pull/138) was also updated to
+that main at `e8abcec7c7b86e4ab6a365a4a14ee20da0dee755`; its new CI is
+pending, so it is not recorded as merged or as closing alerts.
+[Draft PR #179](https://github.com/ayutaz/vokra/pull/179) adds independently
+owned positive/negative Realtime language cache pairs.
+[Draft PR #180](https://github.com/ayutaz/vokra/pull/180) records the Dia
+Torch 2.13.0 / TorchAudio 2.11.0 CPU candidate: model-free source imports
+pass, while upstream-version compatibility, owner review and real-weight
+parity remain open. These changes do not promote a public model row.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
