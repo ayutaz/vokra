@@ -2478,6 +2478,64 @@ checks are not a complete green verdict; no merge was performed in this slice.
 The 194-row scope, 58 unresolved code/artifact rows and attachment security,
 provenance and public-artifact work remain open.
 
+### Exact PR merge and source preparation readback (19:30 UTC)
+
+PR #189 was merged at `2026-09-30T19:19:06Z`, after root reviewed all 57
+checks on exact head `c7af1357f69e6a5e1de495b31cfec043e59d15ce`: 56
+successes, one intentional full-history-gitleaks skip, zero pending checks
+and zero failures. Each of the sixteen strict required context/application
+pairs had exactly one successful match. The squash commit is
+`97447185361a37af64c1b30fe87e8e2618d96e20`; a fresh read-only GitHub API
+readback confirmed the merged state. This documentation-only merge does not
+include the subsequent FireRed or source-collector implementation candidates.
+
+Root accepted the separate FireRed v2 schema-reader candidate at
+`e9b9b058b4802107aab56623062328ba7d98185c`, based on frozen native
+`a374eb004dcbfc028c12127171174e17a483b388`. Consumer and design SHA-256
+values are respectively
+`56e74871a21a7f0e935aeab23d2ebe3341b0f43cf7a9d6e7145c21fcd538d051`
+and `c46038d665aa64198b29887ec4118bef4fd46c373e45b2c923478c75c289d42e`.
+The reader adds eleven model-free schema tests while preserving seven v1
+tests; eighteen passing tests and two ignored real legs are the expected
+remote selection, not an executed result. Root passed formatting, diff,
+dependency, forbidden-symbol and documentation gates only. The v2 real leg
+explicitly stops OPEN before GGUF/model loading: source-bound capture,
+v1-envelope digest binding, full stage-tensor comparison and Torch tie
+behavior are still missing. No Rust compilation or real parity is claimed.
+
+The authenticated primary decoder source was reviewed for the next capture
+boundary. Its existing v1 module hooks and top-k wrapper do not observe
+embedding, actual projected self K/V, post-rewrite candidates, cache lineage
+or termination/GNMT locals. A separate source-instrumentation builder is being
+prepared with exact source authentication and an original-AST preservation
+check; this is not permission to execute unapproved upstream/model code.
+
+Root also accepted and committed the separate Realtime source-only collector
+as `abf7b0086c7e4c4ca6c91fbddcc79d59164df721`. Collector, test and design
+SHA-256 values are respectively
+`f109e1089d221c0a42b10b05a5e4b92fa4a973f6eecdcc2801cf791c64d9506d`,
+`ff77947ae6578bc2c101baae6a23bf5ddf0a74b5537730d31a5e1692077e4be0`
+and `83c0f62f531c61184270b064e13377a1b43212154c284ab2fb601fb202e94c73`.
+Root independently ran all 25 offline UV/Python-3.12 tests successfully and
+passed diff, dependency, forbidden-symbol and documentation gates. The fixed
+allowlist is seventeen Microsoft files plus four Transformers/Qwen2 files;
+source bodies have not yet been acquired. Per-file, aggregate and metadata
+bounds, hard HTTP deadlines, partial-write accounting and explicit unknown
+dynamic-call facts remain fail-closed. Static source facts do not establish
+runtime import closure, legal approval, native synthesis or device parity.
+
+The combined VAST controller still requires actual nested-session cleanup and
+production destroy-order proof before acceptance. The next reviewed fork
+must target `e9b9b058` and collect both frozen source-only inventories on the
+same disposable verification worker. No live controller was started or
+instance rented in this slice. The latest all-pages VAST instance readback
+returned an empty list and `next_token=null`; no separate volume audit is
+claimed. The GPU preference remains setup/transfer-inclusive and conditional
+on complete supported execution at unchanged precision. CPU reference and
+final Apple CPU/Metal/no-fallback gates remain mandatory; all 194 public
+rows, the 58 unresolved code/artifact rows and attachment security/provenance
+tasks remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
