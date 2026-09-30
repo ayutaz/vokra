@@ -165,12 +165,12 @@
   "dependency_audit_evidence": {
     "schema": "vokra-ultravox-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "64fde03fcb8e8e770ba8cb51bc9963ab97efd56d530725eea304f0d542c91b03",
-    "full_audit_sha256": "22698a69938a657327a6ef074d4505e060ede67f4e8e3f3ece97d4085a92e6df",
+    "sha256": "9b33428fa4af8da8d603982c5155d3b5aae2dc5ca027fee5a18c6c7a1d4c6bfd",
+    "full_audit_sha256": "77437cfb7fb1838ea791f67f4fc06552f6d64c52b4181ee3012387727e7832b7",
     "status": "PENDING_OWNER_APPROVAL",
-    "approval_scope_sha256": "978535af15b82610f06aa73fb62e839cd0e2af146ef7f4ecd57c7b296067ea34"
+    "approval_scope_sha256": "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c"
   },
-  "approval_scope_sha256": "323925ba7ca401801dda5821ed00dc9c230a292d018b6568a821ad7adafd501b",
+  "approval_scope_sha256": "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c",
   "approval": {
     "status": "OWNER_SIGNOFF_REQUIRED",
     "signer": null,

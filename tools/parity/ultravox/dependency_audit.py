@@ -84,7 +84,7 @@ REFRESH_CURRENT_CONTRACT = {
     "lock_sha256": "1a98b86cc71bf2ad8c84dae2ad53dc48369878c857fa756bb050260060d6da25",
     "package_rows_sha256": "f6b33b6c58c8110bba2178503468e678a0f8d2af0dced7ee00c9de447bf7d407",
     "license_rows_sha256": "62623143095ee2d9dfc422450d54299f95d19ada6f10c9aee82ce41c22911b16",
-    "approval_scope_sha256": "323925ba7ca401801dda5821ed00dc9c230a292d018b6568a821ad7adafd501b",
+    "approval_scope_sha256": "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c",
 }
 REFRESH_STALE_INPUTS = {
     "pyproject_sha256": "0f9cb64cc8f43a6e1fe8cd793f43909a2f9dbf4957ea963a03d929666c521f78",
@@ -1197,6 +1197,7 @@ def self_test() -> int:
     checked_evidence = strict_json(evidence_path)
     current_contract = REFRESH_CURRENT_CONTRACT
     stale_evidence = REFRESH_STALE_INPUTS
+    assert stale_evidence != checked_evidence["inputs"]
     assert {key: checked_manifest[key] for key in current_contract} == current_contract
     assert sha256_bytes(project_bytes) == current_contract["project_sha256"]
     assert sha256_bytes(lock_bytes) == current_contract["lock_sha256"]
@@ -1204,29 +1205,32 @@ def self_test() -> int:
     assert checked_manifest["dependency_audit_evidence"] == {
         "schema": license_gate.COMPACT_SCHEMA,
         "path": "dependency_audit_evidence.json",
-        "sha256": "64fde03fcb8e8e770ba8cb51bc9963ab97efd56d530725eea304f0d542c91b03",
+        "sha256": "9b33428fa4af8da8d603982c5155d3b5aae2dc5ca027fee5a18c6c7a1d4c6bfd",
         "full_audit_sha256": license_gate.FULL_AUDIT_SHA256,
         "status": "PENDING_OWNER_APPROVAL",
-        "approval_scope_sha256": "978535af15b82610f06aa73fb62e839cd0e2af146ef7f4ecd57c7b296067ea34",
+        "approval_scope_sha256": "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c",
     }
-    assert checked_evidence["inputs"] == stale_evidence
+    assert checked_evidence["inputs"] == {
+        "pyproject_sha256": current_contract["project_sha256"],
+        "uv_lock_sha256": current_contract["lock_sha256"],
+        "package_review_rows_sha256": checked_manifest["package_review_rows_sha256"],
+        "license_rows_sha256": current_contract["license_rows_sha256"],
+    }
     assert checked_evidence["schema"] == license_gate.COMPACT_SCHEMA
     assert checked_evidence["full_audit_sha256"] == license_gate.FULL_AUDIT_SHA256
-    assert checked_manifest["approval_scope_sha256"] == "323925ba7ca401801dda5821ed00dc9c230a292d018b6568a821ad7adafd501b"
-    assert checked_manifest["approval_scope_sha256"] != checked_manifest["dependency_audit_evidence"]["approval_scope_sha256"]
-    # The tracked compact proof is deliberately stale after a dependency
-    # security refresh.  Production audit paths must reject that mismatch;
-    # the self-test still needs to exercise the lock/manifest shape without
-    # pretending the old proof is valid for the new closure.
+    assert checked_manifest["approval_scope_sha256"] == "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c"
+    assert checked_manifest["approval_scope_sha256"] == checked_manifest["dependency_audit_evidence"]["approval_scope_sha256"]
+    # The tracked compact proof is now bound to the exact fresh VAST audit.
+    # The explicit refresh path must reject the old bootstrap contract rather
+    # than allowing a second unreviewed evidence replacement.
+    _, strict_lock, strict_manifest, _, _ = _contract(project_root)
+    assert strict_lock == checked_lock and strict_manifest == checked_manifest
     try:
-        _, checked_lock, checked_manifest, _, _ = _contract(project_root)
+        _contract(project_root, allow_unbound_evidence=True)
     except AuditError as exc:
-        assert str(exc) == "Ultravox compact dependency evidence contract is malformed or unbound"
-        project_data = tomllib.loads(project_bytes.decode("utf-8"))
-        _validate_lock_shape(checked_lock, project_data)
-        assert checked_manifest["dependency_audit_evidence"]["status"] == "PENDING_OWNER_APPROVAL"
-    _, refresh_lock, refresh_manifest, _, _ = _contract(project_root, allow_unbound_evidence=True)
-    assert refresh_lock == checked_lock and refresh_manifest == checked_manifest
+        assert str(exc) == "Ultravox refresh evidence reference is not the reviewed stale proof"
+    else:
+        raise AssertionError("refresh unexpectedly bypassed the fresh evidence contract")
     active_rows, inactive_rows = classify_rows(checked_lock)
     assert len(checked_lock["package"]) == 40 and len(active_rows) == 37 and len(inactive_rows) == 3
     colorama_rows = [row for row in inactive_rows if row["name"] == "colorama"]
