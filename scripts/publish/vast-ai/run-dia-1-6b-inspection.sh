@@ -9,12 +9,13 @@ SOURCE_URL="https://github.com/nari-labs/dia.git"
 SOURCE_REVISION="2811af1c5f476b1f49f4744fabf56cf352be21e5"
 INSPECTOR="$ROOT/tools/parity/dia_1_6b_inspect.py"
 SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
+COMPAT_PROBE="$ROOT/tools/parity/dia_1_6b_reference/upstream_compat_probe.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
 DEPENDENCY_AUDIT="$REFERENCE_PROJECT/dependency_audit.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
 DEPENDENCY_APPROVAL="$REFERENCE_PROJECT/dependency_approval.py"
-REFERENCE_LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-REFERENCE_PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+REFERENCE_LOCK_SHA256="f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7"
+REFERENCE_PYPROJECT_SHA256="1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48"
 # dedicated locked-reference project; its uv.lock is a hard pre-download gate
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SHM_KIB=$((40 * 1024 * 1024))
@@ -25,11 +26,14 @@ self_test(){
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || { echo 'missing source-only contract marker' >&2; fail=1; }
+ [[ -f "$COMPAT_PROBE" && ! -L "$COMPAT_PROBE" ]] || { echo 'Dia upstream compatibility probe missing or symlinked' >&2; fail=1; }
  [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || { echo 'Dia dependency auditor missing or symlinked' >&2; fail=1; }
  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || { echo 'Dia dependency audit wrapper missing or symlinked' >&2; fail=1; }
  [[ -f "$DEPENDENCY_APPROVAL" && ! -L "$DEPENDENCY_APPROVAL" ]] || { echo 'Dia dependency approval validator missing or symlinked' >&2; fail=1; }
  grep -Fq 'O_NOFOLLOW' "$INSPECTOR" "$SOURCE_CONTRACT" || { echo 'missing no-follow artifact publication gate' >&2; fail=1; }
  grep -Fq -- '--source-only' "$0" || { echo 'missing source-only worker mode' >&2; fail=1; }
+ grep -Fq 'BLOCKED_UPSTREAM_PINNED_COMPATIBILITY' "$COMPAT_PROBE" || { echo 'missing fail-closed compatibility decision' >&2; fail=1; }
+ grep -Fq 'VAST model-free API probe' "$0" || { echo 'missing compatibility probe rationale' >&2; fail=1; }
  grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--dependency-scope' "$0"; grep -Fq -- '--dependency-approval-evidence' "$0"; grep -Fq -- '--dependency-approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
  grep -Fq 'canonical_existing_path' "$0"; grep -Fq 'canonical_absent_path' "$0"; grep -Fq 'inspection WORK path has invalid' "$0"
  if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then echo 'duplicate expected-head accepted' >&2; fail=1; fi
@@ -62,12 +66,14 @@ self_test(){
 }
 
 source_only(){
+ # VAST model-free API probe: no checkpoint, weight, or forward is allowed.
  local expected_head='' seen_head=0
  while (($#)); do case "$1" in
   --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
   *) die "unexpected source-only argument: $1" ;;
  esac; done
  (( seen_head == 1 )) || die 'source-only mode requires --expected-head'
+ [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'source-only compatibility probe is VAST-only'
  [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
  [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'source-only worker requires Linux x86_64'
  [[ -f "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse source-only execution'
@@ -83,13 +89,23 @@ source_only(){
  UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$SOURCE_CONTRACT" --source "$work/source" --rust-root "$ROOT" --output "$work/evidence/source-contract.json" >>"$work/evidence/validation.log" 2>&1
  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$work/evidence/source-contract.json" || die 'source-only contract did not complete'
  grep -Fq 'NO_UPLOAD' "$work/evidence/source-contract.json" || die 'source-only contract lost NO_UPLOAD marker'
- echo "Dia source-only contract is complete; evidence preserved at $work/evidence" >&2
+ set +e
+ VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$COMPAT_PROBE" --source "$work/source" --project "$REFERENCE_PROJECT" --output "$work/evidence/upstream-compatibility.json" >>"$work/evidence/validation.log" 2>&1
+ compat_status=$?
+ set -e
+ [[ "$compat_status" == 2 ]] || die "upstream compatibility probe returned $compat_status, expected fail-closed 2"
+ grep -Fq 'BLOCKED_UPSTREAM_PINNED_COMPATIBILITY' "$work/evidence/upstream-compatibility.json" || die 'compatibility probe did not preserve blocked decision'
+ echo "Dia source-only contract is complete; upstream compatibility remains blocked; evidence preserved at $work/evidence" >&2
+ return 2
 }
 
 if [[ "${1:-}" == --source-only ]]; then
  shift
+ set +e
  source_only "$@"
- exit 0
+ source_only_status=$?
+ set -e
+ exit "$source_only_status"
 fi
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
 usage(){ echo 'usage: run-dia-1-6b-inspection.sh --expected-head <40-hex> --approval-evidence <model/source-file> --approval-sha256 <64-hex> --dependency-scope <scope-file> --dependency-approval-evidence <dependency-approval-file> --dependency-approval-sha256 <64-hex>' >&2; }

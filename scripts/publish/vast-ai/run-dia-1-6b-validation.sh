@@ -7,14 +7,29 @@ DEPENDENCY_AUDIT="$ROOT/tools/parity/dia_1_6b_reference/dependency_audit.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
 DEPENDENCY_PREPARER="$ROOT/scripts/publish/vast-ai/prepare-dia-1-6b-reference.sh"
 DEPENDENCY_APPROVAL="$ROOT/tools/parity/dia_1_6b_reference/dependency_approval.py"
-LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+LOCK_SHA256="f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7"
+PYPROJECT_SHA256="1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48"
+# Primary-source compatibility facts for the authenticated Dia revision
+# (https://raw.githubusercontent.com/nari-labs/dia/2811af1c5f476b1f49f4744fabf56cf352be21e5/pyproject.toml).
+# The
+# candidate project intentionally differs, so full reference validation must
+# stop before input paths or model bytes are touched until VAST proves the
+# replacement API and CPU parity.
+UPSTREAM_TORCH_PIN="2.6.0"
+UPSTREAM_TORCHAUDIO_PIN="2.6.0"
+SECURITY_REFRESH_STATUS="BLOCKED_UPSTREAM_PINNED_COMPATIBILITY"
 die(){ echo "dia-validation: ERROR: $*" >&2; exit 2; }
 
 check_project_identity() {
   [[ -f "$PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse validation'
   [[ "$(sha256sum "$PROJECT/uv.lock" | awk '{print $1}')" == "$LOCK_SHA256" ]] || die 'dedicated Dia uv.lock identity mismatch'
   [[ "$(sha256sum "$PROJECT/pyproject.toml" | awk '{print $1}')" == "$PYPROJECT_SHA256" ]] || die 'dedicated Dia pyproject identity mismatch'
+}
+
+security_refresh_gate() {
+  [[ "$SECURITY_REFRESH_STATUS" == "BLOCKED_UPSTREAM_PINNED_COMPATIBILITY" ]] || die 'security-refresh status is not fail-closed'
+  [[ "$UPSTREAM_TORCH_PIN" == "2.6.0" && "$UPSTREAM_TORCHAUDIO_PIN" == "2.6.0" ]] || die 'authenticated Dia upstream pin facts drifted'
+  die 'Torch 2.13.0 candidate is blocked: authenticated Dia pins Torch/TorchAudio 2.6.0; run the VAST model-free API probe and owner-approved real-weight CPU parity before validation'
 }
 
 self_test(){
@@ -40,6 +55,8 @@ self_test(){
   grep -Fq -- '--dependency-scope-sha256' "$0" || die 'dependency scope SHA binding missing'
   grep -Fq -- '--dependency-approval-status VALIDATED' "$0" || die 'validated dependency result is not passed to dumper'
   grep -Fq 'dependency_approval' "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" || die 'validator dependency approval binding missing'
+  grep -Fq 'BLOCKED_UPSTREAM_PINNED_COMPATIBILITY' "$0" || die 'Torch security-refresh gate missing'
+  grep -Fq 'VAST model-free API probe' "$0" || die 'Torch security-refresh rationale missing'
   grep -Fq 'canonical_existing_path' "$0" || die 'canonical input path gate missing'
   grep -Fq 'canonical_absent_path' "$0" || die 'canonical evidence path gate missing'
   grep -Fq 'adapter log claim failed' "$0" || die 'adapter log no-clobber gate missing'
@@ -60,6 +77,7 @@ self_test(){
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
 check_project_identity
+security_refresh_gate
 usage(){ echo 'usage: run-dia-1-6b-validation.sh --expected-head HEAD --approval-evidence MODEL_SOURCE_FILE --approval-sha256 SHA --dependency-scope SCOPE_FILE --dependency-approval-evidence DEPENDENCY_APPROVAL_FILE --dependency-approval-sha256 SHA SOURCE_DIR MODEL_DIR PUBLIC_DIR DAC_SOURCE DAC_EVIDENCE DAC_CHECKPOINT EVIDENCE_DIR' >&2; }
 expected_head=''; approval_evidence=''; approval_sha256=''; dependency_scope=''; dependency_approval_evidence=''; dependency_approval_sha256=''; seen_head=0; seen_approval=0; seen_sha=0; seen_dependency_scope=0; seen_dependency_approval=0; seen_dependency_approval_sha=0; positional=()
 while (($#)); do case "$1" in

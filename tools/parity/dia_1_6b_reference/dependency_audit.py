@@ -46,8 +46,8 @@ COMPACT_SCHEMA = "vokra-dia-dependency-audit-compact-v1"
 PROJECT_NAME = "vokra-dia-1-6b-reference"
 PROJECT_VERSION = "0.1.0"
 LOCK_SCHEMA = "uv-lock-v1-python312"
-LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+LOCK_SHA256 = "f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7"
+PYPROJECT_SHA256 = "1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48"
 GATE_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 PUBLICATION = "NO_UPLOAD"
 ALLOWED_REGISTRIES = {
@@ -60,7 +60,7 @@ EXPECTED_DIRECT_DEPENDENCIES = {
     "huggingface-hub": "0.30.2",
     "numpy": "2.2.5",
     "pydantic": "2.11.3",
-    "torch": "2.6.0",
+    "torch": "2.13.0",
 }
 EXPECTED_LINUX_DIRECT_IDS = {
     "einops==0.8.2",
@@ -68,7 +68,7 @@ EXPECTED_LINUX_DIRECT_IDS = {
     "huggingface-hub==0.30.2",
     "numpy==2.2.5",
     "pydantic==2.11.3",
-    "torch==2.6.0+cpu",
+    "torch==2.13.0+cpu",
 }
 LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".a"}
@@ -793,7 +793,7 @@ def self_test() -> int:
     assert len(active) == 26
     assert "colorama==0.4.6" not in {identity(row["name"], row["version"]) for row in active}
     assert all(row["source"].get("registry") in ALLOWED_REGISTRIES for row in active)
-    assert identity("Torch", "2.6.0+CPU") == "torch==2.6.0+cpu"
+    assert identity("Torch", "2.13.0+CPU") == "torch==2.13.0+cpu"
     synthetic_packages = [{"installed": {"identity": "numpy==2.2.5", "name": "NumPy", "version": "2.2.5", "native_files": [{"path": "numpy.libs/libx.so", "bytes": 1, "sha256": "a" * 64, "native": {}}]}}]
     flattened = top_level_native_facts(synthetic_packages)
     assert flattened[0]["package_identity"] == "numpy==2.2.5"

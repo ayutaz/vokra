@@ -166,6 +166,7 @@ def validate_scope(scope: dict[str, Any], report_path: Path, preparation_path: P
 
 
 def self_test() -> int:
+    global LOCK_SHA256, PYPROJECT_SHA256
     assert SCHEMA.endswith("v1") and APPROVAL_SCHEMA.endswith("v1")
     for unsafe in (Path("relative.json"), Path("/tmp/../owner.json"), Path("/")):
         try: require_output(unsafe)
@@ -178,6 +179,13 @@ def self_test() -> int:
         try: require_output(root / "link-alias" / "scope.json")
         except ScopeError: pass
         else: raise AssertionError("symlinked owner scope output accepted")
+        # Keep the production constants historical; these in-memory values
+        # only let the tamper tests exercise the unchanged scope logic.
+        historical_lock_sha256, historical_pyproject_sha256 = LOCK_SHA256, PYPROJECT_SHA256
+        assert digest_bytes(PROJECT / "uv.lock") != historical_lock_sha256
+        assert digest_bytes(PROJECT / "pyproject.toml") != historical_pyproject_sha256
+        LOCK_SHA256 = digest_bytes(PROJECT / "uv.lock")
+        PYPROJECT_SHA256 = digest_bytes(PROJECT / "pyproject.toml")
         identities = sorted(f"p{i}==1" for i in range(26))
         report = {"schema": "vokra-dia-dependency-audit-v1", "status": "FACTS_COLLECTED_GATE_BLOCKED", "dependency_license_audit": GATE, "publication": PUBLICATION, "repository": {"head": "0" * 40, "clean": True}, "contract": {"gate_status": GATE, "uv_lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256}, "closure": {"exact": True, "missing": [], "unexpected": [], "duplicate_identities": [], "expected": identities, "installed": identities}, "packages": [{"lock": {"name": f"p{i}", "version": "1"}, "installed": {"identity": f"p{i}==1"}} for i in range(26)], "license_facts": {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}, "native_facts": {"files": [{"package_identity": "p0==1", "sha256": "a" * 64, "path": "x.so"}]}, "failures": []}
         preparation = {"schema": "vokra-dia-reference-preparation-v1", "status": "PREPARED_NO_BLAS", "publication": PUBLICATION, "build": {"isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"}, "runtime": {"soundfile_installed": False, "torchaudio_installed": False}}
@@ -218,7 +226,8 @@ def self_test() -> int:
         try: validate_scope(broken, report_path, preparation_path, "0" * 40)
         except ScopeError: pass
         else: raise AssertionError("unsigned VAST_READY scope accepted")
-    print("dia owner-review scope: self-test PASS (model-free, unsigned, NO_UPLOAD)")
+        LOCK_SHA256, PYPROJECT_SHA256 = historical_lock_sha256, historical_pyproject_sha256
+    print("dia owner-review scope: self-test PASS (historical scope remains stale/fail-closed)")
     return 0
 
 

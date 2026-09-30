@@ -12,8 +12,8 @@ AUDITOR="$PROJECT/dependency_audit.py"
 OWNER_SCOPE="$PROJECT/owner_review_scope.py"
 DEPENDENCY_APPROVAL="$PROJECT/dependency_approval.py"
 PREPARER="$VOKRA_ROOT/scripts/publish/vast-ai/prepare-dia-1-6b-reference.sh"
-LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+LOCK_SHA256="f375fa3e3832674a8feeafa2136f6acc8ba5b709a633d8b868bfbbb8ca99e0f7"
+PYPROJECT_SHA256="1038485bc641af2981239eb3b80f8344576cd6d55ad1c61609afe83eee98ec48"
 MIN_VAST_MEM_KIB=60000000
 
 log() { printf '[dia-dependency-audit] %s\n' "$*" >&2; }
