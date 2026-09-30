@@ -2591,6 +2591,53 @@ Independent CPU reference and final Apple CPU/Metal/no-fallback validation
 remain mandatory. All 194 public rows, 58 unresolved code/artifact rows and
 the attachment's security/provenance/public-artifact work remain in scope.
 
+### Security inventory and source-logits correction (20:01 UTC)
+
+Root reviewed and committed the four-file CosyVoice security inventory as
+`e7350b24c919759a6dc4971975a9db35f6b15d78`, based on merged main
+`97447185361a37af64c1b30fe87e8e2618d96e20`. Both blocked reference trees
+now record isolated Torch 2.13.0/TorchAudio 2.11.0 CPU-index candidates and
+retain the pinned original requirements as separate provenance. CosyVoice2's
+Hub candidate is aligned to the existing Transformers candidate; compatibility
+is still unverified. The requested `uv add --frozen --no-sync` combination was
+rejected by the installed CLI before changing any dependency environment.
+Its [official CLI contract](https://docs.astral.sh/uv/reference/cli/#uv-add)
+states that `uv add --frozen` skips resolution and environment synchronization.
+The implementer therefore used the CLI-valid frozen/offline/Python-3.12 form
+successfully for both trees, without creating a lockfile or virtual environment.
+Root independently passed both TOML-only tests, dependency-automation fixture
+and actual lock-coverage checks, diff, forbidden-symbol, zero-dependency,
+documentation-reference and runbook-citation gates. No upstream import, model
+run, numerical result, owner approval or alert closure is inferred; this
+unpublished candidate does not resolve the forbidden official soxr closure.
+
+The official decoder source revealed that logits are rank two
+`[batch * beam, vocab]`, not a full-prefix tensor. Root accepted the separate
+reader correction as `f8570bfde3be66fc2c309fd17723b5491d908b99`, based on
+frozen builder `0dc33c2e`. It requires an exact source-batch-row selection,
+retains finite/type/individual and cumulative resource checks, and rejects
+invented prefix axes, padding and replicated rows. Consumer and design
+SHA-256 values are respectively
+`d3f7ec76827792dd0614bee88915c9c3a79e976617dabe18da7b00773c0c9cd8`
+and `594c320e23ae0745cb3f1c10a5d60a5fb537b0b50e64ea793ff8791d2e6267eb`.
+Root passed formatting and relevant static/documentation gates; the expected
+remote selection is now 24 nonignored tests and two ignored real legs, not
+executed Rust evidence. The v2 capture, source-patch and v1-envelope binding,
+module-role registry, candidate lineage and real stage comparison remain open.
+
+A subsequent stronger lifecycle failure retained its evidence and permitted
+read-only process-state diagnostics. The remaining mock leaf had `PPID=1`
+and sleeping state `S`, not zombie state, after the driver/executor/SSH PIDs
+had gone. Natural disappearance later is not cleanup success. Whether the
+cause is signal forwarding/group ownership, sandbox signal permissions, or
+both is still being tested; no cause is declared from group IDs alone.
+The draft controller and cleanup fork remain unaccepted and no worker is
+rented. Their eventual integrated verification must use frozen `f8570bf`,
+both accepted source-only collectors and actual lifecycle proof; it must not
+rent an obsolete `a374eb`/`e9b9b058` batch. GPU eligibility, independent CPU
+reference, final Apple/no-fallback gates and the complete public/attachment
+scope remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
