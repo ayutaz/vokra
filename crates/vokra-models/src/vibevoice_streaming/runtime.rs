@@ -37,6 +37,22 @@ use super::sampler::{VIBEVOICE_REALTIME_LATENT_WIDTH, sample_vibevoice_realtime_
 use super::state::{TTS_SPEECH_WINDOW_SIZE, VibeVoiceStreamingState, VibeVoiceStreamingTextPlan};
 use super::tokenizer::VibeVoiceRealtimeTokenizer;
 use super::{HIDDEN, MAX_POSITIONS, VibeVoiceStreamingCheckpoint, VibeVoiceStreamingDiffusionHead};
+use crate::compute::{Compute, HotOp};
+
+/// Union of every learned operation used by the complete Realtime composite.
+/// Host-side token/cache bookkeeping and the DPM scheduler are intentionally
+/// absent: they are control stages, not learned backend operations.
+const REALTIME_COMPOSITE_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Gemv,
+    HotOp::Softmax,
+    HotOp::RmsNorm,
+    HotOp::Silu,
+    HotOp::Relu,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::Gelu,
+];
 
 const SPEECH_TOKEN_ID: u32 = 1;
 
@@ -130,12 +146,20 @@ pub struct VibeVoiceRealtimeRuntime {
 impl VibeVoiceRealtimeRuntime {
     /// Loads the complete native composition from one authenticated GGUF.
     ///
-    /// The complete composition is currently CPU-only because its sampler and
-    /// causal acoustic decoder have no GPU implementation.  The backend is
-    /// checked before any model tensor binding so a Metal/CUDA caller receives
-    /// an explicit unsupported error and cannot trigger an implicit CPU path.
+    /// The complete composition supports CPU and the Metal learned-op path.
+    /// The backend is checked before any model tensor binding so an uncovered
+    /// backend receives an explicit error and cannot trigger an implicit CPU
+    /// path.  The sampler's DPM scheduler remains an explicit host-control
+    /// stage; it does not move learned tensors off the selected backend.
+    /// Dispatch coverage here is not real Metal hardware or numerical-parity
+    /// evidence; those remain separate verification gates.
     pub fn from_gguf(file: &vokra_core::gguf::GgufFile, backend: BackendKind) -> Result<Self> {
-        require_cpu_before_binding(backend)?;
+        require_realtime_backend_before_binding(backend)?;
+        // Probe the complete learned-op registry before authentication or any
+        // component loads.  In particular this is a loud BackendUnavailable
+        // on a non-Apple/feature-off Metal build, not a late error after
+        // binding a large language-model tensor set.
+        preflight_realtime_backend(backend)?;
         VibeVoiceStreamingCheckpoint::from_gguf(file)?;
         Ok(Self {
             language: VibeVoiceRealtimeLanguage::from_gguf(file, backend)?,
@@ -625,13 +649,17 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
     }
 }
 
-fn require_cpu_before_binding(backend: BackendKind) -> Result<()> {
-    if backend != BackendKind::Cpu {
-        return Err(VokraError::UnsupportedOp(format!(
-            "vibevoice realtime composite is CPU-only; backend {backend:?} is unsupported and no CPU fallback is used"
-        )));
+fn require_realtime_backend_before_binding(backend: BackendKind) -> Result<()> {
+    match backend {
+        BackendKind::Cpu | BackendKind::Metal => Ok(()),
+        _ => Err(VokraError::UnsupportedOp(format!(
+            "vibevoice realtime composite backend {backend:?} lacks complete learned-op coverage; no CPU fallback is used"
+        ))),
     }
-    Ok(())
+}
+
+fn preflight_realtime_backend(backend: BackendKind) -> Result<()> {
+    Compute::for_backend(backend, REALTIME_COMPOSITE_HOT_OPS).map(|_| ())
 }
 
 fn validate_noise(noise: &[f32]) -> Result<()> {
@@ -999,9 +1027,40 @@ mod tests {
     }
 
     #[test]
-    fn non_cpu_backend_is_rejected_before_weight_binding() {
-        let error = require_cpu_before_binding(BackendKind::Metal).unwrap_err();
+    fn metal_backend_selection_is_permitted_before_weight_binding() {
+        assert!(require_realtime_backend_before_binding(BackendKind::Metal).is_ok());
+    }
+
+    #[test]
+    fn composite_registry_covers_all_component_learned_ops() {
+        let component_registries = [
+            crate::vibevoice::QWEN2_HOT_OPS,
+            crate::vibevoice::VIBEVOICE_TOKENIZER_HOT_OPS,
+            super::connector::VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_HOT_OPS,
+            super::diffusion::VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS,
+            super::language::VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS,
+        ];
+        for registry in component_registries {
+            for op in registry {
+                assert!(
+                    REALTIME_COMPOSITE_HOT_OPS.contains(op),
+                    "composite registry omitted component op {op:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn uncovered_backend_is_rejected_before_weight_binding() {
+        let error = require_realtime_backend_before_binding(BackendKind::Cuda).unwrap_err();
         assert!(matches!(error, VokraError::UnsupportedOp(_)));
         assert!(error.to_string().contains("no CPU fallback"));
+    }
+
+    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+    #[test]
+    fn metal_feature_off_fails_during_backend_preflight() {
+        let error = preflight_realtime_backend(BackendKind::Metal).unwrap_err();
+        assert!(matches!(error, VokraError::BackendUnavailable(_)));
     }
 }

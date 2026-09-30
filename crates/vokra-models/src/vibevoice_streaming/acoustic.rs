@@ -2,17 +2,21 @@
 //!
 //! Realtime uses the same causal acoustic decoder topology as the native
 //! VibeVoice-1.5B implementation, but its checkpoint identity and scalar
-//! latent factors are different.  This module authenticates the Realtime
-//! composite first, then reuses the 1.5B decoder's loader and streaming DSP.
+//! latent factors are different.  This module preflights the selected
+//! learned-op backend, authenticates the Realtime composite, then reuses the
+//! 1.5B decoder's loader and streaming DSP.
 //! It accepts one scaled 64-wide latent frame and emits one 3200-sample,
-//! 24 kHz mono chunk.  No backend partitioning or CPU fallback is allowed.
+//! 24 kHz mono chunk.  Learned decoder operations stay on the selected
+//! backend; host-side layout/scaling work is not a CPU fallback.
 
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_core::{Result, VokraError};
 
+use crate::compute::Compute;
 use crate::vibevoice::{
-    VibeVoiceAcousticDecoder, VibeVoiceAcousticDecoderStream, VibeVoiceLatentScale,
+    VIBEVOICE_TOKENIZER_HOT_OPS, VibeVoiceAcousticDecoder, VibeVoiceAcousticDecoderStream,
+    VibeVoiceLatentScale,
 };
 
 use super::VibeVoiceStreamingCheckpoint;
@@ -24,9 +28,10 @@ pub const REALTIME_ACOUSTIC_CHUNK_SAMPLES: usize = 3_200;
 
 /// Realtime acoustic decoder bound to one authenticated GGUF.
 ///
-/// The decoder is intentionally CPU-only until an independent Metal path and
-/// its parity evidence exist.  Constructing this handle on another backend
-/// returns [`VokraError::UnsupportedOp`] rather than silently using CPU.
+/// The decoder supports the backends whose complete tokenizer-op registry is
+/// wired through [`crate::compute::Compute`].  Constructing this handle on an
+/// uncovered backend returns [`VokraError::UnsupportedOp`] rather than
+/// silently using CPU.
 #[derive(Debug, Clone)]
 pub struct VibeVoiceRealtimeAcousticDecoder {
     decoder: VibeVoiceAcousticDecoder,
@@ -36,11 +41,20 @@ pub struct VibeVoiceRealtimeAcousticDecoder {
 impl VibeVoiceRealtimeAcousticDecoder {
     /// Authenticates the Realtime composite and binds its decoder/scalars.
     pub fn from_gguf(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        // Keep this preflight ahead of tensor binding.  The shared decoder
+        // uses Conv1d/GroupedConv1d/Gemm/Gelu/RmsNorm through Compute; its
+        // ConvTranspose topology is expressed as a host layout transform
+        // followed by the selected backend's Conv1d kernel.  CUDA currently
+        // lacks the grouped-convolution seam, so it must fail closed here.
+        require_realtime_acoustic_backend(backend)?;
+        // This also reports a feature/device-unavailable Metal build before
+        // the authenticated GGUF payload is bound.  The decoder's forward
+        // path repeats this registry check at execution time.
+        let _ = Compute::for_backend(backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
         // This gate must precede the shared decoder/scalar loaders.  In
         // particular, a Realtime file must never be accepted by the 1.5B
         // `VibeVoiceCheckpoint` manifest just because the decoder shapes fit.
         VibeVoiceStreamingCheckpoint::from_gguf(file)?;
-        require_cpu(backend)?;
         let decoder = VibeVoiceAcousticDecoder::from_realtime_tensors(file, backend)?;
         let latent_scale = VibeVoiceLatentScale::from_realtime_tensors(file)?;
         Ok(Self {
@@ -49,7 +63,7 @@ impl VibeVoiceRealtimeAcousticDecoder {
         })
     }
 
-    /// Returns the backend selected for this decoder (currently CPU only).
+    /// Returns the explicitly selected learned-op backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.decoder.backend()
@@ -107,13 +121,13 @@ impl VibeVoiceRealtimeAcousticDecoderStream {
     }
 }
 
-fn require_cpu(backend: BackendKind) -> Result<()> {
-    if backend != BackendKind::Cpu {
-        return Err(VokraError::UnsupportedOp(format!(
-            "vibevoice-realtime acoustic decoder: backend {backend:?} is unsupported; no CPU fallback"
-        )));
+fn require_realtime_acoustic_backend(backend: BackendKind) -> Result<()> {
+    match backend {
+        BackendKind::Cpu | BackendKind::Metal => Ok(()),
+        _ => Err(VokraError::UnsupportedOp(format!(
+            "vibevoice-realtime acoustic decoder: backend {backend:?} lacks complete tokenizer learned-op coverage; no CPU fallback"
+        ))),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -127,8 +141,13 @@ mod tests {
     }
 
     #[test]
-    fn non_cpu_backend_is_rejected_without_fallback() {
-        let error = require_cpu(BackendKind::Metal).unwrap_err();
+    fn metal_backend_selection_is_permitted_without_device_claim() {
+        assert!(require_realtime_acoustic_backend(BackendKind::Metal).is_ok());
+    }
+
+    #[test]
+    fn uncovered_backend_is_rejected_without_fallback() {
+        let error = require_realtime_acoustic_backend(BackendKind::Cuda).unwrap_err();
         assert!(matches!(error, VokraError::UnsupportedOp(_)));
         assert!(error.to_string().contains("no CPU fallback"));
     }

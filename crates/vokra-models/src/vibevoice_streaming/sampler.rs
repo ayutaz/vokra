@@ -38,11 +38,11 @@ pub const VIBEVOICE_REALTIME_INFERENCE_STEPS: usize = 20;
 /// applies `uncond + guidance_scale * (cond - uncond)` before the scheduler
 /// advances it.
 ///
-/// The sampler is deliberately CPU-only at present.  Passing a head selected
-/// for Metal, CUDA, or another backend returns an explicit error instead of
-/// moving scheduler state or tensors to CPU implicitly.  This function stops
-/// at the final 64-wide latent and makes no full-synthesis, real-weight parity,
-/// or Apple backend claim.
+/// The learned prediction head runs on its selected backend.  The DPM
+/// scheduler is an explicit host-control stage over the 64-wide latent; it
+/// does not bind learned weights and never migrates the head or its tensors to
+/// CPU.  Realtime currently composes this path only with CPU or Metal heads;
+/// other backends fail closed rather than becoming an implicit fallback.
 pub fn sample_vibevoice_realtime_cfg(
     head: &VibeVoiceStreamingDiffusionHead,
     positive_condition: &[f32],
@@ -50,7 +50,7 @@ pub fn sample_vibevoice_realtime_cfg(
     initial_noise: &[f32],
     guidance_scale: f32,
 ) -> Result<Vec<f32>> {
-    ensure_cpu_backend(head.backend())?;
+    ensure_realtime_head_backend(head.backend())?;
     sample_with_predictor(
         positive_condition,
         negative_condition,
@@ -98,14 +98,13 @@ where
     Ok(sample)
 }
 
-fn ensure_cpu_backend(backend: BackendKind) -> Result<()> {
-    if backend != BackendKind::Cpu {
-        return Err(VokraError::UnsupportedOp(
-            "vibevoice realtime CFG scheduler is CPU-only; non-CPU backend would require an explicit scheduler implementation"
-                .to_owned(),
-        ));
+fn ensure_realtime_head_backend(backend: BackendKind) -> Result<()> {
+    match backend {
+        BackendKind::Cpu | BackendKind::Metal => Ok(()),
+        _ => Err(VokraError::UnsupportedOp(format!(
+            "vibevoice realtime CFG head backend {backend:?} is not covered by the composite; no CPU fallback"
+        ))),
     }
-    Ok(())
 }
 
 fn validate_inputs(
@@ -298,9 +297,14 @@ mod tests {
     }
 
     #[test]
-    fn non_cpu_backend_is_rejected_explicitly() {
-        let error = ensure_cpu_backend(BackendKind::Metal).unwrap_err();
+    fn metal_head_keeps_learned_ops_on_selected_backend() {
+        assert!(ensure_realtime_head_backend(BackendKind::Metal).is_ok());
+    }
+
+    #[test]
+    fn uncovered_head_backend_is_rejected_without_fallback() {
+        let error = ensure_realtime_head_backend(BackendKind::Cuda).unwrap_err();
         assert!(matches!(error, VokraError::UnsupportedOp(_)));
-        assert!(error.to_string().contains("CPU-only"));
+        assert!(error.to_string().contains("no CPU fallback"));
     }
 }

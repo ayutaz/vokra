@@ -35,7 +35,7 @@ pub mod preset;
 /// Native composition of the authenticated language, diffusion, connector,
 /// and causal acoustic stages.
 pub mod runtime;
-/// Deterministic CPU-only classifier-free guidance diffusion sampler.
+/// Backend-dispatched classifier-free guidance with an explicit host scheduler.
 pub mod sampler;
 /// Cached-prompt input and bookkeeping state for the staged streaming path.
 pub mod state;
