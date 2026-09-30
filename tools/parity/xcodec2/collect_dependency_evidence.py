@@ -175,7 +175,12 @@ class SafeRedirects(HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, resolved)
 
 
-def fetch_artifact(artifact: dict[str, Any], temporary: Path, fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
+def fetch_artifact(
+    artifact: dict[str, Any],
+    temporary: Path,
+    fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+    opener_factory: Callable[[Any], Any] | None = None,
+) -> dict[str, Any]:
     url, expected_hash = artifact.get("url"), artifact.get("hash")
     expected_size = artifact.get("size")
     if not isinstance(url, str) or not isinstance(expected_hash, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_hash):
@@ -188,6 +193,27 @@ def fetch_artifact(artifact: dict[str, Any], temporary: Path, fetcher: Callable[
     if not basename or basename in {".", ".."} or "/" in basename or "\\" in basename or ".." in basename:
         raise EvidenceError("locked artifact basename is unsafe")
     output = temporary / (sha256_bytes(url.encode()) + "-" + basename)
+
+    def reuse_verified() -> dict[str, Any] | None:
+        """Reuse only a complete cache entry whose locked identity still matches."""
+        if not output.exists() and not output.is_symlink():
+            return None
+        if output.is_symlink() or not output.is_file():
+            raise EvidenceError("cached artifact path is not a regular file")
+        try:
+            count = output.stat().st_size
+            if count <= 0 or count > MAX_ARTIFACT_BYTES:
+                raise EvidenceError("cached artifact exceeds bounded size")
+            observed = sha256_file(output)
+        except OSError as exc:
+            raise EvidenceError(f"cached artifact read failed: {type(exc).__name__}") from exc
+        if expected_size is not None and count != expected_size or "sha256:" + observed != expected_hash:
+            raise EvidenceError("cached artifact bytes do not match lock")
+        return {"url": url, "final_url": None, "cache_reused": True, "bytes": count, "sha256": observed, "temporary": str(output)}
+
+    cached = reuse_verified()
+    if cached is not None:
+        return cached
     if fetcher is not None:
         final, body = fetcher(url)
         validate_url(final)
@@ -199,10 +225,12 @@ def fetch_artifact(artifact: dict[str, Any], temporary: Path, fetcher: Callable[
         return {"url": url, "final_url": final, "bytes": len(body), "sha256": sha256_bytes(body), "temporary": str(output)}
     digest = hashlib.sha256()
     count = 0
+    created = False
     try:
-        opener = build_opener(SafeRedirects(trace, url))
+        opener = (opener_factory or build_opener)(SafeRedirects(trace, url))
         request = Request(url, headers={"Accept": "application/octet-stream", "User-Agent": "vokra-xcodec2-evidence/1"})
         with opener.open(request, timeout=60) as response, output.open("xb") as stream:
+            created = True
             final = urljoin(url, response.geturl())
             validate_url(final)
             if urlsplit(final).path != urlsplit(url).path:
@@ -216,10 +244,26 @@ def fetch_artifact(artifact: dict[str, Any], temporary: Path, fetcher: Callable[
                     raise EvidenceError("artifact exceeds bounded size")
                 digest.update(chunk)
                 stream.write(chunk)
+    except EvidenceError:
+        if created:
+            try:
+                output.unlink()
+            except OSError:
+                pass
+        raise
     except (HTTPError, URLError, OSError, UnicodeError, ValueError) as exc:
+        if created:
+            try:
+                output.unlink()
+            except OSError:
+                pass
         raise EvidenceError(f"artifact acquisition failed: {type(exc).__name__}") from exc
     observed = digest.hexdigest()
     if expected_size is not None and count != expected_size or "sha256:" + observed != expected_hash:
+        try:
+            output.unlink()
+        except OSError:
+            pass
         raise EvidenceError("locked artifact bytes do not match lock")
     return {"url": url, "final_url": trace[-1], "bytes": count, "sha256": observed, "temporary": str(output)}
 
@@ -328,7 +372,8 @@ def wheel_record_entries(path: Path) -> tuple[list[dict[str, Any]], str]:
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():
             clean = safe_member(info.filename)
-            if clean.endswith(".dist-info/RECORD"):
+            parts = PurePosixPath(clean).parts
+            if len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "RECORD":
                 record_members.append(clean)
                 if info.file_size > MAX_LICENSE_BYTES:
                     raise EvidenceError("publisher RECORD exceeds bound")
@@ -736,12 +781,80 @@ def self_test() -> int:
         result = fetch_artifact(artifact, root, lambda url: (url, body))
         if result["sha256"] != sha256_bytes(body):
             raise AssertionError("artifact evidence mismatch")
+        reused = fetch_artifact(artifact, root, lambda url: (_ for _ in ()).throw(AssertionError("valid cache was fetched again")))
+        if reused["temporary"] != result["temporary"] or reused["sha256"] != result["sha256"]:
+            raise AssertionError("verified artifact cache was not reused")
+        Path(result["temporary"]).write_bytes(b"tampered")
+        try:
+            fetch_artifact(artifact, root, lambda url: (url, body))
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("tampered cached artifact accepted")
         try:
             fetch_artifact({**artifact, "hash": "sha256:" + "0" * 64}, root, lambda url: (url, body))
         except EvidenceError:
             pass
         else:
             raise AssertionError("artifact hash tamper accepted")
+        oversize_url = "https://files.pythonhosted.org/packages/oversize-1-py3-none-any.whl"
+        oversize_artifact = {"url": oversize_url, "hash": "sha256:" + sha256_bytes(body)}
+        fetch_artifact(oversize_artifact, root, lambda url: (url, body))
+        original_limit = MAX_ARTIFACT_BYTES
+        try:
+            globals()["MAX_ARTIFACT_BYTES"] = len(body) - 1
+            try:
+                fetch_artifact(oversize_artifact, root, lambda url: (_ for _ in ()).throw(AssertionError("oversize cache was fetched again")))
+            except EvidenceError:
+                pass
+            else:
+                raise AssertionError("oversize cached artifact accepted")
+        finally:
+            globals()["MAX_ARTIFACT_BYTES"] = original_limit
+        symlink_url = "https://files.pythonhosted.org/packages/symlink-1-py3-none-any.whl"
+        symlink_artifact = {"url": symlink_url, "hash": "sha256:" + sha256_bytes(body), "size": len(body)}
+        symlink_cache = root / (sha256_bytes(symlink_url.encode()) + "-symlink-1-py3-none-any.whl")
+        symlink_cache.symlink_to(root / "real-output", target_is_directory=True)
+        try:
+            fetch_artifact(symlink_artifact, root, lambda url: (url, body))
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("symlink cached artifact accepted")
+        partial_url = "https://files.pythonhosted.org/packages/partial-1-py3-none-any.whl"
+        partial_artifact = {"url": partial_url, "hash": "sha256:" + sha256_bytes(b"complete"), "size": len(b"complete")}
+
+        class PartialResponse:
+            def __enter__(self) -> "PartialResponse":
+                return self
+
+            def __exit__(self, *_args: Any) -> None:
+                return None
+
+            def geturl(self) -> str:
+                return partial_url
+
+            def read(self, _size: int) -> bytes:
+                if not hasattr(self, "read_once"):
+                    self.read_once = True
+                    return b"part"
+                raise EvidenceError("synthetic response failure")
+
+        class PartialOpener:
+            def open(self, _request: Request, timeout: int) -> PartialResponse:
+                if timeout != 60:
+                    raise AssertionError("unexpected artifact timeout")
+                return PartialResponse()
+
+        try:
+            fetch_artifact(partial_artifact, root, opener_factory=lambda _handler: PartialOpener())
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("partial artifact failure was accepted")
+        partial_cache = root / (sha256_bytes(partial_url.encode()) + "-partial-1-py3-none-any.whl")
+        if partial_cache.exists() or partial_cache.is_symlink():
+            raise AssertionError("partial artifact was not cleaned up")
         link_target = root / "real-output"
         link_target.mkdir()
         link_parent = root / "linked-output"
@@ -752,6 +865,35 @@ def self_test() -> int:
             pass
         else:
             raise AssertionError("symlink output ancestry accepted")
+        record_wheel = root / "record.whl"
+        with zipfile.ZipFile(record_wheel, "w") as handle:
+            handle.writestr(
+                "demo-1.0.dist-info/RECORD",
+                "demo/module.py,,\nvendor/nested.dist-info/RECORD,,\ndemo-1.0.dist-info/RECORD,,\n",
+            )
+            handle.writestr("vendor/nested.dist-info/RECORD", b"nested")
+        entries, selected = wheel_record_entries(record_wheel)
+        if selected != "demo-1.0.dist-info/RECORD" or not any(item["path"] == "vendor/nested.dist-info/RECORD" for item in entries):
+            raise AssertionError("nested RECORD was not retained as payload")
+        nested_only = root / "nested-only.whl"
+        with zipfile.ZipFile(nested_only, "w") as handle:
+            handle.writestr("vendor/nested.dist-info/RECORD", b"nested")
+        try:
+            wheel_record_entries(nested_only)
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("nested vendored RECORD selected as publisher RECORD")
+        multiple_root = root / "multiple-root.whl"
+        with zipfile.ZipFile(multiple_root, "w") as handle:
+            handle.writestr("demo-1.0.dist-info/RECORD", "demo/module.py,,\n")
+            handle.writestr("other-1.0.dist-info/RECORD", "other/module.py,,\n")
+        try:
+            wheel_record_entries(multiple_root)
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("multiple root RECORD files accepted")
     if "torch" in sys.modules or "xcodec2" in sys.modules:
         raise AssertionError("collector self-test imported a model package")
     print("xcodec2 dependency evidence collector: PASS (model-free self-test)")
