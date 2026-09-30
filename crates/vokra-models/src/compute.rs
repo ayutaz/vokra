@@ -809,8 +809,7 @@ impl Compute {
             .find(|capability| !capability.covered_by_backend(kind))
         {
             return Err(VokraError::UnsupportedOp(format!(
-                "{kind:?} backend does not cover Mimi capability {capability:?}; Vokra does not "
-                "silently run it on the CPU"
+                "{kind:?} backend does not cover Mimi capability {capability:?}; Vokra does not silently run it on the CPU"
             )));
         }
         Self::for_backend(kind, required)
