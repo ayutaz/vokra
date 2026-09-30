@@ -1776,6 +1776,21 @@ Further draft corrections remain under review and are not included in this
 authenticated packet. No model, independent real-weight parity, Apple run or
 upload was performed. Scope remains 194 public rows and 58 unresolved.
 
+Root subsequently reviewed and froze the next logical changes in three local
+commits, each based on `00632846`: `84098e8` closes the source-audit subprocess
+streams and adds warning-aware regression coverage; `9d2eded` adds the
+crate-private authenticated Kyutai PCM composite with shared production
+buffer/lifecycle tests; `5040643` adds the bounded official Rust Mimi source
+inventory and its synthetic contract tests. Static diff, format where
+applicable, zero-dependency and forbidden-symbol gates are green. Local
+compilation/model execution was not attempted; the Python unit executions
+remain deferred after the local guard blocked them. These commits are
+source-reviewed, **not** remotely verified or pushed. The next controller
+must bind their combined clean head, retain the unchanged gates, and run both
+new focused suites along with full regression. It must not treat the source
+inventory's explicitly `OPEN` dependency/native/license status as parity or
+execution approval.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
