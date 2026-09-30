@@ -2638,6 +2638,71 @@ rent an obsolete `a374eb`/`e9b9b058` batch. GPU eligibility, independent CPU
 reference, final Apple/no-fallback gates and the complete public/attachment
 scope remain unchanged.
 
+### Decoder identity acceptance and bounded lifecycle proof (20:23 UTC)
+
+Root accepted the separate FireRed module-identity registry as
+`3cae7c7e1125f108f7e55d5f0dc0629ef0853fb0`, based on frozen reader/builder
+`f8570bfde3be66fc2c309fd17723b5491d908b99`. It registers the explicitly
+observed decoder, layer, self-attention and cross-attention object identities,
+retains their lifetimes, and resolves the builder's actual integer-ID events
+without inferring roles from tensor shape or call order. Source bytes/URLs,
+caller-supplied layer count and actual `n_layers`/layer-stack geometry are
+checked; aliases, unknown IDs, event-arity drift, mutation, symlinks and
+nonregular/oversized records fail closed. Nonblocking file opens prevent a
+FIFO from stalling authentication. Root independently passed all nine tests
+with the authenticated source record; the portable default passes seven
+synthetic tests and explicitly skips the two optional source-record tests.
+Diff, zero-dependency, forbidden-symbol, documentation and runbook gates
+passed. This is not a capture writer, upstream model run or numerical result;
+v1/v2-envelope and patch binding, full beam/stage comparison, owner/legal,
+real-weight CPU and final Apple gates remain open.
+
+The bounded cleanup forks now have independent lifecycle evidence. Root
+passed the nine outer-executor tests and the controller's complete offline
+suite, then the real nested mock driver/SSH/TERM-ignoring-leaf cases for
+parent termination, outer timeout and production collect-before-destroy.
+The retained proof is
+`/private/tmp/vokra-firered-postmerge-source-cache-success.0nCsdc`; all fifteen
+recorded PIDs were absent in a subsequent read-only process-state check.
+The shared absolute seven-second group-cleanup deadline does not restart in
+the signal/timeout/finally paths; controller termination allows ten seconds
+for that grace and the bounded leader reap. The strict twenty-second PID
+absence gate was not relaxed. Outer, driver and controller SHA-256 values are
+respectively `47e2a1f7e22c30250adfae48c0a59dfee578523f10c844a6e9d1e4dde1f50690`,
+`9ee6f8ca766b2270b1a2a4e227bb273ecb98a485590db0cb5bccd12b156605eb`
+and `a20a0e49d6df4b890d68bf7dbc80ccb96b0eb4cb6b32e29eb1167075f23b3437`.
+Earlier failure evidence remains historical failure, not retroactive success.
+These accepted cleanup mechanisms do not authorize launching the obsolete
+`a374eb` batch: a separate integrated fork must bind the latest accepted code
+and source-only collectors to merged main before a disposable VAST run.
+
+Root also accepted the five-file VibeVoice Diffusers candidate as
+`0f204ea9575a210727c94a0480bf96c31baa8b28`, based on main
+`97447185361a37af64c1b30fe87e8e2618d96e20`. The 1.5B reference lock now pins
+Diffusers 0.38.0 for GHSA-7wx4-6vff-v64p and GHSA-98h9-4798-4q5v. The
+original Vokra reference pin is retained separately; it is not relabelled an
+authenticated Microsoft upstream requirement. `uv add --no-sync` updated
+lock metadata without environment installation. Realtime resolution instead
+proved a conflict with its existing `safetensors==0.5.3` pin and preserved
+the original lock, with an explicit blocked candidate record. Root passed
+three TOML-only tests, both offline lock checks (44/57 package records),
+dependency-automation fixture/coverage and relevant static/documentation
+gates. No API, dependency-license, model, CPU/Metal or alert-closure verdict
+is inferred; the unpublished candidate requires those later gates.
+
+A fresh all-pages GitHub read still reports 209 open Dependabot alerts:
+182 have a patched version and 27 do not; severity remains three critical,
+31 high, 82 medium and 93 low. Scorecard has three open findings
+(`VulnerabilitiesID`, `CodeReviewID`, `CIIBestPracticesID`). Main remains
+`97447185361a37af64c1b30fe87e8e2618d96e20`. The all-pages VAST read at
+20:10 UTC returned zero instances and `next_token=null`; no separate volume
+audit is claimed. No worker was rented, no model ran locally, and no code was
+pushed or artifact uploaded in this slice. GPU use remains conditional on
+transfer/setup-inclusive speed, supported operations and unchanged precision;
+independent CPU reference and final Apple CPU/Metal/no-fallback are mandatory.
+All 194 public rows, 58 unresolved code/artifact rows and attachment repair,
+provenance, legal and security tasks remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
