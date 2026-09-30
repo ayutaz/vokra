@@ -1302,6 +1302,98 @@ frozen implementation/input hashes, followed by actual Apple/Metal and speed
 evidence. Existing Python package names or a historical workflow do not by
 themselves approve a new source revision or its wheel/native license closure.
 
+### Mimi integration regression and derived-source audit (12:52 UTC)
+
+The queued Mimi replay above subsequently completed at exact clean head
+`a84817d43a01bac0fb3d93c5f58d805d214aa72d`. Worker `53524722` passed
+78 focused Mimi tests, with no failures or ignores, and the serial workspace
+run reported 8,114 passed, zero failed and 105 ignored across 323 result
+summaries. All-feature/all-target `vokra-models` Clippy, deny and advisory
+audit exited zero. Final HEAD matched, observed status was empty and all
+18 recovered packet SHA-256 checks passed independently. The packet manifest
+SHA-256 is
+`bd2009c862476de199e06ee1212311c1ca0edfce56eac6946d2df4c8a7c3afc5`.
+The worker and its 200-GB storage were destroyed after recovery; individual
+readback returned `instances: null` and the exact-label list was terminal and
+empty. The reviewed source was pushed as
+[draft PR #186](https://github.com/ayutaz/vokra/pull/186); its new CI is pending.
+This is Linux regression evidence, not Apple Metal execution, independent
+real-weight parity or a public-row completion verdict.
+
+The XCodec2 derived-sdist builder was reviewed and committed cleanly at
+`f260f8842baec412580565f9205fbac2461e9342`. A separate source checkout on
+the same owned worker received the reviewed Git bundle and the two small,
+hash-pinned ANTLR 4.9.3 and XCodec2 0.1.5 source archives. Initial static
+verification stopped because `uv` was absent from PATH; resuming with the
+installed absolute `uv` path passed all six named standard-library tests,
+the builder self-test and repackaging of both actual archives. No upstream
+setup/backend, package import, installation, model or upload was executed.
+All four recovered output hashes matched independently:
+
+- ANTLR derived wheel:
+  `06e39bb3d804f5e14ec6dfcb2be2cf125419d700bbea43e5a52eb4269c1aa7e2`.
+- ANTLR provenance:
+  `8f8de04c9713bd9752a6fdbd1f22c5da1d548b0bd872ca061fc04d6c2026fe41`.
+- XCodec2 derived wheel:
+  `aa20f3975710b221a9f7f33e7a1be80a2f28b1f0093acba36a4df714ef5d5b78`.
+- XCodec2 provenance:
+  `5af99ab73f76c1976db517fb2e360769dc1bb370fd61bd79ebcbfb1e4516c1fa`.
+
+These are locally derived package distributions, not official wheels or
+model artifacts. Their provenance remains `DERIVED_NOT_OFFICIAL` /
+`UNAPPROVED_NO_EXECUTION` / `NO_UPLOAD`. This closes only the bounded,
+source-byte-preserving repackaging check. The runtime dependency closure and
+the setuptools vendored LGPL finding above remain unapproved. The side
+checkout was removed with the disposable worker; no XCodec2 real-weight run
+or public artifact replacement is inferred.
+
+The previously reviewed Kyutai streaming stack was replayed onto actual main
+`81d72f2317a3bd2462cb7abbca15ac55b7518d56` as clean head
+`27060dd2b8eceb744fb338fb1783caab9c5717b8`. Static checks passed. Its
+independently reviewed full-verification controller has SHA-256
+`b385bea61ba85d84370764bb5f22c544a98892d02b8f625b94cb42e4d7fff67d`;
+it requires the actual EPYC 7713 CPU, exactly four named tests under observed
+Avx2 and forced Scalar, all six verification exits zero and authenticated
+recovered evidence. Red evidence remains recoverable, and both success and
+failure paths destroy the owned worker. A fresh single-rent attempt is now
+pending; no result from the earlier focused head is relabelled as full proof
+for this integrated head.
+
+The current full Mimi upstream-dump proposal remains an uncommitted,
+preparatory contract, permanently blocked before checkpoint access or
+third-party import. Canonical owner, dependency and native-payload gates and
+first-class consumer verification are not yet closed. No model ran locally,
+no HF token was transferred and no public artifact was uploaded. Coverage
+classification remains 136 code/artifact-full and 58 unresolved public rows.
+
+### Current security API readback (12:52 UTC)
+
+A fresh GitHub API readback at `2026-09-30T12:52:14Z` contains 209 open
+Dependabot alerts across 37 distinct manifests: 182 have a patched version
+and 27 have none. Severity counts are three critical, 31 high, 82 medium
+and 93 low. The complete paginated readback SHA-256 is
+`e866594e13746f816b71130c43b4e4f9b0e08b2415083359a28aaf022e495a40`.
+This is a new dated snapshot; the original 258/226/32 counts remain history,
+not current completion evidence.
+
+The three critical alerts concern Torch versions below 2.6.0: #340 in
+`tools/parity/cosyvoice3_reference/pyproject.toml`, #318 in
+`tools/parity/cosyvoice2_reference/pyproject.toml`, and #159 in
+`tools/parity/xcodec2/uv.lock`. Main `81d72f23` still contains those
+vulnerable declarations/resolution. Draft PR #152 contains an XCodec2 update
+candidate, but is behind main; the locally accepted derived-source builder
+is not yet in its remote head. Neither that candidate nor a declaration-only
+CosyVoice version bump is a completed, numerically validated dependency fix.
+CosyVoice's reference closure and package/native license gates remain open.
+
+The Scorecard code-scanning API contains three open findings:
+`CIIBestPracticesID`, `CodeReviewID` and `VulnerabilitiesID`. Readback SHA-256:
+`f2b133092885fc6e0198afb7508d776731c458438fce19a38c3cd0abb77481d3`.
+API state alone does not prove that every underlying policy requirement is
+closed. The historical five-finding scope remains in the final audit, with
+current per-finding disposition still required. No alert was dismissed to
+obtain these counts, and no protected owner manifest was inspected.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
