@@ -2745,6 +2745,42 @@ readback found neither retained instances nor separate storage volumes. No
 credential was printed, passed as a CLI argument or transferred to a worker.
 The full 194-row scope and all 58 unresolved rows remain unchanged.
 
+### Observer preparation acceptance and integrated test-name review (20:43 UTC)
+
+Root accepted the source-only FireRed observer-envelope preparation slice as
+`333fc8c5d0f3f300f14f11473d5e6f271eb1841a`. The reviewed builder is loaded
+only after its exact 27,190-byte size and SHA-256
+`106504cd323abbbdbe197ce4fc77342e3a420e5334215b61292630414b2aa882`
+are authenticated. The original upstream source is parsed, not executed.
+The tests now use portable temporary paths, reject malformed registry roles
+and tampered/aliased builder bytes, and cover the actual preparation output
+and no-clobber path. Root independently passed ten tests with the explicit
+authenticated source record; the portable default passed eight and skipped
+two optional source-record tests. Zero-dependency, forbidden-symbol,
+documentation-reference and diff gates passed. The envelope still says
+`PREPARATION_ONLY_NO_UPLOAD` / `OPEN_NOT_CAPTURED`; external artifact
+digests are declared prerequisites, not independent file authentication, and
+the Rust v2 consumer does not yet consume this envelope. No real capture,
+model execution, CPU/Metal parity or owner/legal approval is inferred.
+
+Root separately repeated the integrated source-only tools' documented
+`--self-test` entry points: CosyVoice 23, Realtime 25, FireRed builder 11
+plus authenticated-source AST roundtrip, and FireRed module registry nine
+with no source-record skips. No upstream source was imported or executed.
+These are local standard-library checks, not remote Cargo or model results.
+
+Inspection of the actual Rust test source found that the v2 tests are in
+`decoder_trace_v2`, not `tests`, and the ignored function is
+`decoder_trace_v2::firered_asr_aed_l_real_decoder_trace_v2_consumer`, not
+the initially proposed controller name. The controller's local/remote
+matchers and mocks are being corrected against those actual names before
+rent. Its registry gate also requires an explicitly fetched authenticated
+source record; accepting the portable two skips would weaken that gate and
+is not permitted. The integrated source-collection/packet work remains
+unaccepted pending complete controller review. No VAST worker was rented
+and no implementation was pushed in this slice; all public/attachment scope
+and real-weight/Apple/publication gates remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
