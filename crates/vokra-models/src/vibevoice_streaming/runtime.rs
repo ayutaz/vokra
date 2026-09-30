@@ -1036,9 +1036,9 @@ mod tests {
         let component_registries = [
             crate::vibevoice::QWEN2_HOT_OPS,
             crate::vibevoice::VIBEVOICE_TOKENIZER_HOT_OPS,
-            super::connector::VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_HOT_OPS,
-            super::diffusion::VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS,
-            super::language::VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS,
+            crate::vibevoice_streaming::connector::VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_HOT_OPS,
+            crate::vibevoice_streaming::diffusion::VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS,
+            crate::vibevoice_streaming::language::VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS,
         ];
         for registry in component_registries {
             for op in registry {
