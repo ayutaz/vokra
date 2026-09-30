@@ -1871,6 +1871,44 @@ CPU/Metal/no-fallback evidence. No local model execution, model upload,
 license approval or catalog-row promotion occurred; scope remains 194 public
 rows with 58 unresolved.
 
+### Reviewed repair freeze and live replay (15:46 UTC)
+
+The next reviewed, clean integrated head is
+`76cd41757be011ddf35bc66d49690bfeed90a4b6`, a descendant of both the Mimi
+integration ancestor and `main` `909c527b`. It adds the FireRed PCM composition,
+the component-binder API correction and the Moshi core metadata binder. The
+last binder slice is local commit `3635475`, integrated as `76cd417`; its
+15 model-free unit tests have not yet been run at this snapshot. Its registry,
+target activation, native/license, owner and real-weight parity gates remain
+explicitly OPEN, even if those unit tests subsequently pass.
+
+Root independently confirmed all eight implementation/test hashes, clean
+status, ancestor relationships, formatting, zero-dependency and forbidden
+symbol gates. The new controller SHA-256 is
+`5c522e2e594019c99f2ddf01776f317521ae66ebae8b78a50e70db2814eb15e7`.
+Root also ran its syntax, ShellCheck and complete offline mock successfully.
+The thirteen-leg replay requires the unchanged 17/22/18 named suites plus
+five FireRed PCM tests and 15 metadata-binding tests, all regression/audit
+legs, and exactly 34 authenticated packet members. It must not weaken result
+matchers or promote skipped, missing, duplicate or hash-mismatched evidence.
+
+The first creation request, for offer `39529883`, terminated with
+`no_such_ask`; no verification process started. Label recovery and a fresh
+unfiltered account read found no worker from that attempt, only unrelated
+`53545562`. After confirming terminal failure and absence, a different
+reviewed offer `31947962` created owned worker `53547744`, labelled
+`vokra-mimi-kyutai-integrated-repair-verify-76cd4175-20260930T154240Z-95510`.
+Its resource readback records 16 effective CPU cores, 200-GB storage and
+16 build jobs. Provisioning completed; live SSH evidence records the
+17- and 22-test source suites passing while Rust compilation is still running.
+There is **no terminal replay verdict or deletion claim yet**. The existing
+controller owns evidence recovery and exact-instance destruction.
+
+Fresh GitHub reads still show `main` at `909c527b`, 209 open Dependabot
+alerts, and draft PR #186 at unchanged remote head `a84817d4` with 89
+successful, nine skipped and two failed old-head checks. No corrected code
+push, model acquisition, upload, Apple run or row promotion is claimed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
