@@ -2259,6 +2259,49 @@ The fixed FireRed reference environment remains CPU-only; required CPU and
 Apple CPU/Metal/no-fallback verdicts are not waived. No model execution,
 upload, new cloud allocation or public-row promotion occurred in this step.
 
+### Source-cache transport accepted offline; current security and docs PR (18:14 UTC)
+
+Root completed review of the bounded source-cache transport driver, including
+portable local SSH/SCP deadlines, process-group cleanup after leader exit,
+remote watchdog cancellation, authenticated packet membership and mandatory
+before/after identity evidence. The terminal verifier now requires each result
+key exactly once with its expected value, including the target HEAD, Moshi
+revision and Cargo-lock hash. Contradictory `probe_exit`/`transport_complete`
+keys, missing or incorrect identities, missing status files and mutated
+evidence are rejected.
+
+The frozen driver SHA-256 is
+`d5b962572911da9a8264da46980e950ea12fc40bc500ca5371a3308541f12b92`;
+its offline self-test SHA-256 is
+`e3f3a699a479826e745bd0b73818479a50e61d67e1d134953311e1a78f51212b`.
+Root independently passed Bash syntax, ShellCheck and all nine offline tests
+at these identities. The earlier deficient drafts are superseded, not treated
+as accepted execution evidence. No actual SSH, source-cache acquisition,
+Linux fixture run, native build, model or upload occurred. The next worker
+must execute the actual Linux fixtures, recover authenticated evidence and
+retain the source/license result as blocked until its own gates close.
+
+A fresh all-pages GitHub readback still contains 209 open Dependabot alerts:
+182 with a named patch, 27 without one, across 37 manifests. Severities remain
+three critical, 31 high, 82 medium and 93 low. The separately queried critical
+alerts are #340/#318 in the CosyVoice3/2 reference inventories and #159 in
+XCodec2's lock, all `GHSA-53q9-r3pm-6pq6` for Torch below 2.6.0. CosyVoice's
+complete official dependency path remains blocked; source/dependency
+investigation is not replacement numerical evidence or approval. No alert
+was dismissed or legal gate bypassed.
+
+Root reviewed all four documentation-only files in
+[PR #188](https://github.com/ayutaz/vokra/pull/188), authenticated the existing
+`v0.3.0` release and its four Python wheels, and passed the existing 52-case
+mocked pre-push classifier/integration test. Because the PR was behind main,
+root requested an update with exact old-head guard
+`0ff54a16a138e0d4880a81d6965904b06a55899d`. GitHub produced new head
+`4b434bbeb6a2076b5ef0f5deabb6d26c0ed7bd97`; the new CI is actually queued
+and running, with no observed failure at this readback. Old CI is not proof
+for this head, and the PR is not merged. Main and the frozen FireRed
+verification checkout remain unchanged. No VAST allocation or public-model
+row promotion occurred in this continuation.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
