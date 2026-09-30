@@ -1020,6 +1020,38 @@ next VAST collection remains pending. Source-built payload identity, wheel
 `.data` relocation, the Torch archive bound and owner/license decisions
 remain blocked; no collection or model row is promoted by the local tests.
 
+### Mimi control-plane preflight and Kyutai CPU candidate (2026-09-30)
+
+The reviewed Mimi candidate remains clean at
+`336de430e4c9d40bb81906cd09381b43797c22de`. A full-verification controller
+with SHA-256
+`c11e321909acfa951a269aadff0d0185cb4fa1cc9a22b7e14dc83731418cc420`
+created disposable worker `53511195` at 10:31 UTC. The exact owned worker
+reported intended/cur state `stopped`; actual state first reported running
+and later exited. No SSH verification or Rust test started. Its readback
+also distinguishes eight effective CPU cores from 32 physical cores, and
+uses `disk_space=200` while `disk` is null. These facts exposed controller
+preflight defects, not a model or test failure. The manager terminated the
+controller (exit 143); its EXIT cleanup destroyed the worker and disk.
+Individual strict readback returned `instances: null`, the exact-label
+readback was empty, and the subsequent all-pages account readback reported
+zero instances. The individual readback SHA-256 is
+`817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057`.
+Full Mimi workspace/Clippy/deny/audit verification remains pending. Linux
+verification cannot establish Apple/Metal execution or complete no-fallback.
+
+Kyutai's separate clean candidate is now
+`9950e896a8554f8161a0148a53ac5c77c6a64475`. It includes Clippy hygiene and
+CPU-only visible-context softmax dispatch through the existing native-ISA
+`Compute` path. Non-CPU backends retain batched softmax; no scalar forcing,
+CPU fallback, seed change or tolerance relaxation was added. Synthetic
+self-consistency coverage includes context 1/3 and widths 8/9/12 before and
+after window saturation, with explicit masked zeroes. Root review,
+formatting, diff hygiene and five static repository gates passed. The
+original strict eight-frame streaming test is unchanged; its default-AVX2
+rerun and independent real-weight reference remain pending. Neither this
+candidate nor the failed preflight closes any of the 58 unresolved rows.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
