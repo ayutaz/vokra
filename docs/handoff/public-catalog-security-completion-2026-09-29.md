@@ -779,6 +779,54 @@ next page. There is no retained VAST worker or storage from this restart.
 No model payload, owner approval, numerical pass, artifact upload, or public
 catalog promotion is inferred from these setup and compilation checks.
 
+### Corrected-head Rust verification (08:32 UTC)
+
+The bounded tokenizer import correction is committed at clean candidate head
+`46948802f5fc939d0ba038517cd57504f6e50b87`. A separately reviewed
+single-rent controller (SHA-256
+`2406290da597c7ff305124ce7e29dafb0a53d65409acac16e9fec7076ae972a8`)
+verified that exact head on disposable VAST worker `53495557`. Workspace tests
+completed 324 suites with 8,142 passed, zero failed and 108 ignored. Ignored
+tests supply no verification verdict. Workspace/all-target/all-feature Clippy
+with `-D warnings`, the focused CUDA-feature Realtime test (68 passed, zero
+failed, five ignored), locked cargo-deny and cargo-audit each exited zero.
+Compilation and feature tests are not measured CUDA execution or numerical
+parity with an independent real-weight reference.
+
+All 16 recovered evidence files matched their remote SHA-256 values. The
+observed worktree status was empty and final HEAD matched the target. Raw
+workspace-log SHA-256 is
+`3122f4be1d2dd7faa9429d74dec55686406146fc190263294683431def414ac2`;
+Clippy-log SHA-256 is
+`2f6434160e02910b60902cbb0995cc44558e3b7197f3035e11cb7f5e40cd400b`;
+the recovered packet checksum-list SHA-256 is
+`85b34615e38db28fd7a8ca1202bf97bc5882320c86dba250a928ceca5f36a1a8`.
+Worker `53495557` and its 200-GB storage were destroyed after recovery.
+Strict individual readback returned `instances: null`; a subsequent paginated
+account readback found zero instances and no next page. No model payload was
+downloaded or executed in this job, and no cloud worker was retained.
+
+The metadata/card-only HF audit against code identical to main
+`740cd3b38d2bdb659c4db74f9be0b4bb1bece2e2` still reports 194 public
+repositories, 193 GGUF repositories and 198 files: CPU 136 full, 43 partial,
+14 no-runtime-binder and one non-artifact; Metal 136 full, 57 blocked-by-CPU
+and one non-artifact. Its summary SHA-256 is
+`42efbeee107584ba481691e00b80d1a2853fc5a0ed4743cb2fa144f79ac6ae97`.
+The 58 unresolved rows are unchanged. Same-input correctness and faster
+whole-path measured performance remain prerequisites for GPU selection;
+native CPU, Apple CPU/Metal/no-fallback and publication gates remain open.
+
+### PR integration readback (08:46 UTC)
+
+Documentation PR #183 merged after 56 successful checks, one skip and no
+unfinished or failed check. Its squash commit is
+`a76f8c5317a4284772a4045d382eb86b385094ba`; local main and origin/main
+were fast-forwarded to that head. Draft PR #182 now points to the verified
+`46948802` candidate, and its title/body distinguish Metal dispatch and
+packet-consumer implementation from pending real-weight and Apple evidence.
+Fresh CI on that candidate is running; the draft has not been promoted or
+merged. No publication or model-row completion follows from these PR changes.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
