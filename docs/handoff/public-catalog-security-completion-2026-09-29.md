@@ -2781,6 +2781,73 @@ unaccepted pending complete controller review. No VAST worker was rented
 and no implementation was pushed in this slice; all public/attachment scope
 and real-weight/Apple/publication gates remain open.
 
+### Source-license preparation and production-controller review (21:01 UTC)
+
+Root independently reviewed and committed the four-file safetensors/Diffusers
+source-license preparation slice as
+`2a6cc35a476c817ad624fc626d5b27b78b1f94e7`, based on the accepted Realtime
+dependency candidate `7901e95543bcd45fdf2b535f55db516e037dad8d`. Its standard-library
+self-tests passed 11 and nine tests respectively, including the optional
+saved-primary-record mock collection on this host. These are offline tests,
+not actual Linux collection; the optional tests skip when those saved records
+are absent. The collectors authenticate fixed tag chains, source LICENSE
+bytes and PyPI artifact/Requires-Dist metadata, enforce a whole-run deadline,
+and preserve exclusive bounded output through directory file descriptors.
+Synthetic reports explicitly remain `SYNTHETIC_UNTRUSTED`, including the
+safetensors PyPI license-status field. Root's fresh primary Diffusers tag,
+LICENSE and PyPI readbacks matched the fixed identities; no distribution
+payload was downloaded. Documentation-reference, forbidden-symbol,
+zero-dependency and diff gates passed. Distribution/native and transitive
+license review, owner decisions, API compatibility, real-weight CPU parity,
+Apple/no-fallback and security-alert closure remain open. No upload is implied.
+
+Root also reviewed and committed the two-file FireRed decoder comparator
+preparation slice as `4678f40f4667971a5649e5a71abcf56967fe3ce1`, based on
+the accepted observer preparation `333fc8c5d0f3f300f14f11473d5e6f271eb1841a`.
+The parser retains typed row/layer/cache/candidate/prune observations and
+charges checked container storage before allocation against the unchanged
+128-MiB ledger. The shared comparison helper consumes actual native trace
+getter slices without recomputing decoder arithmetic; synthetic positive and
+drift/resource-negative tests are preparation only. An unconditional OPEN
+abort remains before real model opening. The observer envelope does not
+authorize capture; authenticated capture/provenance/owner binding and the
+source rank-four projected-K/V to native-axis mapping remain unresolved.
+Root independently passed formatting, zero-dependency, forbidden-symbol and
+diff checks. Rust compilation, these new tests and Clippy have not run yet;
+they require a later exact-head VAST batch. No numerical or hardware verdict
+is claimed.
+
+The integrated clone remains frozen at
+`58177c040625f8cb714d2f8689c697e4a441cbe5`, based on main
+`97447185361a37af64c1b30fe87e8e2618d96e20`. Its controller candidate
+`5f833f4ea52fabce29bdbaa5c9e514770b67cdd1dea4693a2dfc1fcb1de24067`
+passed agent-reported offline mocks but is not accepted for rent. Root found
+production-path defects: the source subdirectory violates the flat main
+packet's exact-member check, registry CLI verbosity does not match the named
+test gate, and unescaped remote heredoc variables can expand locally before
+SSH. Source-packet pre-read bounds/pin binding and unnecessary full reference
+provisioning also require correction. Those corrections are delegated before
+any paid execution; the two newer commits above are intentionally not added
+to this frozen batch. Earlier controller mocks are not evidence that these
+production paths work.
+
+The completed read-only HF metadata audit at the integrated head still reports
+194 public repositories, 193 GGUF-bearing repositories and 198 files; CPU
+code/artifact classifications remain 136 full, 43 partial, 14 without a runtime
+binder and one non-artifact, with 58 unresolved rows. Metal remains 136 full,
+57 blocked by CPU and one non-artifact. This is not a real-weight or Apple
+completion verdict. All public rows and the attachment's artifact, provenance,
+legal and security tasks remain in scope. The user's GPU preference is applied
+when supported operations and unchanged precision yield a setup/transfer-inclusive
+speed advantage; independent CPU reference and final Apple CPU/Metal/no-fallback
+remain mandatory. This source/Cargo-only batch is CPU-oriented. No model ran
+locally and no implementation was pushed in this slice.
+
+The fresh all-pages VAST readback returned `success=true`, `instances=[]`,
+`total_instances=0` and `next_token=null`; the independent
+`show volumes --type all --raw` read returned `[]`. No VAST worker was rented
+in this slice and no retained compute or separate storage volume was found.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
