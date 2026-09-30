@@ -53,9 +53,9 @@ use crate::csm::backbone::xavier_uniform;
 
 /// Hot ops the Mimi neural chain dispatches (im2col-GEMM convolutions +
 /// transformer GEMM/softmax/LayerNorm/GELU + the learned LayerScale residual
-/// update). RVQ nearest-codebook search and the remaining host-layout glue are
-/// still intentionally outside this registry; this is not a claim of full
-/// Metal residency or GPU speedup.
+/// update). RVQ nearest-codebook search is included through the dedicated
+/// batch seam; remaining host-layout glue is still outside this registry. This
+/// is not a claim of full Metal residency or GPU speedup.
 pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Gemv,
@@ -64,6 +64,7 @@ pub(crate) const MIMI_HOT_OPS: &[HotOp] = &[
     HotOp::Gelu,
     HotOp::Elu,
     HotOp::ResidualScaleAdd,
+    HotOp::MimiRvqEncode,
 ];
 
 /// One SEANet residual block (assembled).
@@ -148,6 +149,8 @@ pub struct MimiEncoderState {
     /// RVQ sweep (M5-14 Wave-2 T19).
     proj_all: Vec<f32>,
     rest_all: Vec<f32>,
+    /// One contiguous code-index scratch row reused for every codebook batch.
+    rvq_codes: Vec<u32>,
 }
 
 impl std::fmt::Debug for MimiEncoderState {
@@ -188,6 +191,7 @@ impl MimiEncoderState {
         self.elu.fill(0.0);
         self.proj_all.fill(0.0);
         self.rest_all.fill(0.0);
+        self.rvq_codes.fill(0);
     }
 }
 
@@ -580,6 +584,7 @@ impl MimiEncoder {
             elu: vec![0.0; elu_cap],
             proj_all: vec![0.0; frames_cap * self.config.quantizer.dimension],
             rest_all: vec![0.0; frames_cap * self.config.quantizer.dimension],
+            rvq_codes: vec![0; frames_cap],
         })
     }
 
@@ -886,25 +891,49 @@ impl MimiEncoder {
             None => {
                 // Plain chain over every codebook, frame-inner.
                 for (cb, (table, table_t)) in self.tables.iter().zip(&self.tables_t).enumerate() {
+                    compute.mimi_rvq_encode_f32(
+                        n_frames,
+                        q_dim,
+                        table.codebook_size,
+                        &mut state.proj_all[..n_frames * q_dim],
+                        &mut state.rvq_codes[..n_frames],
+                        &table.data,
+                        table_t,
+                    )?;
                     for f in 0..n_frames {
-                        let r = &mut state.proj_all[f * q_dim..(f + 1) * q_dim];
-                        codes_out[f * n_qs + cb] = rvq_quantize_one_t(table, table_t, r)?;
+                        codes_out[f * n_qs + cb] = state.rvq_codes[f];
                     }
                 }
             }
             Some(_) => {
                 // Semantic split: codebook 0 over `input_proj(x)`.
+                let semantic = &self.tables[0];
+                compute.mimi_rvq_encode_f32(
+                    n_frames,
+                    q_dim,
+                    semantic.codebook_size,
+                    &mut state.proj_all[..n_frames * q_dim],
+                    &mut state.rvq_codes[..n_frames],
+                    &semantic.data,
+                    &self.tables_t[0],
+                )?;
                 for f in 0..n_frames {
-                    let r = &mut state.proj_all[f * q_dim..(f + 1) * q_dim];
-                    codes_out[f * n_qs] =
-                        rvq_quantize_one_t(&self.tables[0], &self.tables_t[0], r)?;
+                    codes_out[f * n_qs] = state.rvq_codes[f];
                 }
                 // Acoustic split: codebooks 1.. chain over `input_proj_rest(x)`.
                 for cb in 1..n_qs {
-                    let (table, table_t) = (&self.tables[cb], &self.tables_t[cb]);
+                    let table = &self.tables[cb];
+                    compute.mimi_rvq_encode_f32(
+                        n_frames,
+                        q_dim,
+                        table.codebook_size,
+                        &mut state.rest_all[..n_frames * q_dim],
+                        &mut state.rvq_codes[..n_frames],
+                        &table.data,
+                        &self.tables_t[cb],
+                    )?;
                     for f in 0..n_frames {
-                        let r = &mut state.rest_all[f * q_dim..(f + 1) * q_dim];
-                        codes_out[f * n_qs + cb] = rvq_quantize_one_t(table, table_t, r)?;
+                        codes_out[f * n_qs + cb] = state.rvq_codes[f];
                     }
                 }
             }
@@ -1040,6 +1069,7 @@ pub(crate) fn rvq_quantize_chain_t(
 /// `residual` (same distance chains and `<` lowest-index tie-break as the
 /// row-major scan — see [`rvq_quantize_chain_t`]), then subtracts the
 /// winner row from `residual` in place. Returns the winner index.
+#[cfg(test)]
 pub(crate) fn rvq_quantize_one_t(
     table: &CodebookTable,
     table_t: &[f32],
@@ -1292,6 +1322,7 @@ mod tests {
     fn mimi_backend_gate_declares_elu_and_refuses_uncovered_backend() {
         assert!(MIMI_HOT_OPS.contains(&HotOp::Elu));
         assert!(MIMI_HOT_OPS.contains(&HotOp::ResidualScaleAdd));
+        assert!(MIMI_HOT_OPS.contains(&HotOp::MimiRvqEncode));
         assert!(Compute::for_backend(BackendKind::Vulkan, MIMI_HOT_OPS).is_err());
     }
 
@@ -1481,6 +1512,49 @@ mod tests {
 
             assert_eq!(got_codes, want_codes, "codes ({bins}x{d_model}x{n_q})");
             assert_eq!(got_res, want_res, "residual ({bins}x{d_model}x{n_q})");
+        }
+    }
+
+    #[test]
+    fn compute_rvq_encode_batch_matches_existing_transposed_helper() {
+        for &bins in &[1usize, 31, 32, 33, 65] {
+            let d_model = 4usize;
+            let frames = 3usize;
+            let data: Vec<f32> = (0..bins * d_model)
+                .map(|i| (i as f32 - 9.0) * 0.0625)
+                .collect();
+            let table = CodebookTable::new(bins, d_model, data).unwrap();
+            let tables_t = transpose_tables(std::slice::from_ref(&table));
+            let mut got_residuals = vec![
+                0.25f32, -0.5, 1.25, 2.0, -1.0, 0.75, 0.5, -2.25, 3.0, 1.5, -0.25, 0.125,
+            ];
+            let mut got_codes = vec![u32::MAX; frames];
+            Compute::cpu()
+                .mimi_rvq_encode_f32(
+                    frames,
+                    d_model,
+                    bins,
+                    &mut got_residuals,
+                    &mut got_codes,
+                    &table.data,
+                    &tables_t[0],
+                )
+                .unwrap();
+
+            let mut want_residuals = vec![
+                0.25f32, -0.5, 1.25, 2.0, -1.0, 0.75, 0.5, -2.25, 3.0, 1.5, -0.25, 0.125,
+            ];
+            let mut want_codes = vec![0u32; frames];
+            for frame in 0..frames {
+                want_codes[frame] = rvq_quantize_one_t(
+                    &table,
+                    &tables_t[0],
+                    &mut want_residuals[frame * d_model..(frame + 1) * d_model],
+                )
+                .unwrap();
+            }
+            assert_eq!(got_codes, want_codes, "bins={bins}");
+            assert_eq!(got_residuals, want_residuals, "bins={bins}");
         }
     }
 

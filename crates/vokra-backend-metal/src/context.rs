@@ -2722,6 +2722,83 @@ kernel void vokra_fir_resample_2d_f32(
 }
 "#;
 
+/// Dedicated Mimi RVQ encoder kernels. This library is compiled with
+/// `fastMathEnabled = false`; the existing shared kernel library keeps its
+/// historical compile options and is intentionally unchanged.
+const MIMI_RVQ_ENCODE_MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+
+#pragma clang fp contract(off)
+
+struct MimiRvqEncodeDims {
+    uint frames;
+    uint codebook_size;
+    uint d_model;
+};
+
+kernel void vokra_mimi_rvq_encode_distance_f32(
+    device const float* residuals [[buffer(0)]],
+    device const float* table_t [[buffer(1)]],
+    device float* distances [[buffer(2)]],
+    constant MimiRvqEncodeDims& d [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint total = d.frames * d.codebook_size;
+    if (gid >= total) {
+        return;
+    }
+    const uint frame = gid / d.codebook_size;
+    const uint entry = gid % d.codebook_size;
+    float distance = 0.0f;
+    for (uint dim = 0u; dim < d.d_model; ++dim) {
+        const float diff = residuals[frame * d.d_model + dim]
+            - table_t[dim * d.codebook_size + entry];
+        distance += diff * diff;
+    }
+    distances[gid] = distance;
+}
+
+kernel void vokra_mimi_rvq_encode_argmin_f32(
+    device const float* distances [[buffer(0)]],
+    device uint* codes [[buffer(1)]],
+    constant MimiRvqEncodeDims& d [[buffer(2)]],
+    uint frame [[thread_position_in_grid]])
+{
+    if (frame >= d.frames) {
+        return;
+    }
+    uint best = 0u;
+    float best_distance = INFINITY;
+    for (uint entry = 0u; entry < d.codebook_size; ++entry) {
+        const float distance = distances[frame * d.codebook_size + entry];
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = entry;
+        }
+    }
+    codes[frame] = best;
+}
+
+kernel void vokra_mimi_rvq_encode_subtract_f32(
+    device const float* residuals [[buffer(0)]],
+    device const float* table [[buffer(1)]],
+    device const uint* codes [[buffer(2)]],
+    device float* out [[buffer(3)]],
+    constant MimiRvqEncodeDims& d [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint total = d.frames * d.d_model;
+    if (gid >= total) {
+        return;
+    }
+    const uint frame = gid / d.d_model;
+    const uint dim = gid % d.d_model;
+    const uint entry = codes[frame];
+    out[gid] = residuals[gid] - table[entry * d.d_model + dim];
+}
+"#;
+
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
 /// Field order and `u32` widths mirror the MSL `struct GemmDims`.
 #[repr(C)]
@@ -2920,6 +2997,16 @@ struct EluDims {
 struct LinearAbsDims {
     channels: u32,
     time: u32,
+}
+
+/// Dedicated Mimi RVQ encoder dimensions. Field order and widths mirror the
+/// `MimiRvqEncodeDims` MSL struct in the precise-math encoder library.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MimiRvqEncodeDims {
+    frames: u32,
+    codebook_size: u32,
+    d_model: u32,
 }
 
 #[repr(C)]
@@ -3748,6 +3835,11 @@ pub struct MetalContext {
     /// respective factorized-projection / plain-fold arms are wired (each will
     /// land its own kernel or reuse this one — coverage flags stay per-op).
     mimi_rvq_gather_fold_pipeline: Id,
+    /// Dedicated precise-math Mimi RVQ encoder passes: distance, argmin, and
+    /// residual subtraction. The library is compiled with fast math disabled.
+    mimi_rvq_encode_distance_pipeline: Id,
+    mimi_rvq_encode_argmin_pipeline: Id,
+    mimi_rvq_encode_subtract_pipeline: Id,
     /// M4-04 dac_rvq gather + factorized projection + FP32 fold
     /// (`vokra_dac_rvq_gather_project_fold_f32`), the GPU implementation of
     /// `vokra_ops::dac_rvq::dac_rvq_decode`. Distinct from
@@ -4081,6 +4173,36 @@ impl MetalContext {
         // SAFETY: as above.
         let mimi_rvq_gather_fold_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_mimi_rvq_gather_fold_f32") }?;
+        // Mimi RVQ encode is intentionally compiled in a separate library
+        // with MTLCompileOptions.fastMathEnabled = false. Do not alter the
+        // shared library's long-standing math mode for unrelated kernels.
+        let rvq_encode_lib =
+            unsafe { compile_precise_library(device, MIMI_RVQ_ENCODE_MSL, "mimi_rvq_encode") }?;
+        // SAFETY: device is valid and the dedicated library owns these functions.
+        let mimi_rvq_encode_distance_pipeline = unsafe {
+            make_pipeline(
+                device,
+                rvq_encode_lib.0,
+                c"vokra_mimi_rvq_encode_distance_f32",
+            )
+        }?;
+        // SAFETY: device is valid and the dedicated library owns these functions.
+        let mimi_rvq_encode_argmin_pipeline = unsafe {
+            make_pipeline(
+                device,
+                rvq_encode_lib.0,
+                c"vokra_mimi_rvq_encode_argmin_f32",
+            )
+        }?;
+        // SAFETY: device is valid and the dedicated library owns these functions.
+        let mimi_rvq_encode_subtract_pipeline = unsafe {
+            make_pipeline(
+                device,
+                rvq_encode_lib.0,
+                c"vokra_mimi_rvq_encode_subtract_f32",
+            )
+        }?;
+        drop(rvq_encode_lib);
         // M4-04 dac_rvq gather + factorized projection + FP32 fold; shares the
         // same library. Distinct kernel because DAC folds W · low + b per
         // quantizer into the gather (see `KERNELS_MSL` module docs).
@@ -4235,6 +4357,9 @@ impl MetalContext {
             ouve_annealed_langevin_pipeline: ouve_annealed_langevin_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
             mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
+            mimi_rvq_encode_distance_pipeline: mimi_rvq_encode_distance_pipeline.into_raw(),
+            mimi_rvq_encode_argmin_pipeline: mimi_rvq_encode_argmin_pipeline.into_raw(),
+            mimi_rvq_encode_subtract_pipeline: mimi_rvq_encode_subtract_pipeline.into_raw(),
             dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
             wavtokenizer_vq_gather_pipeline: wavtokenizer_vq_gather_pipeline.into_raw(),
             xcodec2_fsq_decode_pipeline: xcodec2_fsq_decode_pipeline.into_raw(),
@@ -6887,6 +7012,140 @@ impl MetalContext {
         let mut out = vec![0.0_f32; out_len];
         read_back(&out_buf, &mut out)?;
         Ok(out)
+    }
+
+    /// Metal Mimi RVQ encode for one codebook. Distance, deterministic
+    /// lowest-index argmin, and residual subtraction are three device passes;
+    /// the host only receives final outputs after all passes succeed.
+    #[allow(clippy::too_many_arguments)] // intrinsic one-codebook batch shape
+    pub fn mimi_rvq_encode_f32(
+        &self,
+        frames: usize,
+        d_model: usize,
+        codebook_size: usize,
+        residuals: &[f32],
+        table: &[f32],
+        table_t: &[f32],
+    ) -> Result<(Vec<u32>, Vec<f32>)> {
+        if d_model == 0 || codebook_size == 0 {
+            return Err(VokraError::InvalidArgument(
+                "mimi_rvq_encode_f32: d_model and codebook_size must be > 0".into(),
+            ));
+        }
+        let residual_len = checked_mul(frames, d_model, "mimi_rvq_encode_f32 frames*d_model")?;
+        let table_len = checked_mul(
+            codebook_size,
+            d_model,
+            "mimi_rvq_encode_f32 codebook_size*d_model",
+        )?;
+        let distance_len = checked_mul(
+            frames,
+            codebook_size,
+            "mimi_rvq_encode_f32 frames*codebook_size",
+        )?;
+        checked_u32(frames, "mimi_rvq_encode_f32 frames")?;
+        checked_u32(d_model, "mimi_rvq_encode_f32 d_model")?;
+        checked_u32(codebook_size, "mimi_rvq_encode_f32 codebook_size")?;
+        checked_u32(residual_len, "mimi_rvq_encode_f32 residual length")?;
+        checked_u32(table_len, "mimi_rvq_encode_f32 table length")?;
+        checked_u32(distance_len, "mimi_rvq_encode_f32 distance length")?;
+        expect_len(
+            "mimi_rvq_encode_f32 residuals",
+            residuals.len(),
+            residual_len,
+        )?;
+        expect_len("mimi_rvq_encode_f32 table", table.len(), table_len)?;
+        expect_len("mimi_rvq_encode_f32 table_t", table_t.len(), table_len)?;
+        if frames == 0 {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        // SAFETY: the pool token is consumed exactly once below; all temporary
+        // Objective-C/Metal objects are bounded by this host-in/host-out call.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_mimi_rvq_encode(
+            frames,
+            d_model,
+            codebook_size,
+            residuals,
+            table,
+            table_t,
+            distance_len,
+        );
+        // SAFETY: `pool` is the token returned by the immediately preceding
+        // push and has not been consumed on any other path.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_mimi_rvq_encode(
+        &self,
+        frames: usize,
+        d_model: usize,
+        codebook_size: usize,
+        residuals: &[f32],
+        table: &[f32],
+        table_t: &[f32],
+        distance_len: usize,
+    ) -> Result<(Vec<u32>, Vec<f32>)> {
+        let residual_buf = self.new_buffer_from_slice(residuals)?;
+        let table_buf = self.new_buffer_from_slice(table)?;
+        let table_t_buf = self.new_buffer_from_slice(table_t)?;
+        let distance_buf = self.new_buffer_output(distance_len)?;
+        // u32 and f32 have identical element widths; this buffer is bound only
+        // to the argmin pass as a uint buffer.
+        let codes_buf = self.new_buffer_output(frames)?;
+        let out_buf = self.new_buffer_output(residuals.len())?;
+        let dims = MimiRvqEncodeDims {
+            frames: checked_u32(frames, "mimi_rvq_encode_f32 frames")?,
+            codebook_size: checked_u32(codebook_size, "mimi_rvq_encode_f32 codebook_size")?,
+            d_model: checked_u32(d_model, "mimi_rvq_encode_f32 d_model")?,
+        };
+        let (distance_grid, distance_tg) = grid_1d(distance_len);
+        self.dispatch_compute(
+            self.mimi_rvq_encode_distance_pipeline,
+            &[&residual_buf, &table_t_buf, &distance_buf],
+            (&dims as *const MimiRvqEncodeDims).cast::<c_void>(),
+            size_of::<MimiRvqEncodeDims>(),
+            distance_grid,
+            distance_tg,
+            "mimi_rvq_encode_distance",
+        )?;
+        let (argmin_grid, argmin_tg) = grid_1d(frames);
+        self.dispatch_compute(
+            self.mimi_rvq_encode_argmin_pipeline,
+            &[&distance_buf, &codes_buf],
+            (&dims as *const MimiRvqEncodeDims).cast::<c_void>(),
+            size_of::<MimiRvqEncodeDims>(),
+            argmin_grid,
+            argmin_tg,
+            "mimi_rvq_encode_argmin",
+        )?;
+        let (subtract_grid, subtract_tg) = grid_1d(residuals.len());
+        self.dispatch_compute(
+            self.mimi_rvq_encode_subtract_pipeline,
+            &[&residual_buf, &table_buf, &codes_buf, &out_buf],
+            (&dims as *const MimiRvqEncodeDims).cast::<c_void>(),
+            size_of::<MimiRvqEncodeDims>(),
+            subtract_grid,
+            subtract_tg,
+            "mimi_rvq_encode_subtract",
+        )?;
+
+        let mut codes = vec![0u32; frames];
+        let code_ptr = unsafe { sys::send_ptr(codes_buf.0, sys::sel(b"contents\0")) } as *const u32;
+        if code_ptr.is_null() {
+            return Err(VokraError::BackendUnavailable(
+                "mimi_rvq_encode argmin output contents pointer is null".into(),
+            ));
+        }
+        // SAFETY: the output buffer has `frames * sizeof(f32)` bytes, exactly
+        // the width needed for `frames` u32 values; all passes have completed.
+        unsafe { core::ptr::copy_nonoverlapping(code_ptr, codes.as_mut_ptr(), frames) };
+        let mut out = vec![0.0f32; residuals.len()];
+        read_back(&out_buf, &mut out)?;
+        Ok((codes, out))
     }
 
     /// M4-04: DAC (Descript) factorized RVQ decode — gather + per-quantizer
@@ -11868,6 +12127,9 @@ impl Drop for MetalContext {
             release(self.snake_activation_pipeline);
             release(self.xcodec2_fsq_decode_pipeline);
             release(self.wavtokenizer_vq_gather_pipeline);
+            release(self.mimi_rvq_encode_subtract_pipeline);
+            release(self.mimi_rvq_encode_argmin_pipeline);
+            release(self.mimi_rvq_encode_distance_pipeline);
             release(self.dac_rvq_gather_project_fold_pipeline);
             release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
@@ -12729,6 +12991,40 @@ fn opt_buf_or<'a>(bias: Option<&'a OwnedBuf>, dummy: &'a OwnedBuf) -> &'a OwnedB
 /// # Safety
 /// `device` must be a valid, non-null `MTLDevice`.
 unsafe fn compile_library(device: Id, source: &str, what: &str) -> Result<Owned> {
+    // SAFETY: the caller upholds the device contract; nil options select the
+    // historical default compile mode.
+    unsafe { compile_library_with_options(device, source, what, core::ptr::null_mut()) }
+}
+
+/// Compiles the dedicated Mimi RVQ encoder library with Metal fast math
+/// disabled. Apple documents the default as enabled; this narrow option keeps
+/// the existing shared library unchanged while avoiding an implicit fast-math
+/// choice for the learned nearest-search path. This is not a mathematical
+/// bit-identity claim for GPU vs CPU.
+unsafe fn compile_precise_library(device: Id, source: &str, what: &str) -> Result<Owned> {
+    // SAFETY: `class`/`sel` return the loaded Objective-C class and selector;
+    // `new` returns a +1 MTLCompileOptions object, which `Owned` releases.
+    let options =
+        Owned(unsafe { sys::send_id(sys::class(b"MTLCompileOptions\0"), sys::sel(b"new\0")) });
+    if options.0.is_null() {
+        return Err(VokraError::BackendUnavailable(
+            "MTLCompileOptions new returned nil".to_owned(),
+        ));
+    }
+    // SAFETY: `options` is a valid MTLCompileOptions object and the selector
+    // takes the Objective-C BOOL value false. This only affects this library.
+    unsafe { send_void_bool(options.0, sys::sel(b"setFastMathEnabled:\0"), false) };
+    // SAFETY: the caller upholds the device contract and `options` remains
+    // alive for the duration of library creation.
+    unsafe { compile_library_with_options(device, source, what, options.0) }
+}
+
+unsafe fn compile_library_with_options(
+    device: Id,
+    source: &str,
+    what: &str,
+    options: Id,
+) -> Result<Owned> {
     let csource = std::ffi::CString::new(source).map_err(|_| {
         VokraError::InvalidArgument(format!("{what} MSL source contains an interior NUL"))
     })?;
@@ -12742,14 +13038,15 @@ unsafe fn compile_library(device: Id, source: &str, what: &str) -> Result<Owned>
         )
     };
     let mut err: Id = core::ptr::null_mut();
-    // SAFETY: `newLibraryWithSource:options:error:` on a valid device; nil options
-    // selects defaults; `&mut err` receives an autoreleased NSError on failure.
+    // SAFETY: `newLibraryWithSource:options:error:` on a valid device; options
+    // is either nil or a live MTLCompileOptions object; `&mut err` receives an
+    // autoreleased NSError on failure.
     let library = unsafe {
         sys::send_new_library(
             device,
             sys::sel(b"newLibraryWithSource:options:error:\0"),
             ns_source,
-            core::ptr::null_mut(),
+            options,
             &mut err,
         )
     };
@@ -12761,6 +13058,18 @@ unsafe fn compile_library(device: Id, source: &str, what: &str) -> Result<Owned>
         )));
     }
     Ok(Owned(library))
+}
+
+/// Sends Objective-C `-(void)setFastMathEnabled:(BOOL)` through the exact
+/// arm64 ABI signature. Kept local because the public sys surface only needs
+/// the read-side BOOL helper for device-family probes.
+unsafe fn send_void_bool(recv: Id, sel: sys::Sel, value: bool) {
+    // SAFETY: caller guarantees `recv` is an MTLCompileOptions object and `sel`
+    // is `setFastMathEnabled:`; Objective-C BOOL is one byte on Apple targets.
+    let f: unsafe extern "C" fn(Id, sys::Sel, bool) =
+        unsafe { core::mem::transmute(sys::objc_msgSend as unsafe extern "C" fn()) };
+    // SAFETY: selector and argument match the declared function signature.
+    unsafe { f(recv, sel, value) };
 }
 
 /// Builds a compute pipeline for the function named `fname` in `library`
