@@ -1394,6 +1394,37 @@ closed. The historical five-finding scope remains in the final audit, with
 current per-finding disposition still required. No alert was dismissed to
 obtain these counts, and no protected owner manifest was inspected.
 
+### Integrated PRs and active Kyutai replay (13:02 UTC)
+
+PR #186's new CI exposed two genuine source-gate failures at `a84817d4`:
+`cargo-semver-checks` rejected additions to the public exhaustive `HotOp`
+enum and changes to existing implicit discriminants; the Apple Metal build
+passed, but Metal Clippy rejected two undocumented unsafe blocks. These
+failures are not waived or attributed to flakiness. A bounded API-preserving
+capability correction and accurate safety comments are under implementation
+review. The green Linux packet above remains evidence for its named head,
+not proof that this PR is currently mergeable or that Apple parity passed.
+
+XCodec2's accepted source candidate was integrated conflict-free with actual
+main as `35e4c70e830a675e3f9a124347e8fa3d23b77373` and pushed to
+[draft PR #152](https://github.com/ayutaz/vokra/pull/152). Against main,
+changes are restricted to its dedicated reference directory; all runtime
+source remains byte-identical to main. Root independently passed the static
+inspector and builder self-tests. The first builder invocation with Python
+isolated mode failed sibling-module resolution before any audit; the ordinary
+stdlib-only `-S` invocation then passed. The implementer reports 21 named
+stdlib tests and dependency self-tests green. New CI is pending. No package
+closure approval, real-weight run, public-row completion or upload is inferred.
+
+The new Kyutai replay owns worker `53528022` (200-GB disk) at integrated
+head `27060dd2`. Actual EPYC 7713 default Avx2 and forced Scalar each passed
+exactly four tests with zero failures or ignores. The serial workspace leg
+is actively running; no final result is recorded yet. A fresh terminal
+all-pages account read contains only this exact owned, running worker. It is
+needed for current verification, and its controller will recover evidence
+then destroy it on both success and failure. No idle retained worker or HF
+token transfer was introduced. Scaleway has not been newly allocated.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
