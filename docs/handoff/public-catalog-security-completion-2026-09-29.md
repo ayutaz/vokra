@@ -1237,6 +1237,58 @@ The live coverage classification remains 136 code/artifact-full and 58
 unresolved public rows. No source regression result above promotes an
 independent-reference or Apple gate, and no public artifact was uploaded.
 
+### Kyutai same-CPU regression and queued Mimi integration (12:22 UTC)
+
+The endpoint-parser correction passed independent offline regression checks.
+The next Kyutai setup attempt, worker `53522056`, reached SSH/bootstrap but
+failed the explicit AMD EPYC 7713 CPU-model guard: the manager had selected a
+Xeon offer without checking that requirement. This was a host-selection error,
+not a Rust test result. The guard was not weakened. The worker and its 200-GB
+disk were destroyed, with successful strict individual and label readbacks.
+
+A subsequent replay of the same frozen Kyutai head
+`1dacaa14c77b07eba75df5d3ad4539d2ccf5afc6` on worker `53522575` observed
+the required AMD EPYC 7713 CPU. Default execution explicitly reported Avx2;
+forced Scalar execution explicitly reported Scalar. Each selection passed
+four tests with zero failures or ignores. The additional context-boundary
+selection passed one test, and all-feature library/tests Clippy exited zero.
+The original strict synthetic step/full assertion was not relaxed. These
+results close that focused regression, not independent upstream, real-weight,
+workspace-wide or Apple parity. All 16 packet entries passed independent
+SHA-256 verification. Final HEAD matched and observed worktree status was
+empty. Manifest SHA-256:
+`6e96a73409891c6bb7a7e164fd8d6ee27e9c0e1f9251e4986a3881e54815a35b`.
+Controller exit, recovery, destroy and strict individual/label readbacks
+passed; the worker and its 200-GB disk were destroyed. A later all-pages
+account read returned zero instances and a terminal null next token.
+
+The reviewed Mimi RVQ encode dispatch was committed as
+`e5dd3b703e906d538aab03bbd4d88c6bdee2cdc7`. It adds a genuine Metal
+distance/argmin/residual route, deterministic tie ordering and fail-closed
+shape/backend checks. The attention, LayerScale and RVQ slices were then
+integrated on the actual main base
+`81d72f2317a3bd2462cb7abbca15ac55b7518d56` as clean head
+`a84817d43a01bac0fb3d93c5f58d805d214aa72d`. Its complete tree matches
+the frozen RVQ source; independent formatting and static gates passed.
+The reviewed full-regression controller is bound to this exact head and to
+eight required named focused tests. Its SHA-256 is
+`28c8d1805244c5328dad472275e8cd56dae1eff1574767b6a1b43bf87168090e`.
+The first rent request returned `no_such_ask` because that offer was no longer
+available. Both exact-label and all-pages account readbacks were empty; no
+test or cleanup success is inferred from an unknown instance ID. A separately
+reviewed fresh offer is being used for the next single-rent attempt. Full
+Linux and actual Apple results at `a84817d4` are still pending; the earlier
+`e49ca0c5` packet is not relabelled as evidence for this integration.
+
+Source-only investigation also confirmed that the existing upstream Mimi
+fixture exercises eight-codebook RVQ decode, not the complete 32-codebook
+STT encode/decode contract. Independent real-weight codes/PCM, Apple CPU,
+Metal/no-fallback execution and transfer-inclusive speed measurements remain
+open. GPU use is preferred only where correctness and measured end-to-end
+speed support it; mandatory CPU verification is retained. No model was
+executed locally and no public artifact was uploaded. The live classification
+remains 136 code/artifact-full and 58 unresolved public rows.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
