@@ -755,6 +755,30 @@ rows and the separate artifact/security/Apple work remain in scope. GPU
 selection still requires same-input correctness and a faster measured whole
 path; it does not waive the mandatory CPU or Apple/no-fallback checks.
 
+### Termination of the restarted verification (08:15 UTC)
+
+The restart above reached actual Rust compilation but stopped at
+`workspace-test` with exit code 101. The unmerged candidate's integration test
+`parity_vibevoice_realtime_streaming.rs` imports
+`VibeVoiceRealtimeTokenizer` from the parent module, whereas the public type
+is under `vibevoice_streaming::tokenizer`. This is a compile failure, not a
+numerical-parity failure or a hardware result. Workspace tests did not
+complete; all-feature Clippy, the focused CUDA-feature test, deny and audit
+were not reached. The recovered full workspace log SHA-256 is
+`f66c5659d56a0c7b0be4953cbe64f600c771141f56eb07e9902ae6ad6e0e2463`.
+Eight recovered evidence files passed their remote/local SHA-256 comparison;
+the final HEAD is the exact `8dd161e1` target and its observed worktree status
+is empty. The bounded import correction is assigned for implementation review
+before another fixed-head verification.
+
+Worker `53494404` and its 200-GB storage were destroyed. The destroy command
+returned zero, strict individual readback returned `instances: null`
+(SHA-256 `817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057`),
+and a subsequent all-pages account readback reported zero instances with no
+next page. There is no retained VAST worker or storage from this restart.
+No model payload, owner approval, numerical pass, artifact upload, or public
+catalog promotion is inferred from these setup and compilation checks.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
