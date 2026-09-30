@@ -1652,7 +1652,7 @@ unrelated instance. An initial read-only attempt using unsupported
 `--all-pages` exited two; the correct `--all` query succeeded with no next
 page. Catalog scope remains 194 rows, 136 code/artifact-full and 58 unresolved.
 
-### Integrated Mimi nine-leg verification started (14:22 UTC)
+### Integrated Mimi nine-leg verification started (14:18 UTC)
 
 Root reviewed the frozen controller for clean integrated HEAD
 `00632846da5b11b3225c2864b7f75b41d1b9a4f3`, based on merged `main`
