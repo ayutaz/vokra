@@ -925,6 +925,56 @@ slice. The catalog denominator remains 58 unresolved rows. The GPU execution
 policy still requires same-input correctness and faster measured whole-path
 time, including transfers; mandatory CPU and Apple/no-fallback gates remain.
 
+### XCodec2 model-free collection and stage-trace preparation (10:13 UTC)
+
+The frozen clean XCodec2 collector at
+`097c5884053092d07d758e7a60854a4c9ed95318` ran on disposable VAST
+worker `53508157`, using the reviewed offer `51324724` (eight effective
+CPU cores, 128,983 MB advertised RAM, 200-GB requested disk). The collector's
+Linux Python-3.12 environment exactly matched all 62 external lock rows;
+the reachable closure includes one additional first-party project row.
+It collected 56 package/license evidence rows and reported six factual
+failures, so its verdict remains `BLOCKED_FACTUAL_COLLECTION` / `NO_UPLOAD`.
+These are not owner approvals or model-parity results.
+
+The failures were repeated-download `FileExistsError` for the locked Antlr
+and XCodec2 source archives, unsupported wheel `.data` relocation for Dill
+and SymPy, the bounded publisher-RECORD selection for setuptools, and the
+archive member-count bound for Torch. Fixing collection mechanics must not
+approve unverified source-built payloads, infer a license grant or silently
+relax archive safety limits. All license rows remain unresolved; NumPy's
+bundled GPL-with-GCC-exception/LGPL components still require disposition.
+
+The isolated collector wrapper reported no Torch/XCodec2 model-code imports
+before or after collection. The setup phase's sdist build hooks are explicitly
+`UNTRUSTED_NOT_ASSESSED`; the collector guard is not proof that setup executed
+no package code. No model checkpoint, audio, forward, Cargo or upload task was
+requested or recorded in this run. All 15 recovered manifest entries passed
+local SHA-256 verification, final HEAD matched the target and observed Git
+status was empty. Report SHA-256 is
+`ea811881c0c20faa47a140c17e4095d1ab9e006def0cae25a14b598571cc3b32`;
+manifest SHA-256 is
+`f2f4febbbb1aff8ddc9e991e60a520c237714040ece44453b69eae1dfea7660a`.
+
+The collector and remote shell both exited 2. The historical controller
+`c1af86a7938eaf78501c353915d439185d53587103940293b813c5e731af8957`
+incorrectly returned zero because cleanup overwrote its global exit-code
+variable. Its zero is not a green verdict. The subsequently reviewed
+controller preserves the original exit with an offline trap regression;
+the recovered report and raw exit files remain authoritative. Recovery,
+destroy and strict individual readback each succeeded; the worker and its
+200-GB disk were destroyed, and the all-pages account readback reported zero
+instances with no next page.
+
+The separate clean Kyutai candidate
+`a987c7a16ae5f9c5400db3a0efad73637f80956f` adds test-only copies immediately
+after the actual full/streaming operations, rather than a diagnostic mirror.
+Replay-integrity checks reject stage interpretation if replayed logits drift
+from the original outputs. Static checks passed; the new focused VAST
+stage-trace run remains pending. Production arithmetic, strict equality and
+numerical bounds are unchanged. Neither slice closes an unresolved public
+row or an Apple/Metal/publication gate; the unresolved denominator remains 58.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
