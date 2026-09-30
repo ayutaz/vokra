@@ -130,4 +130,48 @@ run_python_dict_key_cases() {
 
 run_python_dict_key_cases
 
-echo 'test-vastai-safe.sh: OK (redaction + exit-status preservation)'
+run_destroy_confirmation_cases() {
+  local actual_status
+
+  set +e
+  VASTAI_BIN=/bin/echo "$wrapper" destroy instance 123456 \
+    >"$stdout_file" 2>"$stderr_file"
+  actual_status=$?
+  set -e
+  [[ "$actual_status" == 64 ]] || {
+    echo "vastai-safe self-test: destroy without --yes returned $actual_status" >&2
+    return 1
+  }
+  [[ ! -s "$stdout_file" ]] || {
+    echo 'vastai-safe self-test: rejected destroy reached Vast CLI' >&2
+    return 1
+  }
+  grep -Fqx -- \
+    'vastai-safe.sh: refusing "destroy instance" without explicit --yes' \
+    "$stderr_file" || {
+    echo 'vastai-safe self-test: destroy guard message mismatch' >&2
+    return 1
+  }
+
+  set +e
+  VASTAI_BIN=/bin/echo "$wrapper" destroy instance 123456 --yes \
+    >"$stdout_file" 2>"$stderr_file"
+  actual_status=$?
+  set -e
+  [[ "$actual_status" == 0 ]] || {
+    echo "vastai-safe self-test: confirmed destroy returned $actual_status" >&2
+    return 1
+  }
+  grep -Fqx -- 'destroy instance 123456 --yes' "$stdout_file" || {
+    echo 'vastai-safe self-test: confirmed destroy arguments changed' >&2
+    return 1
+  }
+  [[ ! -s "$stderr_file" ]] || {
+    echo 'vastai-safe self-test: confirmed destroy wrote unexpected stderr' >&2
+    return 1
+  }
+}
+
+run_destroy_confirmation_cases
+
+echo 'test-vastai-safe.sh: OK (redaction + exit-status + destroy confirmation)'

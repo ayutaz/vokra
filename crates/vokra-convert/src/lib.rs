@@ -7053,6 +7053,21 @@ pub fn convert_file_licensed(
                 .into(),
         ));
     }
+    // Realtime-0.5B is an authenticated MIT checkpoint.  Its converter
+    // stamps the exact lowercase MIT/source identity required by the strict
+    // runtime binder, so reject conflicting overrides before reading the
+    // multi-gigabyte input and preserve the pinned stamp for an explicit MIT
+    // spelling as well.
+    if matches!(model, ModelKind::VibeVoiceRealtime) {
+        if let Some(lic) = license {
+            if !lic.eq_ignore_ascii_case("mit") {
+                return Err(ConvertError::Usage(
+                    "vibevoice-realtime-0.5b is pinned to the authenticated MIT checkpoint; --license may only be `mit`"
+                        .to_owned(),
+                ));
+            }
+        }
+    }
     match model {
         ModelKind::Qwen3Tts => {
             return convert_qwen3_tts_file_summary(model, input, output, None, license);
@@ -12030,7 +12045,9 @@ pub fn convert_file_licensed(
     // source's SPDX id (add_string overwrites the key in place, so the model's
     // model_id / source / attribution stamps are preserved — only the licence
     // and its class change).
-    if let Some(lic) = license {
+    if let Some(lic) = license
+        && !matches!(model, ModelKind::VibeVoiceRealtime)
+    {
         let class = vokra_core::LicenseClass::from_license_str(lic);
         builder.add_string(
             vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
@@ -15236,6 +15253,38 @@ mod dia_zonos_inspection_only_tests {
             );
             assert!(!output.exists(), "inspection-only dispatch created output");
         }
+    }
+}
+
+#[cfg(test)]
+mod vibevoice_realtime_license_tests {
+    use super::{ModelKind, convert_file_licensed};
+
+    #[test]
+    fn conflicting_license_override_is_rejected_before_checkpoint_read() {
+        let input = std::env::temp_dir().join(format!(
+            "vokra-vibevoice-realtime-missing-license-{}.safetensors",
+            std::process::id()
+        ));
+        let output = std::env::temp_dir().join(format!(
+            "vokra-vibevoice-realtime-license-{}.gguf",
+            std::process::id()
+        ));
+        assert!(!input.exists(), "test input unexpectedly exists: {input:?}");
+        let error = convert_file_licensed(
+            ModelKind::VibeVoiceRealtime,
+            &input,
+            &output,
+            Some("apache-2.0"),
+        )
+        .expect_err("Realtime must reject a conflicting license before reading input")
+        .to_string();
+        assert!(error.contains("pinned to the authenticated MIT checkpoint"));
+        assert!(
+            !error.contains("I/O error"),
+            "guard ran after read: {error}"
+        );
+        assert!(!output.exists(), "license rejection created output");
     }
 }
 

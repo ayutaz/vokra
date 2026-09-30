@@ -28,7 +28,7 @@ from pathlib import Path
 SPEECHT5_PARITY_DIR = Path(__file__).resolve().parent / "speecht5_tts"
 if str(SPEECHT5_PARITY_DIR) not in sys.path:
     sys.path.insert(0, str(SPEECHT5_PARITY_DIR))
-from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+from torch_compat import require_native_float8_dtype, require_non_quantized_config, self_test as torch_compat_self_test
 from api_smoke import (
     SAFE_TENSOR_LOAD_CONTRACT,
     SAFE_TENSOR_WEIGHT,
@@ -362,7 +362,7 @@ def main() -> int:
     try:
         import numpy as np
         import torch
-        float8_import_compat = install_float8_import_compat(torch)
+        float8_import_compat = require_native_float8_dtype(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
     except ImportError as error:

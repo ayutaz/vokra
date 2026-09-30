@@ -1,8 +1,8 @@
 {
   "gate_version": 1,
-  "lock_sha256": "d124044b0c03ddc91dce362773d36c9ba4b187b78fcdd0c02826e1c6566ff74d",
-  "project_sha256": "94cc65df02993b01f8e9e0fa0eb4c1f7405a6087722eb5a7203a703c4e786611",
-  "package_rows_sha256": "aca70d723a55f63fa518683cc9a5a56995eb14601d0cb598dc5d7ed1f1a0d376",
+  "lock_sha256": "106975f55b96cb1a003acb055fb59680d12f417b72404aca4c4524a3eb54c6ee",
+  "project_sha256": "9e5e594359dfa73c1a37c39207a6ef7825125e2a0bda9d6c32175823a231470d",
+  "package_rows_sha256": "f07aebcaf6385decba9fab1ee08ece8e5b921b82574cf05426e45bc6fbfc45f9",
   "package_rows": [
     {
       "name": "annotated-doc",
@@ -368,7 +368,7 @@
     },
     {
       "name": "torch",
-      "version": "2.7.1+cpu",
+      "version": "2.13.0+cpu",
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
@@ -814,7 +814,7 @@
     },
     {
       "name": "torch",
-      "version": "2.7.1+cpu",
+      "version": "2.13.0+cpu",
       "source": {
         "registry": "https://download.pytorch.org/whl/cpu"
       },
@@ -873,7 +873,7 @@
       "native_bundled_review": "OWNER_REVIEW_REQUIRED"
     }
   ],
-  "package_review_rows_sha256": "8dc1be9119152e63f70e4f1774ba44a93a2fd8675a8521e6eaa299144b639f91",
+  "package_review_rows_sha256": "56ac2dec500d1cc681d1155ba5abc534d4f9cec307ee205a26d92466e3e48716",
   "license_rows": [
     {
       "id": "source-apache",
@@ -1028,14 +1028,24 @@
   },
   "license_file_present": false,
   "reference_route": {
-    "status": "BLOCKED_SECURITY_ADVISORY",
+    "status": "BLOCKED_UNVERIFIED_API_SMOKE",
     "transformers_version": "5.10.4",
     "previous_isolated_transformers_pin": "5.5.0",
     "isolated_transformers_pin": "transformers==5.10.4",
     "transformers_security_advisory": "GHSA-xrqw-3rrv-vx5w",
     "transformers_security_patched_minimum": "5.10.0",
-    "transformers_compatibility_status": "BLOCKED_SECURITY_ADVISORY",
-    "reason": "official AutoModel meta construction requires VAST revalidation without the former vulnerable helper; source and weight access remain blocked",
+    "transformers_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    "previous_isolated_torch_pin": "2.7.1+cpu",
+    "isolated_torch_pin": "torch==2.13.0",
+    "torch_security_advisories": [
+      "GHSA-887c-mr87-cxwp",
+      "GHSA-vgrw-7cvw-pwgx",
+      "GHSA-qfhq-4f3w-5fph",
+      "GHSA-rrmf-rvhw-rf47"
+    ],
+    "torch_security_patched_minimum": "2.13.0",
+    "torch_compatibility_status": "BLOCKED_UNVERIFIED_API_SMOKE",
+    "reason": "official AutoModel meta construction and real-weight API compatibility require authorized VAST revalidation; source and weight access remain blocked",
     "api_path": {
       "config": "transformers.AutoConfig.from_pretrained",
       "model": "transformers.AutoModel.from_config",
@@ -1124,7 +1134,7 @@
       "inspection_vokra_head": "aaace7e51cb42a2b4ea90319e7dd195d3952ae7b",
       "inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE",
       "collection_status": "AUTHENTICATED",
-      "dependency_audit_report_sha256": "5cc7c9dc22331f081af6b50e80244f2805e4006590c4b2b9c828cc68e5dbc5ac",
+      "dependency_audit_report_sha256": "c50199aa53c8659e6ac234ccf1e1af2da56e5be579457df1598ef45619d48eac",
       "dependency_audit_status": "BLOCKED",
       "dependency_audit_package_review_rows": 35,
       "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED",

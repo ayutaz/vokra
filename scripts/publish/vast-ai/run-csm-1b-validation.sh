@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PARITY="$ROOT/tools/parity"
 REFERENCE="$PARITY/csm_1b_dump_reference.py"
 REFERENCE_PROJECT="$PARITY/csm_1b_reference"
-REFERENCE_LOCK_SHA256="62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+REFERENCE_LOCK_SHA256="a6761aee26522ee65fdc6dd5493e4584b11d028dd010ccb19a5a3d06c48b9683"
 GATE="$ROOT/tools/parity/csm_1b_gate.py"
 UV=(uv run --no-sync --frozen --project "$REFERENCE_PROJECT" --python 3.12 python)
 MIN_MEM_KIB=$((128 * 1024 * 1024))
@@ -45,7 +45,7 @@ self_test() {
     echo 'self-test sync must follow the affirmative gate and precede reference execution' >&2; fail=1
   fi
   UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-cache --no-project --offline --python 3.12 python "$GATE" --self-test || fail=1
-  UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-sync --frozen --project "$root/tools/parity" --python 3.12 "$py" "$root/tools/parity/csm_1b_dump_reference.py" --self-test || fail=1
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/private/tmp/csm-uv-cache}" uv run --no-sync --frozen --project "$root/tools/parity/csm_1b_reference" --python 3.12 "$py" "$root/tools/parity/csm_1b_dump_reference.py" --self-test || fail=1
   if bash "$0" --self-test --self-test >/dev/null 2>&1; then echo 'self-test duplicate --self-test accepted' >&2; fail=1; fi
   if bash "$0" --expected-head "$(printf '%040d' 0)" --expected-head "$(printf '%040d' 0)" --approval-evidence /missing --approval-sha256 "$(printf '%064d' 0)" >/dev/null 2>&1; then echo 'self-test duplicate --expected-head accepted' >&2; fail=1; fi
   (( fail == 0 )) && echo 'run-csm-1b-validation.sh self-test: OK' || return 1
@@ -154,7 +154,7 @@ if manifest.get("transformers", {}).get("commit") != "945727948c1143a10ac6f7d811
 environment = manifest.get("reference_environment", {})
 if not isinstance(environment, dict) or not re.fullmatch(r"[0-9a-f]{64}", environment.get("lock_sha256", "")) or environment.get("python") != "3.12":
     raise SystemExit("dedicated reference lock identity is missing")
-if environment.get("lock_sha256") != "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc":
+if environment.get("lock_sha256") != "a6761aee26522ee65fdc6dd5493e4584b11d028dd010ccb19a5a3d06c48b9683":
     raise SystemExit("dedicated reference lock SHA does not match the reviewed lock")
 if environment.get("selection_status") != "REVIEWED_ADAPTED_REFERENCE_ENVIRONMENT_NOT_UPSTREAM_REQUIREMENTS":
     raise SystemExit("reference package selection is missing its adapted-environment disclosure")
@@ -228,10 +228,10 @@ locked_third_party = {row["name"] for row in lock_rows if row["name"] != "vokra-
 audited_third_party = set(audit_expectations) - {"vokra-csm-1b-reference"}
 if audited_third_party != locked_third_party or "vokra-csm-1b-reference" not in audit_expectations:
     raise SystemExit("locked dependency license audit does not cover every package")
-if environment.get("packages", {}).get("numpy") != "2.2.6" or environment.get("packages", {}).get("torch_distribution") not in {"2.7.1", "2.7.1+cpu"} or environment.get("packages", {}).get("transformers") != "5.10.4":
+if environment.get("packages", {}).get("numpy") != "2.2.6" or environment.get("packages", {}).get("torch_distribution") not in {"2.13.0", "2.13.0+cpu"} or environment.get("packages", {}).get("transformers") != "5.10.4":
     raise SystemExit("dedicated reference package versions are not pinned")
 torch_runtime = environment.get("packages", {}).get("torch_runtime")
-if not isinstance(torch_runtime, str) or not re.fullmatch(r"2\.7\.1(?:\+[^+ ]+)?", torch_runtime):
+if not isinstance(torch_runtime, str) or not re.fullmatch(r"2\.13\.0(?:\+[^+ ]+)?", torch_runtime):
     raise SystemExit("runtime torch version is missing or incompatible with the locked distribution")
 identity = manifest.get("inspection_identity", {})
 if identity.get("source_repository") != "https://github.com/SesameAILabs/csm.git" or identity.get("source_revision") != "8f6d947a26f6301deec9696f9bfb28e9e2e0d7d5" or identity.get("transformers_commit") != "945727948c1143a10ac6f7d811aa58bb0d126b5b":

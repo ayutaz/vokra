@@ -1,4 +1,4 @@
-//! Gated real-public-GGUF parity against pinned official Transformers 5.5.0.
+//! Gated real-public-GGUF parity against pinned official Transformers 5.10.4.
 //!
 //! Generate references on VAST through
 //! `scripts/publish/vast-ai/run-bark-validation.sh`. Each variant requires a

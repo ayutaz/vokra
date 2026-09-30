@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import platform
 import struct
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 SCHEMA = "vokra-whisper-extras-reference-v1"
@@ -70,6 +72,98 @@ MODELS = {
 PCM_SAMPLES = 30 * 16_000
 ENCODER_ROWS = 32
 MAX_NEW_TOKENS = 224
+
+
+_API_IMPORT_EXCEPTION_LABELS = (
+    (ModuleNotFoundError, "ModuleNotFoundError"),
+    (ImportError, "ImportError"),
+    (OSError, "OSError"),
+    (RuntimeError, "RuntimeError"),
+    (ValueError, "ValueError"),
+    (AttributeError, "AttributeError"),
+    (TypeError, "TypeError"),
+)
+
+
+def _api_import_failure_message(exc: BaseException) -> str:
+    """Return an import diagnostic without exposing exception text."""
+    for exception_type, label in _API_IMPORT_EXCEPTION_LABELS:
+        if isinstance(exc, exception_type):
+            return f"api self-test: official API import failed: {label}"
+    return "api self-test: official API import failed: Exception"
+
+
+def _api_import_diagnostic_self_test() -> None:
+    """Ensure simulated dependency errors cannot leak their message."""
+    secret = "credential=/private/tmp/secret-token"
+    cases = (
+        (RuntimeError(secret), "RuntimeError"),
+        (Exception(secret), "Exception"),
+    )
+    for exception, label in cases:
+        message = _api_import_failure_message(exception)
+        if message != f"api self-test: official API import failed: {label}":
+            raise SystemExit("api self-test diagnostic output drift")
+        if secret in message:
+            raise SystemExit("api self-test diagnostic leaked exception text")
+
+
+def api_self_test() -> None:
+    """Check the pinned official API without opening a checkpoint.
+
+    This deliberately imports the dependency stack but never calls a model
+    constructor, ``from_pretrained``, or any tensor operation. The real
+    checkpoint route remains the VAST-only path below.
+    """
+    expected = {
+        "numpy": "1.26.4",
+        "torch": "2.13.0",
+        "transformers": "5.10.4",
+    }
+    actual: dict[str, str] = {}
+    for package, expected_version in expected.items():
+        try:
+            actual[package] = version(package)
+        except PackageNotFoundError as exc:
+            raise SystemExit(f"api self-test: missing pinned package {package}") from exc
+        base_version = actual[package].split("+", 1)[0]
+        if base_version != expected_version:
+            raise SystemExit(
+                f"api self-test: {package} version drifted: "
+                f"{actual[package]} != {expected_version}"
+            )
+
+    try:
+        import torch
+        import transformers
+        from transformers import WhisperForConditionalGeneration, WhisperProcessor
+    except Exception as exc:  # noqa: BLE001 - preserve a loud import failure
+        raise SystemExit(_api_import_failure_message(exc)) from None
+
+    if torch.__version__.split("+", 1)[0] != expected["torch"]:
+        raise SystemExit(f"api self-test: imported torch version drifted: {torch.__version__}")
+    if transformers.__version__ != expected["transformers"]:
+        raise SystemExit(
+            f"api self-test: imported transformers version drifted: {transformers.__version__}"
+        )
+    if WhisperForConditionalGeneration.__module__ != "transformers.models.whisper.modeling_whisper":
+        raise SystemExit("api self-test: Whisper model is not the official Transformers implementation")
+    if WhisperProcessor.__module__ != "transformers.models.whisper.processing_whisper":
+        raise SystemExit("api self-test: Whisper processor is not the official Transformers implementation")
+
+    model_signature = inspect.signature(WhisperForConditionalGeneration.forward)
+    for parameter in ("input_features", "decoder_input_ids", "encoder_outputs"):
+        if parameter not in model_signature.parameters:
+            raise SystemExit(f"api self-test: Whisper forward lost {parameter}")
+    processor_signature = inspect.signature(WhisperProcessor.from_pretrained)
+    if "pretrained_model_name_or_path" not in processor_signature.parameters:
+        raise SystemExit("api self-test: WhisperProcessor.from_pretrained API drifted")
+
+    print(
+        "whisper_extras API self-test: OK "
+        f"(torch={actual['torch']}, transformers={actual['transformers']}, "
+        "no checkpoint loaded)"
+    )
 
 
 def sha256(path: Path) -> str:
@@ -227,12 +321,17 @@ def greedy(model, encoder_outputs, prefix: list[int], eot: int) -> list[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--self-test", action="store_true")
+    tests = parser.add_mutually_exclusive_group()
+    tests.add_argument("--self-test", action="store_true")
+    tests.add_argument("--api-self-test", action="store_true")
     parser.add_argument("--model", choices=sorted(MODELS))
     parser.add_argument("--checkpoint-dir", type=Path)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.api_self_test:
+        api_self_test()
+        return
     if args.self_test:
         expected = {
             "model.safetensors": ("checkpoint_bytes", "checkpoint_sha256"),
@@ -253,6 +352,7 @@ def main() -> None:
                 raise
         else:
             raise SystemExit("unknown identity filename was accepted")
+        _api_import_diagnostic_self_test()
         print("dump_reference self-test: OK")
         return
     if not all((args.model, args.checkpoint_dir, args.audio, args.output_dir)):

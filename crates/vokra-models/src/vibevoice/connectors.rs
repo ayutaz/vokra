@@ -196,6 +196,16 @@ impl VibeVoiceLatentScale {
     /// Loads `model.speech_bias_factor` and `model.speech_scaling_factor`.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         super::VibeVoiceCheckpoint::from_gguf(file)?;
+        Self::from_scale_tensors(file)
+    }
+
+    /// Loads the scalar factors after the Realtime composite checkpoint has
+    /// already been authenticated by its owning wrapper.
+    pub(crate) fn from_realtime_tensors(file: &GgufFile) -> Result<Self> {
+        Self::from_scale_tensors(file)
+    }
+
+    fn from_scale_tensors(file: &GgufFile) -> Result<Self> {
         let bias_factor = load_scalar(file, "model.speech_bias_factor")?;
         let scaling_factor = load_scalar(file, "model.speech_scaling_factor")?;
         if !bias_factor.is_finite() || !scaling_factor.is_finite() || scaling_factor == 0.0 {

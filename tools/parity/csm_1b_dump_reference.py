@@ -40,7 +40,7 @@ FORMAT = "vokra-csm-1b-official-reference-v1"
 # This is the reviewed lock identity for the adapted Python 3.12 reference
 # selection. It does not claim that Sesame or Transformers upstream require
 # these torch/numpy/audio versions.
-REFERENCE_LOCK_SHA256 = "62b70ae227b81a2eda59716c2a613f8322405abbf352dc74a5774ffa541a75bc"
+REFERENCE_LOCK_SHA256 = "a6761aee26522ee65fdc6dd5493e4584b11d028dd010ccb19a5a3d06c48b9683"
 SOURCE_TRANSFORMERS_REQUIREMENT = "transformers==4.52.1"
 SOURCE_HUGGINGFACE_HUB_REQUIREMENT = "huggingface-hub>=0.30,<1.0"
 TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
@@ -51,10 +51,10 @@ TRANSFORMERS_COMPATIBILITY_STATUS = "BLOCKED_UNVERIFIED_API_SMOKE"
 REFERENCE_PACKAGE_SELECTION = {
     "huggingface-hub": ISOLATED_HUGGINGFACE_HUB_PIN,
     "numpy": "2.2.6",
-    "torch": "2.7.1",
+    "torch": "2.13.0",
     "transformers": ISOLATED_TRANSFORMERS_PIN,
 }
-REFERENCE_TORCH_DISTRIBUTIONS = {"2.7.1", "2.7.1+cpu"}
+REFERENCE_TORCH_DISTRIBUTIONS = {"2.13.0", "2.13.0+cpu"}
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 DEPENDENCY_LICENSE_AUDIT = {
     "annotated-doc": ("MIT", "https://pypi.org/pypi/annotated-doc/0.0.5/json"),

@@ -270,7 +270,7 @@ wheels = [
 
 [[package]]
 name = "torch"
-version = "2.4.1+cpu"
+version = "2.13.0+cpu"
 source = { registry = "https://download.pytorch.org/whl/cpu" }
 dependencies = [
     { name = "filelock", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -281,7 +281,7 @@ dependencies = [
     { name = "typing-extensions", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.4.1%2Bcpu-cp312-cp312-linux_x86_64.whl", hash = "sha256:8800deef0026011d502c0c256cc4b67d002347f63c3a38cd8e45f1f445c61364", upload-time = "2024-09-06T21:24:42Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2", upload-time = "2026-07-08T19:29:03Z" },
 ]
 
 [[package]]
@@ -355,7 +355,7 @@ requires-dist = [
     { name = "numpy", specifier = "==1.26.4" },
     { name = "safetensors", specifier = "==0.8.0" },
     { name = "sentencepiece", specifier = "==0.2.2" },
-    { name = "torch", specifier = "==2.4.1", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", specifier = "==2.13.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "transformers", specifier = "==5.10.4" },
     { name = "typer", specifier = "==0.9.0" },
 ]

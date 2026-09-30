@@ -1,0 +1,14 @@
+{"format":"vokra-vast-stage-v1","stage":"bundle_verify","returncode":0,"stderr_category":"none"}
+{"format":"vokra-vast-stage-v1","stage":"ssh_reachable_attempt","returncode":0,"stderr_category":"other","attempts":1}
+{"format":"vokra-vast-stage-v1","stage":"ssh_reachable","returncode":0,"stderr_category":"other","attempts":1}
+{"format":"vokra-vast-stage-v1","stage":"remote_clone_provision","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"bundle_transfer","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"helper_transfer","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"remote_bundle_fetch","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"remote_bundle_checkout","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"remote_head_check","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"remote_clean_check","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"uv_sync","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"source_checkout","returncode":0,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"probe","returncode":2,"stderr_category":"other"}
+{"format":"vokra-vast-stage-v1","stage":"cleanup_destroy","returncode":0,"stderr_category":"none"}

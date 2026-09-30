@@ -19,10 +19,11 @@ from urllib.parse import urlparse
 GATE_VERSION = 2
 # These are the exact active closure inputs. The dependency audit binds these
 # active bytes, while the separate owner and operator gates remain fail-closed.
-LOCK_SHA256 = "3c3d82bd1feecff7b62adc7c931f446cab2e259517c6405b60ba9dae281a0075"
-PYPROJECT_SHA256 = "b09790815febacb77780569094329d9edabebfaab2977eab7bd4e4834844d3b8"
-FULL_AUDIT_SHA256 = "9a229854279b7f7208f16d4a38220daaa6da2407ca824ec97bf9117bd7852e69"
+LOCK_SHA256 = "36d0f01df62e4d9f90f80d4c7d15bfa9df612b5a4f99ad4716c1c62458a6864b"
+PYPROJECT_SHA256 = "a6f51a2e3300ba0b8750dca6050c6fc2d645e657c8a507dcfc334c291d9e0bff"
+FULL_AUDIT_SHA256 = "bcd5c811713a23f0373db17039d3c3844968c75936388ef55d445c7643443082"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
+COMPACT_AUDIT_PATH = "dependency_audit_evidence-20260929-36d0f01d.json"
 EXPECTED_BUILD_CONSTRAINTS = [
     "Cython==3.0.12",
     "meson-python==0.15.0",
@@ -185,9 +186,9 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
                     allowed_missing_size = (
                         registry == "https://download.pytorch.org/whl/cpu"
                         and package["name"] == "torch"
-                        and package["version"] == "2.4.1+cpu"
-                        and artifact["url"] == "https://download-r2.pytorch.org/whl/cpu/torch-2.4.1%2Bcpu-cp312-cp312-linux_x86_64.whl"
-                        and artifact["hash"] == "sha256:8800deef0026011d502c0c256cc4b67d002347f63c3a38cd8e45f1f445c61364"
+                        and package["version"] == "2.13.0+cpu"
+                        and artifact["url"] == "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl"
+                        and artifact["hash"] == "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2"
                     )
                     if not allowed_missing_size:
                         raise ValueError("uv.lock artifact size is missing outside the reviewed PyTorch CPU identity")
@@ -331,7 +332,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     audit_ref = manifest.get("dependency_audit_evidence")
     if not isinstance(audit_ref, dict) or set(audit_ref) != {"schema", "path", "sha256", "full_audit_sha256"}:
         return blocked("compact dependency audit reference is malformed")
-    if audit_ref.get("schema") != COMPACT_AUDIT_SCHEMA or audit_ref.get("path") != "dependency_audit_evidence.json" or audit_ref.get("full_audit_sha256") != FULL_AUDIT_SHA256:
+    if audit_ref.get("schema") != COMPACT_AUDIT_SCHEMA or audit_ref.get("path") != COMPACT_AUDIT_PATH or audit_ref.get("full_audit_sha256") != FULL_AUDIT_SHA256:
         return blocked("compact dependency audit is not bound to the reviewed VAST report")
     audit_path = manifest_path.parent / audit_ref["path"]
     if audit_path.is_symlink() or not audit_path.is_file() or digest(audit_path.read_bytes()) != audit_ref.get("sha256"):
@@ -440,18 +441,24 @@ def self_test() -> int:
     if manifest_data.get("approval_scope_sha256") != canonical(expected_scope):
         print("speecht5 preflight gate: manifest scope is stale", file=sys.stderr)
         return 1
-    if manifest_data.get("operator_approval", {}).get("decision") != "APPROVED":
-        print("speecht5 preflight gate: operator approval is not approved", file=sys.stderr)
-        return 1
+    production_decision = manifest_data.get("operator_approval", {}).get("decision")
     ok, reason = validate(project, manifest)
-    if not ok:
-        print(f"speecht5 preflight gate: approved baseline failed: {reason}", file=sys.stderr)
+    if production_decision == "PENDING_REVIEW":
+        if ok or reason != "operator approval is pending or invalid":
+            print(f"speecht5 preflight gate: expected pending production gate, got {reason}", file=sys.stderr)
+            return 1
+    elif production_decision == "APPROVED":
+        if not ok:
+            print(f"speecht5 preflight gate: approved production baseline failed: {reason}", file=sys.stderr)
+            return 1
+    else:
+        print(f"speecht5 preflight gate: unsupported production approval state: {production_decision!r}", file=sys.stderr)
         return 1
     with tempfile.TemporaryDirectory(prefix="speecht5-gate-") as directory:
         root = Path(directory); test_project = root / "project"; test_project.mkdir()
         shutil.copy2(project / "uv.lock", test_project / "uv.lock"); shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
-        compact_audit = json.loads((project / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
-        audit_path = root / "dependency_audit_evidence.json"
+        compact_audit = json.loads((project / COMPACT_AUDIT_PATH).read_text(encoding="utf-8"))
+        audit_path = root / COMPACT_AUDIT_PATH
         audit_path.write_text(json.dumps(compact_audit, sort_keys=True, separators=(",", ":")), encoding="utf-8")
         complete_lock = re.sub(
             r'(hash = "sha256:[0-9a-f]{64}")(, upload-time =)',

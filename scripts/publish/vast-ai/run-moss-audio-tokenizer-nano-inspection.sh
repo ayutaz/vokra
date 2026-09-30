@@ -9,6 +9,10 @@ PROJECT="$ROOT/tools/parity/moss_audio_tokenizer_nano"
 INSPECTOR="$PROJECT/source_contract_inspector.py"
 HF_REPOSITORY="OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 HF_REVISION="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
+# Keep the source-only probe bound to the reviewed CPU wheel in the adjacent
+# uv.lock.  A stale version here could otherwise reintroduce the old vulnerable
+# closure even though the dependency gate has moved on.
+CPU_TORCH_VERSION="2.13.0+cpu"
 MIN_MEM_KIB=30000000
 MIN_DISK_KIB=5000000
 DEFAULT_WORK_DIR="/dev/shm/vokra-moss-audio-tokenizer-nano-inspection"
@@ -45,7 +49,7 @@ self_test() {
   local script="${BASH_SOURCE[0]}" fail=0 token
   [[ -f "$INSPECTOR" ]] || { log 'self-test FAIL: inspector missing'; fail=1; }
   for token in "$HF_REPOSITORY" "$HF_REVISION" 'source_contract_inspector.py' \
-    'download.pytorch.org/whl/cpu' '2.7.1+cpu' 'torch.version.cuda is None' 'torch.cuda.is_available' \
+    'download.pytorch.org/whl/cpu' "$CPU_TORCH_VERSION" 'torch.version.cuda is None' 'torch.cuda.is_available' \
     '.gitattributes' '__init__.py' 'model-00001-of-00001.safetensors' \
     'cardData_license' 'private' 'gated' 'disabled' \
     'snapshot_download' 'list_repo_tree' 'lfs_payload_sha256' \
@@ -72,6 +76,10 @@ self_test() {
   if grep -Fq 'AutoModel.from_pretrained' "$INSPECTOR"; then
     log 'self-test FAIL: model from_pretrained route found'; fail=1
   fi
+  local stale_torch_version='2.7.1'
+  if grep -Fq "${stale_torch_version}+cpu" "$script" || grep -Fq "${stale_torch_version}+cpu" "$INSPECTOR"; then
+    log 'self-test FAIL: stale Torch CPU contract remains'; fail=1
+  fi
   if grep -Eiq 'accelerate|init_empty_weights' "$INSPECTOR"; then
     log 'self-test FAIL: vulnerable meta-device helper remains in inspection path'; fail=1
   fi
@@ -87,7 +95,7 @@ self_test() {
   if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$INSPECTOR" --self-test >/dev/null; then
     log 'self-test FAIL: Python inspector self-test failed'; fail=1
   fi
-  local sync_line download_line probe_line guard_line
+  local sync_line download_line probe_line guard_line route_status_line route_version_line
   sync_line="$(grep -n '^uv sync --project' "$script" | tail -n 1 | cut -d: -f1)"
   download_line="$(grep -n 'snapshot_download(' "$script" | tail -n 1 | cut -d: -f1)"
   # The self-test searches for the literal shell variable reference.
@@ -98,6 +106,11 @@ self_test() {
   guard_line="$(grep -n 'VOKRA_PUBLISH_ON_VAST' "$script" | tail -n 1 | cut -d: -f1)"
   if [[ -z "$guard_line$sync_line$download_line$probe_line" || "$guard_line" -ge "$sync_line" || "$sync_line" -ge "$download_line" || "$download_line" -ge "$probe_line" ]]; then
     log 'self-test FAIL: sync/acquisition/probe order is not fail-closed'; fail=1
+  fi
+  route_status_line="$(grep -n 'route.get("status")' "$script" | tail -n 1 | cut -d: -f1)"
+  route_version_line="$(grep -n 'route.get("torch_version")' "$script" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$route_status_line$route_version_line" || "$route_status_line" -ge "$route_version_line" ]]; then
+    log 'self-test FAIL: Torch closure is checked before authenticated meta probe'; fail=1
   fi
   (( fail == 0 )) || return 1
   log 'self-test PASS'
@@ -181,7 +194,7 @@ uv sync --project "$PROJECT" --frozen --python 3.12
 # Bind the synced environment to the exact Linux CPU wheel before acquiring
 # any upstream source bytes. This imports Torch only; no model code/weights.
 uv run --no-sync --frozen --project "$PROJECT" --python 3.12 python -c \
-  'import platform,torch; assert platform.system() == "Linux" and platform.machine() == "x86_64"; assert torch.__version__ == "2.7.1+cpu"; assert torch.version.cuda is None; assert not torch.cuda.is_available(); print("Nano CPU closure: torch=2.7.1+cpu cuda=None")'
+  "import platform,torch; assert platform.system() == 'Linux' and platform.machine() == 'x86_64'; assert torch.__version__ == '$CPU_TORCH_VERSION'; assert torch.version.cuda is None; assert not torch.cuda.is_available(); print('Nano CPU closure: torch=$CPU_TORCH_VERSION cuda=None')"
 
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --no-sync --frozen --project "$PROJECT" --python 3.12 python - \
   "$HF_REPOSITORY" "$HF_REVISION" "$work_dir/hf" "$work_dir/server-tree.json" <<'PY'
@@ -350,6 +363,8 @@ if manifest.get("unresolved_gates") != {
 route = manifest.get("transformers_route")
 if not isinstance(route, dict) or route.get("status") != "AUTHENTICATED_META_SHAPE_PROBE" or route.get("weights_loaded") is not False or route.get("weights_executed") is not False:
     raise SystemExit("inspection did not authenticate the model-free Transformers route")
+if route.get("torch_version") != "2.13.0+cpu":
+    raise SystemExit(f"inspection did not bind the reviewed CPU Torch closure: {route.get('torch_version')!r}")
 if route.get("api_path") != {
     "config": "transformers.AutoConfig.from_pretrained",
     "model": "transformers.AutoModel.from_config",

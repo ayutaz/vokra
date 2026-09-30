@@ -35,8 +35,15 @@ code status is 136 full, 43 partial, 14 without a runtime binder, and 1
 non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1
 non-artifact, leaving 58 unresolved public rows. VibeVoice Realtime-0.5B now
 has a strict structural `vibevoice_streaming` binder and CLI inspection route,
-so it is partial; synthesis, the complete weight manifest, independent
-reference, and CPU parity remain pending. The exact-revision BiCodec
+so it is partial; synthesis, independent native CPU parity, and Apple
+CPU/Metal verification remain pending. On 2026-09-30, a VAST-only replay
+authenticated and converted its complete 605-tensor checkpoint and ran a
+narrow independent Microsoft-source reference. For that fixed probe, FP32
+CUDA was both faster and within the unchanged output guard, so it was
+selected; BF16 exceeded the guard and stayed on CPU. This is not full
+streaming or Metal parity, and no public artifact was replaced. The
+[dated evidence](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback)
+records the hashes and limitations. The exact-revision BiCodec
 and SGMSE CLI routes now promote those two published, Apple-verified rows to
 full; that promotion does not extend either route beyond its authenticated
 artifact contract. UTMOS numeric parity remains unclaimed.

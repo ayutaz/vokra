@@ -1102,6 +1102,22 @@ provenance/license gates still independently satisfied. Existing GGUF
 publication and parity records are retained as historical facts and are not
 evidence that a new unsafe legacy conversion is authorized.
 
+### 2026-09-30 VibeVoice Realtime implementation supersession
+
+The 2026-08-01 `microsoft/VibeVoice-Realtime-0.5B` table row above remains the
+dated MIT weight-license/owner decision. Its then-current statements that the
+converter refused all conversion and the runtime binder was deferred are now
+superseded **for implementation state only**: a VAST-only run authenticated
+the complete fixed checkpoint, preserved all 605 BF16 tensor payloads in a
+private GGUF, and passed the strict native binder. The official fixed-source
+reference selected CUDA only for an FP32 same-input probe that passed its
+device-comparison guard. The new reference environment's transitive
+dependency-license audit remains open; so do native synthesis, Rust numerical
+parity, Apple CPU/Metal, provenance/publication gates and model-card guidance.
+The historical MIT determination alone does not authorize an upload, and no
+public artifact was changed. See the
+[dated execution receipt](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback).
+
 ## 10. 定期監査
 
 - **四半期ごと**: 全依存の最新版でライセンス変更がないかチェック (Piper が MIT → GPL-3.0 化した precedent)
