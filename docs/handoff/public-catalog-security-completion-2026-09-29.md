@@ -827,6 +827,36 @@ packet-consumer implementation from pending real-weight and Apple evidence.
 Fresh CI on that candidate is running; the draft has not been promoted or
 merged. No publication or model-row completion follows from these PR changes.
 
+### Kyutai incremental-LM verification failure (09:09 UTC)
+
+Disposable VAST worker `53500171` verified the clean, unpushed Kyutai
+candidate `1ec30f6c2733d33664ec6df05eb23b7dc60d206c` with 16 effective
+build jobs. Its API hardware snapshot identifies an AMD EPYC 7713 and RTX
+A4000; selected CPU ISA/kernel flags were not captured and remain a diagnostic
+gap. No model payload or independent upstream reference was executed.
+
+Workspace testing stopped with exit 101 in the models crate: 3,206 tests
+passed, one failed and 23 were ignored in that test binary. The failing
+`kyutai_stt::streaming_lm::tests::step_matches_full_component_before_and_after_context_boundary`
+requires exact equality between one-frame incremental and full-component
+synthetic logits. The logged values differ at approximately 10^-7 scale.
+This is an unresolved self-consistency failure, not evidence of flakiness,
+independent real-weight parity or a justified tolerance change. Clippy, the
+focused CUDA-feature test, deny and audit were not reached. Diagnosis must
+record the failing frame/bin and compare actual scalar/default kernel paths
+before any comparison or numerical bound is changed.
+
+All eight recovered evidence files matched their remote SHA-256 values;
+final HEAD matched the target and observed worktree status was empty. The
+raw workspace-log SHA-256 is
+`e8cfca881c9ca2d7bdabb86b1972244282d1e91a8dda642b9d25b5d5c7d69525`,
+and the local packet checksum-list SHA-256 is
+`a77b8489e30f5f225f8345b10faaab936f101005e57ab81f5fe0af5dac9a4da6`.
+The worker and its 200-GB storage were destroyed after recovery. Strict
+individual readback returned `instances: null`; the subsequent all-pages
+account readback reported zero instances with no next page. No model row,
+GPU performance selection, Apple/Metal gate or publication is promoted.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
