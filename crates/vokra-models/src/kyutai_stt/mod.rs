@@ -94,6 +94,10 @@ use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
 use crate::mimi::MimiNeuralConfig;
 use crate::strict_checkpoint::sha256_bytes;
 
+/// Incremental main-language-model KV state for one-frame STT decoding.
+pub mod streaming_lm;
+pub use streaming_lm::{KyutaiSttStreamingLm, KyutaiSttStreamingLmStep};
+
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry
 /// (`vokra_core::compliance`) knows `kyutai-stt` / `kyutai-stt-2.6b-en` as
@@ -2425,6 +2429,13 @@ impl KyutaiSttAsr {
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
         self.weights.is_synthesized
+    }
+
+    /// Creates an incremental main-language-model stream over this engine's
+    /// authenticated weights.  The stream owns bounded per-layer KV state;
+    /// it does not recompute a full prefix or claim PCM/Mimi composition.
+    pub fn streaming_lm(&self, backend: BackendKind) -> Result<KyutaiSttStreamingLm<'_>> {
+        KyutaiSttStreamingLm::new(self, backend)
     }
 
     /// Runs the authenticated-shape **main decoder component** for the
