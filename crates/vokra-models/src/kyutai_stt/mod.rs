@@ -2664,9 +2664,9 @@ impl KyutaiSttAsr {
         let mut head_k_transposed = vec![0.0f32; head_transposed];
         let mut head_v = vec![0.0f32; head_matrix];
         let mut head_weighted = vec![0.0f32; head_matrix];
-        for (_block_index, block) in self.weights.blocks.iter().enumerate() {
-            #[cfg(test)]
-            let layer_index = _block_index;
+        #[cfg(test)]
+        let mut layer_index = 0usize;
+        for block in &self.weights.blocks {
             compute.rms_norm_f32(
                 &hidden,
                 &mut norm,
@@ -2676,7 +2676,7 @@ impl KyutaiSttAsr {
                 self.cfg.rms_norm_eps,
             )?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "attn_norm", &norm, frames, d);
             }
             compute.gemm_f32(
@@ -2689,7 +2689,7 @@ impl KyutaiSttAsr {
                 &mut qkv,
             )?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "qkv", &qkv, frames, 3 * d);
             }
             // This is the pinned Moshi `Transformer` layout: fused QKV is
@@ -2708,7 +2708,7 @@ impl KyutaiSttAsr {
             apply_rope_heads(&mut q, frames, d, heads, head_dim, &inv_freqs)?;
             apply_rope_heads(&mut k, frames, d, heads, head_dim, &inv_freqs)?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "q_rope", &q, frames, d);
                 trace.record_rows(layer_index, None, "k_rope", &k, frames, d);
                 trace.record_rows(layer_index, None, "v", &v, frames, d);
@@ -2739,7 +2739,7 @@ impl KyutaiSttAsr {
                     &mut scores,
                 )?;
                 #[cfg(test)]
-                if let Some(trace) = trace.as_deref_mut() {
+                if let Some(trace) = trace.as_mut() {
                     trace.record_rows(layer_index, Some(head), "qk_raw", &scores, frames, frames);
                 }
                 for query in 0..frames {
@@ -2753,7 +2753,7 @@ impl KyutaiSttAsr {
                     }
                 }
                 #[cfg(test)]
-                if let Some(trace) = trace.as_deref_mut() {
+                if let Some(trace) = trace.as_mut() {
                     trace.record_rows(
                         layer_index,
                         Some(head),
@@ -2765,7 +2765,7 @@ impl KyutaiSttAsr {
                 }
                 compute.softmax_f32(&scores, &mut probs, frames, frames)?;
                 #[cfg(test)]
-                if let Some(trace) = trace.as_deref_mut() {
+                if let Some(trace) = trace.as_mut() {
                     trace.record_rows(layer_index, Some(head), "softmax", &probs, frames, frames);
                 }
                 // The probability×V product is likewise dispatched as a
@@ -2781,7 +2781,7 @@ impl KyutaiSttAsr {
                     &mut head_weighted,
                 )?;
                 #[cfg(test)]
-                if let Some(trace) = trace.as_deref_mut() {
+                if let Some(trace) = trace.as_mut() {
                     trace.record_rows(
                         layer_index,
                         Some(head),
@@ -2806,7 +2806,7 @@ impl KyutaiSttAsr {
                 &mut attn_output,
             )?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(
                     layer_index,
                     None,
@@ -2820,7 +2820,7 @@ impl KyutaiSttAsr {
                 *dst += value;
             }
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "attention_residual", &hidden, frames, d);
             }
 
@@ -2833,7 +2833,7 @@ impl KyutaiSttAsr {
                 self.cfg.rms_norm_eps,
             )?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "ffn_norm", &norm, frames, d);
             }
             compute.gemm_f32(
@@ -2846,7 +2846,7 @@ impl KyutaiSttAsr {
                 &mut ffn_in,
             )?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "ffn_linear_in", &ffn_in, frames, 2 * ffn);
             }
             for frame in 0..frames {
@@ -2860,7 +2860,7 @@ impl KyutaiSttAsr {
                 *gate *= up;
             }
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(
                     layer_index,
                     None,
@@ -2880,15 +2880,19 @@ impl KyutaiSttAsr {
                 &mut ffn_output,
             )?;
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "ffn_output", &ffn_output, frames, d);
             }
             for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
                 *dst += value;
             }
             #[cfg(test)]
-            if let Some(trace) = trace.as_deref_mut() {
+            if let Some(trace) = trace.as_mut() {
                 trace.record_rows(layer_index, None, "layer_output", &hidden, frames, d);
+            }
+            #[cfg(test)]
+            {
+                layer_index += 1;
             }
         }
 
@@ -2901,7 +2905,7 @@ impl KyutaiSttAsr {
             self.cfg.rms_norm_eps,
         )?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record_rows(
                 self.weights.blocks.len(),
                 None,
@@ -2923,7 +2927,7 @@ impl KyutaiSttAsr {
             &mut logits,
         )?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record_rows(
                 self.weights.blocks.len(),
                 None,

@@ -192,7 +192,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
         &mut self,
         previous_text_token: Option<u32>,
         audio_codes: &[u32],
-        #[cfg(test)] mut trace: Option<&mut KyutaiSttTrace>,
+        #[cfg(test)] trace: Option<&mut KyutaiSttTrace>,
     ) -> Result<KyutaiSttStreamingLmStep> {
         if self.poisoned {
             return Err(VokraError::InvalidArgument(
@@ -241,12 +241,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             Err(error) => return self.poison_error(error),
         };
         #[cfg(test)]
-        let result = self.step_inner(
-            &compute,
-            previous_text_token,
-            audio_codes,
-            trace.as_deref_mut(),
-        );
+        let result = self.step_inner(&compute, previous_text_token, audio_codes, trace);
         #[cfg(not(test))]
         let result = self.step_inner(&compute, previous_text_token, audio_codes);
         match result {
@@ -299,7 +294,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
                     &mut self.layers[index],
                     hidden,
                     self.position,
-                    trace.as_deref_mut(),
+                    trace.as_mut().map(|trace| &mut **trace),
                     index,
                 )?;
             }
@@ -331,7 +326,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             cfg.rms_norm_eps,
         )?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record(
                 self.asr.cfg.backbone.n_layer,
                 self.position,
@@ -352,7 +347,7 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             &mut logits,
         )?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record(
                 self.asr.cfg.backbone.n_layer,
                 self.position,
@@ -410,14 +405,14 @@ fn forward_layer(
     let mut norm = vec![0.0_f32; d];
     compute.rms_norm_f32(&hidden, &mut norm, 1, d, &block.attn_norm, cfg.rms_norm_eps)?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "attn_norm", &norm);
     }
     ensure_finite("attention norm", &norm)?;
     let mut qkv = vec![0.0_f32; 3 * d];
     compute.gemm_f32(1, 3 * d, d, &norm, &block.qkv_proj, None, &mut qkv)?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "qkv", &qkv);
     }
     ensure_finite("QKV projection", &qkv)?;
@@ -429,7 +424,7 @@ fn forward_layer(
     let mut rotated_k = k;
     apply_rope_row(&mut rotated_k, heads, head_dim, &inv_freqs, position)?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "q_rope", &q);
         trace.record(layer_index, position, None, "k_rope", &rotated_k);
         trace.record(layer_index, position, None, "v", &v);
@@ -443,7 +438,7 @@ fn forward_layer(
         ));
     }
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         for (row, &cached_position) in cache.positions.iter().enumerate() {
             trace.record(
                 layer_index,
@@ -476,14 +471,14 @@ fn forward_layer(
         let mut scores = vec![0.0_f32; length];
         compute.gemm_f32(1, length, head_dim, q_head, &keys_t, None, &mut scores)?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record(layer_index, position, Some(head), "qk_raw", &scores);
         }
         for score in &mut scores {
             *score *= scale;
         }
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record(
                 layer_index,
                 position,
@@ -495,7 +490,7 @@ fn forward_layer(
         let mut probabilities = vec![0.0_f32; length];
         compute.softmax_f32(&scores, &mut probabilities, 1, length)?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record(layer_index, position, Some(head), "softmax", &probabilities);
         }
         let mut weighted = vec![0.0_f32; head_dim];
@@ -509,7 +504,7 @@ fn forward_layer(
             &mut weighted,
         )?;
         #[cfg(test)]
-        if let Some(trace) = trace.as_deref_mut() {
+        if let Some(trace) = trace.as_mut() {
             trace.record(layer_index, position, Some(head), "weighted_v", &weighted);
         }
         for column in 0..head_dim {
@@ -528,7 +523,7 @@ fn forward_layer(
         &mut attention_output,
     )?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(
             layer_index,
             position,
@@ -542,20 +537,20 @@ fn forward_layer(
         *dst += value;
     }
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "attention_residual", &hidden);
     }
     ensure_finite("attention residual", &hidden)?;
 
     compute.rms_norm_f32(&hidden, &mut norm, 1, d, &block.ffn_norm, cfg.rms_norm_eps)?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "ffn_norm", &norm);
     }
     let mut ffn_input = vec![0.0_f32; 2 * ffn];
     compute.gemm_f32(1, 2 * ffn, d, &norm, &block.linear_in, None, &mut ffn_input)?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "ffn_linear_in", &ffn_input);
     }
     ensure_finite("FFN projection", &ffn_input)?;
@@ -568,20 +563,20 @@ fn forward_layer(
         *gate_value *= up_value;
     }
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "ffn_activated", &gate);
     }
     let mut ffn_output = vec![0.0_f32; d];
     compute.gemm_f32(1, d, ffn, &gate, &block.linear_out, None, &mut ffn_output)?;
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "ffn_output", &ffn_output);
     }
     for (dst, &value) in hidden.iter_mut().zip(&ffn_output) {
         *dst += value;
     }
     #[cfg(test)]
-    if let Some(trace) = trace.as_deref_mut() {
+    if let Some(trace) = trace.as_mut() {
         trace.record(layer_index, position, None, "layer_output", &hidden);
     }
     ensure_finite("FFN residual", &hidden)?;
@@ -821,9 +816,8 @@ mod tests {
         full_audio: &[u32],
         stream_audio: &[u32],
     ) {
-        let mismatch = (0..actual.len().max(expected.len())).find_map(|index| {
-            (actual.get(index).copied() != expected.get(index).copied()).then_some(index)
-        });
+        let mismatch = (0..actual.len().max(expected.len()))
+            .find(|&index| actual.get(index).copied() != expected.get(index).copied());
         let stream_length = frame.saturating_add(1).min(config.backbone.context);
         let (index, left, right) = mismatch
             .map(|index| {
@@ -926,8 +920,8 @@ mod tests {
         };
         let zero_audio = vec![0_u32; config.n_q];
         let mut step_trace = None;
-        for replay_frame in 0..=frame {
-            let previous = (replay_frame != 0).then(|| full_text[replay_frame]);
+        for (replay_frame, &full_text_token) in full_text.iter().enumerate().take(frame + 1) {
+            let previous = (replay_frame != 0).then_some(full_text_token);
             let audio_start = replay_frame * config.n_q;
             let current_audio = if replay_frame == 0 {
                 zero_audio.as_slice()
@@ -963,7 +957,7 @@ mod tests {
     fn fixture() -> (KyutaiSttAsr, KyutaiSttConfig) {
         let mut config = KyutaiSttConfig::tiny_for_tests();
         config.backbone.context = 3;
-        let weights = KyutaiSttWeights::synthesized(&config, 0x51_7E_A11).expect("weights");
+        let weights = KyutaiSttWeights::synthesized(&config, 0x0517_EA11).expect("weights");
         let asr = KyutaiSttAsr::new(config.clone(), weights).expect("asr");
         (asr, config)
     }
@@ -986,7 +980,7 @@ mod tests {
         let mut full_text = Vec::with_capacity(frames);
         let mut full_audio = Vec::with_capacity(frames * config.n_q);
         full_text.push(config.text_card as u32);
-        full_audio.extend(std::iter::repeat(config.audio_card as u32).take(config.n_q));
+        full_audio.extend(std::iter::repeat_n(config.audio_card as u32, config.n_q));
         for frame in 1..frames {
             full_text.push(text[frame - 1]);
             full_audio.extend_from_slice(&audio[frame * config.n_q..(frame + 1) * config.n_q]);
