@@ -1289,6 +1289,19 @@ speed support it; mandatory CPU verification is retained. No model was
 executed locally and no public artifact was uploaded. The live classification
 remains 136 code/artifact-full and 58 unresolved public rows.
 
+Historical Mimi evidence must not be confused with the missing current
+rerunnable gate. The
+[July 16 campaign report](../bench-baselines/m1-real-weight-eval-2026-07-16/report-campaign2.md)
+does record an independent full CPU comparison: 4,384/4,384 codes matched,
+including semantic and acoustic books, and same-codes PCM maximum delta was
+approximately `3.67e-6`. Its reported baseline is `92dbc92`; these historical
+observations are preserved, not attributed to the new Metal integration or
+to the authenticated STT companion without checking exact input identity.
+The current gap is first-class reproducible full encode/decode replay at the
+frozen implementation/input hashes, followed by actual Apple/Metal and speed
+evidence. Existing Python package names or a historical workflow do not by
+themselves approve a new source revision or its wheel/native license closure.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
