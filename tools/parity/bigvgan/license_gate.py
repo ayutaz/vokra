@@ -108,6 +108,22 @@ EXPECTED_AUDIT_EVIDENCE = {
     },
     "publication": "NO_UPLOAD",
 }
+AUDIT_JSON_PATHS = {
+    "linux": "tools/parity/bigvgan/vast_torch213_linux_audit.json",
+    "arm64-darwin": "tools/parity/bigvgan/vast_torch213_darwin_audit.json",
+}
+AUDIT_JSON_KEYS = {
+    "schema",
+    "decision",
+    "platform",
+    "lock_sha256",
+    "active_package_count",
+    "packages",
+    "dependency_review",
+    "approval",
+    "review_scope",
+    "publication",
+}
 
 
 def digest_bytes(data: bytes) -> str:
@@ -302,6 +318,84 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["name"], row["version"]))
 
 
+def validate_committed_audit_json(
+    repository_root: Path,
+    audit_evidence: dict[str, Any],
+    rows: list[dict[str, Any]],
+    actual_lock_sha256: str,
+) -> None:
+    """Bind the manifest summaries to the durable VAST audit JSON files."""
+    target_markers = {
+        "linux": "platform_machine == 'x86_64' and sys_platform == 'linux'",
+        "arm64-darwin": "platform_machine == 'arm64' and sys_platform == 'darwin'",
+    }
+    for platform, relative_path in AUDIT_JSON_PATHS.items():
+        summary = audit_evidence[platform]
+        path = repository_root / relative_path
+        if not regular_file(path):
+            fail(f"committed VAST audit JSON is missing or symlinked: {relative_path}")
+        payload = path.read_bytes()
+        if digest_bytes(payload) != summary.get("audit_json_sha256"):
+            fail(f"committed VAST audit JSON SHA-256 drifted: {relative_path}")
+        try:
+            candidate = load_json(path)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            fail(f"committed VAST audit JSON is unreadable: {relative_path}: {exc}")
+        if not isinstance(candidate, dict) or set(candidate) != AUDIT_JSON_KEYS:
+            fail(f"committed VAST audit JSON schema drifted: {relative_path}")
+        if (
+            candidate.get("schema") != summary.get("candidate_schema")
+            or candidate.get("platform") != summary.get("platform")
+            or candidate.get("lock_sha256") != actual_lock_sha256
+            or candidate.get("lock_sha256") != summary.get("lock_sha256")
+            or candidate.get("active_package_count") != summary.get("active_package_count")
+            or candidate.get("decision") != summary.get("decision")
+            or candidate.get("dependency_review") != summary.get("dependency_review")
+            or candidate.get("publication") != summary.get("publication")
+        ):
+            fail(f"committed VAST audit JSON summary drifted: {relative_path}")
+        approval = candidate.get("approval")
+        if (
+            not isinstance(approval, dict)
+            or set(approval) != {"status", "signer", "digest"}
+            or approval.get("status") != summary.get("approval_status")
+            or approval.get("signer") is not None
+            or approval.get("digest") is not None
+        ):
+            fail(f"committed VAST audit JSON approval is not pending: {relative_path}")
+        packages = candidate.get("packages")
+        if not isinstance(packages, list) or len(packages) != candidate.get("active_package_count"):
+            fail(f"committed VAST audit JSON package count drifted: {relative_path}")
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not isinstance(item.get("name"), str)
+            or not isinstance(item.get("version"), str)
+            or item.get("id") != f"{item.get('name')}@{item.get('version')}"
+            or not isinstance(item.get("license_payloads"), list)
+            or not isinstance(item.get("native_bundled_payloads"), list)
+            for item in packages
+        ):
+            fail(f"committed VAST audit JSON package identity or payload schema drifted: {relative_path}")
+        license_payload_count = sum(len(item["license_payloads"]) for item in packages)
+        native_payload_count = sum(len(item["native_bundled_payloads"]) for item in packages)
+        if (
+            license_payload_count != summary.get("license_payload_count")
+            or native_payload_count != summary.get("native_payload_count")
+        ):
+            fail(f"committed VAST audit JSON payload counts drifted: {relative_path}")
+        package_ids = [item["id"] for item in packages]
+        marker = target_markers[platform]
+        expected_package_ids = [
+            f"{row['name']}@{row['version']}"
+            for row in rows
+            if row.get("source", {}).get("registry") is not None
+            and (not row.get("resolution-markers") or marker in row.get("resolution-markers", []))
+        ]
+        if package_ids != expected_package_ids or len(set(package_ids)) != len(package_ids):
+            fail(f"committed VAST audit JSON package identities drifted: {relative_path}")
+
+
 def expected_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": row["name"],
@@ -459,6 +553,12 @@ def run(
         fail(f"uv.lock is not valid TOML: {exc}")
     validate_project_schema(project)
     rows = package_rows(lock)
+    validate_committed_audit_json(
+        manifest_path.parents[3],
+        audit_evidence,
+        rows,
+        actual_lock_sha256,
+    )
     project_identity = project.get("project")
     virtual = [row for row in rows if row.get("source") == {"virtual": "."}]
     if not isinstance(project_identity, dict) or not isinstance(project_identity.get("name"), str) or not isinstance(project_identity.get("version"), str) or len(virtual) != 1 or (virtual[0]["name"], virtual[0]["version"]) != (project_identity["name"], project_identity["version"]):
@@ -915,6 +1015,31 @@ source = { registry = 'https://pypi.org/simple' }
         synthetic_lock_sha256 = digest_bytes(lock.read_bytes())
         synthetic_current_audit["linux"]["lock_sha256"] = synthetic_lock_sha256
         synthetic_current_audit["arm64-darwin"]["lock_sha256"] = synthetic_lock_sha256
+        for platform in ("linux", "arm64-darwin"):
+            synthetic_current_audit[platform]["active_package_count"] = 0
+            synthetic_current_audit[platform]["license_payload_count"] = 0
+            synthetic_current_audit[platform]["native_payload_count"] = 0
+        for platform, relative_path in AUDIT_JSON_PATHS.items():
+            summary = synthetic_current_audit[platform]
+            candidate = {
+                "schema": summary["candidate_schema"],
+                "decision": summary["decision"],
+                "platform": summary["platform"],
+                "lock_sha256": synthetic_lock_sha256,
+                "active_package_count": 0,
+                "packages": [],
+                "dependency_review": summary["dependency_review"],
+                "approval": {
+                    "status": summary["approval_status"],
+                    "signer": None,
+                    "digest": None,
+                },
+                "review_scope": {"self_test": True},
+                "publication": summary["publication"],
+            }
+            candidate_path = project_dir / Path(relative_path).name
+            candidate_path.write_text(json.dumps(candidate, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            summary["audit_json_sha256"] = digest_bytes(candidate_path.read_bytes())
         synthetic_current_expected = json.loads(json.dumps(synthetic_current_audit))
         validate_current_audit_binding(synthetic_current_audit, synthetic_current_expected, synthetic_lock_sha256)
         manifest["audit_evidence"] = synthetic_current_audit
@@ -1052,6 +1177,20 @@ source = { registry = 'https://pypi.org/simple' }
             "d" * 64,
             expected_audit_evidence=synthetic_current_expected,
         )
+        for relative_path in AUDIT_JSON_PATHS.values():
+            candidate_path = project_dir / Path(relative_path).name
+            original = candidate_path.read_bytes()
+            candidate_path.write_bytes(original + b"tamper")
+            try:
+                try:
+                    run(lock, project, manifest_path, evidence_path, expected_source, "b" * 40, "c" * 64, "d" * 64, expected_audit_evidence=synthetic_current_expected)
+                except SystemExit as exc:
+                    if exc.code != 2:
+                        raise
+                else:
+                    raise SystemExit(f"bigvgan license gate self-test accepted tampered committed audit JSON: {relative_path}")
+            finally:
+                candidate_path.write_bytes(original)
         duplicate_manifest = project_dir / "duplicate-manifest.json"
         duplicate_manifest.write_text('{"approval": 1, "approval": 2}', encoding="utf-8")
         try:
