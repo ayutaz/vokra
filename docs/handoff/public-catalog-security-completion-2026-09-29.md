@@ -1104,6 +1104,41 @@ all-pages account readback also reports zero instances (SHA-256
 `0bae59a551bcb5491b24cb982cdb029b20509d86fa38b75209f12ca13415f63c`).
 No model row, legal gate or public artifact is advanced by this run.
 
+### Kyutai visible-softmax rerun and Mimi PR readback (11:22 UTC)
+
+The reviewed softmax controller SHA-256
+`e99b91e62186114850dba43c49d93ae7430d17853431ef15e0021c43fb4dd7a1`
+ran exact clean Kyutai HEAD `9950e896a8554f8161a0148a53ac5c77c6a64475`
+on disposable EPYC 7713 worker `53516739`, with 16 allocated CPU cores and
+200 GB disk. Default AVX2 remains red: two passed and one failed (exit 101).
+Scalar passes three tests and the visible-context softmax self-consistency
+test passes one. Neither is independent upstream/real-weight parity.
+
+The first recorded production-stage divergence is now frame 2, layer 0,
+head 0, raw QK element 1: full `0.16708244` / bits `0x3e2b17a9`, step
+`0.1670824` / bits `0x3e2b17a6`, absolute delta `4.4703484e-8` (three ULPs).
+Earlier recorded taps match for this fixture. Full QK geometry is `[8,8,4]`
+and step geometry `[1,3,4]`; these measurements do not establish independent
+model correctness or justify a relaxed bound. The strict eight-frame test,
+seed and equality assertion remain unchanged. All-feature Clippy also exits
+101 for `option_as_ref_deref` at the diagnostic trace reborrow. Both failures
+remain open; the next source candidate aligns CPU visible-window contraction
+geometry without forcing scalar or changing non-CPU dispatch.
+
+All 16 packet entries passed SHA-256 checks, with actual matching HEAD and
+empty observed status. Manifest SHA-256 is
+`33437c12429e8a665937f0b90a1fd3d914afe7460bdd5bcee21df1de96bfffdb`;
+default log SHA-256 is
+`07161a3d964a403ae2d77740ee78138b96f9520883b9162c33c14126abf3ff41`.
+The controller retains exit 1; recovery, destroy and strict individual
+readback all exit zero. Worker and disk are destroyed, and a fresh all-pages
+account readback reports zero instances. No gate is promoted by the red run.
+
+The independently verified Mimi ELU HEAD `336de430` was pushed unchanged as
+[draft PR #185](https://github.com/ayutaz/vokra/pull/185). Its fresh CI is
+pending at this readback; newer attention/LayerScale candidates are not part
+of that PR or its VAST verdict. No PR was merged and no artifact was uploaded.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
