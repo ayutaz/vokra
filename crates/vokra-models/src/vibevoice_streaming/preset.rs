@@ -926,7 +926,7 @@ mod tests {
                 .map(u64::to_string)
                 .collect::<Vec<_>>()
                 .join(",");
-            let mut digest = hex_digest(&sha256_bytes(payload_for(name, &safetensors, &tensors)));
+            let mut digest = hex_digest(&sha256_bytes(&payload_for(name, &safetensors, &tensors)));
             if matches!(mutation, Mutation::WrongHash) && name == "lm.hidden" {
                 digest = "0".repeat(64);
             }
