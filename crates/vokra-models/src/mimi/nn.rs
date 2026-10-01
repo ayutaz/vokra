@@ -21,6 +21,13 @@
 //! either way). The transformer reuses GEMM / softmax / LayerNorm / GELU
 //! seam ops plus the adjacent-pair RoPE from `crate::csm::rope` (plain
 //! frequencies at `max_period` — no Llama-3 scaling here).
+//! Mimi's causal QK and AV contractions likewise use `Compute::gemm_f32` on
+//! non-CPU backends, with chronological ring gathers into preallocated
+//! scratch. LayerScale residual arithmetic uses the checked
+//! `Compute::residual_scale_add_f32` seam, whose Metal arm is a real device
+//! kernel; RVQ encoder arithmetic and other host-layout glue remain host
+//! paths. This module therefore does not claim complete Metal residency,
+//! no-fallback coverage, or GPU performance parity.
 //!
 //! # Upstream anchors (ADR M4-05 §D2 — transcribed)
 //!
@@ -650,6 +657,10 @@ pub(crate) struct MimiTransformerState {
     rope_buf: Vec<f32>,
     scores: Vec<f32>,
     probs: Vec<f32>,
+    /// Non-CPU attention gather scratch. `attn_k_t` is `[head_dim, window]`
+    /// and `attn_v` is `[window, head_dim]`; both are reused for every head.
+    attn_k_t: Vec<f32>,
+    attn_v: Vec<f32>,
     attn_out: Vec<f32>,
     attn_o: Vec<f32>,
     ff1: Vec<f32>,
@@ -683,6 +694,8 @@ impl MimiTransformerState {
         self.rope_buf.fill(0.0);
         self.scores.fill(0.0);
         self.probs.fill(0.0);
+        self.attn_k_t.fill(0.0);
+        self.attn_v.fill(0.0);
         self.attn_out.fill(0.0);
         self.attn_o.fill(0.0);
         self.ff1.fill(0.0);
@@ -764,6 +777,11 @@ impl MimiTransformer {
     /// Fresh state (zero KV window, position 0).
     pub(crate) fn state(&self) -> MimiTransformerState {
         let d = self.d;
+        let head_dim = d / self.n_head;
+        let attention_scratch = self
+            .context
+            .checked_mul(head_dim)
+            .expect("mimi attention scratch size overflow");
         MimiTransformerState {
             k_ring: vec![0.0; self.layers.len() * self.context * d],
             v_ring: vec![0.0; self.layers.len() * self.context * d],
@@ -776,6 +794,8 @@ impl MimiTransformer {
             rope_buf: vec![0.0; d / self.n_head],
             scores: vec![0.0; self.context],
             probs: vec![0.0; self.context],
+            attn_k_t: vec![0.0; attention_scratch],
+            attn_v: vec![0.0; attention_scratch],
             attn_out: vec![0.0; d],
             attn_o: vec![0.0; d],
             ff1: vec![0.0; self.ff],
@@ -852,7 +872,6 @@ impl MimiTransformer {
         let d = self.d;
         let n_head = self.n_head;
         let head_dim = d / n_head;
-        let scale = 1.0f32 / (head_dim as f32).sqrt();
         let ctx = self.context;
         let pos0 = state.pos;
 
@@ -933,40 +952,19 @@ impl MimiTransformer {
             for i in 0..t {
                 let pos = pos0 + i;
                 let slot = pos % ctx;
-                let window = (pos + 1).min(ctx);
                 state.k_ring[ring_base + slot * d..ring_base + (slot + 1) * d]
                     .copy_from_slice(&state.b_k[i * d..(i + 1) * d]);
                 state.v_ring[ring_base + slot * d..ring_base + (slot + 1) * d]
                     .copy_from_slice(&state.b_v[i * d..(i + 1) * d]);
+                // The shared attention helper reads the current query from
+                // the per-position scratch, keeping CPU and device paths on
+                // exactly the same projected/RoPE'd values without a
+                // per-head allocation.
+                state.q.copy_from_slice(&state.b_q[i * d..(i + 1) * d]);
                 for h in 0..n_head {
-                    let q_row = &state.b_q[i * d + h * head_dim..i * d + (h + 1) * head_dim];
-                    for (w, j) in window_positions(pos, window).enumerate() {
-                        let js = j % ctx;
-                        let k_row = &state.k_ring[ring_base + js * d + h * head_dim
-                            ..ring_base + js * d + (h + 1) * head_dim];
-                        let mut s = 0.0f32;
-                        for c in 0..head_dim {
-                            s += q_row[c] * k_row[c];
-                        }
-                        state.scores[w] = s * scale;
-                    }
-                    compute.softmax_f32(
-                        &state.scores[..window],
-                        &mut state.probs[..window],
-                        1,
-                        window,
-                    )?;
-                    let out_dst =
-                        &mut state.b_attn_out[i * d + h * head_dim..i * d + (h + 1) * head_dim];
-                    for (c, out) in out_dst.iter_mut().enumerate() {
-                        let mut sum = 0.0f32;
-                        for (w, j) in window_positions(pos, window).enumerate() {
-                            let js = j % ctx;
-                            sum += state.probs[w]
-                                * state.v_ring[ring_base + js * d + h * head_dim + c];
-                        }
-                        *out = sum;
-                    }
+                    self.attend_head(compute, state, li, pos, h)?;
+                    state.b_attn_out[i * d + h * head_dim..i * d + (h + 1) * head_dim]
+                        .copy_from_slice(&state.attn_out[h * head_dim..(h + 1) * head_dim]);
                 }
             }
             compute.gemm_f32(
@@ -978,11 +976,13 @@ impl MimiTransformer {
                 None,
                 &mut state.b_attn_o[..t * d],
             )?;
-            for i in 0..t {
-                for c in 0..d {
-                    x[i * d + c] += layer.layer_scale_1[c] * state.b_attn_o[i * d + c];
-                }
-            }
+            compute.residual_scale_add_f32(
+                t,
+                d,
+                &mut x[..t * d],
+                &layer.layer_scale_1,
+                &state.b_attn_o[..t * d],
+            )?;
             // ---- MLP sublayer (gating = none → GELU MLP) ----
             compute.layer_norm_f32(
                 &x[..t * d],
@@ -1015,13 +1015,120 @@ impl MimiTransformer {
                 None,
                 &mut state.b_ff2[..t * d],
             )?;
-            for i in 0..t {
-                for c in 0..d {
-                    x[i * d + c] += layer.layer_scale_2[c] * state.b_ff2[i * d + c];
-                }
-            }
+            compute.residual_scale_add_f32(
+                t,
+                d,
+                &mut x[..t * d],
+                &layer.layer_scale_2,
+                &state.b_ff2[..t * d],
+            )?;
         }
         state.pos += t;
+        Ok(())
+    }
+
+    /// Computes one causal head over the chronological rolling window.
+    ///
+    /// The CPU branch intentionally retains the pre-existing scalar loop and
+    /// its accumulation order.  Device backends gather the ring into the
+    /// preallocated `[head_dim, window]` / `[window, head_dim]` scratch and
+    /// dispatch both learned contractions through `Compute::gemm_f32`; any
+    /// unsupported backend error is propagated without a CPU fallback.
+    fn attend_head(
+        &self,
+        compute: &Compute,
+        state: &mut MimiTransformerState,
+        layer: usize,
+        pos: usize,
+        head: usize,
+    ) -> Result<()> {
+        let d = self.d;
+        let ctx = self.context;
+        let head_dim = d / self.n_head;
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let window = (pos + 1).min(ctx);
+        let ring_base = layer
+            .checked_mul(ctx)
+            .and_then(|offset| offset.checked_mul(d))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("mimi KV ring offset overflow".to_owned())
+            })?;
+        let q_offset = head * head_dim;
+        let scratch_len = head_dim.checked_mul(window).ok_or_else(|| {
+            VokraError::InvalidArgument("mimi attention scratch size overflow".to_owned())
+        })?;
+        if state.attn_k_t.len() < scratch_len || state.attn_v.len() < scratch_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi attention scratch too small for window {window} and head_dim {head_dim}"
+            )));
+        }
+        if compute.is_cpu() {
+            let q_row = &state.q[q_offset..q_offset + head_dim];
+            for (w, j) in window_positions(pos, window).enumerate() {
+                let js = j % ctx;
+                let k_row = &state.k_ring
+                    [ring_base + js * d + q_offset..ring_base + js * d + q_offset + head_dim];
+                let mut s = 0.0f32;
+                for c in 0..head_dim {
+                    s += q_row[c] * k_row[c];
+                }
+                state.scores[w] = s * scale;
+            }
+            compute.softmax_f32(
+                &state.scores[..window],
+                &mut state.probs[..window],
+                1,
+                window,
+            )?;
+            let out_dst = &mut state.attn_out[q_offset..q_offset + head_dim];
+            for (c, out) in out_dst.iter_mut().enumerate() {
+                let mut sum = 0.0f32;
+                for (w, j) in window_positions(pos, window).enumerate() {
+                    let js = j % ctx;
+                    sum += state.probs[w] * state.v_ring[ring_base + js * d + q_offset + c];
+                }
+                *out = sum;
+            }
+            return Ok(());
+        }
+
+        // Device GEMM takes row-major operands. Gather in chronological order
+        // so the rolling ring remains an implementation detail and softmax
+        // sees the same oldest-to-current ordering as the CPU path.
+        for (w, j) in window_positions(pos, window).enumerate() {
+            let js = j % ctx;
+            for c in 0..head_dim {
+                state.attn_k_t[c * window + w] = state.k_ring[ring_base + js * d + q_offset + c];
+                state.attn_v[w * head_dim + c] = state.v_ring[ring_base + js * d + q_offset + c];
+            }
+        }
+        compute.gemm_f32(
+            1,
+            window,
+            head_dim,
+            &state.q[q_offset..q_offset + head_dim],
+            &state.attn_k_t[..head_dim * window],
+            None,
+            &mut state.scores[..window],
+        )?;
+        for score in &mut state.scores[..window] {
+            *score *= scale;
+        }
+        compute.softmax_f32(
+            &state.scores[..window],
+            &mut state.probs[..window],
+            1,
+            window,
+        )?;
+        compute.gemm_f32(
+            1,
+            head_dim,
+            window,
+            &state.probs[..window],
+            &state.attn_v[..window * head_dim],
+            None,
+            &mut state.attn_out[q_offset..q_offset + head_dim],
+        )?;
         Ok(())
     }
 
@@ -1030,10 +1137,8 @@ impl MimiTransformer {
         let d = self.d;
         let n_head = self.n_head;
         let head_dim = d / n_head;
-        let scale = 1.0f32 / (head_dim as f32).sqrt();
         let pos = state.pos;
         let ctx = self.context;
-        let window = (pos + 1).min(ctx);
         let slot = pos % ctx;
         for (li, layer) in self.layers.iter().enumerate() {
             // ---- Attention sublayer ----
@@ -1069,32 +1174,7 @@ impl MimiTransformer {
             // Attend over the rolling window (absolute order irrelevant to
             // the softmax sum; RoPE was applied at append time).
             for h in 0..n_head {
-                let q_row = &state.q[h * head_dim..(h + 1) * head_dim];
-                for (w, j) in window_positions(pos, window).enumerate() {
-                    let js = j % ctx;
-                    let k_row = &state.k_ring[ring_base + js * d + h * head_dim
-                        ..ring_base + js * d + (h + 1) * head_dim];
-                    let mut s = 0.0f32;
-                    for c in 0..head_dim {
-                        s += q_row[c] * k_row[c];
-                    }
-                    state.scores[w] = s * scale;
-                }
-                compute.softmax_f32(
-                    &state.scores[..window],
-                    &mut state.probs[..window],
-                    1,
-                    window,
-                )?;
-                let out_dst = &mut state.attn_out[h * head_dim..(h + 1) * head_dim];
-                for (c, out) in out_dst.iter_mut().enumerate() {
-                    let mut sum = 0.0f32;
-                    for (w, j) in window_positions(pos, window).enumerate() {
-                        let js = j % ctx;
-                        sum += state.probs[w] * state.v_ring[ring_base + js * d + h * head_dim + c];
-                    }
-                    *out = sum;
-                }
+                self.attend_head(compute, state, li, pos, h)?;
             }
             compute.gemm_f32(
                 1,
@@ -1105,9 +1185,13 @@ impl MimiTransformer {
                 None,
                 &mut state.attn_o,
             )?;
-            for c in 0..d {
-                state.h[c] += layer.layer_scale_1[c] * state.attn_o[c];
-            }
+            compute.residual_scale_add_f32(
+                1,
+                d,
+                &mut state.h,
+                &layer.layer_scale_1,
+                &state.attn_o,
+            )?;
             // ---- MLP sublayer (gating = none → GELU MLP) ----
             compute.layer_norm_f32(
                 &state.h,
@@ -1137,9 +1221,7 @@ impl MimiTransformer {
                 None,
                 &mut state.ff2,
             )?;
-            for c in 0..d {
-                state.h[c] += layer.layer_scale_2[c] * state.ff2[c];
-            }
+            compute.residual_scale_add_f32(1, d, &mut state.h, &layer.layer_scale_2, &state.ff2)?;
         }
         state.pos += 1;
         Ok(())
@@ -1155,7 +1237,6 @@ fn window_positions(pos: usize, window: usize) -> impl Iterator<Item = usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     use crate::compute::HotOp;
     use vokra_core::BackendKind;
     use vokra_core::rng::SplitMix64;
@@ -1448,6 +1529,16 @@ mod tests {
         n_head: usize,
         ff: usize,
     ) -> MimiTransformer {
+        tiny_transformer_with_context(rng, d, n_head, ff, 4)
+    }
+
+    fn tiny_transformer_with_context(
+        rng: &mut SplitMix64,
+        d: usize,
+        n_head: usize,
+        ff: usize,
+        context: usize,
+    ) -> MimiTransformer {
         let bound = |rng: &mut SplitMix64, n: usize| rnd(rng, n).iter().map(|v| v * 0.2).collect();
         let layer = MimiTransformerLayer {
             ln1_gamma: vec![1.0; d],
@@ -1463,7 +1554,7 @@ mod tests {
             fc2_w_t: bound(rng, ff * d),
             layer_scale_2: vec![0.01; d],
         };
-        MimiTransformer::new(d, n_head, ff, 4, 10_000, vec![layer]).unwrap()
+        MimiTransformer::new(d, n_head, ff, context, 10_000, vec![layer]).unwrap()
     }
 
     #[test]
@@ -1517,6 +1608,135 @@ mod tests {
             tf.process_inplace(&compute, &mut s2, seg, 1).unwrap();
         }
         assert_eq!(bulk, stepped, "batch path must be bit-identical to steps");
+    }
+
+    #[test]
+    fn transformer_attention_scratch_is_context_head_sized_and_reset() {
+        let mut rng = SplitMix64::new(17);
+        let tf = tiny_transformer(&mut rng, 8, 2, 16);
+        let mut state = tf.state();
+        let head_dim = tf.d / tf.n_head;
+        assert_eq!(state.attn_k_t.len(), tf.context * head_dim);
+        assert_eq!(state.attn_v.len(), tf.context * head_dim);
+        state.attn_k_t.fill(3.0);
+        state.attn_v.fill(-2.0);
+        state.reset();
+        assert!(state.attn_k_t.iter().all(|v| *v == 0.0));
+        assert!(state.attn_v.iter().all(|v| *v == 0.0));
+        assert_eq!(state.pos, 0);
+    }
+
+    #[test]
+    fn mimi_attention_backend_selection_is_fail_closed_without_cpu_fallback() {
+        // Vulkan has no Compute seam arm in this slice. Requiring the actual
+        // learned contractions pins selection as an explicit error rather
+        // than allowing a coverage-empty CPU fallback.
+        let result = Compute::for_mimi_backend(BackendKind::Vulkan, &[HotOp::Gemm, HotOp::Softmax]);
+        assert!(result.is_err(), "unsupported backend must fail explicitly");
+    }
+
+    #[test]
+    fn mimi_attention_rejects_undersized_scratch_without_mutating_output() {
+        let mut rng = SplitMix64::new(23);
+        let tf = tiny_transformer(&mut rng, 8, 2, 16);
+        let mut state = tf.state();
+        state.attn_k_t.clear();
+        let before = state.attn_out.clone();
+        let result = tf.attend_head(&compute(), &mut state, 0, 0, 0);
+        assert!(result.is_err(), "undersized attention scratch must fail");
+        assert_eq!(
+            state.attn_out, before,
+            "failed gather must not mutate output"
+        );
+    }
+
+    /// Device-gated synthetic parity for the causal QK/AV dispatch. A skipped
+    /// test means no Metal device was available; it is not a hardware result.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn mimi_attention_metal_synthetic_is_device_gated() {
+        let mut rng = SplitMix64::new(19);
+        let tf = tiny_transformer_with_context(&mut rng, 8, 2, 16, 2);
+        let cpu = compute();
+        let metal = match Compute::for_mimi_backend(
+            BackendKind::Metal,
+            &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Gelu],
+        ) {
+            Ok(compute) => compute,
+            Err(error) => {
+                eprintln!("SKIP Mimi Metal QK/AV: no usable Metal device ({error})");
+                return;
+            }
+        };
+        assert!(!metal.is_cpu(), "Metal request must not select CPU");
+        let frames = 5; // context=2: both paths wrap their chronological KV ring.
+        let input = rnd(&mut rng, 8 * frames);
+        let mut cpu_batch = input.clone();
+        let mut metal_batch = input.clone();
+        let mut cpu_state = tf.state();
+        let mut metal_state = tf.state();
+        tf.process_inplace(&cpu, &mut cpu_state, &mut cpu_batch, frames)
+            .expect("CPU synthetic Mimi attention");
+        tf.process_inplace(&metal, &mut metal_state, &mut metal_batch, frames)
+            .expect("Metal synthetic Mimi attention");
+        let mut cpu_step = input.clone();
+        let mut metal_step = input.clone();
+        let mut cpu_step_state = tf.state();
+        let mut metal_step_state = tf.state();
+        for frame in 0..frames {
+            tf.process_inplace(
+                &cpu,
+                &mut cpu_step_state,
+                &mut cpu_step[frame * 8..(frame + 1) * 8],
+                1,
+            )
+            .expect("CPU synthetic Mimi attention step");
+            tf.process_inplace(
+                &metal,
+                &mut metal_step_state,
+                &mut metal_step[frame * 8..(frame + 1) * 8],
+                1,
+            )
+            .expect("Metal synthetic Mimi attention step");
+        }
+        assert_eq!(cpu_batch, cpu_step, "CPU batch/step ring semantics changed");
+        for (index, (actual, reference)) in metal_batch.iter().zip(cpu_batch.iter()).enumerate() {
+            assert!(
+                actual.is_finite() && reference.is_finite(),
+                "Mimi Metal batch QK/AV produced non-finite output at {index}"
+            );
+            assert!(
+                (actual - reference).abs() <= 0.01,
+                "Mimi Metal batch QK/AV delta at {index}: actual={actual}, reference={reference}"
+            );
+        }
+        for (index, (actual, reference)) in metal_step.iter().zip(cpu_step.iter()).enumerate() {
+            assert!(
+                actual.is_finite() && reference.is_finite(),
+                "Mimi Metal step QK/AV produced non-finite output at {index}"
+            );
+            assert!(
+                (actual - reference).abs() <= 0.01,
+                "Mimi Metal step QK/AV delta at {index}: actual={actual}, reference={reference}"
+            );
+        }
+
+        // Reset must clear the rolling window before the next device call.
+        metal_state.reset();
+        let mut reset_metal = input[..8].to_vec();
+        let mut reset_cpu = input[..8].to_vec();
+        let mut reset_cpu_state = tf.state();
+        tf.process_inplace(&cpu, &mut reset_cpu_state, &mut reset_cpu, 1)
+            .expect("CPU synthetic Mimi reset reference");
+        tf.process_inplace(&metal, &mut metal_state, &mut reset_metal, 1)
+            .expect("Metal synthetic Mimi reset");
+        for (index, (actual, reference)) in reset_metal.iter().zip(reset_cpu.iter()).enumerate() {
+            assert!(actual.is_finite() && reference.is_finite());
+            assert!(
+                (actual - reference).abs() <= 0.01,
+                "Mimi Metal reset delta at {index}: actual={actual}, reference={reference}"
+            );
+        }
     }
 
     #[test]
