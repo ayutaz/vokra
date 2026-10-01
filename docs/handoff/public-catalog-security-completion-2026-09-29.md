@@ -2912,6 +2912,29 @@ the independent volume read returned `[]`. No worker was rented in this
 slice. Documentation-reference, runbook-path, forbidden-symbol,
 zero-dependency and diff gates passed for this management update.
 
+### 2026-10-01 XCodec2 exact-head branch update (01:15 UTC)
+
+Fresh GitHub reads confirmed main at
+`97447185361a37af64c1b30fe87e8e2618d96e20` and draft PR #152 at
+`35e4c70e830a675e3f9a124347e8fa3d23b77373`, behind main with base
+`81d72f2317a3bd2462cb7abbca15ac55b7518d56`. The three source/audit helper
+commits `6185ea8e`, `018c0174` and `f260f884` are already ancestors of that
+PR head; root also found matching collector, inspector, builder, builder-test,
+project and lock hashes in the PR and helper checkouts. They must not be added
+again as supposedly unintegrated work. Alert #159 remains open for Torch
+`<2.6.0`, with first patched version 2.6.0. A patched candidate is not an
+accepted real-weight result or a closed main-branch alert.
+
+Root requested GitHub's branch update guarded by that exact old head. The
+resulting PR head is `7dc3c492fcd44d6cfa7bbdc915b190fa7330ebd1`, based on
+the confirmed main head above. It remains open and draft. New-head CodeQL
+run `36800209413` and secret-scan run `36800209421` were in progress; main CI
+run `36800209675` and the quality/platform/security/coverage workflows were
+queued, and pins-sync-check `36800209448` had succeeded at readback. Old-head
+CI is not proof for this merge head. No merge, model execution, owner/legal
+approval, artifact update or security-alert dismissal occurred. The frozen
+FireRed VAST batch remains at its separate exact head.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
