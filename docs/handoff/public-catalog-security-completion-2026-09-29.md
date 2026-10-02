@@ -6030,6 +6030,62 @@ remains held. Preserve all 194 public rows, the last retained metadata-only
 136 full / 58 unresolved split, independent real-weight CPU and final Apple
 CPU/Metal/no-fallback evidence, security closure and publication gates.
 
+### 2026-10-02 reviewed OWSM family candidate and next source boundary (20:33 UTC)
+
+The preceding OWSM inspector failure is corrected, not overwritten. Root's
+full UV Python 3.12 `-S` self-test passed (`53ac93`, exit zero), and its separate
+primary-source AST invocation (`744184`, exit zero) matched the fixed CGMLP
+and LayerNorm raw SHA-256 values and passed all current checks. Ordered
+projection/gating operations, explicit default-axis checks and negative
+mutations are included; no source or numerical bound was relaxed. Root's fmt,
+forbidden-symbol, first-party lock and diff checks also passed.
+
+The reviewed partial slice is assembled and committed at clean
+`12c32984b51e2d7bddc85c9becd4c5ca007bdc18` in
+`/private/tmp/vokra-owsm-family-pr-20261003`, directly on main
+`97447185361a37af64c1b30fe87e8e2618d96e20`. Root independently checked
+the parent, exactly four paths, clean worktree and matching reviewed hashes
+(`3fdc23`); its additional family-clone self-test passed (`1064bc`). The four
+paths are the OWSM Rust module, inspector, design record and NOTICE; the main
+delta is 2,132 insertions / 68 deletions. The required focused Rust module
+has 18 source-defined tests and no ignored test. Those have not been compiled
+or executed locally; the exact family HEAD still needs remote verification.
+This is the bounded frontend/stem/CGMLP component, not full ASR or parity.
+
+The next controller's full V8-to-family diff review caught invalid OWSM test
+argv, a success-marker mismatch, missing family verification legs, stale
+XCodec2 test counts, missing allocated/cgroup RAM caps and a pagination fixture
+that stopped at pending pins rather than reaching the API. Bash syntax and
+ShellCheck alone pass but cannot prove the requested behavior. The frozen V1
+SHA-256 is
+`1d5e2defe58f0e55dc33674df03248e84bdaab296fe5cd0ad552d52af5cc889d`;
+it is unaccepted and must not run. A corrected inert V2 remains delegated.
+
+Root independently ran the further uncommitted XCodec2 candidate's stdlib
+suite: 44 tests, 43 passed and one explicit Linux-only skip (`05c2da`, exit
+zero). Review still found that deriving an execution footprint from the same
+possibly incomplete payload map does not prove completeness, that output
+files are written directly rather than atomically, and that scope validation
+and behavioral import-order coverage remain incomplete. Producer/archive/
+installed-inventory reconciliation and atomic anchored output corrections
+remain delegated. No commit, execution approval or real-weight result is
+inferred from that suite.
+
+Root also inspected the authenticated ESPnet attention source, raw SHA-256
+`722f4499d555472df6355fa1c811f71f96f2d63adbbf5602acfc5344f20bcf23`.
+Its Flash Attention branch is guarded by `self.training and
+self.use_flash_attn`; eval reaches the ordinary Q/K/V, scaled-score and
+masked-softmax path. This source fact guides a separate native attention
+candidate and stricter AST coverage; it does not authenticate missing actual
+task kwargs or enable full encoder/decoder/reference execution. Preserve the
+frozen CGMLP family HEAD while implementing that next required component.
+
+No replacement VAST worker, local model acquisition/execution, held external
+archive-input transfer, HF upload, PR mutation, merge or Scaleway allocation
+occurred. Keep all 194 public rows and the retained metadata-only 136 full /
+58 unresolved split, with every independent real-weight CPU, final Apple
+CPU/Metal/no-fallback, security and publication gate still accounted for.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

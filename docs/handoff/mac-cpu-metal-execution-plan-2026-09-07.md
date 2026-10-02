@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 OWSM candidate supersession (20:33 UTC):** clean family
+> candidate `12c32984` is now reviewed, with 18 source-defined focused Rust
+> tests to require in the next remote leg. It is not a full-model or hardware
+> verdict. Freeze it separately from later attention work; complete XCodec2
+> hardening and the controller's actual argv/count/source/RAM contracts before
+> any rent. Preserve all 194 rows and final Apple gates; see the
+> [dated candidate record](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-owsm-family-candidate-and-next-source-boundary-2033-utc).
+
 > **2026-10-02 corrective-review supersession (20:26 UTC):** keep the
 > reviewed FireRed family candidate separate from the still-unaccepted OWSM
 > and XCodec2 additions. Root's source-only checks found an OWSM inspector

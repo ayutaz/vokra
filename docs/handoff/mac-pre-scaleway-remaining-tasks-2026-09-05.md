@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 OWSM candidate supersession (20:33 UTC):** root accepted
+> the corrected bounded CGMLP/source slice and independently checked clean
+> family-only `12c32984` directly on main `97447185`. Its inspector now accepts
+> both authenticated primary sources and passes mutation self-tests. Exact-head
+> remote compilation, full inference, independent real-weight and Apple gates
+> remain open. XCodec2 and the next controller still require corrections;
+> no replacement VAST worker has started. Preserve all 194 rows; see the
+> [dated candidate record](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-owsm-family-candidate-and-next-source-boundary-2033-utc).
+
 > **2026-10-02 corrective-review supersession (20:26 UTC):** the new
 > XCodec2 hardening candidate passes 38 local stdlib tests with one explicit
 > Linux-only skip, but root review still rejects incomplete payload-closure
