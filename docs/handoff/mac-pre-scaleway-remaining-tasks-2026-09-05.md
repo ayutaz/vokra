@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 production-lock supersession (21:30 UTC):** root's
+> metadata-only check of the actual tracked XCodec2 lock found a valid-input
+> rejection missed by synthetic tests: UV artifact fields and the builder's
+> pinned identity use different schemas. The separate `38e5c0ed` preparation
+> helper and new source collector require a corrective child; neither proves
+> actual installed-build or model execution. The fresh HF API/card audit still
+> reports 194 rows and metadata-only 136 full / 58 unresolved. Fixed code-only
+> remote targets are unchanged; see the
+> [dated production-lock finding](public-catalog-security-completion-2026-09-29.md#2026-10-02-production-lock-counterexample-and-fresh-catalog-readback-2130-utc).
+
 > **2026-10-02 derived-proof supersession (21:18 UTC):** root accepted
 > the bounded XCodec2 preparation helper at clean `38e5c0ed`; 56 of 57
 > stdlib tests pass locally, with one explicit Linux-only skip. This does not

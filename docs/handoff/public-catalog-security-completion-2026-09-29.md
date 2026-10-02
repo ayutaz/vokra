@@ -6254,6 +6254,44 @@ pending. No new cloud resource, held archive-input transfer, model activity,
 PR mutation or upload occurred. Preserve all 194 rows, metadata-only counts
 and every real-weight CPU, final Apple/no-fallback and publication gate.
 
+### 2026-10-02 production-lock counterexample and fresh catalog readback (21:30 UTC)
+
+Root's source-packet review found a counterexample to the earlier synthetic
+preparation coverage. A metadata-only invocation against the actual tracked
+XCodec2 `uv.lock` (`66a94a`) produces `KeyError: 'hash'` in the new collector
+and rejects the frozen preparation verifier before reaching a nonexistent
+archive, with `lock sdist identity is malformed`. No archive or target package
+was acquired, imported, built, installed or executed by that probe.
+
+The actual UV sdist row uses `url`, `size`, prefixed `hash` and `upload-time`;
+the builder's fixed identity uses `url`, `bytes` and unprefixed `sha256`.
+Raw-dictionary comparisons or rejecting the known UV metadata cannot prove a
+valid production path. A corrective child must normalize the asset identity
+strictly, preserve the complete authenticated lock snapshot and SHA, and test
+the actual tracked lock before any fetch/archive boundary. Wrong URL, size,
+hash, unknown fields and malformed metadata must still fail closed. The
+synthetic tests and commit `38e5c0ed` remain historical evidence, not a
+production installed-build verdict. No execution consumer was unlocked.
+
+The new source collector is preparation only and remains unaccepted. Its
+public path must enforce VAST/platform and production pins before HTTP,
+separate its private fixture seam, include every first-party producer
+dependency identity, and distinguish source-archive network from model
+activity. The current fixed `99e6a157` / 48-test code target remains unchanged.
+The three-family controller also remains under corrective review: negatives
+must test the intended gate rather than fail in BSD-incompatible fixture
+mutation, and failure recovery must prove local recovered files, not merely
+the fake remote files. No replacement worker was rented.
+
+The fresh read-only HF API/model-card audit at 21:25 UTC (`ac5c9b`, exit zero)
+still has 194 public repositories, 193 GGUF-bearing repositories and 198
+GGUF files. CPU reachability is 136 full / 43 partial / 14 no-runtime-binder /
+one non-artifact; Metal is 136 full / 57 blocked-by-CPU / one non-artifact.
+The script's CPU-full/Metal-unsupported invariant passes. This audit downloads
+no model payload and supplies no real-weight or Apple parity verdict. Preserve
+every public row, source/license decision, full native and independent CPU
+reference requirement, final Apple/no-fallback gate and publication boundary.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

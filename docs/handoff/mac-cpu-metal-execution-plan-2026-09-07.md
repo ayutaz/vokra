@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 production-lock supersession (21:30 UTC):** before the
+> later XCodec2 source/archive wave, require actual tracked-lock metadata
+> positives as well as wrong-pin negatives. The separate preparation helper
+> `38e5c0ed` incorrectly rejects the production UV schema; its corrective
+> child and the new source collector remain under review. Do not substitute
+> either for the current `99e6a157` / 48 target. The three-family controller
+> still needs its realistic negative and local failure-log recovery proof
+> before rent. Full native/real-weight CPU and final Apple scope is unchanged;
+> see the [dated finding](public-catalog-security-completion-2026-09-29.md#2026-10-02-production-lock-counterexample-and-fresh-catalog-readback-2130-utc).
+
 > **2026-10-02 derived-proof supersession (21:18 UTC):** retain the fixed
 > three-family code-only targets while separately freezing XCodec2's accepted
 > preparation helper at `38e5c0ed`. Its 57-test candidate has no actual
