@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 reviewed-candidate supersession (14:15 UTC):** the next
+> code-verification candidate is clean HEAD
+> `3315339ebbb1f664969ad0172ab205c68813af13`, which contains the earlier
+> `597164c7` integration plus a reviewed ECAPA malformed-target identity
+> correction. The row-level metadata audit at `597164c7` remains 194 public
+> rows, 136 code/artifact-full and 58 unresolved; no row is promoted by this
+> worker correction. Latest-head VAST Rust gates and independent real-weight
+> validation remain pending. Preserve the full 194-row completion scope and
+> final Apple CPU/Metal/no-fallback and publication gates; see the
+> [review evidence](public-catalog-security-completion-2026-09-29.md#2026-10-02-row-level-audit-controller-regression-and-ecapa-identity-correction).
+
 > **2026-10-02 execution checkpoint:** clean candidate HEAD
 > `597164c7d1a81abf016ebc26400e597a91ab8811` now includes the remotely
 > generated FireRed schema-only fixture and the separately reviewed Realtime

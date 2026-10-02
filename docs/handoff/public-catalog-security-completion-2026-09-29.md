@@ -4860,6 +4860,86 @@ modified. All 194 public rows, independent real-weight CPU validation, final
 Apple CPU/Metal/no-fallback validation and publication boundaries remain in
 scope and incomplete.
 
+### 2026-10-02 row-level audit, controller regression and ECAPA identity correction
+
+The row-level metadata-only audit at clean integration HEAD
+`597164c7d1a81abf016ebc26400e597a91ab8811` completed in terminal session
+`23770`, exit zero. Its retained TSV is
+`/private/tmp/vokra-public-coverage-live-20261002-1358.tsv`, 37,881 bytes,
+SHA-256 `9ef3eb07f12a98de7f425dcd75b98f4cd1be45ab1d3907aafeca2626196cdd56`.
+It enumerates all 194 public rows and confirms the earlier 136
+code/artifact-full and 58 unresolved classification. Only HF API metadata
+and README cards were requested; no model, tokenizer or preset bytes were
+downloaded. This inventory is not a new real-weight or Apple verdict.
+
+Review of current source and the row-level artifact identities found that
+Qwen3-ASR 0.6B/1.7B, NSNet2 and SpeechBrain ECAPA already have source
+converter/binder/CLI/reference routes. They are not thereby VAST-ready:
+Qwen's live artifacts lack required execution metadata/sidecars and its
+dependency/license decisions remain pending; NSNet2's live MIT/permissive
+stamp conflicts with its recorded CC-BY-4.0 model identity; ECAPA's public
+artifact remains out of bounds. Existing owner records do not supply the
+required exact replacement/execution approval for NSNet2 or ECAPA. These
+facts do not authorize model acquisition, sign-off, replacement or upload.
+
+A primary HF API metadata check completed in tool cell `1503`, exit zero,
+without retrieving the GGUF. At
+`vokra/speechbrain-spkrec-ecapa-voxceleb`, exact revision
+`3dc7704b5861e348edafc0d800291887a284a476` reports the file
+`spkrec-ecapa-voxceleb.restamped.gguf`, 83,239,904 bytes, with API-reported
+LFS content-object SHA-256
+`f03292e93c215037b7d855281bb5786d600a1db3e51e9450c8caeb1360f1d571`.
+The old worker revision `3dc7704b2dcb80b8ea8eb2d3db7280f682ac3657`
+returned HTTP 404; its old `75e74d4e...` content pin is not the current
+replacement target. This is metadata identity evidence, not a locally
+measured model hash or repaired artifact.
+
+The implementation owner corrected that worker in an isolated clone as
+commit `5f6ce6fb1ec0b0b302ef71ed446e704dd015d052`, followed by a
+documentation-precision correction at
+`3315339ebbb1f664969ad0172ab205c68813af13`. Root reviewed both diffs and
+independently passed the worker's five-case offline self-test, Bash syntax,
+ShellCheck, zero-dependency, forbidden-symbol, documentation-reference
+(110 IDs), runbook-citation (1,132 anchors across 123 runbooks) and diff
+checks. The two-file logical change preserves the upstream/checkpoint,
+license/approval, restricted loader, parity bounds and no-upload gates. The
+clean isolated clone at `/private/tmp/vokra-ecapa-target-identity-20261002`
+is the next code-verification candidate; it is not pushed or merged, and
+its workspace/Clippy/deny/audit and real-weight/Apple gates remain pending.
+Root's separate management branch is not a wholesale code-push input.
+
+Root's full offline FireRed-controller regression at frozen SHA-256
+`cffc200a00c157f1348099648b9ae34e7298fbc459081f4c68e00801914eb90e`
+ended with exit one in terminal session `73182`. Ownership and
+deadline/signal regressions passed, but the actual extracted remote reader
+gate failed on an unbound `FIRERED_CONSUMER_DESIGN_SHA256` variable. Root
+also found old 25/24 reader and 24/23 source-capture mutation strings that
+no longer mutate the current 40-pass/three-ignore and 33-case fixtures.
+The implementation owner must correct the actual inherited harness rather
+than supply a separate permissive test. The failed snapshot is not approved
+for production; focused reports do not override this full-regression result.
+
+The separate archive-controller's restored inherited lifecycle suite was
+independently run by root at frozen SHA-256
+`8923c25bc58090c92991fce54348f18902a5553c83b0b7f8c772ebc4acaefbb6`.
+Terminal session `90803` exited zero: the actual collection leaf's fourteen
+tiny cases, remote-body check, 21 packet checks and original 21
+create/ownership/recovery/signal/destroy lifecycle scenarios passed. Syntax
+and ShellCheck also passed. This accepts only that first correction stage,
+not production: semantic JSON/result verification and bounded negative-JSON
+recovery still need implementation and review. Root additionally identified
+that the draft's old 128-MiB bundle bound would reject the authenticated
+159,334,746-byte archive total; the archive budget must follow the frozen
+collector/manifest contract, without relaxing packet/log caps.
+
+A fresh read-only VAST readback in terminal session `98706`, exit zero,
+reported zero Vokra instances, one unrelated instance and an explicit null
+pagination token. The unrelated instance was not modified, and no paid
+worker was created in this checkpoint. All 194 public rows, security/CI
+requirements, independent real-weight CPU validation, final Apple
+CPU/Metal/no-fallback verification and authorized publication remain in
+scope and incomplete.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

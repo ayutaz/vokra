@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 row-level audit and candidate supersession (14:15 UTC):** the
+> latest retained metadata-only TSV at `597164c7` enumerates all 194 public
+> rows and confirms 136 code/artifact-full and 58 unresolved. The next clean
+> reviewed candidate is `3315339ebbb1f664969ad0172ab205c68813af13`, adding
+> the ECAPA worker's authenticated current replacement-target identity, not a
+> model replacement or parity result. Preserve the 194-row denominator and
+> every unresolved source, approval, real-weight, Apple and publication gate;
+> the [dated evidence](public-catalog-security-completion-2026-09-29.md#2026-10-02-row-level-audit-controller-regression-and-ecapa-identity-correction)
+> distinguishes the two HEADs and the still-unapproved production controllers.
+
 > **2026-10-02 read-only metadata refresh:** at clean candidate HEAD
 > `597164c7d1a81abf016ebc26400e597a91ab8811`, the live HF API/card audit
 > still reports 194 public repositories, 193 GGUF-bearing repositories and
