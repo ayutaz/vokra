@@ -4111,6 +4111,43 @@ still reports `INCOMPLETE_PARITY_BINDING`, `parity_ready=false` and unbound
 GGUF identity; real-weight, owner/legal, native comparison and Apple gates
 remain open, and no catalog row is promoted.
 
+### 2026-10-02 v5 local-green failure diagnosis (09:18 UTC)
+
+The earlier terminal failure is now localized: the first rejecting check is
+`firered_module_registry_green_result_ok`, called by `verify_local_green`.
+The recovered module-registry log reports all nine named tests passing and
+`OK`, but contains none of the three required SHA-256 file-identity lines.
+Its SHA-256 is
+`5964384a0a32dd0df357204c70fc0dbfe494ec9d1e63f22f8a1ee302c5ff361b`.
+The frozen v5 controller remains unchanged at SHA-256
+`b42a8ef2b88abcaa2d8d5e941b98405c92969cdc79184e2be896f1a94bc087e7`.
+
+Root confirmed that the remote verification heredoc does not forward the
+three module-registry identity variables, and its `run_step` does not measure
+or prepend those hashes or apply the strict module-registry predicate.
+The generic remote process-success marker therefore does not prove that
+the stricter identity-bearing gate passed. This supplements, rather than
+replaces, the 08:59 remote test results and terminal exit-1 record. No hashes
+were fabricated or inserted into the original evidence, and the local gate
+was not weakened.
+
+The sequencing function returns immediately when this local-green check
+fails, before invoking `run_source_cache_side`. The Moshi source-cache leg
+is consequently `NOT_RUN`, not merely unproven and not a numerical result.
+A separate v6 controller correction is delegated for offline review before
+any new disposable-worker allocation. Its target must be frozen only after
+the producer-safety correction and actual Rust capture-binding reader are
+reviewed; the clean `8af2cc7` preparation is not remotely verified.
+
+Root also reviewed the first producer-publication safety draft and returned
+specific post-link stat-error and rollback/descriptor-cleanup paths for
+correction. Its nine focused filesystem test passes are not acceptance or
+real-weight evidence. The actual Python `capture-binding.v1` to Rust reader
+is being implemented separately; unbound GGUF identity and
+`parity_ready=false` must still reject a real-weight run before model access.
+No catalog row, Apple verdict, publication approval or completed-model count
+is changed by this diagnosis or by these model-free drafts.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
