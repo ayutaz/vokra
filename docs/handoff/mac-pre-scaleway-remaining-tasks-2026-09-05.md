@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 integrated code-replay supersession (18:54 UTC):** reviewed
+> clean `39b7570f` combines the two local correction commits. A separate
+> source-bundle-only V5 replay is live on disposable worker `53902589`, with
+> exact ID/label and 16 allocated cores independently confirmed. Bootstrap
+> reached Python 3.12; terminal Rust gates, packet recovery and destruction
+> remain pending. This does not run the denied five-input archive collection
+> or establish any real-weight/Apple result. All 194 rows remain in scope;
+> see the [dated integrated replay record](public-catalog-security-completion-2026-09-29.md#2026-10-02-clean-integrated-candidate-and-distinct-code-only-replay-1854-utc).
+
 > **2026-10-02 terminal replay and reviewed-candidate supersession (18:47 UTC):**
 > the `7b6b49cd` V4 replay recovered and independently verified all 22 packet
 > checksums, but workspace tests failed four FireRed consumer cases. XCodec2's

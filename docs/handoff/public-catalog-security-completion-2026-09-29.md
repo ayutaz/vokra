@@ -5623,6 +5623,51 @@ transfer, artifact upload, PR mutation, merge or Scaleway allocation occurred.
 All 194 public rows and the metadata-only 136 full / 58 unresolved split
 remain unchanged. The full completion audit below still applies.
 
+### 2026-10-02 clean integrated candidate and distinct code-only replay (18:54 UTC)
+
+The separate clean integration is
+`39b7570f3cccd89ccbb049c91077f635f7026c0f`, combining reviewed FireRed
+`2ae2e459` and a local cherry-pick of OWSM `00daef06`. Root independently
+confirmed the five-file scope and all five unchanged accepted file digests;
+the input clones remain clean. This is not a push, merge or Rust/parity pass.
+
+The new generic V5 controller has SHA-256
+`a2d4c25c56d9f95000a4eff8ff40869e76b2cb8977dab3772a7f4fa55a78651b`.
+Root reviewed its entire V4-to-V5 delta: only the name/label namespace and
+fixed model clone/HEAD changed. The validated bootstrap, limits, security
+and exact ownership/recovery/destruction behavior did not change. Root
+passed Bash syntax and ShellCheck, checked both clean HEADs and retained
+offline success/failure/cleanup evidence, and reviewed the implementer's
+complete terminal-zero offline run in session `43592` (15 cases). Root did
+not duplicate that unchanged full controller suite. V4's frozen digest
+remains `a00da7ce62a92ed832565c0f6d8832271abae4be4907f2da06998de966b1eb2f`.
+
+The separately authorized source-git-bundle code verification was accepted
+by auto-review and started in session `65914`, with logs retained under
+`/private/tmp/vokra-clean-heads-model-free-logs.EDCR8t`. It created only
+worker `53902589`, label
+`vokra-clean-heads-model-free-v5-20261003-20261002T185119Z-20122`.
+Independent fresh API session `22615` confirms exact ID/label,
+`actual_status=running`, `cur_state=running`, 16 effective cores, 200-GB disk and USD
+`0.17407407407407408` per hour, below the USD 0.20 cap. The actual bootstrap
+reached a completed Python 3.12 installation. The model bundle is fixed to
+`39b7570f`; separate XCodec2 remains `e6552853`. Both bundle verification
+messages were observed. Workspace tests/Clippy, deny/audit, XCodec2's 32
+cases, complete packet recovery and storage-inclusive destruction are still
+pending; the same bounded teardown is active. Poll the existing session;
+do not restart it merely because observations yield without output.
+
+This is source-bundle code verification only. It does not transfer the
+denied archive collection's generated audit inputs/leaf, execute that
+operation, install its target packages, or acquire a model. The five-file
+archive approval boundary remains unchanged. No HF credential, checkpoint,
+tokenizer, preset or public artifact is sent; no Scaleway allocation or
+model-row promotion is inferred. The preceding zero-Vokra readback applies
+to the completed V4 teardown, not this deliberately active V5 worker.
+All 194 rows and every independent real-weight CPU, Apple CPU/Metal/
+no-fallback, security and publication requirement remain unfinished unless
+their exact earlier row-scoped evidence already proves them.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

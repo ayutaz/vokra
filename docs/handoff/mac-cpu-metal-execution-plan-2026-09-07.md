@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 integrated code-replay supersession (18:54 UTC):** exact
+> clean `39b7570f` is the integrated FireRed/OWSM candidate for a distinct
+> source-bundle-only V5 replay. Worker `53902589` is independently running
+> with the exact label, 16 allocated cores and the same bounded teardown.
+> Rust gates, recovery and deletion remain pending; neither the separately
+> denied archive collection nor any real-weight/Apple/publication work is
+> performed by this code-only job. Preserve the complete 194-row scope;
+> see the [dated integrated replay record](public-catalog-security-completion-2026-09-29.md#2026-10-02-clean-integrated-candidate-and-distinct-code-only-replay-1854-utc).
+
 > **2026-10-02 terminal replay and reviewed-candidate supersession (18:47 UTC):**
 > the code-only V4 replay at `7b6b49cd` is terminal, with four failing FireRed
 > consumer tests and green XCodec2/Clippy/deny/audit legs. All 22 recovered
