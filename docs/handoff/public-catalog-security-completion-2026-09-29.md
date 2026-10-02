@@ -3530,6 +3530,47 @@ one. Package counts are Torch 156, ONNX 20, Transformers 20, Diffusers eight,
 Accelerate two, ModelScope two and NLTK one. No alert was dismissed or claimed
 fixed from the unmerged draft PR.
 
+### 2026-10-02 strict replay launch and decoder-capture review (06:12 UTC)
+
+The full objective remains reconciliation of all 194 public repositories,
+with independent real-weight CPU and Apple CPU/Metal/no-fallback evidence for
+every supported row, exact authorized dispositions for withheld rows, public
+artifact reconciliation, security findings and disposable-resource cleanup.
+This is not a claim that every Vokra feature is complete. The 58 unresolved
+metadata rows are not reduced by model-free tests or by this replay launch.
+
+Root accepted the revised source-only lifecycle controller at SHA-256
+`b0a6831a9057f1d1bd1221af1da7a0acdd82500a90537c910ebabf1e359a8604`.
+Its FireRed consumer predicate uses captured test output without `--nocapture`;
+the Mimi predicate requires ten actual exact-filter summaries and identities;
+the source-builder predicate requires the actual twelve-test namespace with
+zero skips. No synthetic aggregate Rust success summary replaces observed
+results. The main-packet member count is derived from its validated manifest,
+not the obsolete fixed value 42. Root independently passed the complete
+offline suite before the final three explanatory ShellCheck suppressions;
+root syntax and plain ShellCheck then passed at the final hash. The
+implementer also passed the complete final offline suite. The checksum
+tamper-negative control emits its expected warning, not a production failure.
+
+The clean, hash-checked target remains
+`87adbdafe507888df05a861f1f2c15035f73195f`. An all-pages VAST readback confirmed
+no Vokra worker before exactly one new instance, `53815435`, was created from
+offer `49438897`. Its owned label binds that target and this launch. Instance
+readback reports running, 16 effective CPU cores, 200 GB disk and total rate
+USD 0.1995555556/hour. The controller retains its 128,000-MB RAM gate; cheaper
+64-GB offers were rejected before creation. The execution handle is live;
+remote checks, packet recovery, the evidence-only Moshi side probe and strict
+destroy/readback are pending. No weights, HF token, model/preset execution,
+Apple run or upload is part of this replay. Unrelated resources are untouched.
+
+A separate, uncommitted decoder-capture candidate passed ten stdlib tests,
+but root review found missing opt-in imports, incorrect frontend-derived
+maximum-length metadata, module restoration and multi-output publication
+issues, incomplete identity/shape/budget validation, and absent exact packet
+binding. Corrections and integration regressions were delegated; that
+candidate is not accepted and is not included in the frozen VAST target.
+Neither its helper tests nor this source-only replay prove decoder parity.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
