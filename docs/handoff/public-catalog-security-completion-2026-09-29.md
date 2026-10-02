@@ -3294,6 +3294,51 @@ but root review found a production callback-binding defect and requested a
 correction and a production-bound regression test. It is not accepted, merged,
 remotely verified or used as real-reference evidence by this snapshot.
 
+### 2026-10-02 terminal recovery failure and reviewed follow-ups (04:41 UTC)
+
+The active-worker snapshot above is superseded by terminal controller exit 1
+for VAST `53804203`. Remote verification recorded exit 1; source collection
+reported `REMOTE_COLLECT_GUARD_FAIL:SOURCE_TOTAL_LIMIT`. Main fallback recovery
+reported `MAIN_RECOVERY_GUARD_FAIL:UNEXPECTED_NAME`, and diagnostic-only recovery
+reported `FAILED_DIAGNOSTIC_ONLY:MAIN_UNEXPECTED_NAME`. The local evidence
+directory is empty. The earlier direct-SSH observations prove only the 19
+specific completed checks, not the final workspace, deny, audit, source packet
+or Moshi verdict. No green packet, full-workspace success or numerical/model
+parity is inferred. The rejected filename and exact source-size cause are not
+recoverable from these bounded reason codes; a separate controller correction
+and realistic production-output tests are being investigated before another run.
+
+The instance and its storage were destroyed. Cleanup records `destroy_rc=0`,
+individual readback `instances=null`, an empty owned-label instance list with
+`success=true` and `next_token=null`, and strict cleanup PASS. A subsequent
+fresh all-pages account read returned only unrelated instance `53677077`
+(`ralomi-development-41259f7-20261001-urgent-03`, exited, 500 GB); it was not
+modified. There is no remaining Vokra instance in that readback, which is not
+a claim that the entire account has no storage charges. Controller-log SHA-256
+is `0acf5419a56ddb1cca126b727fd3f0800190d8b2202e35b71569aa5ee7e41e36`;
+remote-collect-log SHA-256 is
+`bd275b1cbeb5dd89841b5c8fee197dd47eddf85986de68958b1b052f5c99fb2b`.
+
+Root accepted the separate reference-only correction as commit
+`ed820f4e31bbdce29bc82c457eca48bb064f59c9`. It authenticates both tensor and
+official cache-metadata CPU records, binds the CPU trace manifest to the packet,
+atomically finalizes CPU evidence before optional CUDA, preserves dedicated CPU
+integrity failures and user interruption, and reports staging/rollback failures
+explicitly. The reviewed production callback binding is now defined. Root's
+offline stdlib self-test, diff, zero-dependency and forbidden-symbol checks pass.
+This is not an owner approval or actual CPU/CUDA/model parity; the live target
+was never changed. The reference script SHA-256 is
+`e6f7cc0595b7b5e747b998099e344fdfad16bcfb4c3c0fe7d0dd2810b0731d61`.
+
+The minimal SBV2 lint repair was separately applied to exact PR #152 head
+`152a3695508ed7372ae7cfd06a18e53e11af1fee`, without unrelated FireRed or
+Realtime changes. Its sole converter file is byte-identical to the version
+observed passing converter Clippy on the worker. Root's full format and static
+checks pass; the reviewed five-addition/twelve-deletion repair is committed as
+`dd6f015` and remains unpushed pending appropriate remote verification. PR #152
+is still draft and blocked at its earlier head; no fresh-head CI or merge
+success is claimed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
