@@ -3339,6 +3339,28 @@ checks pass; the reviewed five-addition/twelve-deletion repair is committed as
 is still draft and blocked at its earlier head; no fresh-head CI or merge
 success is claimed.
 
+### 2026-10-02 strict failed-comparison JSON follow-up (04:53 UTC)
+
+The future Realtime reference candidate is now clean commit
+`04571ee1c020d822be9056568e39b1fede1d9a65`, following `ed820f4`.
+Root review found that shape mismatch or non-finite comparisons could otherwise
+serialize `Infinity`/`NaN`, making a preserved CPU packet unusable by the strict
+Rust JSON consumer. The correction checks finite inputs and computed differences,
+records explicit failure status with null magnitudes, and uses strict atomic JSON
+writes. It does not widen the existing device-selection guard or normalize an
+invalid CPU tensor into success; CPU tensor recording still rejects non-finite
+values before finalization.
+
+Root independently passed the offline stdlib self-test and static gates. The
+actual comparison function was exercised with stdlib fake arrays for normal,
+out-of-guard, stage/PCM shape mismatch, NaN and finite-input subtraction overflow;
+PCM failure cases also traversed finalization, preserved CPU hashes and produced
+strictly parseable FAILED/selected-CPU packets. These are model-free control-flow
+regressions, not numerical parity or a real NumPy/Torch/CUDA run. Script SHA-256
+is `9c7cef7b3cf3827c39cca46d3dc1c540b17968697d50d3a64cd6e317c074d647`.
+The original VAST target `d24366c` and frozen recovery controller remain unchanged.
+This follow-up has not been pushed, merged or remotely verified.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
