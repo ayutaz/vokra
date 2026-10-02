@@ -4708,6 +4708,55 @@ instances, one unrelated instance and an explicit null pagination token;
 the persistent-volume query reports zero volumes. No unrelated resource was
 modified and no new paid worker was allocated during this checkpoint.
 
+### 2026-10-02 actual schema bootstrap and disposable-worker cleanup
+
+This later checkpoint supersedes only the preceding fixture-absence and
+bootstrap-pending statements. It does not promote a model's CPU, Apple,
+license or publication state. The root-reviewed schema controller stage3
+passed its full offline regression (terminal session `14957`, exit zero):
+four generator tests, five mocked output files and twenty lifecycle cases.
+
+The first production attempt ended before creation (session `96973`, exit
+one): an exact-ID offer search returned an empty list. A subsequent fresh
+eligible-offer list still included that offer, so the evidence does not prove
+that it was sold out. Stage4 changed preflight to a fresh eligible list with
+an exact local ID/cap match. Its production attempt (session `84409`, exit
+one) created instance `53861014` but stopped before SSH or fixture generation
+because the service reported no direct endpoint. The valid SSH proxy fields
+were present. The controller destroyed that instance including its storage;
+root independently verified individual `instances: null` and a strict empty
+label-scoped list with an explicit null pagination token.
+
+Stage5 added validated SSH proxy transport when a direct endpoint is absent,
+plus bounded endpoint readiness polling. This is a transport alternative,
+not inference CPU fallback. Its frozen SHA-256 is
+`624944f2e632e4d48ed4a3a95aaa3da66ec924780f09e64a4d248993c67ac161`.
+Syntax and ShellCheck passed; the delegated full offline regression completed
+with four generator tests, five mocked outputs and twenty-one lifecycle cases.
+Root also independently checked the endpoint decoder against the failed
+worker's actual metadata before approving the next attempt.
+
+The actual stage5 run (terminal session `12813`, exit zero) used exact clean
+generator HEAD `5b78f8e5e988bcb22f3e05669f839b97262592da`. Four generator
+tests passed remotely and five files were recovered under
+`/private/tmp/vokra-firered-schema-fixture-bootstrap-run-20261002-1301/packet`.
+Root independently verified the exact five-name allowlist, regular/non-symlink
+files, all five SHA-256 values and their 5,210,545-byte aggregate. The packet
+is explicitly `SYNTHETIC_SCHEMA_ONLY=true`, `REAL_V1_ACCEPTANCE=false` and
+`PARITY_READY=false`. It contains no model checkpoint, tokenizer or Torch
+execution evidence. Its authenticated source-record digest remains
+`11c96d58909bb2863e2e92b2f1420b4545d7e7b5a08021e8b90954210293475b`;
+the generator digest is
+`2c5018efa36f4848e6f11f682f958396b7eedcdc93456c789b408ebf8a846d27`.
+
+The successful worker `53861834` was also destroyed including saved data.
+Root verified individual `instances: null` and a strict empty label-scoped
+list with an explicit null pagination token. Neither attempt retained a
+worker or storage. No unrelated instance was modified, and no HF credential
+or `.env` was transferred. Canonical fixture installation, combined clean
+HEAD fixation and latest-head remote Rust gates remain the next steps;
+independent real-weight parity, Apple CPU/Metal and publication remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
