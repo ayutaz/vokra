@@ -4473,6 +4473,54 @@ occurred in this continuation. All 194 public rows remain in scope, and the
 58 unresolved code/artifact classifications are not promoted by these
 mechanism-only tests.
 
+### 2026-10-02 controller safety regressions and transfer preparation (11:12 UTC)
+
+The reviewed integration checkout is clean at
+`5b78f8e5e988bcb22f3e05669f839b97262592da`. Root revalidated the pinned
+binder, binding-test and canonical-generator hashes, then passed their combined
+25 standard-library unittest cases in 1.754 seconds with ResourceWarning
+treated as an error. There were no skips. This is model-free mechanism
+evidence, not independent real-weight CPU parity or Rust consumer evidence.
+The canonical persistent fixture remains absent.
+
+Root reproduced a portable-deadline failure in bootstrap draft SHA-256
+`e4d9bbf221fdf569f48bdfa6299c41bbe4d97f258a0d1c8397f5b41f89fba6e9`.
+With the external timeout runner disabled, a TERM-ignoring shell remained
+live seven seconds after starting a two-second deadline. The isolated
+diagnostic process group was killed and reaped; the reviewed script was not
+changed by the diagnostic. Paid execution remains rejected pending a portable
+TERM-to-KILL runner and whole-lifecycle ownership, signal and recovery tests.
+
+A separate read-only audit of the preserved full-replay v6 controller,
+SHA-256 `a2dc4e161f3b18bcdf2d733316fc4d0a884576f111c28b4d83926d0d471a931f`,
+passed syntax and ShellCheck but found further safety gaps: the positive
+create-response ID was treated as owned before exact-label verification;
+general CLI/SSH/SCP operations lacked a shared deadline; and the final
+label-absence validator accepted malformed non-dictionary rows. Its old
+`218ce74d` target is also not the integrated source head. The old controller
+is preserved, while ownership and strict absence regressions are delegated
+to a separate v7 draft. Neither draft is approved for paid execution, and
+retargeting the full replay still requires a verified persistent fixture and
+the subsequent final clean commit.
+
+Root created and verified a complete-history transfer bundle for clean
+`5b78f8e5` at
+`/private/tmp/vokra-firered-reviewed-bootstrap-input-20261002.2gpaUF/repo.bundle`.
+Its size is 57,873,950 bytes, below the 128-MiB input limit, and its SHA-256 is
+`d2a8ba44c4c10e6b8f1b43dae368cf7936958db978e70017b57917de9fe2ebd3`.
+The bundle contains the intended HEAD and passes `git bundle verify`; it has
+not been transferred or executed remotely. The authenticated source record
+and remote-only UV installer still match their previously recorded hashes.
+The offline Vast wrapper redaction, exit-status and explicit destroy-confirmation
+regressions also pass.
+
+Fresh authenticated paginated VAST readback reports zero Vokra instances,
+one unrelated instance and a null next token. The unrelated resource was not
+modified. No paid allocation, persistent fixture generation, Rust compilation,
+model execution, Apple run, publication, push, PR mutation or merge occurred.
+All 194 public rows remain in scope; no code/artifact classification or
+hardware-completion state is promoted by this preparation.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
