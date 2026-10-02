@@ -4030,6 +4030,63 @@ neither draft is accepted, committed or in the live VAST target. Session
 readback confirms the same v5 controller remains live; workspace verification,
 source-cache evidence recovery and owned-worker destruction are still pending.
 
+### 2026-10-02 portable VAST replay terminal readback (08:59 UTC)
+
+The v5 controller session is terminal with exit 1. Its remote verification at
+clean implementation HEAD `218ce74d5e8476a420efae6576c25a9190029299`
+completed successfully: all recorded remote gates passed, workspace tests
+reported 325 result summaries / 8,220 passed / zero failed / 110 ignored,
+and the FireRed consumer reported 25 passed / zero failed / two deliberately
+ignored real-weight tests. The portable capture suite passed 24/24 on Linux.
+Models all-feature/all-target Clippy, deny and audit exited zero. Deny retained
+the existing unused `libfuzzer-sys` exception warning; audit loaded 1,279
+advisories and scanned the 22 first-party lock entries.
+
+Root independently verified all 55 recovered manifest members and the exact
+final HEAD, empty observed worktree and empty diff-check output. Log SHA-256
+values are: workspace
+`c344f2ecfbd4852e1df3718ad30a4fce25eade814dc28a4d0d08350fc5d411e6`,
+consumer
+`e36a53d5fcc0a17f99ad20507cf67d1fbd6f3dde6a6500b4fbf030b80a8ea4f6`,
+capture
+`f79dcd13658ea7602f875b1670273021673b52e68f7316524517ecfb779dc681`,
+deny
+`907da4b7650fa729da1d4032c1b772616791810ee1e791eb7817b7493f7a172f`
+and audit
+`2de900cde21af07fc0cff26eb7a1fb7a16600c40da5faf87fefa9dd4d47f10dc`.
+The recovered manifest SHA-256 is
+`a07f08339cb63ad3c4f6543fc77a3e4878521446acbfb7ba7f939ea10fcb855a`.
+
+The outer controller nevertheless rejected its main-packet/local-green or
+source-cache boundary. This is not an end-to-end successful lifecycle verdict:
+the first rejecting condition is under review, the Moshi source-cache leg is
+not proven executed, and no retry or new rent is inferred. Preserve the
+terminal failure rather than relabelling the whole execution green.
+
+Owned instance `53832348` and its 200-GiB instance storage were destroyed.
+Controller readback and a fresh root individual API read both return
+`instances: null`; a fresh all-pages read reports zero Vokra instances,
+one unrelated instance and no next page, and the persistent-volume API
+reports zero volumes. The unrelated instance was not modified.
+
+The safe PR-preparation clone contains management-only commit
+`d09cf7ddfd7d61e2ba0a4775ac4208bf72dab6a8` above the remotely tested
+implementation HEAD. Root verified its implementation paths unchanged.
+That clone has no configured pre-commit hook; root separately ran equivalent
+format, forbidden-symbol, zero-dependency, fixture-EOL (190 cases) and
+pipefail (306 cases) gate legs, plus documentation and diff checks. Do not
+claim an automatically executed hook or a remote run at the documentation
+HEAD. No push or PR submission has occurred at this checkpoint.
+
+Both new Python capture-binding and Rust row-projection drafts remain
+unaccepted in separate clones. Further review requires inode-owned,
+fd-relative publication/rollback, producer-equivalent working-memory caps,
+correct parent-finished/EOS lineage, truthful full-matrix row provenance and
+complete allocation accounting. Model-free mechanism tests are not
+independent real-weight parity. The 194-row denominator, 58 unresolved
+metadata/code rows, security findings, owner/legal gates, Apple CPU/Metal and
+separate publication gates remain open. No model ran on the maintainer Mac.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
