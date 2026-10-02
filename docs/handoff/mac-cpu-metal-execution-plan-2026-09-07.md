@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 execution checkpoint:** clean candidate HEAD
+> `597164c7d1a81abf016ebc26400e597a91ab8811` now includes the remotely
+> generated FireRed schema-only fixture and the separately reviewed Realtime
+> archive-license helper. Latest-head remote Rust gates and independent
+> real-weight validation remain pending; synthetic fixtures are not parity.
+> A fresh metadata-only audit still reports 194 public rows, 136
+> code/artifact-full and 58 unresolved. Preserve every source/license,
+> independent CPU, final Apple CPU/Metal/no-fallback and publication gate;
+> see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-canonical-fixture-integration-and-fresh-metadata-audit).
+
 > **2026-09-30 execution supersession:** the live metadata audit at `main`
 > `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` remains 136 code/artifact-full
 > and 58 unresolved public rows, not a hardware-completion verdict. Preserve

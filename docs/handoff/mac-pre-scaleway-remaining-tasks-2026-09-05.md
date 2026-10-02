@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 read-only metadata refresh:** at clean candidate HEAD
+> `597164c7d1a81abf016ebc26400e597a91ab8811`, the live HF API/card audit
+> still reports 194 public repositories, 193 GGUF-bearing repositories and
+> 198 GGUF files. CPU code/artifact classification remains 136 full, 43
+> partial, 14 no-runtime-binder and one non-artifact (58 unresolved). Metal
+> code classification remains 136 full, 57 blocked-by-CPU and one
+> non-artifact. This queried metadata and README cards only, not model bytes.
+> It is not real-weight or Apple parity evidence. The latest
+> [integration checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-canonical-fixture-integration-and-fresh-metadata-audit)
+> fixes the next remote verification HEAD without promoting any model row.
+
 > **2026-09-30 metadata-audit supersession:** the read-only public inventory
 > at `main` `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` remains 194
 > repositories, 193 with GGUFs and 198 GGUF files: CPU code/artifact status is

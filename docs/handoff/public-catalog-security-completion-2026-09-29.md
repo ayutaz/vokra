@@ -4757,6 +4757,64 @@ or `.env` was transferred. Canonical fixture installation, combined clean
 HEAD fixation and latest-head remote Rust gates remain the next steps;
 independent real-weight parity, Apple CPU/Metal and publication remain open.
 
+### 2026-10-02 canonical fixture integration and fresh metadata audit
+
+Root reviewed the five recovered fixture files against their source packet
+with byte-for-byte comparisons, reviewed the LF-pin/handoff diff and ran the
+fixture EOL, zero-dependency, forbidden-symbol and diff checks. The isolated
+fixture commit is `32fe24a6884419812ba7a528bc6c17c6b549fd3f` (seven files:
+five fixtures, `.gitattributes` and the matching dated handoff). Its explicit
+schema-only/non-accepting/non-parity flags remain unchanged. A root attempt
+to run the binder test script locally was refused before execution by the
+maintainer model-execution guard; the guard was not bypassed. The delegated
+stdlib-only binder report records 21 passed tests, but latest-head VAST must
+independently rerun those tests and all required Rust gates.
+
+The previously reviewed archive-helper commit `501215c3` was mechanically
+integrated as a separate three-file commit,
+`597164c7d1a81abf016ebc26400e597a91ab8811`. Root verified the helper,
+focused test and design hashes remained exactly
+`7f3b8d524b2fd6df1841d79fbd06663e635a2baab506611275e6fc9342550fa1`,
+`b45f4cbecb4c7d125b9d4f8ff85dc32037a09c456bc58e492c27ae5c61b24f71`
+and `18600ee813ae734d1660035d9435b45172fbddc813e0102b3b2c698cc23b7798`.
+The combined tree is clean and is the next
+remote verification target; root's separate documentation branch is not a
+wholesale merge or code-push input. Combined-tree EOL, zero-dependency,
+documentation references (110 IDs), runbook citations (1,132 anchors) and
+diff checks passed. Latest-head Cargo/Clippy/deny/audit, real-weight CPU,
+Apple and publication results are not claimed.
+
+At approximately 13:15 UTC, the existing read-only HF audit completed
+successfully at that exact combined HEAD (terminal session `8868`, exit
+zero). It requested only HF API metadata and README cards, not GGUF tensor,
+checkpoint, tokenizer or preset bytes. It reports 194 public repositories,
+193 GGUF-bearing repositories and 198 GGUF files; CPU classification is
+136 full, 43 partial, 14 no-runtime-binder and one non-artifact; Metal code
+classification is 136 full, 57 blocked-by-CPU and one non-artifact. Thus the
+58 unresolved code/artifact rows remain, and 136 full is still not an Apple
+hardware verdict. Audit source SHA-256 is
+`690d603f7182fc5c0645e784f8857acee9604b20050892b2bf0eadeb41f8a905`;
+engine source SHA-256 is
+`cc22a9074531fa738c68101f4697b1b4393252b913b1bb2bc61092da93cf0b1b`.
+The canonical inventory and execution plan receive the same dated refresh.
+
+The separate VAST-only archive collection leaf is frozen at SHA-256
+`eed0d883ae2569ee67ea78896cde7a89beeddde33356376cb9aadb3e1c36a03c`.
+Root reviewed its bounded HTTPS/input/output and whole-process-group cleanup
+paths, then independently passed all fourteen tiny, networkless cases
+(terminal session `16710`, exit zero) and authenticated the actual historical
+audit/lock/manifest/helper inputs without a network request. This accepts
+only the offline collector snapshot; actual wheel/license-byte retrieval,
+installed-wheel identity proof and policy decisions remain open.
+
+Fresh read-only PR results still show PR #152 open/draft at `dd6f0154`,
+clean with 76 successful and three skipped checks; PR #174 is open/draft at
+`f4879d4f`, behind with 68 successful, one skipped and one failed
+`documentation-links` check. Neither was modified, re-run or merged during
+this checkpoint. The two bootstrap workers remain individually confirmed
+destroyed; no new paid worker was allocated for fixture integration or this
+metadata refresh.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
