@@ -5290,6 +5290,35 @@ new review and whole-suite validation; the old frozen hash will not be
 repinned to the inert fixture. No row, merge or artifact is promoted by these
 bounded corrections. The full 194-row completion scope remains active.
 
+### 2026-10-02 clean correction candidate and PR link-check readback
+
+Read-only Git inspection confirmed the isolated FireRed correction is
+committed at `db26d377f90c308e690e37a0871195c712d88a80`, with a clean
+worktree. The separate XCodec2 pre-import execution-gate tree remains clean
+at `e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`. Neither candidate has a
+new independent remote result yet. The main-branch API readback is
+`97447185361a37af64c1b30fe87e8e2618d96e20`; these isolated candidates are
+not represented as merged main or published artifacts.
+
+PR #174 remains draft at `f4879d4ffd948144c4abc385255bdf5964c94f33`.
+CI Security run `36658360528`, attempt three, is terminal failure;
+documentation-links job `110932221071` returned exit two with 22 errors,
+each a GitHub 503 response. This followed a single failed-job rerun after
+three representative primary URLs returned HTTP 200 on bounded HEAD probes.
+Those probes do not establish CI success. No link exclusion, retry-policy
+change, code push or merge was made, and the failed check remains open.
+
+The replacement remote controllers are still under root review. The generic
+workspace/XCodec2 controller's owner reported its offline actual-body tests
+passing, but review requires authenticated effective-core normalization and
+reserved destroy time before production acceptance. FireRed's replacement
+must create and validate real manifests before priority transfer, and the
+Realtime archive replacement must validate the actual helper's primary
+license schema instead of accepting empty package objects. No new worker was
+rented for these review-only steps; no owner decision, model execution,
+numerical parity or publication gate is promoted. The full 194-row objective
+and final Apple CPU/Metal/no-fallback requirements remain active.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

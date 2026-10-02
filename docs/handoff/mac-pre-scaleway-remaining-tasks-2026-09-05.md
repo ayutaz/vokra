@@ -1,5 +1,17 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 failed-run and correction supersession (16:30 UTC):** the
+> actual VAST code-verification run at `3315339e` failed on FireRed consumer
+> compilation and authenticated-record setup; it is not parity evidence.
+> The next isolated, clean correction candidate is
+> `db26d377f90c308e690e37a0871195c712d88a80`. Its static checks and source
+> review do not replace the pending remote Rust and real-weight gates. The
+> worker and its storage were destroyed and independently read back absent.
+> Preserve all 194 rows, the metadata-only 136 full / 58 unresolved split,
+> and every final Apple and publication gate; see the
+> [dated diagnostics](public-catalog-security-completion-2026-09-29.md#2026-10-02-failed-run-diagnostics-destruction-and-bounded-correction-1630-utc)
+> and [clean-candidate checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-clean-correction-candidate-and-pr-link-check-readback).
+
 > **2026-10-02 row-level audit and candidate supersession (14:15 UTC):** the
 > latest retained metadata-only TSV at `597164c7` enumerates all 194 public
 > rows and confirms 136 code/artifact-full and 58 unresolved. The next clean

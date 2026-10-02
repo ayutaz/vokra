@@ -1,5 +1,17 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 failed-run and correction supersession (16:30 UTC):** the
+> actual `3315339e` VAST attempt failed code/setup gates, with incomplete
+> failure-packet recovery. Its disposable worker and storage were destroyed.
+> Clean candidate `db26d377f90c308e690e37a0871195c712d88a80` contains the
+> bounded FireRed compilation correction; remote verification is still
+> pending. Review and validate the replacement controllers before renting,
+> then run remote Rust gates before any approved real-weight work. Scaleway
+> remains the final hardware service, not a way to bypass source, license,
+> independent CPU or packet gates. The metadata-only 136 full / 58 unresolved
+> split and all 194 public rows remain in scope; see the
+> [clean-candidate checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-clean-correction-candidate-and-pr-link-check-readback).
+
 > **2026-10-02 reviewed-candidate supersession (14:15 UTC):** the next
 > code-verification candidate is clean HEAD
 > `3315339ebbb1f664969ad0172ab205c68813af13`, which contains the earlier
