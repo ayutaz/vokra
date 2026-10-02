@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 live latest-head replay (22:14 UTC):** root independently
+> passed the retargeted V5 controller's full offline suite and started one
+> disposable code-only worker, `53926242`. API and read-only SSH confirm its
+> exact label, all three reviewed HEADs, 48 allocated/build cores and the
+> cgroup-bounded memory budget. Workspace tests are progressing; terminal
+> gates, packet recovery and destruction remain unproved. No actual model,
+> source-archive collector or Apple run was started. Preserve all 194 rows;
+> see the [dated live record](public-catalog-security-completion-2026-09-29.md#2026-10-02-live-latest-family-head-replay-and-effective-config-gap-2214-utc).
+
 > **2026-10-02 selected-layer supersession (22:01 UTC):** root accepted
 > and committed OWSM's source-ordered selected E-Branchformer layer at clean
 > `15ec2f0d`, with 28 source-defined Rust tests still requiring exact-head

@@ -6394,6 +6394,64 @@ S2T kwargs, full native encoder/decoder/tokenizer, independent real-weight
 CPU parity, final Apple CPU/Metal/no-fallback and publication gates remain
 unproved for this slice.
 
+### 2026-10-02 live latest family HEAD replay and effective-config gap (22:14 UTC)
+
+Root reviewed the immutable V5 controller diff: only its name/label and the
+OWSM/XCodec2 candidate paths, exact HEADs and required test counts change
+from the corrected V4 lifecycle. Syntax, ShellCheck and the independent full
+offline suite pass. Controller SHA-256 is
+`e1b7a555afe2c9f0428b8ccf7328c56e3569246c7d50946f1b810c04f010bbe9`.
+
+The 22:03 UTC complete paginated account query had no Vokra worker and one
+unrelated instance; response SHA-256 was
+`0e281018d866f4064d5e3f5720da54ee7e5849932f5803bb0cd49f23c996a8c9`.
+After the fresh capacity/price gate, the distinct code-only run created
+`53926242`, exact label
+`vokra-family-model-free-v5-20261003-20261002T220812Z-63522`.
+Independent API readback at 22:10 UTC confirms that exact ID/label is running,
+with 48 allocated CPU cores, 200-GB disk and reported storage-inclusive
+`dph_total=0.19999999999999998`. The unrelated instance is outside this run.
+
+Independent read-only SSH at 22:14 UTC confirms:
+
+| Tree | Actual remote HEAD |
+|---|---|
+| FireRed | `a3fb0fc227b745e30f477f37f2cd264b5948b30a` |
+| OWSM | `15ec2f0d73e7d40202ca54b79933e76a09478a1c` |
+| XCodec2 | `e9c7b8d054bb76f768ca4d13e129088e288544d3` |
+
+The remote resource summary has `allocated_cores=48`,
+`allocated_ram_mb=515823`, `host_ram_kb=528202592`,
+`cgroup_v2_limit_bytes=259621126144`, `effective_ram_kb=253536256`
+and `jobs=48`. Cargo is live and workspace tests are progressing. These are
+observations of this same process, not terminal test verdicts. Final focused
+OWSM/XCodec2 gates, workspace/security results, recovered checksums and
+destruction are still pending. The controller has bounded work and owned-ID
+cleanup; independently confirm individual absence and complete paginated
+ID/label absence after its terminal result. Do not restart a live job because
+an observation command failed or timed out.
+
+This wave transfers clean source bundles only, without an HF key or actual
+model/config/tokenizer payloads. It does not run the separate source-archive
+collector or the held five-input transfer. The source-only controller still
+requires independent root acceptance before any separate rent.
+
+The additional read-only OWSM source audit narrows the earliest unresolved
+effective-kwargs fact: pinned `AbsTask.build_model_from_file` loads persisted
+YAML into a Namespace, and `S2TTask.build_model` passes `args.encoder_conf`
+directly to the selected encoder. Constructor/default-config-generation facts
+therefore cannot authenticate the actual six effective flags without the
+fixed target config's authenticated bytes. The retained metadata guards name
+HF revision `e10985c8f1d592e905c24d2ac2b2c53e3feb24dc` and an advertised
+494,398-byte config Git blob `fbf425c85d183f9103cb5e2c84ebffb0f425a930`;
+those constants are not a live source/config readback. No config body was
+downloaded locally or promoted into an effective runtime contract.
+
+All 194 public rows remain accounted for. No real-weight CPU/reference,
+Apple CPU/Metal/no-fallback, owner/legal or publication gate advances from
+this live code verification. The metadata-only 136 full / 58 unresolved
+snapshot remains distinct from actual Apple-complete rows.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

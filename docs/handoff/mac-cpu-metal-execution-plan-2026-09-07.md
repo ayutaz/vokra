@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 live latest-head replay (22:14 UTC):** the separately
+> reviewed V5 code-only wave is running on owned `53926242` at FireRed
+> `a3fb0fc2`, OWSM `15ec2f0d` / 28 focused tests and XCodec2 `e9c7b8d0` / 72
+> stdlib tests. Independent SSH confirms exact HEADs and 48 build jobs within
+> the effective memory limit. Poll this same live job; do not restart merely
+> because an observation times out. Require terminal gates, authenticated
+> recovered evidence and complete owned-resource destruction before claiming
+> a pass. Source/license, real-weight and final Apple gates remain; see the
+> [dated live record](public-catalog-security-completion-2026-09-29.md#2026-10-02-live-latest-family-head-replay-and-effective-config-gap-2214-utc).
+
 > **2026-10-02 selected-layer supersession (22:01 UTC):** freeze reviewed
 > OWSM `15ec2f0d` / 28 focused Rust tests and XCodec2 `e9c7b8d0` / 72 stdlib
 > tests for the next distinct code-only wave, with FireRed `a3fb0fc2`
