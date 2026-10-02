@@ -5074,6 +5074,49 @@ checkpoint. The full 194-row scope and 136 code/artifact-full / 58 unresolved
 classification remain unchanged; excluded or withheld rows require an exact
 owner disposition and must not be represented as supported models.
 
+### 2026-10-02 XCodec2 safety commit and independent controller readback (15:22 UTC)
+
+The isolated XCodec2 safety patch is now a local, reviewed logical commit,
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`, on parent
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`. Root verified the clean clone,
+the four-file commit scope and unchanged reviewed hashes. The reference
+entry point now validates the exact execution approval and factual dependency
+evidence before importing third-party packages or touching the GGUF. The
+gate reuses the producer's installed-wheel selection, cross-binds retained
+license/native payload records, accepts unknown publisher RECORD fields
+without accepting known hash/size mismatches, and reads external JSON through
+bounded no-follow snapshots. The gate SHA-256 is
+`36fef37d2d30239975f1e80247a3c3ebc277cc5ad99725da6f3fcb55962d0f67`.
+The implementation owner reports 11 focused and 32 full stdlib tests passing,
+AST parsing, zero-dependency, forbidden-symbol and documentation checks.
+Root independently confirmed commit diff hygiene and artifact hashes, but
+its direct local test remains guard-refused; independent remote execution
+is still required. No push, manifest/sign-off change, model execution or
+publication occurred. The blocked production manifest stays blocked, and
+this source-review acceptance is not a merge or parity verdict.
+
+Root's whole mock-only FireRed controller run at frozen SHA-256
+`50f852e6847976ac39dfd87b45b66a7787fd0f76988267e8fa56cb8fe4c8c130`,
+session `29257`, is terminal with exit one. Ownership and deadline checks
+passed in the outer run, but `green-exit-self-test=FAIL` followed. The
+implementation owner inspected the retained green-child packet and found
+that its repeated deadline prerequisite failed before green-exit validation;
+its stderr had no named-case diagnostic. A bounded diagnostic-only revision
+now enables the existing failure diagnostics in those children. The actual
+cause is not yet established; neither an environment explanation nor the
+owner's earlier successful run supersedes this independent failure. No
+paid FireRed run is approved by these mock results.
+
+The clean `3315339e` integration candidate still needs current-head remote
+workspace/Clippy/deny/audit verification. A separate model-free disposable
+verification controller has been delegated so that those Rust checks and
+the isolated XCodec2 stdlib tests can progress without waiting for model
+approval or claiming real-weight parity. It is not yet reviewed or executed.
+All 194 public rows, the 136 code/artifact-full / 58 unresolved distinction,
+owner/legal dispositions, independent real-weight CPU results, final Apple
+CPU/Metal/no-fallback checks and separately authorized publication remain
+in the completion scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
