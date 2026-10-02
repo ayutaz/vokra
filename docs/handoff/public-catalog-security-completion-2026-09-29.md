@@ -3962,6 +3962,36 @@ owned label, running state, 16 effective CPU cores and 200-GiB disk. This
 code-only replay is live; its result, source-cache leg, evidence recovery and
 destruction remain unproven. The unaccepted adapter is not in this target.
 
+**08:35 UTC live progress:** corrected-head `firered-source-capture` returned
+process exit zero and its unchanged 24-test output gate passed on Linux.
+FireRed consumer/Clippy, source-record, source-builder and module-registry
+steps also passed. Whole-run success, the later source-cache leg and cleanup
+are still pending; the old failed execution is not rewritten.
+
+The source-only integration audit also closed mask polarity, not numerical
+parity: authenticated decoder lines 142-148 build `(ys != pad_id)` intersected
+with the causal triangle, and lines 258-264 mask positions equal to zero.
+Thus source target `uint8` one and source encoder `bool` true mean allowed.
+Cached decoder lines 185-196 select the last query row; source lines 48-50
+repeat the encoder mask across beams. Native self-attention uses prior valid
+keys plus the current `previous != pad_id` key, with a current-query causal
+boundary. Exact source/native row correspondence still needs authenticated
+beam-parent and prefix mapping. The top-level encoder/cross-attention source
+mask must not be compared with native self-attention `TraceStep.key_masks`.
+Source hidden-output prefix caches are not projected K/V caches. Source exit
+step is zero-based, while native `AllFinished.step` records the completed
+step count. No real decoder, cache-value, tie-order or Apple PASS follows from
+these source facts.
+
+Root's independent producer-backed adapter suite passed six tests, but the
+adapter remains unaccepted. Further review found aggregate selected-value and
+Base64-retained-byte checks occurring after decoding, missing nested tensor
+digest coverage, noncanonical Base64 acceptance and filesystem publication
+rollback gaps. These must close with targeted regressions before that code is
+committed or included in a remote target. A separate bounded Rust row/head
+projection implementation was delegated in a new clone; the running portable
+verification checkout remains frozen.
+
 Fresh PR #174 readback retains unchanged head
 `f4879d4ffd948144c4abc385255bdf5964c94f33`, draft/behind state, no pending
 checks and the failed `documentation-links` check. No rerun, merge or gate
