@@ -2935,6 +2935,50 @@ CI is not proof for this merge head. No merge, model execution, owner/legal
 approval, artifact update or security-alert dismissal occurred. The frozen
 FireRed VAST batch remains at its separate exact head.
 
+### 2026-10-02 resumed goal and bootstrap-failure readback (02:37 UTC)
+
+The active goal remains all 194 public repositories, including the attachment's
+artifact/provenance/legal and security scope. Completion means authenticated
+native routes, independent real-weight VAST CPU parity, Apple CPU/Metal and
+explicit no-fallback measurements, separately authorized correct public bytes,
+and reconciled security/CI/cloud disposition. The dated 136 code/artifact-full
+and 58 unresolved classification is not an Apple-completion count. A withheld
+row remains explicitly unsupported, not a supported-model success.
+
+The reviewed controller SHA-256
+`75d88822fb09d8cb178f6e4b0006b5880ab6f24c427370acfbb032c6048f5939`
+passed root's full offline self-test before renting disposable worker
+`53663629` for clean target `58177c040625f8cb714d2f8689c697e4a441cbe5`.
+Its actual remote run stopped during toolchain bootstrap: the authenticated
+Rustup binary was executed as `vokra-rustup-init`, which Rustup rejected as
+an unknown proxy name. No Rust tests or model execution followed. This attempt
+is failed setup, not verification evidence. The recovered bootstrap-log
+SHA-256 is `cb22551ce0bfc69b3e7c805b466b1776dd3b38f670f707462c7158bb148e115d`.
+Bounded main diagnostics were recovered; the source-packet guard failed
+because bootstrap had not produced the required evidence. Cleanup recorded
+`destroy_rc=0`, strict individual readback with `instances=null`, and an empty
+owned-label list. The controller-log SHA-256 is
+`5a5b56de7477551a2e3a72fd650f99d65479015f3427d0b9a6f4d739ffe9bc24`.
+The minimal bootstrap repair and its offline regression were delegated;
+they are not yet accepted or rerun.
+
+Fresh GitHub reads still show main at
+`97447185361a37af64c1b30fe87e8e2618d96e20` and draft PR #152 at
+`7dc3c492fcd44d6cfa7bbdc915b190fa7330ebd1`. All checks are terminal;
+`documentation-links` is the sole failure and merge remains blocked. Bounded
+official e-Gov API GETs returned HTTP 200 with law ID `415AC0000000057` in
+their actual bodies. The proposed current USCode Chapter 5 alternative also
+returned HTTP 200, but its body was an `Under Maintenance` page; it was rejected
+as a substitute for the statute. Only the two verified e-Gov citations were
+delegated for a minimal link correction. No legal prose, checker exclusions,
+owner approval, model result, alert dismissal or publication is changed by
+these observations.
+
+The current all-pages VAST list returned `success=true`, `next_token=null`
+and one stopped, unrelated `ralomi-development-*` instance; no Vokra worker
+remains. The independent volume list is empty. The unrelated instance and its
+storage were not modified. The resumed goal remains incomplete.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
