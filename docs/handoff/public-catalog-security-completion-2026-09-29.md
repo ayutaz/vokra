@@ -3031,6 +3031,45 @@ SARIF hash and current Dependabot counts are recorded in the
 This supersedes the older five-open observations, not the full completion
 scope or the outstanding security remediation.
 
+### 2026-10-02 first real compile and bounded correction (03:16 UTC)
+
+Root reviewed controller
+`c10e747ffeaa383e6e29ee90be1d5ec46f9a88c4567c5407c13ec4781e9dac55`
+and independently passed its full offline test, including the production-bound
+single-fetch guard and the actual-Git failure/success regression. The replay
+of clean head `3570e4e86ef936a92f62e857e9302d57aba6e974` used exactly one
+disposable worker, `53795614`. Bootstrap succeeded and an authoritative SSH
+read confirmed that exact head, `jobs=16` and live Cargo/Rust compiler
+processes. Source-audit and Rust-source-audit tests exited zero.
+
+Real compilation exposed seven `E0425` errors in FireRed's nested unit tests:
+`super::AUTHENTICATED_DECODER_N_LAYER` resolved to the `native` module rather
+than its parent. Focused model tests could not compile; this is not a numeric
+parity failure. Root reviewed the exactly seven reference corrections and
+committed them in an isolated clean checkout as
+`824fd33f38cb245e996cdd3c64a2bb51ed6665a8`. Production code, dimensions,
+assertions and bounds are unchanged. Formatting, forbidden-symbol,
+zero-dependency and diff checks passed; the new head is not remotely verified
+or pushed. A separately retargeted controller is being prepared without
+modifying the completed run's source or controller.
+
+The original run ended with exit 1 and its disposable worker was destroyed
+including storage: `destroy_rc=0`, strict individual `instances=null` and
+owned-label absence all passed. Incomplete packets failed the recovery bounds;
+no recovered green result is claimed. The controller-log SHA-256 is
+`dceecee3c290d9c19ee9eaa936b4c9ece7db3d94115b62569a7720f49e71fc9d`.
+Diagnostic-recovery limitations are being investigated separately; they do
+not weaken completion gates.
+
+The next-family review retains current execution blocks for Qwen3-TTS,
+Canary and Lang-ID: changed dependency locks or incomplete unsigned scope
+cannot inherit a historical approval. SGMSE is not reopened. Its unchanged
+converter/runtime, accepted Apple consumer `bed6cc3f` and separately published
+revision `c37e93159b4129b2c582c44f8170b44cf6e3e531` preserve the completed
+exact-artifact verdict in the [Apple reconciliation record](mac-cpu-metal-scaleway-results-2026-09-11.md).
+Later verifier plumbing changed neither runtime, references nor bounds;
+repeating that completed model would not close another unresolved row.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
