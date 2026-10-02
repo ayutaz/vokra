@@ -4654,6 +4654,60 @@ It does not approve installing this old dependency closure, importing its
 packages, executing a model, or publishing an artifact. Real archive/license
 collection remains VAST-only and has not run.
 
+### 2026-10-02 completion scope and recovered historical archive identities
+
+The user-facing goal clarification preserves all 194 public model rows, not
+only the presently prepared FireRed and Realtime slices. Completion requires
+source/license decisions, a working converter/binder/native/CLI route,
+independent real-weight VAST CPU parity, final Apple CPU/Metal/no-fallback
+evidence, authorized public-artifact reconciliation, reviewed PR/CI/docs,
+and removal of unnecessary campaign compute/storage. Withholding must remain
+an explicit disposition, not an implementation or hardware PASS. The latest
+recorded 136 code/artifact-full and 58 unresolved classification is not a
+136-model Apple-completion verdict. Scaleway remains the final hardware leg
+after non-Apple gates are closed or explicitly disposed of.
+
+The recovered evidence directory
+`/private/tmp/vokra-realtime-historical-lock-evidence-20261002` is now frozen.
+Root verified the regular, non-symlink 47,564-byte lock against the historical
+audit's SHA-256 `5cfaad7532ca8e144173cc3552b7f3f9585a15be3b81b29e34a0b0c6355a5603`.
+The manifest explicitly separates Git blob object ID
+`4fee981efbd3d1bfe1826b569920c281800f2455` from that content digest.
+Its current SHA-256 is
+`91b65a06e2be6a0d15477db9c9d6c12163af82e3ca65f6f47260b5516d1ad5c6`;
+the evidence README SHA-256 is
+`92bcaf97ec817adbc7b5969cfedf128573516403620c69c6a45aa1558418b8d9`.
+Earlier reported manifest hashes are superseded, not additional inputs.
+
+Root's independent Python 3.12 stdlib-only comparison verified all eleven
+manifest archive rows' exact URL, SHA-256, byte size and upload timestamp
+against the original lock, and the recorded Linux/x86_64/Python/UV platform
+fields against the authenticated audit. Four Linux wheel candidates are
+identified for safetensors 0.5.3, tokenizers 0.21.4, tqdm 4.67.1 and triton
+3.3.1. These are candidate archive identities, not proof of the originally
+installed wheel bytes. No real archive was downloaded, installed, imported
+or executed; primary license-byte collection and policy review remain open.
+
+The replacement full-replay controller v8r1 is frozen at SHA-256
+`9acfac1320dd21c85434a148abb2d5da5a4a6642d376363cba6192b39a5bbe25`.
+Root independently passed syntax and ShellCheck and the previously failing
+tiny parent-exit diagnostic: exit zero now leaves no descendant process
+group. Root then completed the full offline regression with terminal exit zero
+(session `65978`), including ownership, deadline/signal, wire and bundle
+observation checks. The frozen file's SHA-256 remained unchanged. This accepts
+that offline lifecycle snapshot, not a remote code/parity run.
+The controller still targets the older `218ce74d` input;
+current integration/fixture retargeting and production approval remain pending.
+The actual canonical FireRed schema fixture is still absent, and operational
+bootstrap corrections remain separately under review. No model-completion
+state, real-weight parity, Apple verdict or publication is promoted by this
+evidence-recovery checkpoint.
+
+Authenticated VAST readbacks at approximately 12:39 UTC report zero Vokra
+instances, one unrelated instance and an explicit null pagination token;
+the persistent-volume query reports zero volumes. No unrelated resource was
+modified and no new paid worker was allocated during this checkpoint.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
