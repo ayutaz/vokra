@@ -3070,6 +3070,54 @@ exact-artifact verdict in the [Apple reconciliation record](mac-cpu-metal-scalew
 Later verifier plumbing changed neither runtime, references nor bounds;
 repeating that completed model would not close another unresolved row.
 
+### 2026-10-02 corrected-head replay and remaining compile/guard failures
+
+The separately frozen controller
+`b37470f9631e437ba09ed3ccede410c74abf3856c6452c63bc5b294c3510b5aa`
+targets clean head `824fd33f38cb245e996cdd3c64a2bb51ed6665a8`. It explicitly
+declares the repository path in the separate verification SSH shell; the
+preceding run's actual `REMOTE_REPO: unbound variable` diagnostic explains
+why bootstrap's variable did not survive into that shell. Root reviewed the
+bounded fix and passed syntax, ShellCheck and the full offline regression,
+including extracted-production declaration ordering and missing-declaration
+negative cases. No model identity, numerical bound or cleanup gate changed.
+
+Exactly one disposable worker, `53797800`, replayed that head. Bootstrap
+succeeded; an authoritative SSH read confirmed the exact head and 16 build
+jobs. Actual focused Mimi, ABI, PCM and FireRed composition tests exited zero.
+The converter focused tests and warning-denied converter Clippy also exited
+zero. CosyVoice and VibeVoice source-only collectors exited zero. These are
+partial, directly observed results, not a recovered complete green packet or
+real-weight/Apple parity evidence.
+
+The actual FireRed consumer compile exposed two errors: a synthetic JSON
+object iterator yielded borrowed keys where owned strings were required, and
+an intentionally failing OPEN-path diagnostic used adjacent string literals
+without Rust concatenation. Warning-denied model Clippy also exposed unused
+test helpers, redundant final Option reborrows, equivalent collection checks
+and missing field documentation. Bounded corrections were delegated; the
+intentional OPEN verdict, assertions, tensor contracts and numerical guards
+must remain unchanged.
+
+Two controller defects were diagnosed separately. The full FireRed guard
+retained the previous native-source SHA in its remote comparisons, rejecting
+the correctly retargeted source with exit 125. The source-record step invoked
+a child `sh` without exporting its evidence-directory variable, so subsequent
+source instrumentation and registry tests could not find their required
+authenticated record. The running controller and source remained frozen;
+corrections and production-bound negative regressions are being prepared in
+a separate controller. No source or hash check is bypassed.
+
+The replay ended with exit 1. Incomplete evidence failed the existing recovery
+bounds; no local green packet is claimed. The controller destroyed the worker
+and all storage: destroy and readback exited zero, the individual response
+was `instances=null`, and the exact owned-label list was empty. Controller-log
+SHA-256 is
+`e021637fc6cb577a91996249c5997d8cc09beb0ce359d61f678f13a0056c676e`;
+bootstrap-log SHA-256 is
+`6e74ef4eea7ee68aa10c6172da4cf120e954042d18c7401543c88612235d6c6e`.
+No upload, Apple execution or additional model completion occurred.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
