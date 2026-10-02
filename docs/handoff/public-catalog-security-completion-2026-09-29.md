@@ -5182,6 +5182,63 @@ historical evidence for the exact `38be2988` bytes, not approval to run the
 current file. Production allocation remains unstarted; no model, wheel or
 public artifact was acquired or executed on the Mac.
 
+### 2026-10-02 actual VAST code verification and FireRed compile failure (16:22 UTC)
+
+Root independently accepted the frozen FireRed model-free controller at
+SHA-256 `7c323719fb414bbaa1b001463effb029fcbe4d32d5ef8e630f9bf3302f898faa`:
+whole offline session `37194` returned zero, including ownership, absolute
+deadline, wire-process, packet and bundle-observation checks. Bash syntax
+and independent ShellCheck session `67515` passed. The actual main packet
+contains 61 payload entries (28 logs, 26 exits and seven metadata files),
+not an invented larger member count. The archive-helper gate checks the
+actual three unit tests and 24 named synthetic helper cases; none of this
+is independent real-weight parity.
+
+Root then started production controller session `21345` with reviewed
+offer `32178462`. Creation registered owned instance `53883938` under the
+unique `vokra-firered-output-contract-verify-v9-3315339e-20261002T161319Z-61629`
+label. The reviewed allocation has 16 effective CPU cores, approximately
+258,023 MB RAM and 200 GB rented storage; the controller uses all 16
+allocated cores. Its work deadline is 10,800 seconds with a separate
+180-second cleanup budget. The clean remote code target is `3315339e`.
+No model bytes, HF token or local `.env` were transferred, and this is
+Rust/source verification, not a GPU model run or Apple result.
+
+The actual remote gates passed source audits, focused Mimi/ABI/PCM tests,
+FireRed focused/full tests and the wire contract. Both the FireRed consumer
+test and its Clippy leg returned raw exit 101. Root's bounded, read-only
+SSH observations (`16241` and `43875`, both terminal zero) confirm 13
+consumer compile errors: inaccessible integer-parser helpers, an undefined
+status constant, stale selected-axis/index struct-field accesses, an
+unresolved optional-shape type and a `usize`/`u64` arity mismatch. This is
+not a numerical-parity failure. A library unused-method warning also needs
+review. The failure remains authoritative; no skipped test, relaxed bound,
+mocked packet or successful preceding leg supersedes it.
+
+Root's bounded log observation `41154` also returned zero and distinguished
+two controller-wiring failures: capture-binding ran 21 tests with 22 errors
+because `VOKRA_FIRERED_SOURCE_RECORD` was absent, and the fixture generator
+returned raw zero but skipped its authenticated-record generation test.
+The semantic fixture gate correctly failed rather than accepting that skip.
+The official source-record fetch and builder passed, but the actual remote
+commands omitted that record's environment binding for these two legs.
+The next controller revision must pass the exact authenticated record and
+regress the extracted commands; synthetic all-green lifecycle logs alone
+did not establish this production precondition. The current frozen file
+must remain unchanged. Other completed source and archive-helper legs do
+not supersede these failures.
+
+At this timestamp the controller is still live and completing the remaining
+bounded code/source legs. Evidence collection and owned-instance destruction
+are not yet verified, and the earlier zero-instance readback predates this
+allocation. The consumer correction is delegated to a separate clean
+candidate; frozen production inputs must not change during this run.
+The hook/archive recovery and separate all-feature/XCodec2 controller also
+remain under review. No code push, merge, public upload or Scaleway allocation
+is inferred. The complete scope remains 194 public rows, 136
+code/artifact-full and 58 unresolved, with independent real-weight CPU,
+final Apple CPU/Metal/no-fallback and separate publication gates intact.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
