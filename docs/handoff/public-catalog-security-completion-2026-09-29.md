@@ -4606,11 +4606,14 @@ wheel evidence and cannot fill owner sign-off or authorize model execution.
 
 The historical audit records a 47,564-byte lock with SHA-256
 `5cfaad7532ca8e144173cc3552b7f3f9585a15be3b81b29e34a0b0c6355a5603`.
-Bounded history lookup found only the different 58,249-byte tracked lock at
+Bounded isolated-candidate history lookup found only the different
+58,249-byte tracked lock at
 `4482e80bd4a61e5cb6ff62516835a8e7cfd19492`, SHA-256
 `e8787e3c9e7bfdb3383fca1bba22026edbec4b9e61191692797e43e801f74352`.
-The required historical original remains unavailable. No replacement lock,
-reconstructed identity, dependency approval or real license closure is inferred.
+At that lookup, the required historical original had not been found. No
+replacement lock, reconstructed identity, dependency approval or real license
+closure was inferred. The subsequent maintainer-history lookup below supersedes
+the availability limitation, not the license or execution gates.
 
 Root rejected the full-replay v8 draft frozen at SHA-256
 `cc1fedda900949eb3a844a2ca4be7d1f5fe3ce849dd22be64dd86adb20acfd6d`.
@@ -4630,6 +4633,26 @@ modified and no paid worker was allocated. PR #152 remains draft/open at
 skipped checks; no PR mutation or merge was performed. All 194 public rows,
 real-weight CPU gates, Apple CPU/Metal/no-fallback gates and separately
 authorized publication remain in scope and unpromoted by this slice.
+
+### 2026-10-02 exact historical Realtime lock recovered from Git history
+
+Root expanded the lookup to the maintainer checkout's existing local refs,
+without merging or pushing its divergent branches. Two historical commits,
+`9879093f91b0900964673f91482c0907a12fceeb` and
+`31ab7d84828599d6edf83fe5049917fee88dc9c3`, contain the identical recorded
+47,564-byte lock, Git blob `4fee981efbd3d1bfe1826b569920c281800f2455`.
+Root independently hashed each blob to the required
+`5cfaad7532ca8e144173cc3552b7f3f9585a15be3b81b29e34a0b0c6355a5603`.
+The previous missing-original result was therefore limited to the isolated
+candidate's history, not all local history.
+
+Exact-byte recovery and archive-candidate metadata extraction are delegated
+as separate evidence files; the current reference project's lock is not being
+replaced. The authenticated original permits the historical archive evidence
+collector's input gate to be satisfied once the recovered file is verified.
+It does not approve installing this old dependency closure, importing its
+packages, executing a model, or publishing an artifact. Real archive/license
+collection remains VAST-only and has not run.
 
 ## Final audit
 
