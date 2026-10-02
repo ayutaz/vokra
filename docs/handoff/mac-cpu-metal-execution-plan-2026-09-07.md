@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 derived-proof supersession (21:18 UTC):** retain the fixed
+> three-family code-only targets while separately freezing XCodec2's accepted
+> preparation helper at `38e5c0ed`. Its 57-test candidate has no actual
+> production archive/install proof or execution approval. Do not silently
+> substitute it for `99e6a157` / 48 in the current controller. Source/license,
+> independent real-weight and final Apple gates remain; see the
+> [dated proof record](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-derived-sdist-preparation-helper-2118-utc).
+
 > **2026-10-02 OWSM attention supersession (21:12 UTC):** the reviewed
 > OWSM remote target is now clean `387d1f79`, with 23 required focused Rust
 > tests and no permitted ignore, rather than the historical 18-test CGMLP

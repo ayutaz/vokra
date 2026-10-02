@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 derived-proof supersession (21:18 UTC):** root accepted
+> the bounded XCodec2 preparation helper at clean `38e5c0ed`; 56 of 57
+> stdlib tests pass locally, with one explicit Linux-only skip. This does not
+> approve actual sdist builds/installation or unlock reference execution.
+> The separate next VAST target remains `99e6a157` / 48 tests, and its
+> controller remains under review. No model row is promoted; see the
+> [dated proof record](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-derived-sdist-preparation-helper-2118-utc).
+
 > **2026-10-02 OWSM attention supersession (21:12 UTC):** root accepted
 > and committed the bounded standard-attention slice at clean `387d1f79`,
 > extending the frozen CGMLP candidate. Its 23 source-defined Rust tests

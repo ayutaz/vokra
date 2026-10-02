@@ -6222,6 +6222,38 @@ metadata-only 136 full / 58 unresolved split. Independent real-weight CPU,
 final Apple CPU/Metal/no-fallback, security and publication evidence remain
 required; no row is promoted by this component acceptance.
 
+### 2026-10-02 reviewed derived-sdist preparation helper (21:18 UTC)
+
+The preceding XCodec2 preparation review has now closed its identified code
+corrections. Root fully reviewed the changes and independently ran focused
+9/9 tests (`b17463`) and the complete stdlib discovery (`ce9f8c`): 57 run,
+56 passed, one explicit Linux-only sealed-memfd skip. Forbidden-symbol,
+first-party-lock and diff gates pass. The exact three-file candidate is
+committed at clean `38e5c0edbedcee5e3564b3e65df9e88f2eaec902`, parent
+`99e6a157b47face677f66b61a6dad2ba40ff84ec`, with 767 insertions and no
+other path changes (`0185be`). All five normal commit hooks passed (`93c268`)
+offline and without syncing third-party dependencies.
+
+The production API and CLI enforce the fixed source-artifact identities
+using a single authenticated lock snapshot. The private synthetic seam is
+separate. Installed source, metadata and RECORD tampering are rejected;
+directory/entry/depth/byte bounds and anchored no-follow reads/writes prevent
+unbounded traversal or symlink-based publication. The verifier SHA-256 is
+`1c52cbb964b1500307a7417f32fd95ced09dd5bb77e5c243f3fd170cae522142`.
+These source/synthetic checks prove the bounded preparation contract only.
+No actual production archive, installer-generated mapping, package build,
+upstream compatibility, independent reference or model parity was executed.
+The output retains `UNAPPROVED_NO_EXECUTION`, `NO_UPLOAD` and unresolved owner
+review; ANTLR script relocation and installer RECORD rewriting remain blocked.
+The existing execution consumer is unchanged and still blocks selected sdists.
+
+Keep this candidate separate from the current code-only controller's frozen
+XCodec2 target `99e6a157` / 48 tests. OWSM remains `387d1f79` / 23 and FireRed
+remains `a3fb0fc2`; controller acceptance and exact-head remote results are
+pending. No new cloud resource, held archive-input transfer, model activity,
+PR mutation or upload occurred. Preserve all 194 rows, metadata-only counts
+and every real-weight CPU, final Apple/no-fallback and publication gate.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
