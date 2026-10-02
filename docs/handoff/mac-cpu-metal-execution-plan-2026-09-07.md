@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 corrected-bootstrap replay supersession (18:27 UTC):** the
+> independently reviewed and offline-tested generic V4 controller is running
+> a new code-only VAST replay on disposable `53899353`. Real rustup/uv/deny/
+> audit checksums pass; exact clean `7b6b49cd`, XCodec2 `e6552853` and 16 build
+> jobs are independently observed. No terminal workspace, XCodec2, security,
+> recovery or cleanup success is inferred yet. All independent real-weight,
+> final Apple CPU/Metal/no-fallback and publication requirements remain in
+> scope for all 194 public rows; see the
+> [dated replay checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-corrected-bootstrap-and-live-code-replay-1827-utc).
+
 > **2026-10-02 bootstrap-failure supersession:** worker `53895587` stopped
 > before workspace/XCodec2 tests because release acquisition did not follow
 > the official HTTPS redirect. The uv pin agrees with official metadata;

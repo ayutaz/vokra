@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 corrected-bootstrap replay supersession (18:27 UTC):** root
+> independently passed the frozen generic V4 controller's full offline suite.
+> A new disposable worker `53899353` has passed all four real bootstrap
+> checksums and is running code verification at clean `7b6b49cd` with separate
+> XCodec2 `e6552853`. Independent API and read-only SSH observations confirm
+> the exact ID/label, both HEADs and 16 allocated/build cores. Terminal gates,
+> complete packet recovery and destruction remain pending. This is not model
+> parity or Apple completion; preserve all 194 rows and the metadata-only
+> 136 full / 58 unresolved split. See the
+> [dated replay checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-corrected-bootstrap-and-live-code-replay-1827-utc).
+
 > **2026-10-02 bootstrap-failure supersession:** the separate `7b6b49cd`
 > workspace replay stopped before tests on a release-asset checksum mismatch.
 > The official uv digest matches the pin; bounded HEAD probes identify an

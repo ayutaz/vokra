@@ -5467,6 +5467,72 @@ from this attempt. The corrected FireRed and XCodec2 code results are still
 pending; all 194 public rows and independent real-weight/Apple/publication
 completion requirements remain unchanged.
 
+### 2026-10-02 corrected bootstrap and live code replay (18:27 UTC)
+
+Root reviewed the distinct generic V4 controller at SHA-256
+`a00da7ce62a92ed832565c0f6d8832271abae4be4907f2da06998de966b1eb2f`.
+It preserves the verified release digests while following at most three
+HTTPS-only redirects. Its tiny fixtures exercise the actual extracted
+bootstrap branches, require the redirect contract separately for uv, deny
+and audit, and reject each asset's missing-follow, wrong-protocol and
+wrong-limit mutations. Fixture installation uses a task-specific root,
+without repurposing `HOME`. Root's Bash syntax, ShellCheck and complete
+offline suite passed in session `4062`; the frozen digest remained unchanged.
+These are mechanism tests, not real model or Rust results.
+
+Root independently recomputed the retained official release API asset tag,
+URL, size and digest for uv, cargo-deny and cargo-audit, the uv/deny checksum
+sidecars, and the rustup checksum receipt. The receipt JSON SHA-256 is
+`150789a505c47860f390caf3f93ab5032eea2b6827276d3e1e404ddb472546a9`.
+No archive or executable was downloaded or executed on the maintainer Mac.
+The earlier V2 failure and V3 candidate remain immutable historical evidence.
+
+Production session `98581` created exactly one disposable worker `53899353`,
+label `vokra-clean-heads-model-free-v4-20261003-20261002T182131Z-92897`.
+Independent API readback session `78463` confirms running status, the exact
+ID/label, 16 effective allocated cores, 200-GB disk and USD
+`0.17407407407407408` per hour, below the USD 0.20 cap. The real bootstrap log
+now reports matching rustup, uv, cargo-deny and cargo-audit checksums and a
+completed Python 3.12 installation. Read-only SSH session `28475` confirms
+model HEAD `7b6b49cd192b31f392350922c8765e8e0a1234eb`, XCodec2 HEAD
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`, `allocated_cores=16`, `jobs=16`,
+toolchain exit zero and a progressing workspace test log. An earlier
+read-only probe failed its endpoint type preflight; it did not run SSH,
+restart the controller or establish a worker failure.
+
+The actual all-target/all-feature workspace tests and Clippy, deny/audit,
+XCodec2's 32-case gate, complete packet recovery and storage-inclusive
+destruction are still pending. The controller retains bounded cleanup and
+exact-ID/label ownership checks. No checkpoint, tokenizer, preset or HF
+credential was transferred; no upload or Scaleway allocation occurred.
+Separately, the published PR #152 check readback in session `73014` reports
+76 successes, three skips and no other states. It does not validate the
+unpublished correction candidates.
+
+Root also independently ran the real pinned archive leaf's 14 offline cases
+and the archive-license helper's 24 offline cases, both with terminal exit
+zero and unchanged SHA-256 values `eed0d883ae2569ee67ea78896cde7a89beeddde33356376cb9aadb3e1c36a03c`
+and `7f3b8d524b2fd6df1841d79fbd06663e635a2baab506611275e6fc9342550fa1`.
+These synthetic tests do not establish actual wheel collection or installed
+dependency approval. The archive lifecycle controller remains under separate
+readiness/schema review; its dirty hook is not included in this change.
+
+The retained ESPnet primary `LICENSE` was independently recomputed: 11,372
+bytes, SHA-256 `4696c3c9551da6fef1368be1e4ed2c80cf13e55448c6dcf2aba9462f5ff29ef5`,
+Git blob `6afea95e3feee6ed39ecd4840662576c1f513173`, matching API-decoded bytes
+and fixed revision `cccc29023d43a3f504e28df7d1324bb4eb6daedd`. API receipt
+SHA-256 is `c72ca5e36acda11ae74a7211a1db50e63fe504eff27aa795d0f32ca944c86466`.
+This authenticates Apache-2.0 source facts, not weights, dependencies or an
+owner publication decision. A bounded native OWSM Conv2d8/absolute-position
+stem is delegated with existing CPU/Metal Compute seams and no silent CPU
+fallback. Its inspector correction and native diff are not accepted yet;
+full encoder/decoder/tokenizer, genuine independent real-weight CPU and
+final Apple verification remain unfinished.
+
+All 194 public rows and the metadata-only 136 full / 58 unresolved split
+remain intact. No row is promoted by bootstrap, synthetic tests or a live
+code replay, and the full completion audit below remains required.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
