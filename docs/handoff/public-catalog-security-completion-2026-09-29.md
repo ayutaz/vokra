@@ -4087,6 +4087,30 @@ independent real-weight parity. The 194-row denominator, 58 unresolved
 metadata/code rows, security findings, owner/legal gates, Apple CPU/Metal and
 separate publication gates remain open. No model ran on the maintainer Mac.
 
+### 2026-10-02 reviewed binding and projection integration (09:09 UTC)
+
+Subsequent source review accepted the fail-closed Python capture-binding
+preparation at `10f88b8253c6d6a94b0dcf099c7cd3b7620b1192`. Root independently
+reran 17 stdlib regressions with ResourceWarning errors enabled and the
+authenticated decoder source record; all passed, as did its self-test.
+The reviewed Rust projection slice is
+`9e0eb0b163d657b3f6ca74967ce8359d3e13fdde`; its focused Rust tests and Clippy
+remain VAST-pending. Management integration plan
+`ea82c04aa1e7b6682d236b748b30bd9a00017580` records the actual missing
+producer-to-Rust/native comparison seam rather than claiming schema parity.
+
+The isolated clean integration candidate is
+`8af2cc7bd4d1083602047e721f61bb39614da90a`, above safe PR-preparation
+checkpoint `197b8c5b23612e8c3e64ea8a0930e52c4ee93d37`. Root confirmed only the
+six intended files changed and reviewed-file hashes remained identical.
+This candidate has not been remotely compiled, pushed or submitted as a PR.
+The earlier upstream capture producer's filesystem-publication race boundary
+is now assigned as a separate bounded correction before the next remote
+target is frozen. No new VAST instance was allocated. The Python binding
+still reports `INCOMPLETE_PARITY_BINDING`, `parity_ready=false` and unbound
+GGUF identity; real-weight, owner/legal, native comparison and Apple gates
+remain open, and no catalog row is promoted.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
