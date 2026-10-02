@@ -6164,6 +6164,64 @@ metadata-only 136 full / 58 unresolved classification, with independent
 real-weight CPU, final Apple CPU/Metal/no-fallback, security and publication
 gates still required.
 
+### 2026-10-02 accepted OWSM attention and remaining proof gates (21:12 UTC)
+
+Root accepted the bounded standard self-attention implementation after
+independent source and diff review. The clean commit is
+`387d1f79b3da45eba63ec5c93214a39817e6fad3`, parent
+`12c32984b51e2d7bddc85c9becd4c5ca007bdc18`, in
+`/private/tmp/vokra-owsm-attention-slice-20261003`. Its three-path delta is
+927 insertions / 16 deletions: the OWSM Rust module, source inspector and
+design record. Root rechecked the committed identity and clean worktree
+(`e7be46`). The final commit passed all five normal pre-commit gates
+(`eea297`); the temporary clone's initially missing hook configuration was
+corrected by an immediate amendment using explicit `.githooks`, offline UV
+and no dependency sync. This receipt applies to the final commit, not the
+superseded pre-amendment object.
+
+The authenticated primary attention source remains 16,772 bytes, SHA-256
+`722f4499d555472df6355fa1c811f71f96f2d63adbbf5602acfc5344f20bcf23`.
+Root's final primary-source probe passed 20 AST checks and rejected five
+actual-source mutations affecting dtype, softmax input, head merge, output
+projection and key transpose (`28cbeb`). The inspector self-test also passed
+(`314eb0`). The attention component is authenticated, but the retained overall
+packet remains `BLOCKED_SOURCE_SEMANTICS` with five other source roles missing.
+Fmt, forbidden-symbol, first-party-lock and diff gates pass. The module now
+defines 23 Rust tests and no ignored test; none has been compiled or executed
+on the maintainer Mac. Require these 23 tests at this exact HEAD remotely.
+Synthetic structural checks are not independent real-weight reference parity.
+Full encoder/decoder integration, effective task configuration and the
+reference dependency/license closure remain unfinished.
+
+The next code-only VAST controller remains unaccepted. Review now requires
+independent parsing and API/raw/record hash reconciliation of recovered proof,
+failure-path log recovery, realistic negative cases for changed gates and the
+new 23-test OWSM pin. Separately, the new XCodec2 derived-sdist proof candidate
+still needs corrections for lock-snapshot identity, installed RECORD changes,
+anchored no-follow paths and strict input parsing. Passing its initial small
+test suite did not prove these properties. It does not change the frozen
+`99e6a157` 48-test target, approve actual package builds or unlock execution.
+The separately held five-input archive transfer remains held.
+
+Fresh GitHub reads retain main
+`97447185361a37af64c1b30fe87e8e2618d96e20` (`0580ff`). Draft PR #152
+is mergeable at head `dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`;
+draft PR #149 has a dirty merge state at head
+`9a929c141a40cad524be4945135d3dee1cba3460` (`343244`, `2cc3c9`).
+Those PR heads do not cover the new fixed family candidates. No push, PR
+update, merge or CI restart occurred in this review.
+
+The complete VAST readback at 21:05:56 UTC (`5342e9`) has `next_token: null`,
+zero Vokra instances and one unrelated instance left untouched. Its redacted
+response SHA-256 is
+`9dbb112c795a2933946397200586fae0eb343afb7161002f5d70793103ceec24`.
+Read-only offer research created no instance or storage. No local model
+acquisition/execution, actual archive build/install, HF upload or Scaleway
+allocation occurred. Preserve all 194 public rows and the last retained
+metadata-only 136 full / 58 unresolved split. Independent real-weight CPU,
+final Apple CPU/Metal/no-fallback, security and publication evidence remain
+required; no row is promoted by this component acceptance.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

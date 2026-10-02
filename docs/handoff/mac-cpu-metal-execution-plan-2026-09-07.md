@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 OWSM attention supersession (21:12 UTC):** the reviewed
+> OWSM remote target is now clean `387d1f79`, with 23 required focused Rust
+> tests and no permitted ignore, rather than the historical 18-test CGMLP
+> target. FireRed `a3fb0fc2` and XCodec2 `99e6a157` remain separate fixed
+> candidates. The controller must independently authenticate recovered source
+> proofs, recover failure logs, and exercise its new negative gates before
+> rent. The next XCodec2 derived-sdist producer is not accepted and does not
+> unlock dependency execution. No Vokra instance exists in the latest complete
+> account readback; full-model CPU and final Apple gates remain open. See the
+> [dated acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-owsm-attention-and-remaining-proof-gates-2112-utc).
+
 > **2026-10-02 XCodec2 review supersession (20:51 UTC):** the reviewed
 > clean XCodec2-only family candidate is `99e6a157`, with 48 required Linux
 > stdlib tests and no permitted skip. Keep it separate from the corrected

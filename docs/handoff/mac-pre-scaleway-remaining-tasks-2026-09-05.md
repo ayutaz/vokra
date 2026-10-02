@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 OWSM attention supersession (21:12 UTC):** root accepted
+> and committed the bounded standard-attention slice at clean `387d1f79`,
+> extending the frozen CGMLP candidate. Its 23 source-defined Rust tests
+> still require exact-head remote execution. The primary attention AST passes
+> all 20 checks and rejects five independently constructed semantic mutations;
+> the retained overall source packet still lacks five other roles. The next
+> VAST controller and XCodec2 derived-sdist proof remain under corrective
+> review. The 21:05 UTC complete account readback has no Vokra instance.
+> Preserve all 194 rows and the metadata-only 136 full / 58 unresolved split;
+> see the [dated acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-owsm-attention-and-remaining-proof-gates-2112-utc).
+
 > **2026-10-02 XCodec2 review supersession (20:51 UTC):** root accepted
 > the hardened model-free execution gates and independently verified clean
 > XCodec2-only family `99e6a157`, directly on main `97447185`. Its local
