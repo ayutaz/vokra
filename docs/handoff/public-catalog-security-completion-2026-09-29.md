@@ -3128,6 +3128,75 @@ passed format, diff, zero-dependency and forbidden-symbol checks. No remote
 success is claimed for this new head; the corrected controller must bind its
 source, native and consumer hash comparisons to that exact head before replay.
 
+### 2026-10-02 exact-head tests and remaining mask/lint failures (03:55 UTC)
+
+The separately frozen controller SHA-256
+`81bd80c0960b00d64d3f492be8d7bdb2ace44b3e8ac26d1eaa7772046da61f2c`
+replayed clean head `6ebd68964be69fb57c771fce3cf95c73ab7229c1` on exactly
+one disposable VAST worker, `53800018`. An authoritative SSH read confirmed
+that head and a live serial-test workspace invocation. Bootstrap installed
+Rust/Cargo 1.99, UV 0.12.5 and managed Python 3.12. No source was changed
+during the run.
+
+Direct SSH observations before cleanup showed exit zero for source and Rust
+source audits; focused Mimi, Mimi ABI, PCM and FireRed tests; converter tests
+and converter Clippy; the FireRed consumer tests; CosyVoice and VibeVoice
+source collectors; metadata binding; FireRed wire, source builder, module
+registry and authenticated source record; and Cargo deny/audit. The corrected
+remote source hashes and evidence-directory inheritance therefore progressed
+beyond the preceding failures. These observations are not a complete recovered
+packet, real-weight parity, Apple evidence or publication authorization.
+
+The full FireRed unit selection ran 68 tests: 67 passed and one failed.
+`decoder_self_attention_causal_and_incremental_cache_match` supplied a key
+mask inconsistent with the runtime's cache-plus-current-query contract and
+failed with `InvalidArgument` at the masking comparison. The runtime guard
+must not be relaxed to make the test green; a separately reviewed correction
+must preserve the causal, masked/unmasked and incremental comparisons.
+Consumer Clippy reported six diagnostics: four constant assertions and two
+redundant closures. Consumer compilation and ordinary tests now pass, but
+warning-denied Clippy, full FireRed tests and workspace tests do not. Mimi
+Clippy also exited 101; its detailed diagnostic was not recovered and its
+cause is not inferred here.
+
+The controller ended with exit 1. Main-packet recovery still rejected the
+result with `SKIPPED_BOUNDS_FAILURE`; the local evidence directory is empty.
+The observations above came from direct SSH output before destruction, not a
+locally checksum-verified archive. Recovery is being investigated separately
+without weakening mandatory records, hash checks or size limits. No Moshi
+source-cache success is inferred from this failed main verification.
+
+The worker and its storage were destroyed. Individual readback returned
+`instances=null`; the owned-label list returned `success=true`, an empty
+instance list and `next=null`, and strict cleanup passed. Controller-log
+SHA-256 is
+`266a4675eb211b7fa0e0a65b888c8db6d0ebdd4f8e936ab0881213e6c80b60fc`;
+bootstrap-log SHA-256 is
+`7f3ac185f305bfdf35d44b87e653d1b0624b4962253a9cf5991684726703e34e`.
+No unrelated resource was modified. No model weight, HF token, Apple worker
+or upload was used by this source-only run.
+
+The next VibeVoice structural candidate was prepared separately from current
+main `97447185361a37af64c1b30fe87e8e2618d96e20`, at clean head
+`c08f3b2659716bfd07b224c91b921a4d932e1753`. It assembles 22 existing
+dependency-ordered language, continuation, control-plane, connector, cache
+and preset commits plus the reviewed SBV2 lint correction. Root independently
+passed formatting, diff, zero-dependency and forbidden-symbol gates. Review
+is still in progress; this candidate has no new remote compile/test verdict.
+The native full-runtime aggregate, full streaming reference and real-parity
+consumer are not included. Preset consent/rights, exact execution approval,
+real cache replay, complete waveform parity and Apple CPU/Metal/no-fallback
+remain open. Existing staged code must not be duplicated or counted complete
+merely because it has been assembled.
+
+The campaign goal remains all 194 public repositories, not only this FireRed
+batch or the 136 code/artifact-full rows. Withholding must have an explicit
+exact-scope owner disposition and is not supported-model completion. The next
+steps are bounded source/lint corrections, reliable failed-run evidence
+recovery, exact-head remote verification and the remaining real-reference
+work; Scaleway remains the final hardware leg rather than a substitute for
+these missing gates.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
