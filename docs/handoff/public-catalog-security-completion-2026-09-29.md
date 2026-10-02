@@ -6692,6 +6692,79 @@ Scaleway/no-fallback result, owner/legal decision or publication status is
 promoted by the Linux unit gate. Preserve the last dated metadata-only
 136 full / 58 unresolved snapshot as metadata, not Apple completion.
 
+### 2026-10-02 actual two-sdist inspection and decoder counterexamples (23:45 UTC)
+
+The separately reviewed source-only V11 is terminal with controller exit 0
+at fixed XCodec2 `a5e4c810f853c1d0c25d1df78635f115d7c7d153`. Its actual
+Linux suite passes all 76 named tests in 5.601 seconds with zero failures,
+errors or skips. Root independently checks the names, success markers and
+summary; the 12,720-byte log has SHA-256
+`0860a79cfc6eab7aab972deffbc4805c820e9210b4c1dd9921ec5822710dce60`.
+
+Unlike the earlier relative-lock failure, this run actually acquires the two
+fixed public source archives on VAST. ANTLR 4.9.3 is 117,034 bytes at SHA-256
+`f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b`;
+XCodec2 0.1.5 is 22,329 bytes at SHA-256
+`dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b`.
+Their retained member inventories have 68 and 28 entries respectively.
+Neither contains primary LICENSE/NOTICE/COPYING members. The collector
+therefore intentionally returns packet status 2 with `BLOCKED_FACTUAL`,
+`UNAPPROVED_NO_EXECUTION`, owner review `REQUIRED` and `NO_UPLOAD`. A green
+lifecycle controller means successful bounded collection and cleanup; it is
+not a clean-license or model-execution verdict. Obtain exact release-linked
+primary license/provenance evidence before any approved derived build or
+installation; do not infer a grant from classifiers or another release.
+
+The recovered 30,952-byte packet has SHA-256
+`a3719c196cdf8a9a203c30d8df8d1b7121112d2652191b9cd4cae9059c3e8e12`.
+Root independently verifies it against the exact local lock and all four
+producer/dependency script byte counts and hashes, both artifact identities,
+unique member counts, failure/status consistency and false model/import/
+installation/build activity. Source-only network transport is recorded
+separately as true. No actual package code or model was imported or executed,
+and no HF key was transferred. The held five-input transfer was not retried.
+
+To use the family job's waiting time, this short, independent source-only
+scope ran concurrently on owned `53935735`, label
+`vokra-xcodec2-source-audit-20261002T233701Z-39113`, with eight effective
+cores and total price `$0.07481481481481482/h`. The controller work bound
+remains 1,200 seconds plus an independent 120-second cleanup budget. The
+worker and its storage were destroyed. Root's fresh individual readback is
+`instances: null`; the complete account query has `next_token: null` and
+neither its ID nor exact label. It retains only the in-use Vokra family
+worker `53934208` and one unrelated instance, which was not modified.
+
+The same family controller session remains live, with its three HEADs
+unchanged. Read-only SSH confirms 48 build jobs and effective cgroup-bounded
+RAM of 253,536,256 KiB; workspace tests are progressing. Its terminal
+workspace/Clippy/security/focused gates, authenticated recovery and owned
+destruction remain pending. Do not restart it because observation yields no
+new output and do not substitute the next decoder candidate into it.
+
+The separate, uncommitted OWSM decoder now has the correct 26 tensor roles
+per layer and 40 source-defined focused Rust tests, not executed locally.
+Root authenticates all three actual decoder source files, totaling 44,034
+bytes, and reproduces the expanded primary-source mutation checks. Earlier
+passing inspector self-tests nevertheless missed wrong constructor wiring,
+residual operands and a cache-only attention call; root reproduced these
+counterexamples and sent corrections back to the implementer. Ordinary-path
+residual ordering and the new internal many-argument helpers still require
+final review and remote Clippy/testing. This is source/self-consistency work,
+not an independent numerical reference or accepted full-ASR runtime.
+
+Fresh read-only PR results remain #149 open/draft/dirty at `9a929c14` with
+76 successful and four skipped checks, and #152 open/draft/clean at
+`dd6f0154` with 76 successful and three skipped checks. These results do not
+cover the later isolated candidates and do not authorize a merge of them.
+
+All 194 rows remain in scope. The last dated metadata-only 136 full / 58
+unresolved snapshot is not an Apple-pass count. No real-weight parity,
+owner/legal disposition, final Scaleway/no-fallback result, upload or
+withdrawal is promoted by this source-only collection. An inert PyYAML
+source-only controller is being prepared separately, with no archive
+acquisition, installation, config parsing or new allocation authorized by
+that preparation alone.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

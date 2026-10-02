@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 actual sdist inspection (23:45 UTC):** the distinct
+> XCodec2 source-only V11 replay recovered both exact public sdists and a
+> checksum-verified packet. Its 76 Linux tests pass without skips, but both
+> releases lack primary LICENSE/NOTICE/COPYING members and remain
+> `BLOCKED_FACTUAL` / `UNAPPROVED_NO_EXECUTION` / `NO_UPLOAD`. Worker
+> `53935735` and storage are independently absent. The same family worker
+> `53934208` is still in use; the separate decoder remains under corrective
+> review. Preserve all 194 rows; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-actual-two-sdist-inspection-and-decoder-counterexamples-2345-utc).
+
 > **2026-10-02 Linux gate and next family replay (23:24 UTC):** XCodec2
 > now passes all 76 named Linux stdlib tests at fixed `a5e4c810`, with no
 > skips. Source archive inspection still stops at the relative-lock-path

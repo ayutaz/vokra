@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 actual sdist inspection (23:45 UTC):** source-only V11
+> closes the absolute-lock-path transport failure, not license approval:
+> both authenticated sdists lack primary license members. Keep execution and
+> publication blocked. Its worker is destroyed; continue the same frozen
+> family job `53934208`, not a replacement or a retarget to the unaccepted
+> decoder. Scaleway remains last; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-actual-two-sdist-inspection-and-decoder-counterexamples-2345-utc).
+
 > **2026-10-02 Linux gate and next family replay (23:24 UTC):** the fixed
 > XCodec2 Linux suite passes 76/76 without skips, but the source collector
 > still requires a canonical absolute lock path before archive inspection.
