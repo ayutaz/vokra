@@ -5117,6 +5117,50 @@ owner/legal dispositions, independent real-weight CPU results, final Apple
 CPU/Metal/no-fallback checks and separately authorized publication remain
 in the completion scope.
 
+### 2026-10-02 independent archive-controller acceptance and launch refusal (15:50 UTC)
+
+Root independently verified the frozen Realtime archive-collection controller,
+SHA-256 `38be2988e3fea19c46dd399c28f23292df50795563dec9a4a399f2cbcc78cd03`.
+Bash syntax and ShellCheck passed. Whole offline terminal session `12550`
+returned zero: the actual leaf's 14 synthetic cases, remote-body test, 33
+packet/contract cases and 22 mocked lifecycle cases passed. Root compared
+the packet verifier's canonical member paths and distribution-owned primary
+license rules with the reviewed archive helper at clean `3315339e`. This
+accepts only the bounded collection controller, not a package license grant,
+installed-wheel identity, model execution approval or numerical parity.
+
+The production launch was refused before execution by the local-model guard:
+the transfer-only `--helper` argument names a `tools/parity/*.py` file and
+was classified as local execution. No worker was created, and the command
+was not hidden, rerouted through a self-test or retried with a guard bypass.
+A narrowly hash-bound recognition of the reviewed remote-only controller
+has been delegated; that active hook change still needs root review and
+independent regression checks before the launch can be retried.
+
+Fresh metadata-only VAST terminal session `62736` returned zero with no
+`vokra-*` instances, one unrelated instance and an explicit null pagination
+token. The unrelated instance was not modified. Offer session `50548`
+returned eligible offers, but no allocation is inferred from that search.
+Root separately confirmed the small official UV installer SHA-256
+`58488ae8dbd0773134c92c85e901430e33f99d975bd7f929d26aa9ab0c2f9390`;
+no binary, wheel or model was downloaded or executed on the Mac.
+
+The separate model-free Rust controller remains under correction. Root's
+review of its frozen candidate found that the actual manifest producer
+omits a required status file while the mocked producer supplies it, and
+the local success verifier does not enforce every raw and derived exit
+status. Failed remote transfer preflight, overall deadlines, authenticated
+resource/ownership checks and allocated-core scheduling also need bounded
+corrections. Its mocked green result is not accepted as production readiness.
+Official primary metadata confirms its fixed UV 0.12.5 release digest and
+Rustup 1.29.0 checksum, but actual remote toolchain/tests remain unrun.
+
+The latest clean code candidate remains `3315339e`, with the isolated
+XCodec2 safety commit `e6552853` separately awaiting remote test execution.
+The full 194-row completion scope, 136 code/artifact-full / 58 unresolved
+classification, independent real-weight CPU evidence, final Apple CPU/Metal
+no-fallback results and separately authorized publication remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
