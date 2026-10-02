@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 corrected-source preparation (21:45 UTC):** root reviewed
+> and committed the production-lock correction and source-only collector at
+> clean `e9c7b8d0`. Its 72 stdlib tests have 71 passes and one explicit
+> Linux-only skip; actual archives, installed builds and model execution remain
+> unproved. A separate code-only VAST attempt stopped before any API/create
+> call because its controller incorrectly rejected a valid linked worktree.
+> That layout gate and OWSM's next selected-layer semantic checks require
+> corrections. No public row or Apple status is promoted; see the
+> [dated correction record](public-catalog-security-completion-2026-09-29.md#2026-10-02-corrected-source-packet-and-linked-worktree-preflight-2145-utc).
+
 > **2026-10-02 production-lock supersession (21:30 UTC):** root's
 > metadata-only check of the actual tracked XCodec2 lock found a valid-input
 > rejection missed by synthetic tests: UV artifact fields and the builder's

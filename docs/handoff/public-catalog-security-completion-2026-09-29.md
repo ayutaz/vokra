@@ -6292,6 +6292,53 @@ no model payload and supplies no real-weight or Apple parity verdict. Preserve
 every public row, source/license decision, full native and independent CPU
 reference requirement, final Apple/no-fallback gate and publication boundary.
 
+### 2026-10-02 corrected source packet and linked-worktree preflight (21:45 UTC)
+
+Root accepted and committed the separate five-file XCodec2 correction at
+clean `e9c7b8d054bb76f768ca4d13e129088e288544d3`, parent `38e5c0ed`.
+The production verifier and new source-only collector normalize UV asset
+identity against fixed builder pins, accept the known typed `upload-time`
+metadata, and reject malformed or unknown fields. Actual tracked-lock
+positives reach the archive boundary; wrong URL, size and SHA still reject
+before acquisition. Public collection requires the VAST/Linux/CPython gate
+and production pins before HTTP. Producer identities include the verifier;
+source-archive transport is separate from always-false model activity.
+
+Root's independent full stdlib run (`3bd33e`) has 72 tests: 71 passed and one
+explicit Linux-only skip. The reviewed negative fixtures now parse as valid
+TOML and assert their intended altered fields before gate checks, rather than
+merely fail during fixture parsing. The normal five pre-commit hooks all
+passed (`473f2f`); the exact five-file commit and clean readback are `b062f9`.
+No actual source archive, build backend, installer, target-package import,
+model weight, independent reference, parity, cloud or upload ran in this
+source-preparation review. Existing execution consumers remain locked.
+
+The separate three-family controller at `87f3131c` passed syntax, ShellCheck
+and root's offline lifecycle suite (`1bf5a4`). Root independently verified
+local recovered hashes and the intended source/API, named-test, skip and
+cgroup mutations, with successful fake remote legs before local rejection;
+the source-fetch-failure case recovered its local status, receipt and
+workspace log (`65fae4`). This is offline controller evidence only.
+
+The attempted actual-layout preflight (`090015`) then stopped with
+`review-pending` before any safe-CLI/API or create call. All three pinned HEADs
+are correct, but the clean XCodec2 tree is a valid linked Git worktree whose
+`.git` is a regular file; the controller incorrectly requires a directory
+(`8cb9bd`). Its corrective child must support authenticated clones and linked
+worktrees without weakening exact-head/clean checks. Local controller evidence
+`/private/tmp/vokra-clean-heads-model-free-logs.vnmGAo` records
+`cleanup_rc=0 instance=none`, with no create request record (`f135d6`).
+The fresh complete account readback at 21:42 UTC has no Vokra instance and one
+unrelated instance (`ad3ba2`), which was not changed.
+
+OWSM's next selected-layer candidate is separately unaccepted. Root's
+authenticated-primary-source mutation probe (`67d5a8`) shows that wrong
+pre-norm branch inputs and a changed macaron coefficient still pass its
+new semantic checks; stronger dependency/order/scale checks and meaningful
+binding negatives are required before freezing that child. Preserve every
+public row, metadata-only counts and all native/independent real-weight CPU,
+final Apple/no-fallback, owner/legal, security and publication gates.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

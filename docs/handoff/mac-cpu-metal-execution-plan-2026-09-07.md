@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 corrected-source preparation (21:45 UTC):** retain the
+> fixed three-family remote scope while separately recording clean
+> `e9c7b8d0` as source-preparation only. Production lock schema checks now pass,
+> but Linux-only and actual archive/build/installation facts still require
+> remote evidence. The controller's offline suite does not cover the actual
+> linked-worktree layout yet; the attempted run stopped before API/create.
+> Correct and re-test that gate before rent. Final real-weight CPU and Apple
+> scope remains unchanged; see the
+> [dated correction record](public-catalog-security-completion-2026-09-29.md#2026-10-02-corrected-source-packet-and-linked-worktree-preflight-2145-utc).
+
 > **2026-10-02 production-lock supersession (21:30 UTC):** before the
 > later XCodec2 source/archive wave, require actual tracked-lock metadata
 > positives as well as wrong-pin negatives. The separate preparation helper
