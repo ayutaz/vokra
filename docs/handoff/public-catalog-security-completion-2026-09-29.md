@@ -3445,6 +3445,50 @@ pending at this snapshot. No model/preset execution, weights, HF token,
 Apple run or upload is involved. The lifecycle must recover small evidence
 and destroy this instance and its storage before completion is claimed.
 
+### 2026-10-02 terminal replay and PR head supersession (05:38 UTC)
+
+This supersedes the active-worker and unpushed-PR snapshots above, without
+changing their historical observations. The replay at exact clean HEAD
+`04571ee1c020d822be9056568e39b1fede1d9a65` is terminal with overall exit one.
+All 22 recovered step exit files are zero; the workspace log contains 325
+successful summaries totaling 8,219 passed, zero failed and 110 ignored.
+Those process results are not an overall green verification verdict.
+
+The FireRed consumer's actual Rust result is 24 passed, zero failed and two
+ignored, but its strict identity predicate reports
+`firered_consumer_result_count=FAIL`: `--nocapture` interleaves expected caught
+panic diagnostics with successful test identities. Independently, the broad
+Mimi filter produces 79 passed tests rather than the local verifier's exact
+ten-test contract. The source builder reports 11 tests with two skips because
+its inner tests use a fixed Mac fixture path instead of the explicit remote
+source record. These output-contract defects remain open; no test failure,
+skip, real-weight parity or Apple result is promoted. Fixes must use actual
+observed test summaries, never manufacture a Rust success summary.
+
+The main and source-only packets were recovered and both local checksum
+verifiers passed. The source collector separately authenticated 28 CosyVoice
+payloads totaling 405,766 bytes with a 334,054-byte report, and 21 VibeVoice
+payloads totaling 368,221 bytes with a 433,176-byte report. Frozen Moshi
+source-cache execution was not reached. Evidence SHA-256 values are:
+
+- workspace log: `5a6008c13ae401f99853a56c523ffe0281dda59fc03d9f6db3dee244d528a8ed`;
+- remote packet manifest: `6f8568739c2345a1ba477b2abb286ea7f4166e4a48c068986ce76274adc573e9`;
+- lifecycle controller log: `eded3d6b06ca27bf26662bf72a1b6b28b242be444718907463aeed2a68d61d65`.
+
+VAST instance `53808967` and its storage were destroyed. Exact destroy
+readback returns `instances: null`; the all-pages owned-label readback has
+`success=true`, no pagination token and no matching instance. Strict cleanup
+verification passes. The unrelated `ralomi-*` resource was not modified.
+
+The isolated PR #152 SBV2 converter repair at
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a` passed exact-head, warnings-denied
+converter Clippy on a separate checkout on that same VAST worker before
+destruction. It was then fast-forward pushed to the existing PR branch; the
+campaign root branch was not pushed or merged. A fresh GitHub read at this
+snapshot confirms the new PR head, 68 successful checks, three skips, six
+in-progress checks and zero failures. PR #152 remains OPEN, draft and BLOCKED;
+no completed-CI or merge verdict is claimed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
