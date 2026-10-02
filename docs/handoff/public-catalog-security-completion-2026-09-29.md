@@ -5161,6 +5161,27 @@ The full 194-row completion scope, 136 code/artifact-full / 58 unresolved
 classification, independent real-weight CPU evidence, final Apple CPU/Metal
 no-fallback results and separately authorized publication remain unchanged.
 
+### 2026-10-02 hook-fixture isolation failure and recovery requirement (15:55 UTC)
+
+Root rejected the next hook candidate after inspecting its actual fixture
+lifecycle. Following a symlink-rejection case, the self-test wrote a new
+fixture through that still-present symlink into the temporary production
+controller. The reviewed `38be2988` bytes are no longer at that path: root
+observed SHA-256 `b3ba5208edfcfcf7dc6b159b6e2988b44992ae6e9e318ee0071830c70037ecab`
+and a one-line inert fixture. Root's guard session `65451` returned zero,
+but that result is not accepted: it proves neither fixture isolation nor
+production-file immutability. No hook change has been committed or accepted.
+
+The implementation owner must unlink only the fixture symlink before any
+fixture write, verify that production bytes are unchanged across self-tests,
+and recover the original controller from retained authoritative bytes or
+patch records. The frozen hash may not be changed to bless the overwritten
+file. A new nonmatching reconstruction would require a new source review
+and independent whole-suite validation. The earlier `12550` result remains
+historical evidence for the exact `38be2988` bytes, not approval to run the
+current file. Production allocation remains unstarted; no model, wheel or
+public artifact was acquired or executed on the Mac.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
