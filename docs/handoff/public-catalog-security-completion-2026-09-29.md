@@ -3833,6 +3833,53 @@ PR #174 is still draft at its unchanged head and its documentation check is
 still failed. The previously failing fixed Microsoft source URL still returns
 HTTP 503, so no availability-based rerun or merge was requested.
 
+### 2026-10-02 binding-adapter and remote-controller review
+
+Root rejected the first uncommitted capture-binding adapter proposal. Its
+eight synthetic tests accepted a new identity/tensor layout rather than the
+actual raw capture and `vokra.firered.decoder.binding-manifest.v1` producer
+output. It did not verify the manifest's exact file bytes, and a monotonic
+global event rank incorrectly rejected the next decoder layer's input after
+the previous layer's output. The proposal is not accepted evidence or a
+candidate for publication. Revision requires fixtures generated through the
+existing fake-tensor capture producer, exact serialized reference/capture
+hash binding, nested event order and pre-decode aggregate resource limits.
+No real model or native numerical comparison was run by those eight tests.
+
+Root also found a remote-only controller defect: the rendered wire guard
+used `FIRERED_WIRE_REFERENCE_SHA256` without assigning it in the SSH script.
+The initial offline mock passed but did not exercise that variable boundary.
+The corrected v4 controller adds the remote assignment and a rendered
+`set -u` wire/run-step regression. The exact earlier
+`source-cache-process-self-test=FAIL` was diagnosed from its retained
+`destroy-order.stderr`, which contains `target-source-hash-self-test=FAIL`:
+the nested child used the old default checkout, not the new integrated target.
+Its destroy-order file remained empty, while its orchestration sequence had
+completed and its recorded timeout PIDs were gone. This is a target-binding
+failure, not an unexplained timing failure or a relaxed cleanup gate. The v4
+default checkout now names the clean integrated candidate.
+
+The corrected controller SHA-256 is
+`379bc3e0ba2e9eeb8f2e0579fde8138b21e146d194a9f69ea104f501fd6e5da6`.
+Agent syntax, ShellCheck and full offline mocks pass; root syntax and
+ShellCheck pass, and its independent complete mock also exited zero with
+`bundle-observation-self-test=PASS`. V2/V3
+controllers and the original failed remote verdict remain unchanged. No new
+worker was rented during those mocks. The pre-rent all-pages VAST instance
+read reported zero Vokra instances and one unrelated instance, untouched.
+
+After root's independent mock passed, the single-rent v4 invocation started
+at 08:02 UTC with reviewed offer `49438897`, quoted at USD
+0.19955555555555554/hour including its 200-GiB disk. Creation returned
+`success: true`, instance `53829210`. The owned-label readback confirms that
+exact ID running with 16 effective CPU cores and 200-GiB allocated disk;
+reported host CPU RAM is 515,830 MB. The code-only verification target remains
+clean `1c555807f11ad4e15f6e738e19c7a4c4d0bc5d9a`, and the unaccepted adapter
+is not included. The root controller is live while remote bootstrap proceeds;
+no remote green result, model parity, publication or destruction is claimed.
+Its cleanup trap must recover bounded evidence, destroy this exact owned
+instance including its data, and verify absence.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
