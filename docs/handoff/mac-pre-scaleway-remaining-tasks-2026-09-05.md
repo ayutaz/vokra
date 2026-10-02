@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 source/controller review (22:25 UTC):** the same code-only
+> worker `53926242` remains live; do not restart it. Root reproduced the
+> separate source-only V6 controller's offline suite, but did not accept it
+> for rent: authenticated UV bootstrap, reserved cleanup time and stronger
+> fault evidence still require corrections. Root also reauthenticated the
+> OWSM encoder source and assigned the full 18-layer native stack in a
+> separate child candidate; implementation and remote evidence remain
+> pending. No model, dependency archive or Apple run started in this review.
+> Preserve all 194 rows; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-02-source-controller-review-and-full-encoder-scope-2225-utc).
+
 > **2026-10-02 live latest-head replay (22:14 UTC):** root independently
 > passed the retargeted V5 controller's full offline suite and started one
 > disposable code-only worker, `53926242`. API and read-only SSH confirm its

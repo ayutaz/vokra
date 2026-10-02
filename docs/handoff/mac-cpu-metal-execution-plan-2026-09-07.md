@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 source/controller review (22:25 UTC):** continue observing
+> the same live code-only job `53926242`. The separate source-only V6 offline
+> suite passes, but rent remains gated on authenticated bootstrap, independent
+> destruction budget and phase-specific fault proofs. In parallel, the next
+> OWSM child targets all 18 encoder layers and final normalization, using
+> explicit behavior rather than unauthenticated target-config defaults.
+> Keep the currently running HEADs frozen; a later candidate needs its own
+> exact-head verification. Full reference/real-weight and final Apple gates
+> remain open; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-02-source-controller-review-and-full-encoder-scope-2225-utc).
+
 > **2026-10-02 live latest-head replay (22:14 UTC):** the separately
 > reviewed V5 code-only wave is running on owned `53926242` at FireRed
 > `a3fb0fc2`, OWSM `15ec2f0d` / 28 focused tests and XCodec2 `e9c7b8d0` / 72

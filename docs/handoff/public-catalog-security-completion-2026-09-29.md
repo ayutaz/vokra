@@ -6452,6 +6452,49 @@ Apple CPU/Metal/no-fallback, owner/legal or publication gate advances from
 this live code verification. The metadata-only 136 full / 58 unresolved
 snapshot remains distinct from actual Apple-complete rows.
 
+### 2026-10-02 source controller review and full encoder scope (22:25 UTC)
+
+Root polled the same controller session again; it is still live. A separate
+read-only SSH observation finds Cargo and the workspace test log progressing,
+not a terminal workspace verdict. Do not restart `53926242` or mutate its
+three frozen input HEADs. Packet recovery and owned-resource destruction
+remain pending.
+
+The separate XCodec2 source-only V6 controller has SHA-256
+`eb5a66dd31873f97d18897cb6d350ba2fc3f5ce840e3c0c0b2dc89a290eefe56`.
+Root independently ran syntax, ShellCheck and its exposed offline self-test:
+the 24 source-producer/consumer tests and fake controller lifecycle suite
+terminate successfully. The previously absent missing-packet, wrong-remote-
+exit, malformed-pagination, bounded-readiness-hang and controller INT/TERM
+branches are now actually invoked. This does **not** accept V6 for live use:
+the 30-second preliminary cleanup lane exceeds its eight-second test cleanup
+budget; existing UV is only version-checked; fault cases do not yet prove
+their intended diagnostic/phase; and complete-list destruction must check
+both exact ID and label. A separate immutable corrective controller is
+required. No live API, archive collector, installation or model execution was
+performed by this offline test.
+
+Root reauthenticated the fixed ESPnet E-Branchformer encoder source against
+its retained API content and source receipt: revision
+`cccc29023d43a3f504e28df7d1324bb4eb6daedd`, 19,432 bytes, Git blob
+`1928fb98e4999064ebef4f0a7ee15e261c6c1815`, SHA-256
+`adef32dd5ce8da01c5004d62c43b0b9036d2c455f0b6aac919eac7186c4d5b07`.
+Its forward applies the encoder sequence before `after_norm` and computes
+output lengths from the resulting mask. The next separately owned child of
+accepted `15ec2f0d` targets all 18 native encoder layers and final
+normalization, reusing the reviewed layer and stem with explicit caller
+behavior. This is assigned work, not an accepted implementation or parity
+verdict. Target-config authentication, decoder/tokenizer, independent
+real-weight CPU parity and final Apple/no-fallback remain open.
+
+In a non-overlapping child, the OWSM parser source-fact collector is being
+prepared for exact locked PyYAML source/wheel identities and native-license
+provenance. Synthetic stdlib tests do not approve acquiring or executing a
+dependency, and primary project license text alone does not authenticate the
+actual wheel/native closure. The separately held five-input transfer is not
+retried or replaced by this preparation. All 194 public rows remain in
+scope; the metadata-only 136 full / 58 unresolved split is unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
