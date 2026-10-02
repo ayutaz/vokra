@@ -4307,6 +4307,63 @@ new final-ranking or reader integration. It must be retargeted and reviewed
 before paid execution. No VAST rental, remote source-cache probe, Rust
 compilation, Apple verification or publication is proved by this offline run.
 
+### 2026-10-02 fresh catalog inventory and rejected bootstrap review (10:08 UTC)
+
+A public-metadata-only audit completed at `2026-10-02T10:06:56Z` against
+clean preparation head `197b8c5b23612e8c3e64ea8a0930e52c4ee93d37`, using
+Python 3.12.7 through UV and four workers. The first sandboxed requests failed
+DNS resolution; the subsequently authorized public-network requests both
+terminated successfully. No token, checkpoint, tokenizer or model was used.
+The inventory remains 194 public repositories, 193 GGUF-bearing repositories
+and 198 GGUF files. CPU code/artifact classifications are 136 full, 43 partial,
+14 no-runtime-binder and one non-artifact; Metal code classifications are
+136 full, 57 blocked-by-CPU and one non-artifact. All 58 unresolved names,
+current public revisions and reasons were recovered. These classifications
+are not independent real-weight or Apple hardware verdicts.
+
+Root inspected the unresolved-row report and independently verified the
+recovered report hashes. The audit-tool and CLI-engine SHA-256 values are
+`690d603f7182fc5c0645e784f8857acee9604b20050892b2bf0eadeb41f8a905`
+and `cc22a9074531fa738c68101f4697b1b4393252b913b1bb2bc61092da93cf0b1b`.
+The summary, complete TSV and 58-row TSV SHA-256 values are respectively
+`42efbeee107584ba481691e00b80d1a2853fc5a0ed4743cb2fa144f79ac6ae97`,
+`9ef3eb07f12a98de7f425dcd75b98f4cd1be45ab1d3907aafeca2626196cdd56`
+and `51f989a34453b0c0ad7c72bbe6f5cfb45aebb27a1c55e50c83826dfb415fca14`.
+The reports remain local bounded evidence, not committed model artifacts.
+
+Root reviewed the complete model-free fixture bootstrap draft at SHA-256
+`53487554d7e99579a7c679fe4a46dfb2beccf142f72e7b2c6be6029cf25bc0cc`.
+Shell syntax, ShellCheck and its resource/packet self-test pass, but the
+actual remote path is rejected: it constructs an alternate empty-event
+packet instead of invoking the frozen producer-backed generator, uses the
+wrong output filenames, assumes unprovisioned offline UV/Python, and lacks
+the work-timeout definition. Pre-create disk-inclusive pricing, uncertain
+create recovery, individual deletion verification and unique packet-member
+checks also need correction. No worker was rented. The existing generator
+remains frozen at `2c5018efa36f4848e6f11f682f958396b7eedcdc93456c789b408ebf8a846d27`;
+`82fa23a9a5c0c42a5600a00443eb6dc8f37b6150f533197aaad0fca594dd3ce5`
+identifies the separate producer, not that generator. The corrected bootstrap
+must invoke the actual generator and recover its four JSON files plus README.
+
+The Rust reader draft now routes resealed four-file mutation tests through
+the same reader used by its fixture-positive test, but it is not accepted.
+Root found moved-value and mutable-reference assignment errors, negative
+cases that can fail an earlier unrelated header check, and missing exact
+role-specific geometry and complete derived-lineage checks. Corrections
+were returned to the implementer, including matching the intended rejection
+reason instead of accepting any panic. Formatting is not evidence that the
+Rust code compiles. Fixture JSON generation, Rust compilation/tests, final
+integration and the exact-head VAST replay remain pending.
+
+Fresh paginated VAST API readback reports zero Vokra instances, one unrelated
+instance and zero persistent volumes. The unrelated instance was not changed.
+GitHub still reports main `97447185361a37af64c1b30fe87e8e2618d96e20`
+and PR #174 open, draft and behind at
+`f4879d4ffd948144c4abc385255bdf5964c94f33`. No allocation, upload, push,
+PR update or merge occurred. A separate owner-independent planning audit
+of the complete 58-row queue is in progress; FireRed preparation does not
+replace the full 194-row completion objective.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
