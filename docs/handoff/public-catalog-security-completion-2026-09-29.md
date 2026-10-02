@@ -5239,6 +5239,57 @@ is inferred. The complete scope remains 194 public rows, 136
 code/artifact-full and 58 unresolved, with independent real-weight CPU,
 final Apple CPU/Metal/no-fallback and separate publication gates intact.
 
+### 2026-10-02 failed-run diagnostics, destruction and bounded correction (16:30 UTC)
+
+Production session `21345` is now terminal with exit one. At exact clean
+`3315339e`, the remaining all-feature model Clippy leg failed because the
+unit-test-only `ranked_score` wrapper was compiled into the library, and the
+workspace leg failed on the same 13 FireRed consumer compile errors. Deny,
+audit, source-packet construction, final HEAD, clean worktree and diff-check
+gates passed. This is a failed code-verification run, not a real-weight,
+source-cache or Apple verdict; the separately frozen Moshi source-cache side
+was not executed because the main leg failed.
+
+The failure-path collector recovered the 61 small main payload files, without
+symlinks, including logs, raw exits, environment and source-record metadata.
+However, source-evidence SCP returned 124 within the finite cleanup budget:
+`collect_remote_logs_rc=1`, the local source directory is empty and both
+`remote-packet.sha256` and `source-only.packet.sha256` are absent. Complete
+packet/provenance acceptance is therefore unproved. Root's local diagnostic
+hashes are `4a30e10eecc83137ad45a2d7623a8d949acb067c4a8cffd8e95781740d001dd2`
+for the consumer log and
+`35da99a9498ffa71085e6532aa5df02971db1fdd6909ee581f2961ad7d4b346c`
+for capture-binding; they identify recovered diagnostic bytes, not a remote
+manifest verification. The next controller must prioritize remote manifests
+and bounded failure diagnostics before optional source payloads, while
+preserving the independent destroy reserve and absolute deadlines.
+
+Cleanup returned `destroy_rc=0`, `destroy_readback_rc=0`,
+`post_destroy_list_rc=0`, `post_destroy_label_absent=0` and strict readback
+PASS. Root independently read the individual `instances: null` response
+and the exact-label empty list with explicit `next_token: null`. Fresh
+all-instance observation `83068` returned zero with no `vokra-*` instances,
+two unrelated instances and null pagination. Only owned `53883938` and its
+storage were destroyed; unrelated resources were untouched.
+
+The isolated FireRed correction is source-reviewed for remote validation.
+It fixes integer/status/type/arity compilation, tests established sample and
+beam-row bounds instead of inventing full-matrix selection fields, retains
+the existing parser's axis/index tamper tests and makes the test-only score
+wrapper `cfg(test)`. No bound, license, source identity or publication gate
+was relaxed. Focused static checks pass; Cargo execution remains VAST-only.
+A new controller, rather than a mutation of frozen V9, is required for the
+authenticated-record wiring and evidence-order fixes.
+
+The hook owner fixed the symlink write site but could not recover the exact
+`38be2988` controller from authoritative retained bytes. Root's independent
+guard test `79367` passed after the fix and confirmed the corrupted production
+file's hash remained unchanged. That proves fixture isolation, not recovery
+or production readiness. A distinct V3 controller has been delegated for
+new review and whole-suite validation; the old frozen hash will not be
+repinned to the inert fixture. No row, merge or artifact is promoted by these
+bounded corrections. The full 194-row completion scope remains active.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
