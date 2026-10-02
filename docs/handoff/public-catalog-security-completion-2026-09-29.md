@@ -4186,6 +4186,63 @@ one unrelated instance, no next page and zero persistent volumes. No new
 instance was rented, no unrelated resource was modified, and no model was
 uploaded or catalog row promoted.
 
+### 2026-10-02 explicit completion goal and draft review (09:38 UTC)
+
+The owner asked to make the goal explicit. The full completion objective is
+unchanged: account for every one of the 194 public repositories, finish each
+executable row's authenticated native/CLI route and independent real-weight
+CPU verification, then obtain Apple CPU/reference, Metal/reference and
+Metal/CPU no-fallback evidence. A row may instead have an exact owner-approved
+withholding or withdrawal disposition, but it must not silently disappear
+from the denominator. Metadata/code-full, synthetic mechanism tests and
+successful compilation are not hardware-completion verdicts. Current
+license, provenance, security/CI, separately authorized publication and
+disposable-worker cleanup remain part of the final audit below.
+
+The immediate milestone is reviewed FireRed capture-binding consumption and
+native final-ranking observation, followed by compilation and mechanism
+tests at a frozen clean VAST head. That milestone is preparation, not a
+replacement for authenticated real-weight comparison or the full catalog
+goal. Scaleway remains the final hardware-validation stage, after the
+non-Apple requirements in the execution plan have been met or explicitly
+dispositioned. No model download or execution is allowed on the maintainer
+Mac.
+
+Root reviewed the new uncommitted Rust reader draft above
+`8af2cc7bd4d1083602047e721f61bb39614da90a`. Real and schema-only reads now
+share the capture/manifest validator, while the real path retains the
+complete V1 reference parser. However, root found that step filtering calls
+the required integer accessor on final events without a `step`, which would
+reject the positive producer fixture. Authenticated selected bytes are still
+discarded after digest checking, derived mask/lineage projections need
+semantic validation, and the actual four generated JSON fixture files and
+resealed-negative reader coverage are not yet available. The stdlib fixture
+generator was refused by the local model guard; that guard was not disabled.
+These items were returned to the implementer and the reader is not accepted.
+
+Root also reviewed the uncommitted final-ranking observation draft above
+`f72e0968cdcdfbb45609e5f19b49a7e3cbdab5f0`. Score normalization and sorting
+are now shared, but the draft double-counts final rows and their event
+reservations, introduces a second result-vector allocation in the no-trace
+path, and labels an immediate all-finished exit as a repeated-EOS test.
+Specific corrections and actual continuation/budget regressions were
+requested. Formatting, diff hygiene, forbidden-symbol and zero-dependency
+checks passed for the inspected draft; this is not source acceptance or a
+Rust compilation/test result. All Rust compilation and tests remain
+VAST-pending.
+
+The separate v6 controller passes root's shell syntax and ShellCheck checks
+but is not executed against a paid worker or treated as remote verification.
+Its provisional old target is not a final integration head. The frozen v5
+failure and its original recovered evidence remain unchanged.
+
+Fresh API readback at 09:38 UTC reports main
+`97447185361a37af64c1b30fe87e8e2618d96e20` and PR #174 open, draft and behind
+at `f4879d4ffd948144c4abc385255bdf5964c94f33`. VAST's instance list reports
+zero Vokra instances and one unrelated instance; persistent-volume count is
+zero. No new allocation, upload, PR change, merge or catalog promotion was
+performed. The full goal remains active and unproven.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
