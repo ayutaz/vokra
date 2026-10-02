@@ -3671,6 +3671,50 @@ review corrections. They were delegated together with a lossless packed-byte
 round trip and full-bound mechanism test. The candidate remains unaccepted,
 uncommitted and outside the frozen VAST target; no row is promoted.
 
+### 2026-10-02 source-fidelity review and recovery-v2 replay (07:05 UTC)
+
+Root independently ran eighteen stdlib unittest-discovery tests for the
+uncommitted capture runner with SHA-256
+`d698ace5f1702a829a815f234a9b70bcf71b0da52d968a1872438d4c97984a86`:
+all passed without Torch, weights or Cargo. The candidate is nevertheless
+not accepted. Authenticated upstream lines 51, 71–72, 104–109 and 208–209
+show that decoder caches are optional rank-three layer outputs, not pairs of
+rank-four projected K/V tensors. The proposed validator rejects the real
+initial `None` cache and subsequent `[N*B,t,H]` output cache. Source lines
+112–114 also permit full-beam EOS termination before the maximum length;
+capacity must cover the full horizon, but validity must not require the
+source to ignore its own early-exit condition.
+
+The fake byte-view object lacks `reshape`, so the purported byte-view test
+still enters its fallback. Its dtype packing and several beam/mask/index
+shapes are not source-faithful. The full-horizon test calculates the minimum
+vector formula rather than exercising the complete production selection and
+auxiliary-payload ledger. Corrections were delegated with source-valid cache,
+dtype, byte-view, early-EOS, class-origin and whole-call-order regressions.
+The candidate remains outside the frozen remote target, with no parity or
+catalog promotion.
+
+The separate recovery-v2 controller was accepted after root review,
+`bash -n`, ShellCheck and the complete offline mocked regression succeeded.
+Its frozen SHA-256 is
+`0f564546b96e3ccd01fdfd3ba5d91bea5e80aef0e5dcdb30256d1558ba083bfb`.
+Fresh all-page VAST readback showed zero Vokra workers and one unrelated
+worker, which was not modified. One replay was then started on disposable
+instance `53822210`, offer `32178462`, for exact clean target
+`87adbdafe507888df05a861f1f2c15035f73195f`. The reviewed offer reports sixteen
+effective CPU cores, 258,023 MB RAM and USD 0.17407407407407408/hour with
+200 GiB storage. Bootstrap completed; verification and cleanup are still
+pending. This is source/code verification without model execution or HF
+credentials, not an Apple or real-weight result. The controller must recover
+small evidence and destroy its owned instance before a cleanup claim.
+
+PR #174 remains draft at `f4879d4ffd948144c4abc385255bdf5964c94f33`.
+Documentation run `36658360528`, attempt one, reported zero link errors and
+two timeouts for the same official U.S. Code URL. A bounded current request
+returned HTTP 200 in 1.398321 seconds. Only the failed CI jobs were requested
+for rerun after confirming the unchanged PR head; no link check was weakened
+and no license disposition or merge was inferred.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
