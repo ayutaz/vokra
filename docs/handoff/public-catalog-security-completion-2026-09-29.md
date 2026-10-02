@@ -3776,6 +3776,63 @@ fixed Microsoft source link. No repeated rerun, URL exclusion, gate
 relaxation, legal disposition or merge is inferred from this availability
 failure; dependency-review and workflow-security passed in that attempt.
 
+### 2026-10-02 source-mask and fixture supersession (07:48 UTC)
+
+Further primary-source review found two defects before the next allocation.
+The authenticated decoder constructs the target/self-attention masks as
+`torch.uint8` at source lines 142–148, while candidate `c03e301` incorrectly
+required bool. The encoder's source/cross-attention masks are genuinely bool:
+the fixed conformer source returns bool at lines 45–51 and recreates its
+subsampled mask by an integer comparison at lines 110–117. Its 12,651-byte
+source has Git-blob SHA-1 `b41e68e6eb2bed90611e65c6bc5e2025dc6753df` and
+SHA-256 `ea6412fdffc33b558a610d67143fd3211b76fc5a7a9ccac88ae2110f1fd3d320`.
+No source or model was executed to obtain these facts. The capture fix at
+`1706223ffa6cdb464d66044ee3827144d9a2eb7e` preserves the exact uint8/bool
+distinction without a cast or broad acceptance. Root's independent stdlib
+mechanism suite passed 24/24 tests in 48.179 seconds. The revised runner
+SHA-256 is
+`6b1dfeed33b326ccd0e38a30da582196206e890d51462cb2ad8615d5802a7ffd`.
+
+The four-wide Rust fixture also had an eight-value encoder memory but asserted
+only four values. The reviewed correction at
+`905551c58d245a810bca92bcd416b5d4e4a5b133` now checks all eight distinct
+components, exact shape and dtype. Its consumer SHA-256 is
+`503a38165cf712e789bd796525a45bf78e092b8c90fa7aac484275e4dcf5158a`.
+This remains statically reviewed, not remotely executed Rust evidence. The
+previous `c03e301` candidate is superseded; neither defect is hidden by a
+rerun or a relaxed completion gate.
+
+The two reviewed corrections are integrated at clean candidate
+`1c555807f11ad4e15f6e738e19c7a4c4d0bc5d9a`. Its Rust consumer retains
+25 non-ignored tests and two deliberately ignored real-weight legs.
+Formatting and diff hygiene pass. This head remains unpushed and requires
+an exact-head VAST run; the preceding worker's evidence does not verify it.
+The next independent work item is lossless raw-capture normalization and
+explicit source/reference/input binding for a future native comparator.
+That mechanism must distinguish source observations from derived integer
+projections and must not claim parity while GGUF identity is unbound.
+
+A separate read-only query to the [fixed FireRed HF API revision](https://huggingface.co/api/models/FireRedTeam/FireRedASR-AED-L/revision/e57f5960d03cff1071ff7acbb409314d1e70ed3d)
+returned that exact revision and card license `apache-2.0`, with no license
+file in the sibling list and no dataset field in card metadata. The observed
+API-response SHA-256 is
+`67cd36d96228b107407ecd5ff7320ac1d73a75fee32911cdcf8ed71e0d29203a`;
+this binds the dated observation, not mutable API counters. The
+[fixed README](https://huggingface.co/FireRedTeam/FireRedASR-AED-L/raw/e57f5960d03cff1071ff7acbb409314d1e70ed3d/README.md)
+is 6,458 bytes with SHA-256
+`a5a905edac140af027719a5ba6bab2f34f21ae5bfd279725d536519ddc00cf8a`.
+Only metadata and documentation were read, not weights or tokenizer assets.
+This records the upstream card declaration; it does not settle training
+rights, the reviewed mixed Python closure, approval or redistribution. The
+existing blocked execution gate and `NO_UPLOAD` remain unchanged.
+
+Fresh VAST readback after the previous terminal run found zero Vokra-labelled
+instances, one unrelated instance and zero persistent volumes. The unrelated
+instance was untouched. GitHub main remains `97447185361a37af64c1b30fe87e8e2618d96e20`;
+PR #174 is still draft at its unchanged head and its documentation check is
+still failed. The previously failing fixed Microsoft source URL still returns
+HTTP 503, so no availability-based rerun or merge was requested.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
