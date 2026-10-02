@@ -3118,6 +3118,16 @@ bootstrap-log SHA-256 is
 `6e74ef4eea7ee68aa10c6172da4cf120e954042d18c7401543c88612235d6c6e`.
 No upload, Apple execution or additional model completion occurred.
 
+The subsequent bounded consumer/model-lint correction was reviewed and
+committed in a separate clean checkout as
+`6ebd68964be69fb57c771fce3cf95c73ab7229c1` (three files, 22 insertions and
+16 deletions). The consumer retains its intentionally failing, ignored
+real-weight v2 OPEN test. Test-only helpers are excluded from production;
+collection checks and final trace reborrows are equivalent. Root independently
+passed format, diff, zero-dependency and forbidden-symbol checks. No remote
+success is claimed for this new head; the corrected controller must bind its
+source, native and consumer hash comparisons to that exact head before replay.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
