@@ -5,6 +5,28 @@ OpenSSF Scorecard findings after the `v0.3.0` GitHub release. It records the
 current routing boundary; it is not evidence that an alert is fixed, and it
 does not authorize model publication or a weaker numerical oracle.
 
+## 2026-10-02 current security readback
+
+A fresh all-pages Dependabot API read reports 209 open alerts: 182 with a
+published patched version and 27 without one. This supersedes the older
+queue counts below; no alert was dismissed or reference environment declared
+numerically verified by this readback.
+
+The current Code Scanning API reports three open Scorecard findings:
+`CIIBestPracticesID`, `CodeReviewID` and `VulnerabilitiesID`. `MaintainedID`
+is `fixed` since 2026-09-30 02:49:50 UTC and `SASTID` is `fixed` since
+2026-09-30 05:07:01 UTC; neither has a dismissal record. The latest successful
+[Scorecard run](https://github.com/ayutaz/vokra/actions/runs/36847827407)
+evaluated main `97447185361a37af64c1b30fe87e8e2618d96e20` on 2026-10-01.
+Root downloaded only its small `scorecard-results` artifact and inspected
+the actual SARIF: it contains exactly those three remaining findings,
+59 distinct vulnerability IDs, 0/29 independently approved changesets and no
+Best Practices badge. The SARIF SHA-256 is
+`e183baf1266029bf4b1e759bf84a195d7ff8caa6da6e62da5d1012c5c34a65b8`.
+The corresponding [main CodeQL run](https://github.com/ayutaz/vokra/actions/runs/36842462753)
+also succeeded at that exact head. These facts supersede the earlier five-open
+snapshots, not the remaining remediation or independent-review requirements.
+
 ## 2026-09-22 execution update
 
 PR #115 was squash-merged as
@@ -255,7 +277,9 @@ a narrowly reasoned disposition.
 
 ## OpenSSF Scorecard routing
 
-Five process alerts are open on `main`:
+The five historical findings and their remediation routes are listed below.
+The 2026-10-02 readback above identifies which three remain open on `main`;
+the older causes here are retained as dated context, not current verdicts.
 
 | Alert | Current cause | Resolution route |
 |---|---|---|

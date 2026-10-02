@@ -3020,6 +3020,17 @@ successful reference-environment updates. All public-model, independent
 reference, owner/legal, Apple/no-fallback and publication requirements remain
 in scope; this setup attempt closes none of them.
 
+### 2026-10-02 Scorecard supersession (03:03 UTC)
+
+The current all-pages Code Scanning read and actual SARIF from successful
+main run `36847827407` agree that only three Scorecard findings remain open.
+`MaintainedID` and `SASTID` are fixed without dismissal; Best Practices,
+independent Code Review and Vulnerabilities remain open. Exact-head evidence,
+SARIF hash and current Dependabot counts are recorded in the
+[security readback](security-remediation-2026-09-21.md#2026-10-02-current-security-readback).
+This supersedes the older five-open observations, not the full completion
+scope or the outstanding security remediation.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
