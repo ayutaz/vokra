@@ -9,6 +9,15 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
 
+readonly REVIEWED_ARCHIVE_CONTROLLER="/private/tmp/vokra-realtime-archive-collection-vast-controller-v6-20261003.sh"
+readonly REVIEWED_ARCHIVE_CONTROLLER_SHA256="1d81150ebe1b464233191a535e85f83d6ecaa00e421f8724f3ca683329d8c031"
+readonly REVIEWED_ARCHIVE_AUDIT="/private/tmp/vokra-realtime-dependency-audit-20260930.json"
+readonly REVIEWED_ARCHIVE_LOCK="/private/tmp/vokra-realtime-historical-lock-evidence-20261002/uv.lock"
+readonly REVIEWED_ARCHIVE_MANIFEST="/private/tmp/vokra-realtime-historical-lock-evidence-20261002/artifact-rows.json"
+readonly REVIEWED_ARCHIVE_HELPER="/private/tmp/vokra-ecapa-target-identity-20261002/tools/parity/vibevoice_realtime_0_5b_reference/audit_dependency_archives.py"
+readonly REVIEWED_ARCHIVE_LEAF="/private/tmp/vokra-realtime-dependency-archive-collection-20261002.py"
+readonly REVIEWED_ARCHIVE_UV_SHA256="58488ae8dbd0773134c92c85e901430e33f99d975bd7f929d26aa9ab0c2f9390"
+
 model_marker() {
     printf '%s' "$1" | grep -Eiq \
         "(^|[[:space:]=/])(--?(model|checkpoint|weights)([-_](name|id|path|file))?|--?(gguf|safetensors|state-dict))([=[:space:]]|$)|\\.(gguf|safetensors|pt|pth|bin|ckpt)([[:space:]\"'<>|;&?]|$)|huggingface\\.co|/resolve/|/(model|checkpoint)([/._-]|[[:space:]]|$)|hf_hub_download|snapshot_download|from_pretrained|(^|[[:space:]])(hf|huggingface-cli)[[:space:]]+download([[:space:]]|$)"
@@ -55,6 +64,42 @@ is_literal_git_add() {
         *"$shell_substitution"*|*"$backtick"*|*'>'*|*'<'*|*'&'*|*'|'*|*';'*) return 1 ;;
     esac
     return 0
+}
+
+archive_controller_digest_ok() {
+    local path="$1" expected_path="${2:-$REVIEWED_ARCHIVE_CONTROLLER}" expected_sha="${3:-$REVIEWED_ARCHIVE_CONTROLLER_SHA256}" actual
+    [ "$path" = "$expected_path" ] || return 1
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    actual="$(shasum -a 256 -- "$path" 2>/dev/null)" || return 1
+    [ "${actual%% *}" = "$expected_sha" ]
+}
+
+is_reviewed_archive_controller_run() {
+    local command="$1" controller_path="${2:-$REVIEWED_ARCHIVE_CONTROLLER}" controller_sha="${3:-$REVIEWED_ARCHIVE_CONTROLLER_SHA256}"
+    local shell_substitution="\$(" backtick="\`" double_quote='"' single_quote="'" backslash="\\"
+    local -a argv
+    case "$command" in
+        *"$shell_substitution"*|*"$backtick"*) return 1 ;;
+        *'>'*|*'<'*|*'&'*|*'|'*|*';'*) return 1 ;;
+        *"$double_quote"*|*"$single_quote"*|*"$backslash"*) return 1 ;;
+    esac
+    read -r -a argv <<< "$command"
+    [ "${#argv[@]}" -ge 17 ] || return 1
+    [ "${argv[0]}" = bash ] || return 1
+    archive_controller_digest_ok "${argv[1]}" "$controller_path" "$controller_sha" || return 1
+    [ "${argv[2]}" = --run ] || return 1
+    [ "${argv[3]}" = --audit-json ] && [ "${argv[4]}" = "$REVIEWED_ARCHIVE_AUDIT" ] || return 1
+    [ "${argv[5]}" = --lock ] && [ "${argv[6]}" = "$REVIEWED_ARCHIVE_LOCK" ] || return 1
+    [ "${argv[7]}" = --manifest ] && [ "${argv[8]}" = "$REVIEWED_ARCHIVE_MANIFEST" ] || return 1
+    [ "${argv[9]}" = --helper ] && [ "${argv[10]}" = "$REVIEWED_ARCHIVE_HELPER" ] || return 1
+    [ "${argv[11]}" = --leaf ] && [ "${argv[12]}" = "$REVIEWED_ARCHIVE_LEAF" ] || return 1
+    [ "${argv[13]}" = --offer-id ] && [[ "${argv[14]}" =~ ^[1-9][0-9]*$ ]] || return 1
+    [ "${argv[15]}" = --uv-installer-sha256 ] && [ "${argv[16]}" = "$REVIEWED_ARCHIVE_UV_SHA256" ] || return 1
+    if [ "${#argv[@]}" -eq 17 ]; then
+        return 0
+    fi
+    [ "${#argv[@]}" -eq 19 ] && [ "${argv[17]}" = --output-root ] || return 1
+    [[ "${argv[18]}" =~ ^/private/tmp/vokra-realtime-archive-collection-[A-Za-z0-9._-]+$ ]]
 }
 
 is_model_execution() {
@@ -123,6 +168,12 @@ analyse_segment() {
     local segment="$1" normalized
     normalized="$(hook_normalize_segment "$segment")"
     [ -n "$normalized" ] || return 1
+
+    # One immutable, hash-bound remote controller is allowed to carry its
+    # remote archive inputs through this local hook.  The recognizer is exact:
+    # it does not permit wrappers, aliases, substitutions, shell chaining, or
+    # any unreviewed path/value.  All other tools/parity Python remains blocked.
+    is_reviewed_archive_controller_run "$segment" && return 1
 
     # Remote execution is deliberately outside this local-machine guard. The
     # VAST mutation guard separately controls cloud lifecycle operations.
@@ -208,6 +259,105 @@ self_test() {
     check 'static repository gate' allow 'scripts/check-doc-references.sh --self-test'
     check 'help is safe' allow 'vokra-cli run --model ./model.gguf --help'
     check 'self-test is safe' allow 'bash scripts/verify/apple-silicon-omniasr-ctc.sh --self-test'
+    reviewed_controller_cmd="bash $REVIEWED_ARCHIVE_CONTROLLER --run --audit-json $REVIEWED_ARCHIVE_AUDIT --lock $REVIEWED_ARCHIVE_LOCK --manifest $REVIEWED_ARCHIVE_MANIFEST --helper $REVIEWED_ARCHIVE_HELPER --leaf $REVIEWED_ARCHIVE_LEAF --offer-id 48161395 --uv-installer-sha256 $REVIEWED_ARCHIVE_UV_SHA256 --output-root /private/tmp/vokra-realtime-archive-collection-selftest"
+    if [ -f "$REVIEWED_ARCHIVE_CONTROLLER" ] && [ ! -L "$REVIEWED_ARCHIVE_CONTROLLER" ] && archive_controller_digest_ok "$REVIEWED_ARCHIVE_CONTROLLER"; then
+        check 'reviewed archive controller exact remote run' allow "$reviewed_controller_cmd"
+    else
+        check 'reviewed archive controller absent or mismatched' block "$reviewed_controller_cmd"
+    fi
+    check 'reviewed controller unknown runner' block "zsh ${reviewed_controller_cmd#bash }"
+    check 'reviewed controller changed argument' block "${reviewed_controller_cmd/--offer-id 48161395/--offer-id 48161395 --unexpected}"
+    check 'reviewed controller chained local model' block "$reviewed_controller_cmd && vokra-cli run --model ./tiny.gguf"
+    check 'direct Python parity remains blocked' block 'uv run --project tools/parity python tools/parity/firered_decoder.py'
+    production_target_state=absent
+    production_target_hash=
+    if [ -L "$REVIEWED_ARCHIVE_CONTROLLER" ]; then
+        production_target_state=symlink
+    elif [ -f "$REVIEWED_ARCHIVE_CONTROLLER" ]; then
+        production_target_state=regular
+        production_target_hash="$(shasum -a 256 -- "$REVIEWED_ARCHIVE_CONTROLLER" 2>/dev/null | awk '{print $1}')"
+    elif [ -e "$REVIEWED_ARCHIVE_CONTROLLER" ]; then
+        production_target_state=other
+    fi
+    fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-archive-hook.XXXXXX")"
+    fixture_controller="$fixture_root/$(basename "$REVIEWED_ARCHIVE_CONTROLLER")"
+    rm -f "$fixture_controller"
+    printf '%s\n' 'synthetic inert controller fixture' > "$fixture_controller"
+    fixture_sha="$(shasum -a 256 -- "$fixture_controller" | awk '{print $1}')"
+    fixture_command="${reviewed_controller_cmd/$REVIEWED_ARCHIVE_CONTROLLER/$fixture_controller}"
+    if is_reviewed_archive_controller_run "$fixture_command" "$fixture_controller" "$fixture_sha"; then
+        printf '  ok    %-54s %s\n' 'fixture trusted controller exact hash' allow
+    else
+        printf '  FAIL  %-54s\n' 'fixture trusted controller exact hash'; fails=$((fails + 1))
+    fi
+    printf '# changed\n' >> "$fixture_controller"
+    if is_reviewed_archive_controller_run "$fixture_command" "$fixture_controller" "$fixture_sha"; then
+        printf '  FAIL  %-54s\n' 'fixture changed hash remains blocked'; fails=$((fails + 1))
+    else
+        printf '  ok    %-54s %s\n' 'fixture changed hash remains blocked' block
+    fi
+    rm -f "$fixture_controller"
+    ln -s "$REVIEWED_ARCHIVE_CONTROLLER" "$fixture_controller"
+    if is_reviewed_archive_controller_run "$fixture_command" "$fixture_controller" "$REVIEWED_ARCHIVE_CONTROLLER_SHA256"; then
+        printf '  FAIL  %-54s\n' 'fixture symlink remains blocked'; fails=$((fails + 1))
+    else
+        printf '  ok    %-54s %s\n' 'fixture symlink remains blocked' block
+    fi
+    rm -f "$fixture_controller"
+    printf '%s\n' 'synthetic inert controller fixture' > "$fixture_controller"
+    fixture_sha="$(shasum -a 256 -- "$fixture_controller" | awk '{print $1}')"
+    if is_reviewed_archive_controller_run "env FOO=bar $fixture_command" "$fixture_controller" "$fixture_sha"; then
+        printf '  FAIL  %-54s\n' 'fixture env wrapper remains blocked'; fails=$((fails + 1))
+    else
+        printf '  ok    %-54s %s\n' 'fixture env wrapper remains blocked' block
+    fi
+    if is_reviewed_archive_controller_run "${fixture_command/--offer-id 48161395/--offer-id \$(printf 48161395)}" "$fixture_controller" "$fixture_sha"; then
+        printf '  FAIL  %-54s\n' 'fixture substitution remains blocked'; fails=$((fails + 1))
+    else
+        printf '  ok    %-54s %s\n' 'fixture substitution remains blocked' block
+    fi
+    if is_reviewed_archive_controller_run "${fixture_command/--output-root \/private\/tmp\/vokra-realtime-archive-collection-selftest/--output-root \/private\/tmp\/vokra-realtime-archive-collection-..\/escape}" "$fixture_controller" "$fixture_sha"; then
+        printf '  FAIL  %-54s\n' 'fixture output traversal remains blocked'; fails=$((fails + 1))
+    else
+        printf '  ok    %-54s %s\n' 'fixture output traversal remains blocked' block
+    fi
+    case "$production_target_state" in
+        absent)
+            if [ -e "$REVIEWED_ARCHIVE_CONTROLLER" ] || [ -L "$REVIEWED_ARCHIVE_CONTROLLER" ]; then
+                printf '  FAIL  %-54s\n' 'production controller self-test target unchanged'; fails=$((fails + 1))
+            else
+                printf '  ok    %-54s %s\n' 'production controller self-test target unchanged' absent
+            fi
+            ;;
+        regular)
+            production_target_hash_after="$(shasum -a 256 -- "$REVIEWED_ARCHIVE_CONTROLLER" 2>/dev/null | awk '{print $1}')"
+            if [ -L "$REVIEWED_ARCHIVE_CONTROLLER" ] || [ ! -f "$REVIEWED_ARCHIVE_CONTROLLER" ] || [ "$production_target_hash_after" != "$production_target_hash" ]; then
+                printf '  FAIL  %-54s\n' 'production controller self-test target unchanged'; fails=$((fails + 1))
+            else
+                printf '  ok    %-54s %s\n' 'production controller self-test target unchanged' "$production_target_hash_after"
+            fi
+            ;;
+        symlink)
+            if [ ! -L "$REVIEWED_ARCHIVE_CONTROLLER" ]; then
+                printf '  FAIL  %-54s\n' 'production controller self-test target unchanged'; fails=$((fails + 1))
+            else
+                printf '  ok    %-54s %s\n' 'production controller self-test target unchanged' symlink
+            fi
+            ;;
+        other)
+            if [ ! -e "$REVIEWED_ARCHIVE_CONTROLLER" ] && [ ! -L "$REVIEWED_ARCHIVE_CONTROLLER" ]; then
+                printf '  FAIL  %-54s\n' 'production controller self-test target unchanged'; fails=$((fails + 1))
+            else
+                printf '  ok    %-54s %s\n' 'production controller self-test target unchanged' other
+            fi
+            ;;
+    esac
+    if [ -f "$REVIEWED_ARCHIVE_CONTROLLER" ] && [ ! -L "$REVIEWED_ARCHIVE_CONTROLLER" ] && archive_controller_digest_ok "$REVIEWED_ARCHIVE_CONTROLLER"; then
+        check 'production controller exact immutable path' allow "$reviewed_controller_cmd"
+    else
+        check 'production controller absent or mismatched remains blocked' block "$reviewed_controller_cmd"
+    fi
+    rm -rf "$fixture_root"
     check 'dry-run is not a bypass' block 'vokra-cli convert --model ./model.gguf --dry-run'
     check 'no-download is not a bypass' block 'uv run python -c from_pretrained() --no-download'
     check 'ordinary parity script is guarded' block 'uv run --project tools/parity python tools/parity/foo.py'
