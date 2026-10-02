@@ -5668,6 +5668,77 @@ All 194 rows and every independent real-weight CPU, Apple CPU/Metal/
 no-fallback, security and publication requirement remain unfinished unless
 their exact earlier row-scoped evidence already proves them.
 
+### 2026-10-02 terminal integrated replay and authenticated task source (19:10 UTC)
+
+The source-bundle-only V5 job in session `65914` is terminal with exit one
+at exact clean model HEAD `39b7570f3cccd89ccbb049c91077f635f7026c0f`
+and separate XCodec2 HEAD `e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`.
+Its retained packet is
+`/private/tmp/vokra-clean-heads-model-free-logs.EDCR8t`.
+Root independently verified the complete 22-file allowlist, regular-file
+and size bounds, every SHA-256, both exact HEADs and all eleven exit-code
+records. The collection-manifest SHA-256 is
+`75c8b9b9c1bef524baa5e3fceae4dd3eca536501944ad3c2e67ff79932e84531`;
+the recovered proof totals `563259` bytes. Collection completeness proves
+packet recovery, not successful verification.
+
+Workspace tests exit `101`, with derived workspace contract exit `1`.
+The other nine exit records are zero, including Clippy, deny, audit and
+XCodec2's actual 32-test run (`1.678` seconds, no skips). The workspace log
+contains 160 result lines, totaling 6,636 passed, one failed and 68 ignored
+before Cargo stops. Those are partial-run totals, not full workspace counts.
+FireRed's binary has 41 passed, one failed and three ignored. The new BOOL
+observation test and the three previously failing producer-consumer cases
+now pass. The remaining
+`producer_fixture_rejects_resealed_event_and_projection_mutations` case
+correctly rejects the resealed `mask-projection-row` value `9`, but the exact
+projection equality assertion lacks the expected `mask step` diagnostic.
+Keep the rejection and exact comparison; a bounded contextual-diagnostic
+correction is delegated rather than accepting the mutation or weakening
+the negative-test assertion. The new OWSM stem tests, including the complete
+tiny-weight stem pipeline, pass in the actual remote Rust run. This is
+synthetic code evidence, not independent upstream/model-weight parity.
+
+The lifecycle reports `cleanup_rc=0 instance=53902589`. Root's separate
+fresh API readback in session `17405` confirms explicit `instances: null`
+for that ID, followed by a complete `instances-v1 --all` response with
+`next_token: null` and the exact ID/label absent. The account has zero Vokra
+workers and one unrelated worker, which was not changed. The owned worker's
+storage was destroyed; no idle verification worker is retained. This
+supersedes the preceding V5-live snapshot, not its historical observations.
+
+OWSM's constructor/task investigation also gained two bounded primary-source
+receipt packets at the same ESPnet revision
+`cccc29023d43a3f504e28df7d1324bb4eb6daedd`:
+
+- `/private/tmp/vokra-owsm-task-source-receipts-20261003` contains five source
+  files totaling `150081` raw bytes and `212204` API-response bytes. Its
+  manifest SHA-256 is
+  `5cb879ed339e209aa3e9a1c9f3d3dc01b72bd45da18da87a3f33bbd7388b3e00`.
+- `/private/tmp/vokra-owsm-s2t-model-source-receipts-20261003` contains six
+  source files totaling `35250` raw bytes and `54797` API-response bytes.
+  Its manifest SHA-256 is
+  `dd905cd30e35a787b7d94ba7be78010a1bcdb0727fb2c967bc30b1d16aae7ee3`.
+
+For all eleven files, root independently checked exact fixed-revision URLs,
+paths, sizes, SHA-256, Git blob SHA-1, retained API JSON and strict Base64
+decoding equality with raw source, then parsed AST without executing the
+upstream code. The authenticated S2T task forwards actual `args.*_conf`
+kwargs; absent model config bytes still prevent runtime-effective resolution.
+The S2T model source authenticates frontend/normalization/encoder ordering,
+optional inter-CTC conditioning and token interfaces. Its previous-text
+`<sop>/<sos>` preparation is the training attention-loss path, not a proved
+inference beam-search route. Config, tokenizer payload, full native
+encoder/decoder/transcription and independent real-weight CPU/Apple parity
+remain unresolved. A separate bounded inference-source investigation is
+ongoing, not a completion claim.
+
+The archive five-input external transfer remains held; no approval was
+inferred from this goal continuation and no archive worker was created.
+No local model execution, HF credential transfer, artifact upload, PR
+mutation, merge or Scaleway allocation occurred. Preserve all 194 public
+rows, the metadata-only 136 full / 58 unresolved split and the final audit.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

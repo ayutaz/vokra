@@ -1,5 +1,17 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 terminal integrated-replay supersession (19:10 UTC):** the
+> clean `39b7570f` V5 code replay is terminal, not successful. FireRed's
+> BOOL correction and the new OWSM stem tests pass, but one resealed mask
+> mutation test fails because its correct rejection lacks the expected
+> diagnostic. Clippy, deny/audit and XCodec2's 32 tests pass; all 22 recovered
+> checksums were independently verified. Worker `53902589` and storage are
+> independently absent, with zero Vokra workers in the complete account
+> readback. Eleven additional ESPnet task/model sources now have independently
+> matched API/raw receipts, not model-effective config or numerical parity.
+> All 194 rows and the metadata-only 136 full / 58 unresolved split remain;
+> see the [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-integrated-replay-and-authenticated-task-source-1910-utc).
+
 > **2026-10-02 integrated code-replay supersession (18:54 UTC):** reviewed
 > clean `39b7570f` combines the two local correction commits. A separate
 > source-bundle-only V5 replay is live on disposable worker `53902589`, with

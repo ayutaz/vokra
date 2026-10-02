@@ -1,5 +1,17 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 terminal integrated-replay supersession (19:10 UTC):** V5
+> at exact clean `39b7570f` ended with one FireRed negative-test diagnostic
+> failure, not a full workspace pass. The BOOL/schema and OWSM stem cases,
+> Clippy, deny/audit and XCodec2 tests pass in their recorded scopes; all 22
+> recovered checksums match. Worker `53902589` and storage are independently
+> absent. A bounded correction is being reviewed without weakening rejection
+> gates; no replacement job is yet started. Additional authenticated ESPnet
+> class source does not resolve actual model kwargs, native full inference,
+> independent real-weight parity or final Apple CPU/Metal/no-fallback gates.
+> The separate five-file archive transfer remains approval-held. Preserve
+> all 194 rows; see the [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-integrated-replay-and-authenticated-task-source-1910-utc).
+
 > **2026-10-02 integrated code-replay supersession (18:54 UTC):** exact
 > clean `39b7570f` is the integrated FireRed/OWSM candidate for a distinct
 > source-bundle-only V5 replay. Worker `53902589` is independently running
