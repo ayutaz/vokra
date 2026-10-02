@@ -3997,6 +3997,39 @@ Fresh PR #174 readback retains unchanged head
 checks and the failed `documentation-links` check. No rerun, merge or gate
 relaxation was performed.
 
+### 2026-10-02 live catalog/security audit and projection review (08:45 UTC)
+
+Root repeated the read-only metadata/README inventory at management checkout
+`36d8d8377fc2b2494285e4c7860070562e46e0dc`. It still reports 194 public
+repositories, 193 with GGUF and 198 GGUF files: CPU code/artifact status is
+136 full, 43 partial, 14 no-runtime-binder and one non-artifact; Metal is
+136 full, 57 blocked-by-cpu and one non-artifact. No model payload was
+downloaded or executed. Audit-script and engine SHA-256 values are respectively
+`690d603f7182fc5c0645e784f8857acee9604b20050892b2bf0eadeb41f8a905`
+and `cc22a9074531fa738c68101f4697b1b4393252b913b1bb2bc61092da93cf0b1b`.
+The 58 unresolved rows and all independent real-weight/Apple gates remain.
+
+Fresh paginated GitHub APIs report 209 open Dependabot records: 182 name a
+patched version and 27 do not. Three open code-scanning records remain:
+`CIIBestPracticesID`, `CodeReviewID` and `VulnerabilitiesID`. GitHub's main
+commit API still reports `97447185361a37af64c1b30fe87e8e2618d96e20`.
+PR #174 remains draft/behind at unchanged head `f4879d4f`, with no pending
+checks. Inspection of its failed documentation job finds 18 link errors with
+HTTP 503/504 responses, spanning Vokra, Microsoft, Demucs and other GitHub
+pages, rather than evidence of eighteen removed source files. No link-gate
+exclusion, blind rerun or merge was performed.
+
+Root reviewed the separate Rust projection draft. Legacy V2 parsing and the
+ignored real decoder gate remain unchanged; the new helpers are not yet an
+authenticated producer-format consumer. Review requires explicit batch/beam
+row correspondence, checked full-source geometry distinct from retained-value
+caps, pre-allocation budget regressions, and actual full-rank logits selection.
+Digest syntax preservation alone is not byte authentication. These corrections
+and the Python adapter safety corrections are delegated in isolated clones;
+neither draft is accepted, committed or in the live VAST target. Session
+readback confirms the same v5 controller remains live; workspace verification,
+source-cache evidence recovery and owned-worker destruction are still pending.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
