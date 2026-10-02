@@ -3948,6 +3948,20 @@ pre-decode aggregate budgets and explicit per-beam projections. A self-test
 that only prints success is not verification. These are mechanism and
 binding requirements, not independent real-weight numerical evidence.
 
+**08:28 UTC corrected-head replay:** the reviewed v5 controller changes only
+the target/default clone, the two portability-file hashes and isolated v5
+namespaces. V4 remains unchanged. The v5 SHA-256 is
+`b42a8ef2b88abcaa2d8d5e941b98405c92969cdc79184e2be896f1a94bc087e7`.
+Agent and root complete offline mocks exited zero; root also checked syntax
+and ShellCheck. Before the new single rent, a fresh all-pages read found zero
+Vokra instances, one unrelated instance and zero persistent volumes. The
+200-GiB-adjusted offer `32178462` quoted USD 0.17407407407407408/hour.
+The controller created owned instance `53832348` for clean target
+`218ce74d5e8476a420efae6576c25a9190029299`; its readback confirms the exact
+owned label, running state, 16 effective CPU cores and 200-GiB disk. This
+code-only replay is live; its result, source-cache leg, evidence recovery and
+destruction remain unproven. The unaccepted adapter is not in this target.
+
 Fresh PR #174 readback retains unchanged head
 `f4879d4ffd948144c4abc385255bdf5964c94f33`, draft/behind state, no pending
 checks and the failed `documentation-links` check. No rerun, merge or gate
