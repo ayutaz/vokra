@@ -3571,6 +3571,51 @@ binding. Corrections and integration regressions were delegated; that
 candidate is not accepted and is not included in the frozen VAST target.
 Neither its helper tests nor this source-only replay prove decoder parity.
 
+### 2026-10-02 terminal replay, recovery-path defect and comparison map
+
+This supersedes the live-worker snapshot above. Instance `53815435` is
+terminal and destroyed, not a retained transfer source. The execution handle
+returned exit one. The bounded SSH readback contains twenty named step results
+with process exit zero, including workspace, deny and audit, and the final
+clean target `87adbdafe507888df05a861f1f2c15035f73195f` with zero status bytes.
+Its remote summary nevertheless has `overall=1`. The two direct source-audit
+results and the failing strict predicate are not independently recoverable;
+no workspace aggregate, exact test identities/counts or overall green verdict
+is inferred from the process exit markers.
+
+Main, source-only and diagnostic recovery all stopped at `EVIDENCE_MISSING`.
+Root traced a separate concrete defect: three remote reader scripts retain
+`/root/vokra-firered-integrated-verify-evidence`, while the new producer writes
+`/root/vokra-firered-output-contract-verify-evidence`. A self-test substitution
+of the old literal hid that production path mismatch. It explains the lost
+packet, not the earlier remote `overall=1`; that verdict remains unlocalized.
+Moshi source-cache execution was not reached. The frozen controller is not
+edited in place. A new recovery candidate must bind every reader to the actual
+producer path, test the rendered production scripts, emit bounded sanitized
+predicate verdicts, and preserve compact failure evidence before destruction.
+The strict packet allowlists and resource ceilings must not be relaxed.
+
+The instance's destroy operation succeeded; exact readback is
+`instances: null`, and the all-pages owned-label readback has `success=true`,
+no pagination token and no matching instance. Strict cleanup passes. No model,
+weights, HF token, preset, Apple execution or upload occurred. Evidence hashes:
+
+- controller log: `83b6c0057e920d3223aff930cc2ef6242fe54f72a17fbdfbf3a7239ac7869c2d`;
+- bounded remote summary: `27666d12b4d2447460c5f8750c0f4edfa80dbafe6d5c129434be7977801ec08c`;
+- recovery guard: `d906c51985237188ecb6f2451262495a84187772234fa2d9821ad2cdbec2d74b`;
+- exact destroy readback: `817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057`.
+
+Read-only comparison mapping also confirms that the current v2 Rust reader
+discards numeric event payloads and its real gate deliberately stops before
+model execution. The next consumer must retain typed events, bind the exact
+V1/PCM/checkpoint/GGUF and observer identities, and compare every required
+native vector and beam/cache lineage. Source K/V are head-major rank four;
+native newly projected rows are full `d_model` vectors. Complete authenticated
+row selection is required, not two scalar samples. Source finished state is
+observed after pruning, not separately for every unselected candidate; Torch
+tie correspondence remains open. A revised capture candidate is still under
+implementation and has not been accepted, committed or declared parity-green.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
