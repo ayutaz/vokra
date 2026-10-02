@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 controller acceptance and replay-start supersession:** the
+> independently tested FireRed V10 controller has started a single disposable
+> VAST code/source replay at clean `db26d377f90c308e690e37a0871195c712d88a80`.
+> No remote success, real-weight parity, cleanup or Apple verdict is inferred
+> from that start. The broader workspace/XCodec2 and archive controllers remain
+> under review. Preserve all 194 public rows, the metadata-only 136 full / 58
+> unresolved split and every final hardware/publication gate; see the
+> [dated replay-start record](public-catalog-security-completion-2026-09-29.md#2026-10-02-controller-acceptance-and-new-code-verification-start).
+
 > **2026-10-02 failed-run and correction supersession (16:30 UTC):** the
 > actual `3315339e` VAST attempt failed code/setup gates, with incomplete
 > failure-packet recovery. Its disposable worker and storage were destroyed.

@@ -5319,6 +5319,53 @@ rented for these review-only steps; no owner decision, model execution,
 numerical parity or publication gate is promoted. The full 194-row objective
 and final Apple CPU/Metal/no-fallback requirements remain active.
 
+### 2026-10-02 controller acceptance and new code-verification start
+
+Root independently ran the complete offline FireRed V10 suite in terminal
+session `32551`, exit zero, after Bash syntax and warning-level ShellCheck
+passed in session `78505`. Controller SHA-256 remained
+`1469c3827bfcacb498fee7ea18cc17ee5909a5643bd9aeca954457116ce7595a`
+before and after execution. The normal and fallback priority regressions
+execute the embedded manifest producers on fresh tiny fixtures and validate
+the retained manifest hashes; failed preflight performs no SCP, and optional
+transfer failure preserves the main manifest and consumer failure records.
+Authenticated-record wiring, ownership, deadlines/signals and inherited
+whole-suite gates passed. These are controller tests, not model execution.
+
+The generic workspace/XCodec2 controller's frozen `da8fec65` independent
+suite passed in session `69520`; its subsequent `819cf31f` suite passed in
+session `59913`. Root nevertheless found an incomplete tool-destination
+bootstrap condition and requested an actual absent-directory/symlink
+regression before production acceptance. Neither snapshot authorizes a new
+generic worker; its all-target/all-feature workspace and separate clean-head
+XCodec2 32-case remote result remain pending. The replacement Realtime
+archive controller and guard repin also remain under review.
+
+Before the new FireRed replay, independent all-instance session `31673`
+returned zero Vokra workers, one unrelated worker and explicit null
+pagination. Fresh offer session `64299` confirmed offer `32178462` with
+16 effective CPU cores and a 200-GB-inclusive estimated rate of
+USD `0.17407407407407408` per hour, below the USD 0.20 review cap.
+Production session `69864` then created exactly one owned instance,
+`53891836`, labeled
+`vokra-firered-output-contract-verify-v10-db26d377-20261002T171715Z-64772`.
+Independent individual readback `80889` confirmed that exact ID/label,
+running state, 16 effective cores, 200-GB storage and the same estimated
+hourly rate. SSH readiness and input-bundle transfer subsequently passed.
+
+The replay remains live at clean target
+`db26d377f90c308e690e37a0871195c712d88a80`; small logs are retained under
+`/private/tmp/vokra-firered-output-contract-recovery-v10-logs.V2embv`.
+Remote code/source results, the conditional Moshi source-cache side,
+complete packet acceptance and storage-inclusive destruction are not yet
+claimed. The controller preserves its 10,800-second work deadline,
+180-second cleanup deadline and separate destroy reserve. No model weights,
+tokenizer or preset are requested, no HF token is transferred, and no
+publication, PR push or merge occurs in this replay. Unrelated resources
+are untouched. All 194 rows, 58 unresolved metadata classifications,
+independent real-weight CPU and final Apple CPU/Metal/no-fallback gates
+remain in scope and incomplete.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

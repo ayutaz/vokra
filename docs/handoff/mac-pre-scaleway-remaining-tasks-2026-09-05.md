@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 controller acceptance and replay-start supersession:** root's
+> independent full offline FireRed V10 suite passed at frozen controller
+> SHA-256 `1469c3827bfcacb498fee7ea18cc17ee5909a5643bd9aeca954457116ce7595a`.
+> A single disposable VAST worker is now verifying clean correction candidate
+> `db26d377f90c308e690e37a0871195c712d88a80`; its result and destruction
+> are still pending. This is model-free code/source verification, not parity
+> or Apple completion. Preserve all 194 rows and the metadata-only 136 full /
+> 58 unresolved split; see the [dated replay-start record](public-catalog-security-completion-2026-09-29.md#2026-10-02-controller-acceptance-and-new-code-verification-start).
+
 > **2026-10-02 failed-run and correction supersession (16:30 UTC):** the
 > actual VAST code-verification run at `3315339e` failed on FireRed consumer
 > compilation and authenticated-record setup; it is not parity evidence.
