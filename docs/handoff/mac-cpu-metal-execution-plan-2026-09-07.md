@@ -1,5 +1,23 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 bootstrap-failure supersession:** worker `53895587` stopped
+> before workspace/XCodec2 tests because release acquisition did not follow
+> the official HTTPS redirect. The uv pin agrees with official metadata;
+> retain integrity verification while correcting bounded redirect handling.
+> Worker and storage are independently confirmed absent. The `7b6b49cd`
+> remote result, real-weight and final Apple gates remain pending; see the
+> [dated diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-02-release-asset-bootstrap-failure-and-independent-destruction).
+
+> **2026-10-02 terminal-failure and corrected-head supersession (17:50 UTC):**
+> the `db26d377` replay failed five FireRed schema/control tests; recovered
+> checksums cover the failure records, not a complete successful packet.
+> Its disposable worker and storage are independently confirmed absent.
+> A separately reviewed controller is verifying clean `7b6b49cd` and XCodec2
+> `e6552853`; no terminal result or model-row promotion is claimed yet.
+> All 194 rows and final independent CPU, Apple CPU/Metal/no-fallback and
+> publication gates remain in scope; see the
+> [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-firered-schema-failure-cleanup-and-corrected-head-replay).
+
 > **2026-10-02 controller acceptance and replay-start supersession:** the
 > independently tested FireRed V10 controller has started a single disposable
 > VAST code/source replay at clean `db26d377f90c308e690e37a0871195c712d88a80`.

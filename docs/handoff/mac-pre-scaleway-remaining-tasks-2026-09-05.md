@@ -1,5 +1,22 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 bootstrap-failure supersession:** the separate `7b6b49cd`
+> workspace replay stopped before tests on a release-asset checksum mismatch.
+> The official uv digest matches the pin; bounded HEAD probes identify an
+> unhandled HTTPS redirect in the acquisition command. Worker `53895587`
+> and its storage are independently confirmed absent. Fix and re-review the
+> bootstrap before another replay; no Rust, parity or model row passed in
+> this attempt. See the [dated diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-02-release-asset-bootstrap-failure-and-independent-destruction).
+
+> **2026-10-02 terminal-failure and corrected-head supersession (17:50 UTC):**
+> the `db26d377` VAST replay ended with five FireRed consumer failures, not
+> parity success. Its worker and storage were destroyed and independently
+> read back absent. Reviewed clean correction `7b6b49cd` is now the target
+> of a separate all-feature workspace/XCodec2 replay; that result is pending.
+> Preserve all 194 rows, the metadata-only 136 full / 58 unresolved split,
+> and independent real-weight and final Apple/publication gates; see the
+> [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-firered-schema-failure-cleanup-and-corrected-head-replay).
+
 > **2026-10-02 controller acceptance and replay-start supersession:** root's
 > independent full offline FireRed V10 suite passed at frozen controller
 > SHA-256 `1469c3827bfcacb498fee7ea18cc17ee5909a5643bd9aeca954457116ce7595a`.

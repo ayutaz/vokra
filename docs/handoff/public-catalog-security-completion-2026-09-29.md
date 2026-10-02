@@ -5366,6 +5366,107 @@ are untouched. All 194 rows, 58 unresolved metadata classifications,
 independent real-weight CPU and final Apple CPU/Metal/no-fallback gates
 remain in scope and incomplete.
 
+### 2026-10-02 terminal FireRed schema failure, cleanup and corrected-head replay
+
+The preceding FireRed V10 production session `69864` terminated with exit
+one at `db26d377f90c308e690e37a0871195c712d88a80`. The consumer compiled,
+but its actual test result was 35 passed, five failed and three ignored;
+the workspace stopped on the same five failures. Both raw exit files are
+101. Four failures reject the upstream registry's legitimate
+`decoder` / `layer_index: null` identity; the fifth test expects a source-head
+diagnostic although the authenticated-head invariant correctly rejects the
+mutation earlier. These are schema/control failures, not measured numeric
+drift, and no tolerance was changed. Source capture binding passed 21 tests,
+the fixture producer passed four and the module registry passed nine, without
+skips. The retained Clippy, deny and audit exit records are zero. The
+conditional Moshi source-cache leg did not execute after the failed main leg.
+
+Priority recovery retained the raw failures and manifests. Root verified
+57 recovered members of the 61-entry remote checksum manifest; four named
+members are absent (`cargo-metadata.json`, `jobs`, `source.txt`, and the
+authenticated decoder source-record JSON). Manifest SHA-256 is
+`8d0b5086253175bd525eb06c28a27bc0135359e25226ead8d2369e72bead932b`.
+Consumer and workspace log SHA-256 values are respectively
+`1a5a1750d8e114e36485f3f52550bc12f81d31b51cd7b9044b9d93c862583a8a`
+and `c239a78f8e721a71f6e475b180cafd5c1d9f8ddb3b412737a149351dd4ed962b`.
+Bulk collection returned one following an SCP timeout; this is retained
+failure evidence, not acceptance of the complete packet. The controller's
+destroy/readback/label checks passed. Independent session `28150` then
+confirmed `53891836` returns explicit `instances: null`, the exact label is
+absent, the complete account listing has zero Vokra workers and explicit
+null pagination, and one unrelated worker remains untouched.
+
+Root reviewed Luna's isolated correction commit
+`7b6b49cd192b31f392350922c8765e8e0a1234eb`, directly descended from
+`db26d377`. Only the FireRed consumer changes: decoder identities require
+explicit null, indexed roles require an in-range integer, and wrong types,
+unknown roles and missing fields remain rejected. The producer-shaped fixture
+now uses the real decoder identity, and the negative head test checks the
+actual authenticated-head diagnostic. Focused format, diff, forbidden-symbol,
+zero-dependency, EOL-pin and pipefail gates passed; local Rust compilation and
+model execution did not run. The commit is clean but not pushed or merged.
+
+The distinct generic V2 controller has SHA-256
+`4166a8cf43a85d757b6f7575224740314990a79b0dc44cd7d200dfed1631fdeb`.
+Root reviewed its bounded retargeting diff and independently passed Bash
+syntax, ShellCheck and the full offline suite in session `77916`; its digest
+remained unchanged. Those mock transport/lifecycle tests do not establish
+actual Rust or Python results. Production session `43017` created a single
+disposable worker `53895587`, labeled
+`vokra-clean-heads-model-free-v2-20261003-20261002T174809Z-90591`, for clean
+`7b6b49cd` workspace all-target/all-feature tests and Clippy plus the separate
+clean `e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf` XCodec2 32-case gate.
+Independent readback session `94342` confirms the exact ID/label, loading
+status, 16 effective cores, 200-GB disk and
+USD `0.1277037037037037` per hour, below the USD 0.20 cap. Its terminal result,
+complete evidence recovery and storage-inclusive destruction remain pending.
+No checkpoint, tokenizer, preset, HF credential or upload is requested.
+
+Separately, root recomputed all 13 retained ESPnet source receipts at
+`cccc29023d43a3f504e28df7d1324bb4eb6daedd`: 168,873 raw bytes agree with
+each SHA-256, Git blob SHA-1, primary API blob and declared size. Receipt and
+source-facts JSON SHA-256 values are respectively
+`754fc50c11bfd501a786c7c9ef3707a66775bea939d0d9cf87a6322e4eb33c42`
+and `b5f4e2a88448a74f89e71dd6b073d8a68c269cb0d4bb1f980e7244dc08149707`.
+OWSM's existing inspector already binds `selfattn`, `abs_pos` and latest
+position mode; the next bounded work authenticates remaining source semantics
+and designs the missing native Conv2d8/encoder integration. These source-only
+facts do not approve dependency installation, model execution or publication.
+All 194 public rows, 58 unresolved metadata classifications, genuine
+independent real-weight CPU and final Apple CPU/Metal/no-fallback gates remain
+active and incomplete. The Realtime archive controller and dirty hook remain
+under their separate review; no unrelated change is staged here.
+
+### 2026-10-02 release-asset bootstrap failure and independent destruction
+
+Production session `43017` subsequently terminated with exit one before
+workspace or XCodec2 execution. The pinned rustup installer checksum passed
+and Rust installation completed, but the uv archive failed its checksum.
+No complete output packet exists, and the secondary collection preflight
+reported a missing output member. These are setup/collection failures, not
+Rust test failures or real-weight evidence. Preserve the immutable V2
+controller digest and its prior offline-test result; those tests skipped real
+bootstrap acquisition and did not prove this branch.
+
+Root queried the [official uv release API](https://api.github.com/repos/astral-sh/uv/releases/tags/0.12.5)
+without downloading an archive: the exact Linux x86-64 asset has 23,015,306
+bytes and digest `sha256:68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2`,
+which agrees with the existing pin. Bounded primary HEAD probes return HTTP
+302 with zero redirects when not following, and HTTP 200 after one HTTPS
+redirect when following. The controller's GitHub release curl commands omit
+redirect following. This supports correcting bounded HTTPS-only acquisition,
+not replacing the authenticated digest with an observed unchecked download.
+A separate V3 correction and actual tiny-fixture bootstrap-branch tests are
+delegated; no new worker is authorized by an unreviewed candidate.
+
+Saved cleanup reports `cleanup_rc=0`. Independent session `98208` confirms
+`53895587` returns explicit `instances: null`, its exact label is absent,
+and the account listing has explicit null pagination and zero Vokra workers.
+One unrelated worker remains untouched. No instance or storage is retained
+from this attempt. The corrected FireRed and XCodec2 code results are still
+pending; all 194 public rows and independent real-weight/Apple/publication
+completion requirements remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
