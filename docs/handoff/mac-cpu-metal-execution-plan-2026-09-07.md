@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 XCodec2 review supersession (20:51 UTC):** the reviewed
+> clean XCodec2-only family candidate is `99e6a157`, with 48 required Linux
+> stdlib tests and no permitted skip. Keep it separate from the corrected
+> FireRed and frozen OWSM CGMLP candidates. The next controller still needs
+> correct cgroup units, real unittest output parsing, authenticated source
+> receipts and independent recovered-proof checks before rent. OWSM attention
+> remains unaccepted; do not replace the frozen 18-test candidate prematurely.
+> No Vokra instance remains in the fresh complete account query. Preserve
+> the full 194-row and final Apple scope; see the
+> [dated review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-xcodec2-family-and-corrective-attentioncontroller-review-2051-utc).
+
 > **2026-10-02 OWSM candidate supersession (20:33 UTC):** clean family
 > candidate `12c32984` is now reviewed, with 18 source-defined focused Rust
 > tests to require in the next remote leg. It is not a full-model or hardware

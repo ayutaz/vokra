@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 XCodec2 review supersession (20:51 UTC):** root accepted
+> the hardened model-free execution gates and independently verified clean
+> XCodec2-only family `99e6a157`, directly on main `97447185`. Its local
+> stdlib suite has 48 tests, 47 passed and one explicit Linux-only skip;
+> exact-head Linux verification still requires all 48 with no skip. OWSM's
+> next attention slice and the next VAST controller remain under corrective
+> review. A fresh complete VAST account readback has no Vokra instance.
+> No real-weight or Apple result is inferred; retain all 194 rows and see the
+> [dated review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-xcodec2-family-and-corrective-attentioncontroller-review-2051-utc).
+
 > **2026-10-02 OWSM candidate supersession (20:33 UTC):** root accepted
 > the corrected bounded CGMLP/source slice and independently checked clean
 > family-only `12c32984` directly on main `97447185`. Its inspector now accepts
