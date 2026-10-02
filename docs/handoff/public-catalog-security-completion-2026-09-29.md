@@ -3880,6 +3880,25 @@ no remote green result, model parity, publication or destruction is claimed.
 Its cleanup trap must recover bounded evidence, destroy this exact owned
 instance including its data, and verify absence.
 
+**08:08 UTC remote failure diagnosis:** the owned worker's exact source-capture
+suite exited one: 24 tests ran in 70.169 seconds, with seven errors and the
+other 17 tests passing. All seven errors are `FileNotFoundError` in
+`tempfile.TemporaryDirectory(dir="/private/tmp")`; that Mac-specific parent
+does not exist on this Linux worker. They affect the bundle/rollback/alias,
+import-scope restoration and source-record-cleanliness mechanism tests.
+This is a test-portability defect, not numerical model evidence. Root read
+only the bounded failed log over SSH and delegated a portable canonical-temp
+parent correction in a separate clone. The frozen verification checkout and
+failed verdict are unchanged; no remote compatibility directory, skip or
+weaker production guard was introduced.
+
+The same live run's FireRed Rust consumer and consumer Clippy steps returned
+zero and their exact-output gates passed. The complete run, evidence recovery
+and instance destruction are still pending. The capture-binding adapter is
+still unaccepted: its newly added producer-generated, full-geometry fake
+fixture exposes the remaining real producer-format mismatch. Such a fixture
+is mechanism coverage only, not execution of the upstream checkpoint.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
