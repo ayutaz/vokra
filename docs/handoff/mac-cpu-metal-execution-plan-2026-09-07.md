@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 terminal V7 and reviewed V8 supersession (19:46 UTC):** V7
+> failed a FireRed negative-test fixture traversal; its recovered proof is
+> complete, but its workspace verdict is not green. Worker `53905822` and
+> storage are independently absent. Reviewed correction `4edc870f` changes
+> only two mutation setups to the authenticated nested lineage-array path;
+> rejection gates and bounds are unchanged. The distinct source-bundle-only
+> V8 replay is running on owned `53908796`, with 28 allocated/build cores
+> and both exact HEADs independently checked. Terminal verification and
+> teardown remain pending. All 194 rows and the final Apple gates remain;
+> see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-v7-and-reviewed-v8-replay-1946-utc).
+
 > **2026-10-02 reviewed-diagnostic replay supersession (19:25 UTC):** a
 > distinct code-only V7 replay at clean `8f98e110` is running on owned
 > `53905822`, with 28 allocated/build cores independently confirmed. It

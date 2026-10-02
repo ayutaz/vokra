@@ -5801,6 +5801,72 @@ HF credential transfer/upload, PR mutation, merge or Scaleway allocation
 occurred. The archive five-file approval is still outstanding. All 194 rows
 and the metadata-only 136 full / 58 unresolved split remain unchanged.
 
+### 2026-10-02 terminal V7 and reviewed V8 replay (19:46 UTC)
+
+V7 session `59021` is terminal with exit one. At exact model head
+`8f98e110dc61864a8b0f002ce10486825ecb6da8` and XCodec2 head
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`, workspace tests exit 101
+and the workspace contract exits one; the other nine exit records are zero.
+The incomplete workspace log has 160 result lines totaling 6,636 passed,
+one failed and 68 ignored, not a full-workspace success count. FireRed's
+binary reports 41 passed / one failed / three ignored. The mask and pruned
+parent mutations now reach the intended rejection checks, but the later
+test setup incorrectly treats the `lineage_projection` object as an array.
+It panics before the rejection helper can inspect that mutation.
+
+Root independently verified all 22 recovered files, exact HEADs and size
+bounds under `/private/tmp/vokra-clean-heads-model-free-logs.qyG9Ea`:
+563,413 proof bytes, manifest SHA-256
+`984b779fdbf4824f191b4cefd558d2d9af968a451b19d6f00c419163926f1f2a`.
+Clippy, deny/audit and XCodec2 remain green only in their recorded scopes.
+Controller destruction is corroborated by a fresh individual query returning
+explicit `instances: null` and a complete paginated inventory with the exact
+ID/label absent. No Vokra worker remained at that deletion snapshot; the
+single unrelated worker was untouched.
+
+The bounded correction at clean commit
+`4edc870fbce14ead1f6b90f4183a6bea71bfbcda` changes only two negative-test
+setups to `lineage_projection.per_step_integer_lineage[]`, matching the
+authenticated schema and the preceding pruned-parent case. Root reviewed
+the full diff and independently passed fmt, forbidden-symbols, zero-deps and
+diff checks (session `83498`, exit zero). No comparison, rejection condition,
+expected reason or parity bound is relaxed. Consumer SHA-256:
+`6b95555bf49fe5e4b6c5918cc3c4c022db071cd4ea5d42dacf20ee35a8cd4ced`.
+
+V8 controller SHA-256 is
+`24e2e0e4fcba5f6cc4a9bb2bf8615f03217ef9d96a26d52f00cbe8614700b194`.
+Root reviewed its complete mechanical retarget and passed Bash syntax and
+ShellCheck; lifecycle and remote gate logic are unchanged from V7's accepted
+15-case offline suite, which was not duplicated. The distinct code-only run
+is live in session `4952`, logs
+`/private/tmp/vokra-clean-heads-model-free-logs.vYHbgD`, owned worker
+`53908796`, exact label
+`vokra-clean-heads-model-free-v8-20261003-20261002T194226Z-37619`.
+Fresh API/read-only SSH (session `44095`, exit zero) confirms running status,
+both exact HEADs, 28 allocated/build cores, 200-GB disk and USD
+`0.1488888888888889` per hour. Toolchain setup exits zero and Rust tests
+are progressing. Terminal gates, proof recovery and destruction are pending;
+poll the same process rather than restarting after an observation timeout.
+
+The fresh actual HF metadata/card-only audit (session `39881`, exit zero)
+reconfirms 194 public repositories, 193 GGUF-bearing repositories and 198
+GGUF files: CPU 136 full / 43 partial / 14 no-runtime-binder / one
+non-artifact; Metal 136 full / 57 blocked-by-CPU / one non-artifact. All
+repository IDs are unique and their revisions are fixed 40-character hashes.
+TSV SHA-256 is
+`9ef3eb07f12a98de7f425dcd75b98f4cd1be45ab1d3907aafeca2626196cdd56`.
+The 58 unresolved rows remain; metadata `full` is not Apple parity.
+
+CosyVoice3's isolated declaration candidate is still being reviewed. Its
+three candidate pins were reproduced with offline `uv add --frozen`, without
+resolution, installation, a lock or virtual environment; the blocked
+composite and unresolved Torch/Torchaudio pair remain explicit. Root's raw
+PyPI readback identified provenance-field wording to correct before accepting
+the candidate. No security-alert closure, license approval, API compatibility
+or complete reference environment is claimed. The separate five-input
+archive transfer is still held. No local model execution, HF credential
+transfer/upload, PR mutation, merge or Scaleway allocation occurred.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

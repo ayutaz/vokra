@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 terminal V7 and reviewed V8 supersession (19:46 UTC):** V7
+> is terminal with one failing FireRed mutation-setup test, not a workspace
+> pass. All 22 recovered checksums match; worker `53905822` and storage are
+> independently absent in individual and complete paginated account queries.
+> The reviewed fixture-traversal correction is committed at `4edc870f`;
+> V8 is independently running on owned `53908796` with exact HEADs and 28
+> allocated/build cores. The fresh metadata/card-only HF audit still has
+> 194 public rows and the metadata-only 136 full / 58 unresolved split.
+> Neither replay proves real-weight or Apple parity; see the
+> [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-v7-and-reviewed-v8-replay-1946-utc).
+
 > **2026-10-02 reviewed-diagnostic replay supersession (19:25 UTC):** the
 > exact clean `8f98e110` code candidate is now being verified on owned
 > disposable `53905822`; independent API/SSH confirm both HEADs and 28
