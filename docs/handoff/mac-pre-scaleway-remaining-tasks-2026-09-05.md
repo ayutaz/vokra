@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 terminal family replay (22:48 UTC):** worker `53926242`
+> is terminal, not an overall pass. Workspace tests passed 8,239 with zero
+> failures and 108 explicit ignores; OWSM's 28 focused tests passed without
+> ignores. Clippy and three Python verification legs failed. Root verified
+> all 59 recovered checksums and fixed HEAD/source identities. Individual
+> and complete paginated account readbacks prove the owned worker and label
+> absent, with no Vokra instance left. Corrections are isolated; no real-weight
+> or Apple verdict advances. Preserve all 194 rows and see the
+> [terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-family-replay-and-production-gate-corrections-2248-utc).
+
 > **2026-10-02 source/controller review (22:25 UTC):** the same code-only
 > worker `53926242` remains live; do not restart it. Root reproduced the
 > separate source-only V6 controller's offline suite, but did not accept it

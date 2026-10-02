@@ -1,5 +1,17 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 terminal family replay (22:48 UTC):** the code-only
+> controller is terminal and its owned worker `53926242` is independently
+> absent. Do not restart it. Workspace and OWSM focused tests pass, but
+> Clippy, FireRed generator/registry and XCodec2 sealing gates require
+> corrections before an exact-head replay can pass. The next OWSM full-stack
+> candidate is committed at `94a8341c`; root used the existing literal-git-add
+> exemption after a configured git-add form was rejected. No guard change,
+> bypass or new rent was attempted; the new Rust tests still need execution.
+> Source-only acquisition remains inert, and full real-weight CPU plus final
+> Apple gates remain open; see the
+> [terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-family-replay-and-production-gate-corrections-2248-utc).
+
 > **2026-10-02 source/controller review (22:25 UTC):** continue observing
 > the same live code-only job `53926242`. The separate source-only V6 offline
 > suite passes, but rent remains gated on authenticated bootstrap, independent

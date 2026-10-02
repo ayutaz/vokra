@@ -6495,6 +6495,68 @@ actual wheel/native closure. The separately held five-input transfer is not
 retried or replaced by this preparation. All 194 public rows remain in
 scope; the metadata-only 136 full / 58 unresolved split is unchanged.
 
+### 2026-10-02 terminal family replay and production gate corrections (22:48 UTC)
+
+The V5 code-only controller is terminal with exit 1, not an overall pass.
+Root independently verified all 59 recovered manifest entries (793,671 bytes
+total), the three frozen HEADs and the fixed FireRed API/raw/Git-blob source
+identity. Workspace tests terminate successfully across 307 result lines:
+8,239 passed, zero failed and 108 explicitly ignored. The OWSM selected-layer
+leg passes all 28 focused tests with no ignore. Cargo deny and audit also
+pass. These results remain code-only; no real model, target config, tokenizer,
+dependency-archive collector or Apple run was started.
+
+The failed gates identify four correction categories, not a reason to waive
+verification:
+
+- Rust 1.99.0 Clippy rejects the one-element candidate loop in the SBV2
+  converter. Both workspace Clippy legs terminate with exit 101; the next
+  isolated change must preserve the tensor lookup and fallback semantics.
+- FireRed's generator leg uses a nonexistent test filename and runs zero
+  tests (exit 5). Its actual generator/self-test entry must be identified and
+  exercised before assigning a test-count contract.
+- FireRed registry tests reject the controller's normalized six-field source
+  record: the registry requires the complete fixed GitHub API record. The
+  test also assumes a spaced size field. Correct the producer/fixture wiring
+  without relaxing authenticated source checks.
+- XCodec2 runs 72 stdlib tests but one errors because this Linux CPython build
+  omits the sealing constants exported by `fcntl`. A separate child must
+  preserve kernel-enforced immutable snapshots, verify installed seals and
+  exercise the missing-export case; skipping production Linux verification
+  or using a mutable snapshot is not acceptable.
+
+The controller recovered failure logs and destroyed owned instance
+`53926242`, including its storage. Root's fresh individual query returns
+`instances: null`; the complete account query has `next_token: null`, neither
+the exact ID nor label, zero Vokra instances and one unrelated instance that
+was not modified. The SSH failure observed during readback was not used as
+terminal evidence; the controller handle and recovered exit records establish
+termination.
+
+Root separately reviewed the new native OWSM 18-layer composition and final
+normalization. Its inspector self-test, formatting and diff checks pass.
+The authenticated 19,432-byte primary source passes the extended AST checks;
+six mutations of that actual source (repeat destination/count, fast-path
+arguments, final norm, lengths and ordinary return) are independently rejected.
+The new Rust tests remain unexecuted and require a later exact-head VAST leg.
+The configured git-only staging command was rejected before execution by the
+local model guard. Root then inspected the authoritative current guard and
+used its existing literal `git add` exemption, followed by a separate commit
+with all five normal hooks enabled. The clean candidate is
+`94a8341cad776159d65e3c5326685ec7770a368e`; no guard was changed, bypassed or
+weakened. Its 30 source-defined Rust tests still require exact-head remote
+execution, not the older selected-layer 28-test result.
+
+The OWSM YAML helper's retained primary-license positive and synthetic source
+tests now pass, but actual PyYAML archives, the wheel's LibYAML closure and
+execution approval remain unproved. The source-only V7 controller's root
+offline suite is terminal and green; V8 requires independent review and cannot
+substitute for the failed production Linux XCodec2 gate. The separately held
+five-input transfer was not retried. All 194 public rows remain in scope, with
+the metadata-only 136 full / 58 unresolved snapshot unchanged. Independent
+real-weight CPU, final Apple/no-fallback, security and separately authorized
+publication/disposition gates remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
