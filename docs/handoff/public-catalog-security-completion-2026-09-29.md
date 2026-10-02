@@ -3645,6 +3645,32 @@ controller remains a separate candidate targeting frozen
 `87adbdafe507888df05a861f1f2c15035f73195f`; the rejected capture is not included.
 The full public-catalog and security completion scope remains unchanged.
 
+### 2026-10-02 packed capture candidate review (06:51 UTC)
+
+The next uncommitted capture runner, SHA-256
+`b366289ab5dc87cb454b93182208bea2cd780894c5d83f620ec24e57186c7533`,
+fixes the earlier pruning and penalty shapes and adds packed/base64 selected
+values. Root independently ran its stdlib unittest-discovery suite: thirteen
+passed, zero failed. No Torch, weights, model arithmetic or Cargo was run.
+This result is mechanism evidence, not numerical parity or acceptance.
+
+The capacity assertion covers only 5,387,400 required values at the proposed
+sixteen-layer, three-beam, twenty-five-step bound. The actual selection policy
+still retains both layer inputs and duplicate pre-cache-store outputs,
+adding 3,072,000 values. That makes 8,459,400 before masks, indices and final
+state, already above the unchanged 8,388,608-value cap. The candidate therefore
+does not prove its full-step capacity. Those duplicate vectors may become
+explicit observation-only records; no required vector may be sampled or
+dropped to pass the cap. A complete saved-payload ledger is required.
+
+The tests also route through fake-array ASCII bytes rather than the production
+byte-view/chunk path, and their synthetic shapes, dtypes and cache/registry
+semantics do not yet authenticate the real source contract. Whole-step nested
+layer/QKV completeness, source-cleanliness and stale-import rejection remain
+review corrections. They were delegated together with a lossless packed-byte
+round trip and full-bound mechanism test. The candidate remains unaccepted,
+uncommitted and outside the frozen VAST target; no row is promoted.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
