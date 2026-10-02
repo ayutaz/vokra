@@ -4148,6 +4148,44 @@ is being implemented separately; unbound GGUF identity and
 No catalog row, Apple verdict, publication approval or completed-model count
 is changed by this diagnosis or by these model-free drafts.
 
+### 2026-10-02 capture publication review and commit (09:25 UTC)
+
+After two correction rounds, root accepted the bounded producer publication
+slice at `f72e0968cdcdfbb45609e5f19b49a7e3cbdab5f0`, based on frozen
+integration preparation `8af2cc7bd4d1083602047e721f61bb39614da90a`.
+Only the source-capture producer, its tests and its design record changed.
+The isolated publication-safety clone is clean. It has no configured
+pre-commit hook; root separately ran diff, forbidden-symbol and zero-dependency
+checks and reviewed all three file changes.
+
+Root independently reran the 13 focused stdlib filesystem tests with
+ResourceWarning errors enabled: 13 passed in 0.037 seconds. No model or
+upstream inference executed. Direct test-script invocation was refused by
+the local model guard; the normal stdlib unittest runner successfully ran
+only the inspected filesystem cases, without disabling any guard.
+The reviewed producer SHA-256 is
+`82fa23a9a5c0c42a5600a00443eb6dc8f37b6150f533197aaad0fca594dd3ce5`,
+test SHA-256
+`a25779e75671aa5bf25ed370cef9a99a45ff6b9b154677fb192cde5a613b1016`
+and design SHA-256
+`da1b4d3e09baa04931ab6ffd7ce6bc79778bca7fdf488070d25b8e6067ed221c`.
+The complete 33-method suite and integrated Rust compilation remain
+VAST-pending. This is filesystem mechanism evidence, not real-weight parity.
+
+The actual Rust capture-binding reader draft remains unaccepted: root
+requested producer-backed positive and resealed-negative tests, typed tensor
+retention, byte/digest and derived-projection checks, and correction of
+first-party JSON API assumptions. A separate read-only native observation-gap
+review is underway to prepare the real comparison seam. No synthetic parser
+or filesystem test advances an Apple or model-completion verdict.
+
+Fresh root API reads confirm GitHub main is still `97447185361a37af64c1b30fe87e8e2618d96e20`
+and PR #174 remains open, draft and behind at
+`f4879d4ffd948144c4abc385255bdf5964c94f33`. VAST reports zero Vokra instances,
+one unrelated instance, no next page and zero persistent volumes. No new
+instance was rented, no unrelated resource was modified, and no model was
+uploaded or catalog row promoted.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
