@@ -3489,6 +3489,47 @@ snapshot confirms the new PR head, 68 successful checks, three skips, six
 in-progress checks and zero failures. PR #152 remains OPEN, draft and BLOCKED;
 no completed-CI or merge verdict is claimed.
 
+### 2026-10-02 source-test repair, terminal PR CI and live security readback
+
+The portable source-test repair is fixed at clean candidate
+`87adbdafe507888df05a861f1f2c15035f73195f`, parent
+`04571ee1c020d822be9056568e39b1fede1d9a65`. Only the source instrumentation
+builder and its owned unittest module change. An explicit authenticated source
+record is relayed to the inner suite; an explicit missing/invalid record fails
+instead of becoming an optional-fixture skip. Verbose output identifies each
+test. Stdlib regressions cover environment restoration after success, failure
+and exception, missing/invalid/symlink records and authentication failures.
+The normal `prepare` JSON is captured and asserted by its unittest without
+changing production stdout or converting a failed result into success.
+
+Root reviewed the final two-file diff and independently passed all 12 source
+tests, zero skips, using the recovered authenticated source JSON; a missing
+explicit record exited one. The source builder and test SHA-256 values are
+respectively `cb77fc88d814297330464f146768b16db60dd2e010ae1a344d0b799bcd86a968`
+and `5941901ffd1484b59e9327719febe0e89f03789a4789e65127424e43b1a86a48`.
+No upstream model/package, Torch, weights, tokenizer, preset or Cargo was run
+locally. This is source-protocol verification, not real-weight parity.
+The new lifecycle controller remains under review: its positive controls must
+match real output, including the actual unittest module/class namespace and
+each of the ten independent exact-filter Rust summaries. No fixed success
+summary may be emitted to replace observed results.
+
+Fresh PR #152 CI at exact pushed head
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a` is now terminal: 76 successful
+checks, three skips, zero failures and no pending checks, including the later
+Unity packaging job. All 16 required checks pass. Its title and body were
+updated to the actual head, converter/citation scope and terminal CI evidence.
+It remains draft; XCodec2 package-license, hard-pin override and owner/legal
+execution/publication gates are not closed by CI.
+
+A fresh all-pages VAST inventory returns `success=true`, no pagination token
+and only the unrelated stopped instance `53677077`. No Vokra worker is present
+and no unrelated resource was changed. Fresh all-pages GitHub Dependabot
+readback still has 209 open alerts: 182 with a patched version and 27 without
+one. Package counts are Torch 156, ONNX 20, Transformers 20, Diffusers eight,
+Accelerate two, ModelScope two and NLTK one. No alert was dismissed or claimed
+fixed from the unmerged draft PR.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
