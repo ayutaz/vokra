@@ -2979,6 +2979,47 @@ and one stopped, unrelated `ralomi-development-*` instance; no Vokra worker
 remains. The independent volume list is empty. The unrelated instance and its
 storage were not modified. The resumed goal remains incomplete.
 
+### 2026-10-02 PR lint repair and second bootstrap readback (02:57 UTC)
+
+The verified e-Gov citation-only correction was committed as
+`152a3695508ed7372ae7cfd06a18e53e11af1fee` and pushed to draft PR #152.
+Its new-head `documentation-links` check passes. Main remains
+`97447185361a37af64c1b30fe87e8e2618d96e20`; the PR remains open, draft and
+blocked. Multiple new-head Clippy/backend/parity-matrix jobs fail on the same
+Rust 1.99 `single_element_loop` diagnostic in the SBV2 converter, not on a
+measured model-parity mismatch. The minimal direct-lookup repair preserves
+primary speaker-key precedence and the existing fallback. It was reviewed and
+committed as `1e4bd71f33956f56e3360787dffc341b999dce8b`; integrated verification
+HEAD is `3570e4e86ef936a92f62e857e9302d57aba6e974`. The code has not been pushed
+or described as remotely verified.
+
+The retargeted controller SHA-256
+`11be1f9349349bf8dd7b9cb273d3e92fae7d0186d06c8e893f6c22f8e386fc8f`
+passed shell syntax, ShellCheck and the full offline controller self-test.
+Root also confirmed that only the target constant differed from the accepted
+bootstrap-repair controller and that the target checkout was clean. It rented
+exactly one disposable worker, `53794282`, with 16 effective CPU cores,
+128,483 MB RAM and 200 GB storage. The real Rustup repair succeeded: Cargo and
+Rust 1.99, UV 0.12.5 and managed Python 3.12 were available. Bootstrap then
+failed with exit 128 because a second bundle fetch attempted to update the
+already checked-out `verification` branch. No Rust test, real-weight parity,
+Apple run or model upload occurred. The bootstrap-log SHA-256 is
+`30b7b891af985d3d72acafa4afb2598a94dfeb4cab11425d40aafa2f0111baf9`.
+
+The controller destroyed `53794282` including its storage. Cleanup records
+`destroy_rc=0`, strict individual readback with `instances=null`, and an empty
+owned-label list. Recovery bounds rejected the incomplete result packets; no
+green verification packet is claimed. Controller-log SHA-256 is
+`6174ebb5f6ed650151821a4ba210dddd2d910fcf50a91543c43c7deac45a0b5a`.
+The redundant-fetch repair and an actual-Git offline regression were delegated
+before another rent; target, source pins and cleanup contracts remain frozen.
+
+A fresh all-pages GitHub Dependabot read found 209 open alerts: 182 have a
+published patch and 27 do not. These are current residuals, not dismissals or
+successful reference-environment updates. All public-model, independent
+reference, owner/legal, Apple/no-fallback and publication requirements remain
+in scope; this setup attempt closes none of them.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
