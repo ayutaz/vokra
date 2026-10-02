@@ -1,5 +1,17 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 terminal replay and reviewed-candidate supersession (18:47 UTC):**
+> the code-only V4 replay at `7b6b49cd` is terminal, with four failing FireRed
+> consumer tests and green XCodec2/Clippy/deny/audit legs. All 22 recovered
+> checksums match; worker `53899353` and its storage are independently absent.
+> Reviewed local FireRed `2ae2e459` and OWSM stem `00daef06` are being prepared
+> for a distinct clean integration, not promoted to numerical or Apple parity.
+> The separately reviewed archive V6 transfer was rejected by auto-review
+> before process creation and must not be rerouted to bypass that decision.
+> All 194 public rows and final independent CPU, Apple CPU/Metal/no-fallback,
+> security and publication gates remain in scope; see the
+> [dated terminal and review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-code-replay-reviewed-stem-and-archive-transfer-boundary-1847-utc).
+
 > **2026-10-02 corrected-bootstrap replay supersession (18:27 UTC):** the
 > independently reviewed and offline-tested generic V4 controller is running
 > a new code-only VAST replay on disposable `53899353`. Real rustup/uv/deny/

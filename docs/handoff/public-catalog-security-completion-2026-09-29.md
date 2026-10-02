@@ -5533,6 +5533,96 @@ All 194 public rows and the metadata-only 136 full / 58 unresolved split
 remain intact. No row is promoted by bootstrap, synthetic tests or a live
 code replay, and the full completion audit below remains required.
 
+### 2026-10-02 terminal code replay, reviewed stem and archive transfer boundary (18:47 UTC)
+
+The existing V4 production session `98581` is terminal with exit one, not a
+successful workspace replay. Its exact model HEAD was
+`7b6b49cd192b31f392350922c8765e8e0a1234eb` and separate XCodec2 HEAD was
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`. Workspace tests exited `101`,
+stopping at the FireRed consumer binary: 37 passed, four failed and three
+ignored in that binary. The log contains 160 reported result lines totaling
+6,624 passed, four failed and 68 ignored; because execution stopped early,
+these are partial replay counts, not a full workspace success or real-weight
+parity verdict. Toolchain, workspace Clippy with warnings denied, cargo-deny,
+cargo-audit and XCodec2's 32 tests all exited zero. The derived workspace
+contract alone is nonzero.
+
+Root independently verified all 22 required recovered files, their exact
+allowlist, regular-file and size bounds, both HEADs and exit records. Total
+packet bytes are `564699`; `collection-manifest.sha256` SHA-256 is
+`557a39b813c509bed861378db192a1c49ff15ac56b8a51ab3ca5f0a4b01e9372`.
+The controller recorded `cleanup_rc=0`. A fresh exact-ID readback confirms
+worker `53899353` has explicit `instances: null`; a separate paginated
+account readback confirms the exact label is absent, `next_token: null` and
+zero Vokra instances. One unrelated worker was not modified. No retained
+compute or storage from this replay remains.
+
+Three FireRed failures originate from comparing source-observed raw BOOL
+bytes, preserved as integer `0/1` by the Python producer, against a consumer
+test's re-cast JSON boolean array. Root checked the committed producer's
+`_tensor_values` and strict consumer binary-value gate. Reviewed local commit
+`2ae2e4597d0e378f16abdefae389c1205946f57e` preserves raw integer observations
+while retaining typed boolean state for derived EOS logic. It also aligns
+the noncanonical-Base64 negative test's expected diagnostic with the actual
+strict padding-bit rejection and adds explicit BOOL/UINT8/FP32 and byte-two
+contract coverage. It changes one consumer test file only; SHA-256 is
+`b2d4cdb2676e6a7579842e96d55cc91de0464862728c2aa6c77ea481dfc1168f`.
+No producer, authenticated fixture, schema rejection or tolerance was relaxed.
+Remote Rust results for this correction are pending.
+
+Reviewed local OWSM commit `00daef0655c2c8ad5245d6e1fbed5e0dc84e4ea6`
+adds the authenticated Conv2d8/absolute-position stem, its source inspector,
+Apache source attribution and a bounded design record. Root reviewed native
+GGUF-derived geometry, finite/overflow checks, actual three-stage synthetic
+pipeline tests, channel/time layout, prefix/mask/position ordering and
+Conv2d/ReLU/GEMM Compute seams. Metal selection explicitly rejects the
+CPU-only PCM frontend instead of silently running it. The public weights
+binder signature is preserved. Root independently passed the stdlib
+inspector self-test and parsed the five roles from the retained authenticated
+ESPnet source files without importing or executing upstream model code.
+Conv2d8 and positional expressions are checked separately from structural
+encoder/attention/CGMLP facts. Constructor-only defaults are not substituted
+for the unresolved S2T task-kwargs or runtime attention-backend contracts.
+Rust file SHA-256 is
+`3f57c10aae6181a24355bd6324501cb9a9ade7d7d58a561edd9aa54b6a7f5085`;
+inspector SHA-256 is
+`c5e48068863904ea6ee914a672c77dfd4abffb3d9e59fd3910394c501b91d389`.
+Both implementation commits have parent `7b6b49cd`; their distinct clean
+integration and remote compilation remain pending. The complete encoder,
+decoder, tokenizer and independent real-weight/Apple parity are unfinished.
+
+The archive lifecycle V6 controller has frozen SHA-256
+`1d81150ebe1b464233191a535e85f83d6ecaa00e421f8724f3ca683329d8c031`.
+Root reviewed the minimal V5-to-V6 delta and independently passed Bash
+syntax, ShellCheck and the complete offline suite (session `19587`, exit
+zero, 25 lifecycle cases). Oversize, aggregate-size, symlink and missing
+manifest cases now execute the actual transfer-preflight shell body;
+refreshed endpoints recheck the exact instance ID, label and resource
+contract before SSH. The exact hook pin and isolated fixture tests passed
+twice independently in session `41859`; neither self-test altered the
+production controller. All other local model/download paths remain blocked.
+
+Actual archive collection was attempted only after that review. Auto-review
+rejected the launch before process creation because explicit authorization
+for the five-file external transfer was not recognized. A bounded read-only
+input inspection established `358621` total bytes, unchanged fixed hashes,
+public PyPI package/URL/hash metadata and audit code, and no matches for
+the inspected secret-literal patterns; `.env`, keys and weights are excluded.
+The evidence-backed re-review of the same operation was also rejected before
+process creation. No instance was rented and no file was sent. The operation
+is held for explicit five-file approval; do not bypass the rejection through
+a wrapper, other runner or alternate transfer. Actual wheel collection,
+installed dependency approval and full Realtime synthesis/parity are still
+pending. This restriction does not justify loosening any license gate.
+
+Separately, root removed five exact, clean, terminal synthetic-test clone
+directories totaling `1791260` KiB (about 1.7 GiB). Their input bundles and
+all small evidence were retained for reconstruction; no working candidate or
+production packet was deleted. No local model execution, HF credential
+transfer, artifact upload, PR mutation, merge or Scaleway allocation occurred.
+All 194 public rows and the metadata-only 136 full / 58 unresolved split
+remain unchanged. The full completion audit below still applies.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

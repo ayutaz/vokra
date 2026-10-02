@@ -1,5 +1,18 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 terminal replay and reviewed-candidate supersession (18:47 UTC):**
+> the `7b6b49cd` V4 replay recovered and independently verified all 22 packet
+> checksums, but workspace tests failed four FireRed consumer cases. XCodec2's
+> 32 tests, Clippy and deny/audit passed. Worker `53899353` and its storage
+> are independently absent; the complete account readback reports no Vokra
+> worker. Local reviewed corrections are FireRed `2ae2e459` and bounded OWSM
+> stem `00daef06`; integrated remote Rust results remain pending. The archive
+> V6 controller and exact hook pin passed independent offline checks, but
+> transferring its five inputs requires an explicit approval recognized by
+> auto-review. Both attempted launches were rejected before process creation.
+> Preserve all 194 rows and the metadata-only 136 full / 58 unresolved split;
+> see the [dated terminal and review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-code-replay-reviewed-stem-and-archive-transfer-boundary-1847-utc).
+
 > **2026-10-02 corrected-bootstrap replay supersession (18:27 UTC):** root
 > independently passed the frozen generic V4 controller's full offline suite.
 > A new disposable worker `53899353` has passed all four real bootstrap
