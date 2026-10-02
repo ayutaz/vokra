@@ -4815,6 +4815,51 @@ this checkpoint. The two bootstrap workers remain individually confirmed
 destroyed; no new paid worker was allocated for fixture integration or this
 metadata refresh.
 
+### 2026-10-02 preflight rejection and current-source inventory correction
+
+The next paid runs remain gated on controller review. Root rejected an
+archive-controller draft at SHA-256
+`90029d3cbec2bd589df0decb3bf23aa7d6c2d5841612f3902094cb2f191f00fe`:
+its later function definitions overrode the inherited lifecycle regression
+suite with differently named cases, including no-op checks. It also hashed
+the transfer payload only after copying it locally, and its remote archive
+manifest path did not match the staged worker path. These are review defects,
+not a successful lifecycle or archive-evidence result. The implementation
+owner was instructed to preserve the actual inherited create/ownership,
+signal/deadline, failure-recovery and destruction cases, bind a remote
+transfer checksum manifest before copying, and recover bounded negative
+evidence without promoting it to PASS. Neither this rejected draft nor an
+in-progress correction is authorized for a production run.
+
+A separate read-only audit of clean candidate `597164c7` found the FireRed
+reader contains 43 test attributes: 40 ordinary cases and three explicitly
+ignored real-weight consumers. Root independently checked the attributes,
+ignore declarations and unchanged reader SHA-256
+`3f79aacc702c57b16bbb013ef973c5cb5e1dcf1db6bf6e017441928584806602`.
+The ordinary cases split into seven `tests::`, 23 `decoder_trace_v2::` and
+ten `capture_binding_v1::` cases. The earlier planning inventory of 37
+ordinary plus three ignored was inaccurate; it was not an executed Rust
+result. The old controller's 25-pass/two-ignore reader expectation and
+24-case source-capture expectation are also stale. Its successor must bind
+the actual complete test identities, including the 33 source-capture,
+21 capture-binding, four generator and three archive-helper unittest cases.
+The helper's 24 tiny cases are a separate self-test inventory. No latest-head
+Rust or real-weight success is inferred from this source enumeration.
+
+Fresh read-only cloud and GitHub checks completed in terminal sessions
+`67196`, `58013` and `58840`, all exit zero. VAST reported zero Vokra
+instances, one unrelated instance and an explicit null pagination token;
+the unrelated instance was not changed. Two eligible offer candidates were
+observed with 200-GB-inclusive estimated rates below USD 0.20/hour, but no
+instance was rented; availability and pricing must be rechecked immediately
+before allocation. GitHub main remains `97447185361a37af64c1b30fe87e8e2618d96e20`.
+PR #152 remains open/draft/clean at `dd6f0154` with 76 successful and three
+skipped checks. PR #174 remains open/draft/behind at `f4879d4f` with 68
+successful, one skipped and one failed check. No PR or remote branch was
+modified. All 194 public rows, independent real-weight CPU validation, final
+Apple CPU/Metal/no-fallback validation and publication boundaries remain in
+scope and incomplete.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
