@@ -3361,6 +3361,39 @@ is `9c7cef7b3cf3827c39cca46d3dc1c540b17968697d50d3a64cd6e317c074d647`.
 The original VAST target `d24366c` and frozen recovery controller remain unchanged.
 This follow-up has not been pushed, merged or remotely verified.
 
+### 2026-10-02 recovery-contract investigation (05:02 UTC)
+
+Read-only inspection found two concrete producer/collector mismatches in the
+frozen controller, without recovering the destroyed worker's missing bytes.
+The pinned CosyVoice collector declares separate 512-KiB payload and 512-KiB
+manifest limits; its 28 pinned payloads total 405,766 bytes. The old transfer
+guard instead counted payload and manifest together against 512 KiB. The
+VibeVoice collector likewise separates its 4-MiB payload and 1-MiB metadata
+budgets. A new controller must preserve these independently declared limits,
+source counts, hashes and validation rather than enlarge an arbitrary combined
+budget. The old run's exact rejected family and manifest size remain unknown.
+
+The bootstrap also writes `cargo-deny.tar.list` and `cargo-audit.tar.list`
+inside the evidence directory, although neither basename belongs to its exact
+green-packet allowlist. This source-level mismatch is proved; it is not a
+measurement of the old run's rejected basename. Bootstrap-only listings must
+move to the existing tool-staging directory while retaining archive-member
+validation, not expand the green-evidence allowlist.
+
+Root also found that the final focused and ABI log predicates in
+`verify_local_green` were not explicitly failure-chained. In a conditional
+shell invocation, a later successful predicate can hide an earlier failure.
+Explicit rejection and production-verifier negative fixtures are required.
+These corrections are delegated in a new controller; the historical controller
+and candidate remain frozen. Full controller self-test acceptance and remote
+replay are still pending. No model, parity, Apple or publication result is
+promoted by these source findings.
+
+A fresh all-pages VAST read returned `success=true`, no pagination token and
+only the unrelated, exited instance `53677077`. No Vokra instance was present;
+the unrelated resource was not modified. The credential-redaction/exit-status/
+destroy-confirmation wrapper self-test also passed locally without models.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
