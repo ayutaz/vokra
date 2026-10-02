@@ -3899,6 +3899,60 @@ still unaccepted: its newly added producer-generated, full-geometry fake
 fixture exposes the remaining real producer-format mismatch. Such a fixture
 is mechanism coverage only, not execution of the upstream checkpoint.
 
+### 2026-10-02 portability correction and terminal VAST readback
+
+The frozen `1c555807f11ad4e15f6e738e19c7a4c4d0bc5d9a` v4 execution
+terminated with exit one, preserving the source-capture test failure above.
+Workspace verification exited zero: 325 successful result summaries,
+8,220 passed, zero failed and 110 ignored. Its recovered log SHA-256 is
+`e5151d9da070aec5dd14119e4972815285c1ba3d21f0b51d9445ede795a6c44f`.
+FireRed consumer verification reports 25 passed, zero failed and two ignored;
+the ignored real-weight legs remain open. Consumer log SHA-256 is
+`0d4d583645e75b0bc34f7cade2c256bd3c7df560641bf2c66b208480cbb57258`.
+Deny and audit exited zero, with respective log SHA-256 values
+`f35734dc54f6283b1df3d005396eeec011459fa5fa1fc9259dbf3e49b66065a9`
+and `2de900cde21af07fc0cff26eb7a1fb7a16600c40da5faf87fefa9dd4d47f10dc`.
+The failed capture log remains bound to
+`ba7c6408243cc77c0f18eb5a209a5e6d8a6d4725fe8fe0a6c5c5149bf35dbd0a`.
+
+The controller recovered bounded evidence, verified both local packet and
+source-only packet checksums, and reported collection exit zero. It destroyed
+owned instance `53829210` and its 200-GiB disk: destroy and individual
+readback exited zero, the individual response is `instances: null`, and the
+all-pages post-destroy response has no Vokra instance. It lists one unrelated
+instance label, which was untouched. The sequential source-cache probe did
+not run after the failed main gate. No real model, upload or Apple verdict is
+inferred from this code-only execution.
+
+Root reviewed and accepted the separate test-only portability correction at
+clean commit `218ce74d5e8476a420efae6576c25a9190029299`. Seven fixtures now
+use resolved `tempfile.gettempdir()` rather than a Mac-specific directory;
+the existing alias test also checks that canonical parent. Production
+no-follow guards and the 24 test names are unchanged. Root's independent
+Python 3.12 UV stdlib replay passed 24/24 in 45.920 seconds, and agent
+documentation gates passed. The test-file and design-file SHA-256 values are
+respectively
+`471d9d4663837bc1a89e8f88809e061bb6a111b805cc9a33fe5c1ff18ebf9fec`
+and `32ff0b478390977a58684db0451cb2c6598d47961738ed5ce464951c924976d9`.
+There is no import patch-target change; that agent-report claim was corrected
+against the actual diff. Exact-head Linux replay is still required.
+
+The uncommitted three-file capture-binding adapter now accepts a fixture made
+through the real capture/bundle producer, but root has not accepted it. Its
+semantic tamper tests currently stop at stale serialized-byte mismatches,
+without exercising the claimed event/shape rejection paths; the fixture also
+depends on an external Mac-specific source-record path. Root requested
+portable producer fixtures, re-sealed semantic tamper tests, authenticated
+contract/V1 links, distinct selected/full tensor hashes, producer-equivalent
+pre-decode aggregate budgets and explicit per-beam projections. A self-test
+that only prints success is not verification. These are mechanism and
+binding requirements, not independent real-weight numerical evidence.
+
+Fresh PR #174 readback retains unchanged head
+`f4879d4ffd948144c4abc385255bdf5964c94f33`, draft/behind state, no pending
+checks and the failed `documentation-links` check. No rerun, merge or gate
+relaxation was performed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
