@@ -3214,6 +3214,52 @@ instance. The sole account instance was the unrelated stopped
 `ralomi-development-41259f7-20261001-urgent-03`, which was not modified; this
 is not a claim that the entire account has no resources or storage charges.
 
+### 2026-10-02 coherent FireRed / Realtime source-only candidate (04:14 UTC)
+
+The earlier structural-only Realtime checkpoint remains historical. A separate
+full-stack checkout at `0340a146cf5c14dec6f21d25c020c350409a15d5` combines
+the reviewed structural commits with the existing native streaming composition,
+selected-backend Metal dispatch, official streaming-reference caller,
+model-free cache-compatibility probe and ignored real-packet consumer. It does
+not duplicate the previously staged implementation or supply an owner approval.
+
+The next coherent source-only verification candidate is clean head
+`d24366cbcbb9018e33262ad37a24d734d4d75167`, based on the reviewed FireRed
+correction `53192b06eb6111ce15982cba875f319923bc533d`. Exactly 30 existing
+Realtime commits were cherry-picked without conflict, excluding the SBV2 lint
+fix already present in the parent. The resulting 19 changed paths (8,651
+insertions and 129 deletions) are byte-identical to their full-stack counterparts.
+FireRed module, native implementation and consumer remain byte-identical to the
+reviewed parent. Historical candidates and controllers remain frozen.
+
+Root independently passed formatting, diff, first-party-only lock and
+forbidden-symbol checks, plus the streaming-reference and cache-probe stdlib
+self-tests on this exact combined checkout. The implementer also passed the
+preset-exporter and installed-closure audit self-tests. These checks did not
+compile or execute models, import model dependencies, load a preset, download
+weights or produce numerical parity. Workspace/model Cargo remains VAST-only.
+
+The native composition selects CPU or Metal explicitly and rejects unsupported
+backends; dispatch support alone is not actual Apple execution. The independent
+caller invokes the fixed official Microsoft generation path, but its real run
+requires an external hash-bound execution scope, exact dependency disposition
+and proved preset consent. Its PCM consumer reports measured error with an
+explicitly OPEN numerical gate; neither structure agreement nor device-selection
+diagnostics may be promoted to waveform parity. The ordinary synthesis/CLI
+completion and real-weight CPU/Apple/no-fallback gates remain open.
+
+The failed-run recovery controller is being corrected separately. Review found
+that local diagnostic archive acceptance still needed an exact filename allowlist,
+complete member/manifest equality and expanded-size validation before extraction.
+Those corrections are delegated; no reviewed/frozen controller has been modified
+mid-run and no new worker has been rented for this candidate. Diagnostic recovery
+must stay failure-only and preserve the original failure exit, mandatory green
+records, source hashes, transfer caps and frozen Moshi source-cache budgets.
+
+The full 194-row goal remains unchanged. The dated 136 code/artifact-full and
+58 unresolved classifications are not an Apple-completion count, and withheld
+rows must remain separately accounted rather than described as supported.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
