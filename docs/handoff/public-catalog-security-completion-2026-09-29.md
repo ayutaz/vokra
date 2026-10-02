@@ -3760,6 +3760,15 @@ two explicitly ignored real-weight legs. Formatting and diff hygiene pass;
 the new Rust tests have not yet been compiled or executed on VAST. This
 candidate is unpushed and is not covered by the running `87adbdaf` replay.
 
+**Terminal recovery update:** the original recovery-v2 session subsequently
+exited with status one, retaining the original failed output-contract
+verdict. Both recovered packet checksum gates passed and collection returned
+zero. Destroy returned zero; strict individual readback returned
+`instances: null` for `53822210`, and the controller's post-destroy label
+readback passed. The worker and its attached 200-GiB data were destroyed.
+The integrated candidate above still requires a new exact-head remote run;
+the earlier failure is not retroactively replaced by an offline mock.
+
 PR #174's unchanged-head documentation rerun, attempt two of `36658360528`,
 also failed. The previous U.S. Code timeouts disappeared, but 18 GitHub links
 returned HTTP 503/504. A bounded subsequent probe still returned 503 for one
