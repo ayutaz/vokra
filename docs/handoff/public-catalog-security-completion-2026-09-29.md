@@ -3394,6 +3394,23 @@ only the unrelated, exited instance `53677077`. No Vokra instance was present;
 the unrelated resource was not modified. The credential-redaction/exit-status/
 destroy-confirmation wrapper self-test also passed locally without models.
 
+### 2026-10-02 fresh public inventory audit
+
+The read-only Hugging Face API/README audit completed again: 194 public
+repositories, 193 GGUF-bearing repositories and 198 GGUF files. CPU
+classification remains 136 full, 43 partial, 14 without a runtime binder and
+one non-artifact; Metal remains 136 full, 57 blocked by CPU and one
+non-artifact. The 58 unresolved rows remain in scope. The audit script and
+engine source used for this readback are byte-identical to GitHub `main`
+`97447185361a37af64c1b30fe87e8e2618d96e20`, whose remote HEAD was freshly
+confirmed unchanged. The audit's 14 local stdlib classification tests passed.
+No model weights or tokenizer/preset payload were acquired or executed.
+
+These are code/public-metadata classifications, not independent real-weight
+or Apple verification verdicts. PR #152 was freshly read as OPEN, draft and
+BLOCKED at `152a3695508ed7372ae7cfd06a18e53e11af1fee`; its isolated SBV2
+repair is still unpushed, so no new CI or merge result is claimed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
