@@ -4983,6 +4983,49 @@ treated as real-weight reference or parity approval. No PR, alert, branch,
 package environment or cloud resource was mutated by this review, and no
 merge or model-execution authorization is inferred.
 
+### 2026-10-02 archive-consumer schema defect and XCodec2 execution-gate audit
+
+Root's read-only review of the archive controller's in-progress SHA-256
+`c53719358eb08c34cc76b41e95acc06772324a6055e682dbc2803fe66aad1b61`
+found a production-input mismatch, not a primary-license verdict. Its new
+package JSON verifier requires an exact ten-key object and a four-key
+artifact object, but the frozen helper `7f3b8d5` actually returns additional
+`recorded_installed_status`, `archive`, `supporting_license_evidence`,
+`distribution_identity`, `evidence_scope` and `fallback_policy` fields,
+and the artifact includes `kind`. Consequently, a positive mock using only
+the invented smaller schema cannot prove acceptance of the real collector
+output. The implementation owner must bind positive and negative fixtures
+to the frozen helper's actual schema, validate the exact wheel filename in
+the summary, and retain the original lifecycle and bounded negative-packet
+checks. This WIP is not approved for a paid run.
+
+A separate delegated read-only review of PR #152 at exact HEAD
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a` traced the direct reference
+path. `tools/parity/xcodec2/dump_reference.py` imports NumPy, Torch and GGUF
+at lines 28-30; its lines 64-78 validate version strings, lines 111-123
+import the official decoder, and lines 189-218 authenticate a supplied
+GGUF and execute the decoder. Neither this direct path nor the documented
+dependency guard invokes the license manifest or a hash-bound owner
+execution approval. The guard's documents-only mode exits before third-party
+imports, but its ordinary mode is an API/dependency check, not legal approval.
+No dedicated XCodec2 VAST worker was found in that exact tree. Thus the
+blocked manifest and documented VAST boundary do not themselves enforce
+fail-closed direct execution. A bounded isolated implementation has been
+assigned to put the executable gate before third-party import and model
+access; no approval or primary-license bytes are invented. `NO_UPLOAD`
+remains a publication restriction, not by itself a prohibition on separately
+approved no-upload reference validation. Current-head API compatibility and
+real-weight CPU/Apple parity remain unproved, and PR #152 is not accepted
+for merge by this audit.
+
+Root's fresh read-only VAST query completed in terminal session `66824`,
+exit zero, with zero Vokra instances, one unrelated instance and an explicit
+null pagination token. The unrelated instance was not modified; this query
+does not establish Scaleway or persistent-volume state. No paid worker or
+model execution was started in this checkpoint. The 194-row completion
+scope, 136 code/artifact-full / 58 unresolved classification, and all
+independent CPU, Apple and publication requirements remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
