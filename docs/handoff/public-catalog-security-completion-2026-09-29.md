@@ -6339,6 +6339,61 @@ binding negatives are required before freezing that child. Preserve every
 public row, metadata-only counts and all native/independent real-weight CPU,
 final Apple/no-fallback, owner/legal, security and publication gates.
 
+### 2026-10-02 accepted selected layer and latest code-only targets (22:01 UTC)
+
+Root accepted the bounded OWSM selected E-Branchformer composition and
+committed its three reviewed files with all five normal pre-commit hooks.
+The independently read-back clean candidate is
+`15ec2f0d73e7d40202ca54b79933e76a09478a1c`, a child of the historical
+`387d1f79` attention candidate. The Rust implementation binds 38 selected
+layer tensors after global license/config/inventory checks and follows
+source-ordered macaron FFN, attention/CGMLP branches, concat-plus-convolution
+merge, main FFN and final normalization through existing Compute seams.
+Unsupported paths remain explicit errors, not silent CPU fallback.
+
+Root independently authenticated the primary layer source and Positionwise
+FFN source, accepted their 29 and six AST checks, and rejected altered
+attention/CGMLP norms, FFN scaling, branch copying and normalization order.
+The final corrective review additionally found a missing-macaron-source
+exception and a copy-before-macaron acceptance gap. Both were corrected;
+independent primary-source mutations now return `BLOCKED_SOURCE_AST` rather
+than an exception or a false acceptance. Inspector self-test, formatting,
+diff hygiene, forbidden-symbols and first-party-only lock gates pass. The
+28 Rust test definitions have not been compiled or executed locally.
+
+The final reviewed file SHA-256 identities belong to the separate candidate
+commit, not necessarily the versions in this management checkout:
+
+| File | SHA-256 |
+|---|---|
+| `crates/vokra-models/src/owsm_v4_medium_1b.rs` | `c7fee8537d90f8ba2b1d805ff541d7a2293d01b252d610a75299a01804da6209` |
+| `tools/parity/owsm_v4_medium_1b_inspect.py` | `b088c592cca58f4079f7338fbdc9142344d89d2d70d09d2a7b50f9b85594434b` |
+| `docs/design/owsm-v4-medium-1b-source-contract.md` (candidate-only; does not exist in this checkout) | `4a7c87bf7c72ba1b99cd95fe9bd656e1b7bdd1b485f0589f77c9715cc0799e1a` |
+
+Root also independently passed the corrected V4 controller's full offline
+suite, including its actual linked-worktree fixture and instrumented invalid
+repository preflight. This is controller evidence only, not a remote Cargo
+verdict. A distinct V5 is now being prepared for the latest clean candidates:
+FireRed `a3fb0fc2` unchanged, OWSM `15ec2f0d` / 28 focused tests, and XCodec2
+`e9c7b8d0` / 72 stdlib tests with no permitted Linux skip. The new pins and
+full controller suite still require root review before any rent. XCodec2's
+actual source collector is not invoked by that code-only wave.
+
+The separate proposed two-public-sdist source-only controller did not pass
+root review: its clone/worktree gate, remote-to-local producer identity
+mapping, cleanup ownership/resource separation, nested packet validation,
+toolchain authentication and real-path offline lifecycle tests need
+corrections. It remains inert and has made no live API, archive or cloud
+request. No permission is inferred for the separately held five-input
+transfer, installed builds, independent model execution or publication.
+
+No replacement VAST or Scaleway worker was created by this review. All 194
+public rows remain in scope; the last dated HF metadata snapshot remains
+136 full / 58 unresolved and is not an Apple-completion count. Effective
+S2T kwargs, full native encoder/decoder/tokenizer, independent real-weight
+CPU parity, final Apple CPU/Metal/no-fallback and publication gates remain
+unproved for this slice.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

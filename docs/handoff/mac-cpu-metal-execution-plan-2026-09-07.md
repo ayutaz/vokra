@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 selected-layer supersession (22:01 UTC):** freeze reviewed
+> OWSM `15ec2f0d` / 28 focused Rust tests and XCodec2 `e9c7b8d0` / 72 stdlib
+> tests for the next distinct code-only wave, with FireRed `a3fb0fc2`
+> unchanged. Retarget and independently test a new immutable controller
+> before rent; no actual source collector runs in this three-family wave.
+> The separate two-public-sdist source-only controller still requires
+> corrective review and cannot unlock installed-build or model execution.
+> Full real-weight CPU and final Apple/no-fallback gates remain; see the
+> [dated acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-selected-layer-and-latest-code-only-targets-2201-utc).
+
 > **2026-10-02 corrected-source preparation (21:45 UTC):** retain the
 > fixed three-family remote scope while separately recording clean
 > `e9c7b8d0` as source-preparation only. Production lock schema checks now pass,

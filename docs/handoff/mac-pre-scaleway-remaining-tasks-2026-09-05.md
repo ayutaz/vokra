@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 selected-layer supersession (22:01 UTC):** root accepted
+> and committed OWSM's source-ordered selected E-Branchformer layer at clean
+> `15ec2f0d`, with 28 source-defined Rust tests still requiring exact-head
+> remote execution. The next code-only controller is being retargeted to that
+> candidate and clean XCodec2 `e9c7b8d0` / 72 stdlib tests; FireRed remains
+> `a3fb0fc2`. No replacement worker has been rented. A separate source-only
+> controller failed root review and remains inert. Preserve all 194 rows and
+> the metadata-only 136 full / 58 unresolved snapshot; see the
+> [dated acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-selected-layer-and-latest-code-only-targets-2201-utc).
+
 > **2026-10-02 corrected-source preparation (21:45 UTC):** root reviewed
 > and committed the production-lock correction and source-only collector at
 > clean `e9c7b8d0`. Its 72 stdlib tests have 71 passes and one explicit
