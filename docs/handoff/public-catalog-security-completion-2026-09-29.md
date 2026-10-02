@@ -4521,6 +4521,69 @@ model execution, Apple run, publication, push, PR mutation or merge occurred.
 All 194 public rows remain in scope; no code/artifact classification or
 hardware-completion state is promoted by this preparation.
 
+### 2026-10-02 owned-instance recovery and cleanup-signal review
+
+The full-replay v7 controller is frozen at SHA-256
+`b553f79eae126fc8e71fddc92a0427c248ec3771456c0f333d8bdf4bd9f2f254`.
+Root reviewed its complete diff against preserved v6, passed Bash syntax and
+ShellCheck, and independently completed the full offline self-test with exit
+zero. Ownership and bundle-observation markers passed; the checksum-tamper
+warning belongs to the expected negative case. Common registration now retains
+an individually proven owned ID solely for cleanup after a nonzero create
+exit, while aborting work. Ambiguous exact-label recovery checks every ID
+individually, destroys owned candidates, and checks individual null responses
+plus an empty final list with an explicit null pagination token. This accepts
+only that recovery/ownership scope: global deadlines, cleanup interruption,
+transfer limits and retargeting to the eventual final integration HEAD remain
+pending. The old `218ce74d` target is not approved for production replay.
+
+Root separately reproduced a cleanup-runner defect: inherited SIGTERM-ignore
+was overwritten by the ordinary interruption handler, yielding exit 143 before
+the tiny diagnostic command completed. A subsequent embedded-runner snapshot
+from bootstrap SHA-256
+`8e9b1a00f2923a994b14c29af9403cdccf9cae4dd32b9108f1957261b112df9e`
+passed four independent cases. Cleanup mode completed after either SIGINT or
+SIGTERM, while ordinary mode stopped with exit 130 or 143 respectively.
+The embedded code SHA-256 is
+`156c8fef00043a939466d5b506b2ae278561666833c9cfe39ada8997f276298d`.
+This is runner-only evidence, not approval of the UV launcher, whole cleanup
+lifecycle, schema fixture, real-weight parity, or paid execution.
+
+Root subsequently completed the same frozen bootstrap's full offline self-test
+with exit zero: four actual generator unittests, five mocked remote-body output
+files, and eleven lifecycle cases passed. Those cases include nonzero create,
+ambiguous ownership, unrelated/unknown IDs, residual readback and synchronized
+INT/TERM with a second process-group signal during cleanup. This additionally
+accepts the tested model-free lifecycle integration, but not real remote
+generation or operational readiness. Remote prerequisites and pre-transfer
+log recovery remain a separate stage; the canonical persistent fixture is
+still absent and paid execution remains unapproved.
+
+The latest authenticated VAST readbacks at approximately 11:44 UTC report
+zero Vokra instances, two unrelated instances, an explicit null pagination
+token, and zero persistent volumes. The unrelated instances were not modified.
+No new paid worker was allocated during these checks.
+
+Read-only Realtime reconciliation at clean integration `5b78f8e5` confirms that
+the isolated candidate already contains the native source-ordered streaming
+runtime composition; that integration is absent from the maintainer checkout.
+It must not be implemented a second time. The unchanged CLI remains
+inspection-only. The Carter preset manifest,
+SHA-256 `d56c5fbd82d42c80f81ee0f550ad6a4ff4c160cb8004d394552a3a04e6b9c957`,
+retains `INSPECTION_ONLY`, `NO_MODEL_FORWARD_NO_AUDIO`, `NO_UPLOAD`, and
+unproven rights/voice consent. The recorded dependency audit, SHA-256
+`3e41d14ef2260f4eafe7775ae4345e626593f0e524da973149bb75109d2faa5b`,
+still requires owner review and reports undiscovered installed license files
+for safetensors, tokenizers, tqdm and triton. Source license discovery is a
+separate pending investigation, not owner approval. The existing narrow
+reference packets do not authorize full streaming generation; an exact
+external execution scope and independent CPU waveform evidence remain open.
+
+These checkpoint-free diagnostics and reconciliations do not advance any
+public-model completion state. All 194 public rows remain in scope, and no
+model/preset/tokenizer download or execution, Rust compilation, Apple run,
+artifact publication or PR mutation occurred in this continuation.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
