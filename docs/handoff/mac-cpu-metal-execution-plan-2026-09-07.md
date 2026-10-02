@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 corrective-review supersession (20:26 UTC):** keep the
+> reviewed FireRed family candidate separate from the still-unaccepted OWSM
+> and XCodec2 additions. Root's source-only checks found an OWSM inspector
+> false rejection and residual XCodec2 authentication gaps despite passing
+> lightweight tests. The next model-free controller remains inert until all
+> reviewed clean HEADs and required test counts are fixed. Existing PR CI
+> cannot supply those verdicts; preserve the full 194-row scope and final
+> Apple gates. See the [dated review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-independent-corrective-review-and-pr-readback-2026-utc).
+
 > **2026-10-02 terminal V8 supersession (20:17 UTC):** V8 is terminal and
 > green in its code-only scope: 8,289 workspace tests passed, zero failed,
 > 111 explicitly ignored, green Clippy/deny/audit and 32 XCodec2 tests. Root

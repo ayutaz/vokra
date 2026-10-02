@@ -5987,6 +5987,49 @@ remains held without a worker. Preserve all 194 public rows, the last retained
 metadata-only 136 full / 58 unresolved classification, and every independent
 real-weight CPU, final Apple CPU/Metal/no-fallback and publication gate.
 
+### 2026-10-02 independent corrective review and PR readback (20:26 UTC)
+
+The root worktree started clean at `88ae2c36734f5e682863786221054d8dc71b890f`.
+The prior V8 job is terminal; this review did not start another VAST worker.
+Root independently ran the new uncommitted XCodec2 hardening candidate's full
+stdlib discovery through offline Python 3.12 with `-S`: 39 tests, 38 passed
+and one Linux-only sealed-memfd test explicitly skipped (command receipt
+`c84125`, exit zero). This is not a Linux or real-model execution verdict.
+Review still found that a nonempty executable-file map does not authenticate
+the complete installed execution footprint, that the source-distribution
+receipt field is not emitted by the current producer, and that bounded
+growth, bad-code-before-import and output/source replacement behavior need
+stronger implementation and tests. Corrections remain delegated; no candidate
+commit or safe-execution approval is inferred from the passing suite.
+
+Root's OWSM inspector self-test failed at the new LayerNorm positive fixture
+(`951f63`, exit one). A separate source-only check (`7c7c7f`, exit zero)
+independently matched the retained primary CGMLP and LayerNorm raw SHA-256
+values. The current CGMLP AST checks accept the fixed primary source, while
+the LayerNorm AST check rejects its actual nested transpose expression.
+That is an inspector false rejection, not an upstream LayerNorm defect; fix
+the source consumer and retain mutation rejection rather than altering the
+authenticated source or weakening numerical bounds. Constructor/default-axis
+and ordered-operation coverage are also requested. The partial native CGMLP
+candidate remains unaccepted, uncommitted and not compiled locally.
+
+Fresh read-only GitHub queries confirm main remains
+`97447185361a37af64c1b30fe87e8e2618d96e20`. FireRed PR #149 is still
+open/draft/dirty at `9a929c141a40cad524be4945135d3dee1cba3460`, based on
+`09b39079a5b205e859ea24392ffe56b3bcd2371b`, with 76 successful and four
+skipped checks. XCodec2 PR #152 is open/draft/clean at
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, based on the current main,
+with 76 successful and three skipped checks. These verdicts do not cover
+the fresh FireRed family HEAD or either new uncommitted correction.
+
+The next three-family code-only controller is preparation work only: missing
+reviewed OWSM/XCodec2 pins must prevent execution. No local model acquisition
+or execution, external archive-input transfer, HF upload, PR mutation, merge
+or Scaleway allocation occurred. The separate five-input archive transfer
+remains held. Preserve all 194 public rows, the last retained metadata-only
+136 full / 58 unresolved split, independent real-weight CPU and final Apple
+CPU/Metal/no-fallback evidence, security closure and publication gates.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

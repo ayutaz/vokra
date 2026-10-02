@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 corrective-review supersession (20:26 UTC):** the new
+> XCodec2 hardening candidate passes 38 local stdlib tests with one explicit
+> Linux-only skip, but root review still rejects incomplete payload-closure
+> authentication. OWSM's current inspector also rejects authenticated primary
+> LayerNorm source; its source-AST correction remains pending. These findings
+> require corrections before fixing new remote HEADs, not a new parity claim.
+> No replacement VAST worker was started in this review. All 194 rows and
+> final Apple gates remain; see the [dated review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-independent-corrective-review-and-pr-readback-2026-utc).
+
 > **2026-10-02 terminal V8 supersession (20:17 UTC):** the exact clean V8
 > code replay passed: 308 workspace result lines, 8,289 passed / zero failed /
 > 111 explicitly ignored; all 11 exit records are zero and all 22 recovered
