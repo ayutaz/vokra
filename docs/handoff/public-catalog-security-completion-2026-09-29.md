@@ -4243,6 +4243,42 @@ zero Vokra instances and one unrelated instance; persistent-volume count is
 zero. No new allocation, upload, PR change, merge or catalog promotion was
 performed. The full goal remains active and unproven.
 
+### 2026-10-02 reviewed final-ranking preparation (09:42 UTC)
+
+The earlier unaccepted final-ranking draft is superseded by the reviewed
+source-mechanism preparation at
+`d328a5a401dc07f6cd4890bb0e8fa6fc51aa6b58`, parent
+`f72e0968cdcdfbb45609e5f19b49a7e3cbdab5f0`. The isolated native-trace clone
+is clean and frozen. Only `native.rs`, `mod.rs` and its design record changed.
+The source hashes are respectively
+`0005408e008abd8179fef10fec47aca04721878e491565b67389de8f33c6a5b9`,
+`390fb3326a66e057be6e89117ac877a4c12b7e4b0d07a7d20132d5ccfbc2a262`
+and `26d240db7c1f2a37b5b3179d0cba3f6f9bb6ab707f7f2cbc4e0a80ad066fcde7`.
+
+After further correction and root review, final-row reservations are consumed
+once; the ordinary path keeps its original single hypothesis-vector
+allocation; and traced/untraced ranking uses one shared generic arithmetic,
+sort and truncation implementation. Synthetic regressions now describe
+actual mixed finished/unfinished continuation, repeated EOS, max-length
+termination, selected-hypothesis correspondence, exact two-/three-row event
+reservation consumption and charged metadata budgets. These regressions are
+not claimed to have run: Rust compile, focused tests and Clippy remain
+VAST-pending. Root independently confirmed formatting, diff hygiene,
+forbidden-symbol, zero-dependency, 190-file EOL and 306-file pipefail checks.
+The source preparation was committed but not pushed or promoted to parity.
+
+The producer-backed reader still requires correction. Root compared its
+projection logic with the actual existing Python adapter and found three
+positive-fixture mismatches: target masks require the final query row of
+`[NB,width,width]`, source masks use the last dimension of `[NB,1,Ti]`, and
+original candidate source rows are the three beam groups rather than nine
+flattened candidate slots. These were returned for correction, together with
+decoded-byte pre-allocation charging and no-clobber generator checks. The
+generated JSON fixtures are still pending; no missing fixture is skipped or
+relabelled as a passing real reference. The clean native preparation is not
+yet the final integrated verification target. Real CPU, Apple, owner/legal,
+publication and full-catalog completion remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
