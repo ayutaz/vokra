@@ -4364,6 +4364,46 @@ PR update or merge occurred. A separate owner-independent planning audit
 of the complete 58-row queue is in progress; FireRed preparation does not
 replace the full 194-row completion objective.
 
+### 2026-10-02 source-role and immediate-EOS review (10:24 UTC)
+
+Root reviewed the reader draft at SHA-256
+`e635ec422400eb5ad435387b2b756c24abee8dbf9150130e4aeb14e25df892b1`
+against the actual frozen producer and instrumentation contract, rather than
+assuming that a tensor index is a payload slot. Explicit payload targeting
+replaces that ambiguous mutation helper in the draft. Further corrections
+are still required: Q observations and cross-attention K/V are metadata-only,
+while only self-attention K/V retain last-prefix numeric bytes. The draft's
+role checks incorrectly require retained values for all Q/K/V. Negative tests
+also need to match the first actual rejecting validator and independently
+prove an aligned over-budget input. This draft is not accepted or compiled;
+the missing checked fixture and remote Rust verification remain open.
+
+A separate UV/Python 3.12 stdlib-only probe reproduced an immediate-EOS
+contract mismatch without Torch, weights or model execution. The existing
+fake capture producer emits a valid `torch.int64` metadata tensor of shape
+`[0]`, zero elements and bytes, and the SHA-256 of empty bytes for final
+content. The Python binder rejects that tensor as an invalid shape. The
+authenticated source's final-content slice permits this empty output. A
+separate implementer owns a narrow semantic-role-bound repair; this is not
+permission to allow zero dimensions globally or claim real parity.
+
+The narrowed Nano audit at clean preparation head
+`197b8c5b23612e8c3e64ea8a0930e52c4ee93d37` found no justified additional
+owner-independent source implementation. Root independently checked the
+inspector, dependency audit, license gate, native binder and real-test hashes
+reported by that audit, and inspected the official meta API route, strict
+Nano binder and measurement-only real test. The audit record SHA-256 is
+`81f04d67b6958157c28fa0cb8beff0b7a64097db6f35cf303196c03b6ade561f`.
+Existing source preparation does not prove a successful actual API replay,
+an owner/legal decision, real CPU parity, reviewed numerical bounds, Apple
+CPU/Metal/no-fallback or publication. Those gates remain open. The old
+generic planning matrix is not accepted as an execution-ready per-row audit.
+
+The model-free bootstrap remains under review and no new paid allocation,
+Rust compilation, model run, upload, push or PR mutation was performed during
+this readback. All 194 public rows and the 58 unresolved-row denominator
+remain in scope; no row was promoted by these source and fake-only findings.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
