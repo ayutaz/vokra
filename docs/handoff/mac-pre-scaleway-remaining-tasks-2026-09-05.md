@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 terminal V8 supersession (20:17 UTC):** the exact clean V8
+> code replay passed: 308 workspace result lines, 8,289 passed / zero failed /
+> 111 explicitly ignored; all 11 exit records are zero and all 22 recovered
+> checksums match. Worker `53908796` and its storage are independently absent;
+> a complete paginated account query has no Vokra worker. The clean FireRed
+> family-only candidate is now `a3fb0fc2`, with fresh exact-head remote checks
+> still required. OWSM and XCodec2 additions remain under review. This does not
+> establish real-weight or Apple parity; preserve all 194 rows and the last
+> metadata-only 136 full / 58 unresolved snapshot. See the
+> [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-v8-proof-and-family-only-firered-candidate-2017-utc).
+
 > **2026-10-02 code-review and live-progress supersession (20:02 UTC):**
 > V8 remains live on the same owned worker `53908796`; independent API/SSH
 > confirms 28 allocated cores and progression beyond the previously failing

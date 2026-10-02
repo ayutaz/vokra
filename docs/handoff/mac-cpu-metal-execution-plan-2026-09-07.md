@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 terminal V8 supersession (20:17 UTC):** V8 is terminal and
+> green in its code-only scope: 8,289 workspace tests passed, zero failed,
+> 111 explicitly ignored, green Clippy/deny/audit and 32 XCodec2 tests. Root
+> independently verified all 22 checksums and all 11 exit records. Worker
+> `53908796` and storage are independently absent. The next fixed-head work
+> is the fresh-main FireRed candidate `a3fb0fc2` plus separately reviewed OWSM
+> and XCodec2 changes, not a restart of the terminal V8 job. All real-weight,
+> final Apple and publication gates remain; see the
+> [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-v8-proof-and-family-only-firered-candidate-2017-utc).
+
 > **2026-10-02 code-review and live-progress supersession (20:02 UTC):**
 > The same V8 process and worker `53908796` are still running; the repaired
 > FireRed negative test passes, but a complete terminal verdict is pending.

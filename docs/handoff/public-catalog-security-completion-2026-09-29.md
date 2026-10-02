@@ -5925,6 +5925,68 @@ or Scaleway allocation occurred. Preserve all 194 rows and the metadata-only
 136 full / 58 unresolved split; the current live V8 worker must be destroyed
 after bounded evidence recovery.
 
+### 2026-10-02 terminal V8 proof and family-only FireRed candidate (20:17 UTC)
+
+V8 session `4952` is terminal with exit zero, not a process to resume or
+restart. At exact clean model head
+`4edc870fbce14ead1f6b90f4183a6bea71bfbcda` and XCodec2 head
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`, all 11 raw/contract exit
+records are zero. The full all-target/all-feature serial workspace test log
+has 308 result lines totaling 8,289 passed, zero failed and 111 explicitly
+ignored tests. Clippy with warnings denied, deny/audit and the separate
+32-test XCodec2 stdlib suite pass. Explicit ignores and device-less feature
+builds are not real-weight or Apple verification.
+
+Root independently verified all 22 recovered regular-file checksums, per-file
+and aggregate bounds, exact HEADs and both input bundle digests under
+`/private/tmp/vokra-clean-heads-model-free-logs.vYHbgD`. Proof payload:
+713,522 bytes; collection-manifest SHA-256:
+`f2030d5091e63a5fcfe4cf86b568204edf1574698ed3fbe6f260031d46dc3ccf`.
+The recorded allocation/build count is 28. Controller cleanup reports zero;
+fresh independent individual and complete paginated API queries (session
+`37687`, exit zero) prove worker `53908796` absent via explicit
+`instances: null` and exact ID/label absence with `next_token: null`.
+No Vokra worker remains in that account snapshot; the one unrelated worker
+was not operated on. Storage was destroyed, not retained by stop.
+
+The reviewed FireRed-only assembly is committed at clean
+`a3fb0fc227b745e30f477f37f2cd264b5948b30a`, directly on main
+`97447185361a37af64c1b30fe87e8e2618d96e20`. All 31 selected files are
+byte-identical to the corresponding reviewed `4edc870f` files, independently
+checked against both index and worktree. The only shared-file change is the
+FireRed schema-fixture EOL pin; Cargo.lock and other model families are
+unchanged. Root's fmt, forbidden-symbol, zero-dependency, EOL and diff checks
+pass, and the isolated commit's normal hooks pass. The new family HEAD still
+needs its own remote verification before push/PR update; V8's mixed-head
+green result is not relabelled as an exact `a3fb0fc2` verdict.
+
+Root's first additional Python binding invocation correctly failed closed
+because `VOKRA_FIRERED_SOURCE_RECORD` was absent. After independently
+verifying the retained fixed-revision record and supplying that explicit
+environment, all 21 tests passed (session `78803`, exit zero). The 16,493-byte
+GitHub record SHA-256 is
+`11c96d58909bb2863e2e92b2f1420b4545d7e7b5a08021e8b90954210293475b`;
+its 11,033 decoded source bytes match Git blob
+`2088b0832b84da4421883e2dc7b518f734c3e0b2` at source revision
+`834635e4cf277ed8ca92049fc375b17c3dc20748`. This authenticates source and
+schema tests, not a real checkpoint reference or numerical parity.
+
+OWSM's added LayerNorm receipt was independently matched across raw bytes,
+API base64, fixed revision, Git blob and constructor AST: 958 raw bytes,
+SHA-256 `5f2b40be03a3f345a6d86231ba38e3acf1f22eb28ec81d17474d908cb06ad8fd`.
+The source explicitly uses `eps=1e-12`. Root review caught and requested
+correction of per-row CGMLP splitting, eval dropout handling, public binding
+gate preservation and source-inspector coverage. That candidate remains
+uncommitted and uncompiled locally. XCodec2's additional hardening likewise
+remains unaccepted after review found residual snapshot, output, sdist-proof,
+payload-closure and test-coverage gaps. Neither addition is covered by V8.
+
+No local model execution, HF credential transfer/upload, PR mutation, merge
+or Scaleway allocation occurred. The separate five-input archive transfer
+remains held without a worker. Preserve all 194 public rows, the last retained
+metadata-only 136 full / 58 unresolved classification, and every independent
+real-weight CPU, final Apple CPU/Metal/no-fallback and publication gate.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
