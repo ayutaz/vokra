@@ -4584,6 +4584,53 @@ public-model completion state. All 194 public rows remain in scope, and no
 model/preset/tokenizer download or execution, Rust compilation, Apple run,
 artifact publication or PR mutation occurred in this continuation.
 
+### 2026-10-02 archive-license helper review and descendant-leak rejection
+
+A separately reviewed implementation candidate is committed at
+`501215c3b6a54d62a07c745b056e00327c3429b5`, based on clean integration
+`5b78f8e5e988bcb22f3e05669f839b97262592da`, in the isolated checkout
+`/private/tmp/vokra-vibevoice-dependency-archive-audit-20261002`.
+Its three-file change is absent from the maintainer checkout and has not been
+pushed. The archive collector SHA-256 is
+`7f3b8d524b2fd6df1841d79fbd06663e635a2baab506611275e6fc9342550fa1`;
+root independently passed its 24 named tiny-archive cases and three focused
+unittests. Zero-dependency, the 190-file EOL-pin check and staged diff hygiene
+also passed. No real archive was acquired or executed.
+
+The collector authenticates the historical audit, exact lock and archive
+identity; separates distribution-owned primary licenses from vendored and
+NOTICE evidence; rejects non-regular, empty, ambiguous and unsafe inputs;
+and caps aggregate license evidence at 8 MiB. Metadata body text cannot
+fabricate a License-File header. Sdist evidence remains distinct from installed
+wheel evidence and cannot fill owner sign-off or authorize model execution.
+
+The historical audit records a 47,564-byte lock with SHA-256
+`5cfaad7532ca8e144173cc3552b7f3f9585a15be3b81b29e34a0b0c6355a5603`.
+Bounded history lookup found only the different 58,249-byte tracked lock at
+`4482e80bd4a61e5cb6ff62516835a8e7cfd19492`, SHA-256
+`e8787e3c9e7bfdb3383fca1bba22026edbec4b9e61191692797e43e801f74352`.
+The required historical original remains unavailable. No replacement lock,
+reconstructed identity, dependency approval or real license closure is inferred.
+
+Root rejected the full-replay v8 draft frozen at SHA-256
+`cc1fedda900949eb3a844a2ca4be7d1f5fe3ce849dd22be64dd86adb20acfd6d`.
+An independent tiny-process diagnostic returned runner exit zero while its
+child process group remained live after the parent exited. Root killed the
+diagnostic's own remaining group. The draft therefore has no paid-execution
+approval despite its reported deadline-only test result. Whole-group teardown
+and legacy-suite deadline isolation are delegated corrections; the accepted
+v7 ownership snapshot remains unchanged. Bootstrap transfer-prerequisite and
+partial-log recovery corrections are also still under review.
+
+Authenticated paginated VAST readback at approximately 12:09 UTC reports zero
+Vokra instances, two unrelated instances and an explicit null pagination token;
+the volume readback reports zero persistent volumes. No unrelated resource was
+modified and no paid worker was allocated. PR #152 remains draft/open at
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, with 76 successful and three
+skipped checks; no PR mutation or merge was performed. All 194 public rows,
+real-weight CPU gates, Apple CPU/Metal/no-fallback gates and separately
+authorized publication remain in scope and unpromoted by this slice.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
