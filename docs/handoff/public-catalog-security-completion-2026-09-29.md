@@ -4279,6 +4279,34 @@ relabelled as a passing real reference. The clean native preparation is not
 yet the final integrated verification target. Real CPU, Apple, owner/legal,
 publication and full-catalog completion remain open.
 
+### 2026-10-02 stdlib fixture and offline controller checks (09:52 UTC)
+
+Root independently ran the fixture builder's four normal stdlib unittest
+methods with Python 3.12 through UV, the authenticated source record and
+ResourceWarning errors enabled. The first run exposed the macOS `/var`
+temporary-root alias; the test setup was corrected without relaxing the
+production symlink checks. The subsequent run passed all four tests in
+1.041 seconds, including deterministic generation into owned temporary
+directories. No Torch, checkpoint or model executed and no guard was
+disabled. The inspected generator SHA-256 is
+`2c5018efa36f4848e6f11f682f958396b7eedcdc93456c789b408ebf8a846d27`.
+The checked-in four-file synthetic fixture and complete Rust reader
+regressions are still pending, and real V1 acceptance remains unproved.
+
+Root also reviewed the scoped v5-to-v6 controller diff and independently ran
+shell syntax, ShellCheck and the complete offline self-test. The self-test
+terminated with exit 0 and `bundle-observation-self-test=PASS`; its deliberate
+checksum-tamper warning is a negative-test result, not recovered production
+evidence. The reviewed v6 SHA-256 is
+`a2dc4e161f3b18bcdf2d733316fc4d0a884576f111c28b4d83926d0d471a931f`.
+The repaired embedded registry gate measures real frozen source files and
+rejects wrong, missing and duplicate identities; the actual worker-side
+registry tests still require the final remote run. This template retains
+provisional target `218ce74d5e8476a420efae6576c25a9190029299`, not the
+new final-ranking or reader integration. It must be retargeted and reviewed
+before paid execution. No VAST rental, remote source-cache probe, Rust
+compilation, Apple verification or publication is proved by this offline run.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
