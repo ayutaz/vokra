@@ -3704,8 +3704,10 @@ instance `53822210`, offer `32178462`, for exact clean target
 `87adbdafe507888df05a861f1f2c15035f73195f`. The reviewed offer reports sixteen
 effective CPU cores, 258,023 MB RAM and USD 0.17407407407407408/hour with
 200 GiB storage. Bootstrap completed; verification and cleanup are still
-pending. This is source/code verification without model execution or HF
-credentials, not an Apple or real-weight result. The controller must recover
+pending. This is source/code verification without upstream checkpoint
+acquisition or real-weight execution, and without HF credentials; synthetic
+workspace tests execute only on VAST. It is not an Apple or real-weight
+result. The controller must recover
 small evidence and destroy its owned instance before a cleanup claim.
 
 PR #174 remains draft at `f4879d4ffd948144c4abc385255bdf5964c94f33`.
@@ -3714,6 +3716,56 @@ two timeouts for the same official U.S. Code URL. A bounded current request
 returned HTTP 200 in 1.398321 seconds. Only the failed CI jobs were requested
 for rerun after confirming the unchanged PR head; no link check was weakened
 and no license disposition or merge was inferred.
+
+### 2026-10-02 consumer-output diagnosis and reviewed capture (07:29 UTC)
+
+The same recovery-v2 session on `53822210` reached the exact clean target
+`87adbdafe507888df05a861f1f2c15035f73195f`. Workspace, deny and audit
+reported process exit zero and their remote predicates passed. The original
+overall result remains failure: the FireRed consumer process passed 24 tests
+with zero failures and two expected real-weight tests ignored, but Rust's
+authenticated ignore-reason suffix did not match the frozen controller's
+plain `ignored` predicate. This is an output-contract defect, not numerical
+parity evidence. The original logs and failed verdict are not rewritten.
+Evidence recovery is in progress; destruction has not yet been proved.
+
+A separate recovery-v3 controller, SHA-256
+`ffa8e5d4846afa713d44c1932ac2c898efa835467a77641ab6033680dc29bbbb`,
+passed root review, syntax, ShellCheck and the full offline mock. Its local
+and rendered remote predicates require the exact named 24 successful tests,
+the exact two ignored names with only their authenticated reason or legacy
+plain form, exactly 26 test lines and the unchanged zero-failure summary.
+Extra names, duplicate/missing tests and wrong reasons are rejected. It has
+not been used to allocate another worker or retroactively promote v2.
+
+The corrected raw source-capture foundation is committed in its isolated
+clean clone at `5b919cca1bb3277456803798d165626e201239f3`. Root's independent
+stdlib run passed 23/23 tests without Torch, checkpoints or local Cargo.
+The mechanism tests include the full 16-layer, 25-step observational sink,
+source-shaped optional caches, complete event ordering, early EOS, strict
+dtype/geometry checks and manifest-last no-clobber output recovery. The
+runner SHA-256 is
+`f137de54c50c53cae89836696755f6bcc77efd4dc91df1a3bd892e05f30d690e`.
+These are fake-tensor mechanism tests, not execution of the independent
+upstream checkpoint. Raw-to-Rust-v2 normalization, PCM/checkpoint/GGUF
+binding, native CPU parity and Apple CPU/Metal/no-fallback remain open.
+
+The reviewed typed-retention correction was committed at
+`3299c649d91ae39e23f5d124502d6ec09768220c`; combining the disjoint capture
+commit produces clean candidate `c03e3010472521f0064a1d30e1a05e0d5af6389a`.
+Its schema fixture uses two steps, three beams, two layers and four-wide
+distinct complete vectors, and allocations are charged before retained
+copies. The consumer source now contains 25 non-ignored tests and the same
+two explicitly ignored real-weight legs. Formatting and diff hygiene pass;
+the new Rust tests have not yet been compiled or executed on VAST. This
+candidate is unpushed and is not covered by the running `87adbdaf` replay.
+
+PR #174's unchanged-head documentation rerun, attempt two of `36658360528`,
+also failed. The previous U.S. Code timeouts disappeared, but 18 GitHub links
+returned HTTP 503/504. A bounded subsequent probe still returned 503 for one
+fixed Microsoft source link. No repeated rerun, URL exclusion, gate
+relaxation, legal disposition or merge is inferred from this availability
+failure; dependency-review and workflow-security passed in that attempt.
 
 ## Final audit
 
