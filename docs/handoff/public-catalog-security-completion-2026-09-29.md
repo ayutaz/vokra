@@ -5026,6 +5026,54 @@ model execution was started in this checkpoint. The 194-row completion
 scope, 136 code/artifact-full / 58 unresolved classification, and all
 independent CPU, Apple and publication requirements remain unchanged.
 
+### 2026-10-02 independent controller failure and producer-contract review (15:02 UTC)
+
+Root independently ran the FireRed controller's mock-only trap-child path
+at SHA-256 `084360e3e08e952c7192e3c13b6df4232339a37d46b00a7933840dd3f6596a61`.
+Terminal session `44384` returned one: ownership passed but the deadline/signal
+self-test failed before the expected trap-child exit. The implementation
+owner's full-suite success is retained as a separate observation, not a
+supersession of this failure. A diagnostic-only revision at SHA-256
+`997b751f34a7f6654966cde376d98b7f0778b17d9b2407eab7e94da598e88cca`
+preserves assertions and deadlines. Root's independent deadline-only run,
+terminal session `78214`, also returned one without a case diagnostic; the
+remaining early and cleanup failure branches need instrumentation before a
+cause can be claimed. Neither snapshot is production-approved. The archive
+helper integration and final `3315339e` retarget remain subsequent work.
+
+Root also reviewed the isolated XCodec2 pre-import execution-gate candidate
+against the actual PR #152 evidence producer, not just its synthetic tests.
+The initial gate used `parents[2]` (the `tools` directory) as the repository
+root, required a different activity schema, required embedded license bytes
+in the producer's three-field summary, rejected the producer's ELF
+`readelf_returncode`, and selected the first lock artifact rather than the
+installed wheel. The implementation owner corrected those paths and reported
+focused tests, but root's next review at gate SHA-256
+`1528ae6a4eb21391cc9a12d12f01386374fc0533d206bab4f5c491f24a9485e2`
+found another incompatibility: the producer names artifact kinds
+`locked_wheel` / `locked_sdist`, while the positive fixture and lock matcher
+use `wheel` / `sdist`. That fixture bypasses the installed-wheel binding
+branch and cannot establish acceptance of factual producer output. This
+uncommitted four-file candidate remains under correction and is not a merge,
+owner-approval, model-execution or parity verdict. Root's local direct-test
+invocation was refused by the model guard; it was not rerouted to bypass the
+guard, and independent execution remains a remote verification requirement.
+
+The clean code-verification candidate is still
+`3315339ebbb1f664969ad0172ab205c68813af13`. Root's terminal session `87242`
+returned zero for the zero-external-dependency and forbidden-symbol shell
+gates and diff hygiene; no Cargo or model execution was performed locally.
+Latest-head workspace/Clippy/deny/audit and independent real-weight CPU,
+Apple CPU/Metal/no-fallback and publication gates remain pending.
+
+A fresh read-only VAST query, terminal session `66379`, returned zero with
+zero `vokra-*` instances, two other instances and an explicit null pagination
+token. The other instances were not modified; this query does not establish
+persistent-volume or Scaleway state. No paid worker was created in this
+checkpoint. The full 194-row scope and 136 code/artifact-full / 58 unresolved
+classification remain unchanged; excluded or withheld rows require an exact
+owner disposition and must not be represented as supported models.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
