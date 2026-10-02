@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 code-review and live-progress supersession (20:02 UTC):**
+> The same V8 process and worker `53908796` are still running; the repaired
+> FireRed negative test passes, but a complete terminal verdict is pending.
+> Prepare a FireRed-only main-based integration instead of pushing its mixed
+> 74-commit stack, and harden XCodec2's installed-payload and file-snapshot
+> gates before any reference execution. Reviewed CosyVoice3 commit `4f389505`
+> contains declaration candidates only; source/dependency approval, API
+> compatibility, real-weight CPU parity and Apple gates remain open. All 194
+> rows remain in scope; see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-live-v8-progress-and-family-security-review-2002-utc).
+
 > **2026-10-02 terminal V7 and reviewed V8 supersession (19:46 UTC):** V7
 > failed a FireRed negative-test fixture traversal; its recovered proof is
 > complete, but its workspace verdict is not green. Worker `53905822` and

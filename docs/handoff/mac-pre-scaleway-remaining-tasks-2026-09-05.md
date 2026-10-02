@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 code-review and live-progress supersession (20:02 UTC):**
+> V8 remains live on the same owned worker `53908796`; independent API/SSH
+> confirms 28 allocated cores and progression beyond the previously failing
+> FireRed mutation test. Its terminal workspace/security verdict, recovered
+> packet and destruction are not yet proved. CosyVoice3's reviewed declaration
+> candidate `4f389505` is committed, not installed or compatibility-validated.
+> XCodec2's execution-gate review identified additional hardening work, and
+> FireRed requires a fresh main-based, family-only PR scope. No public row is
+> promoted; retain all 194 rows and the metadata-only 136 full / 58 unresolved
+> split. See the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-live-v8-progress-and-family-security-review-2002-utc).
+
 > **2026-10-02 terminal V7 and reviewed V8 supersession (19:46 UTC):** V7
 > is terminal with one failing FireRed mutation-setup test, not a workspace
 > pass. All 22 recovered checksums match; worker `53905822` and storage are

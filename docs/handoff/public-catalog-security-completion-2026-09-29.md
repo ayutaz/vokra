@@ -5867,6 +5867,64 @@ or complete reference environment is claimed. The separate five-input
 archive transfer is still held. No local model execution, HF credential
 transfer/upload, PR mutation, merge or Scaleway allocation occurred.
 
+### 2026-10-02 live V8 progress and family security review (20:02 UTC)
+
+The same V8 session `4952` remains live; do not restart it merely because
+polls have no new controller output. A fresh independent API/read-only SSH
+observation (session `20897`, exit zero) confirms owned worker `53908796`,
+the exact V8 label, running state and 28 allocated cores. The previously
+failing `producer_fixture_rejects_resealed_event_and_projection_mutations`
+test is now `ok`. The later workspace log is executing FFT/RFFT benchmarks;
+only the toolchain exit is recovered in this live observation. Terminal
+workspace, Clippy, deny/audit and XCodec2 verdicts, the complete checksummed
+packet and independent destruction readback remain pending. This is code
+verification, not independent real-weight or Apple parity.
+
+CosyVoice3's reviewed isolated candidate is committed at clean
+`4f389505db43b130776e335d64973671dd4a96d4`, based on public main
+`97447185361a37af64c1b30fe87e8e2618d96e20`. Its sole changed file is
+`tools/parity/cosyvoice3_reference/pyproject.toml` (SHA-256
+`ab1fa2186d7d0c29f0cc9b294035a3a2651c361f6d2f5f7bd1d2a64711151d62`).
+The ONNX 1.22.0, Diffusers 0.38.0 and ModelScope 1.27.0 declarations were
+reproduced with offline `uv add --frozen --no-python-downloads --no-build`.
+No dependency resolution, package installation, lock or virtual environment
+was created. Root independently matched the retained official PyPI JSON
+metadata, including raw license fields, expressions and capture hashes.
+Primary license bytes and API compatibility are unreviewed; the forbidden
+soxr composite closure and unresolved Torch/TorchAudio pair remain blocked.
+No security alert is declared closed by this declaration-only commit.
+
+The read-only XCodec2 review at exact `e6552853` found remaining execution
+boundary defects: declared distribution/source identities are not fully
+checked against actual installed payloads; decoder source is checked only
+after its import; file hashing and document reads lack complete bounded
+snapshot/ancestor-path guarantees; codes/output handling lacks a hardened
+no-clobber boundary; payload paths and aggregate counts require stricter
+validation; and an unverified locked-sdist build can pass the evidence
+validator despite the documented block. A separate isolated hardening
+candidate is being implemented. The current 32-test result does not prove
+these uncovered properties, authorize an unverified sdist, or establish
+independent CPU/Metal parity.
+
+Fresh GitHub readback still has 19 open draft PRs. PR #152 is clean at
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, with 76 successful and three
+skipped checks; those checks do not validate the unpushed `e6552853` delta.
+PR #149's older PCM seam already exists on current main, while its old
+branch is dirty relative to main. The FireRed integration is therefore being
+reconstructed from reviewed FireRed-only paths on current main, not by
+pushing the mixed 74-commit integration stack. Its fresh exact-head Rust
+verification remains required before a PR update or merge.
+
+OWSM's next native component is the source-authenticated CGMLP branch, using
+existing Compute operations; it is not a completed E-Branchformer or ASR
+route. Effective model flags, complete payload binding, independent reference
+and real CPU/Apple results remain unproved. The separate five-file archive
+transfer remains approval-held, without a worker or transferred inputs.
+No local model execution, HF credential transfer/upload, PR mutation, merge
+or Scaleway allocation occurred. Preserve all 194 rows and the metadata-only
+136 full / 58 unresolved split; the current live V8 worker must be destroyed
+after bounded evidence recovery.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
