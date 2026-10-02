@@ -4940,6 +4940,49 @@ requirements, independent real-weight CPU validation, final Apple
 CPU/Metal/no-fallback verification and authorized publication remain in
 scope and incomplete.
 
+### 2026-10-02 subsequent harness failure and read-only security review
+
+The FireRed implementation owner corrected the extracted remote harness
+bindings and current-count negative mutations in controller SHA-256
+`af69b8e6793ce3f76c6894c53fb76a13ad2d61e342214f766e2fa6b976af88f7`.
+Its focused extracted reader, source-capture, capture-binding and generator
+gates passed in terminal session `1174`, exit zero, with syntax and ShellCheck
+also green. However, the owner's actual full offline regression in terminal
+session `79457` ended with exit one at `green-exit-self-test=FAIL`. This is
+not a production-approved controller. The previously frozen v8r1 full suite
+had passed, so the new failure must be diagnosed against the actual child
+packet/exit evidence rather than declared an unrelated pre-existing defect.
+The strict valid-packet, tampered-packet and cleanup-exit checks remain
+required. Archive-helper test integration and the `3315339e` retarget are
+still subsequent work, not completed gates.
+
+A delegated authenticated, read-only GitHub API audit used complete
+pagination and completed synchronously without a persistent process. Current
+open Dependabot metadata remains 209 alerts: 182 have a published
+`first_patched_version` and 27 do not. This is patch availability, not 182
+repairs in the repository. The current API represents 37 manifest paths and
+30 project roots; those metrics are not interchangeable with the earlier
+local 49-tree inventory. The no-fixed-version rows cover Accelerate in
+NanoCodec/Ultravox, NLTK in the Misaki integration, and three Torch advisories
+across eight manifests. Missing upstream patches do not establish that
+removing an unused dependency or obtaining another allowed official route is
+impossible; any alternative still needs compatibility and license evidence.
+
+The same read-only review confirms PR #152 remains open/draft/clean at exact
+head `dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, base
+`97447185361a37af64c1b30fe87e8e2618d96e20`, with 76 successful and three
+skipped checks and no failures. Its XCodec2 reference project overrides the
+official Torch/TorchAudio 2.5.0 requirement with 2.13.0/2.11.0 and pins
+Transformers 5.10.4. Historical model-free import evidence exists for an
+earlier head, but current-head API compatibility is not thereby proved;
+version-string checks alone are not an independent compatibility test.
+The branch's manifest remains `BLOCKED_PENDING_PRIMARY_BYTES` / `NO_UPLOAD`,
+with 62 external distribution license/notice rows, native-payload review and
+owner decisions still unresolved. The source-only lock change must not be
+treated as real-weight reference or parity approval. No PR, alert, branch,
+package environment or cloud resource was mutated by this review, and no
+merge or model-execution authorization is inferred.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
