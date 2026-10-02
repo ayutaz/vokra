@@ -3260,6 +3260,40 @@ The full 194-row goal remains unchanged. The dated 136 code/artifact-full and
 58 unresolved classifications are not an Apple-completion count, and withheld
 rows must remain separately accounted rather than described as supported.
 
+### 2026-10-02 accepted recovery controller and active verification (04:36 UTC)
+
+The 04:14 preparation record above remains historical. Root review accepted
+the separately frozen diagnostic controller at SHA-256
+`7f8595f15b669675f1b7bd0a2782a8513b6fefc040dbebf1c67d0dc199971dd5`.
+Its diagnostic-only recovery rejects compressed, sparse, duplicate, unknown,
+non-regular and oversized archive members before extraction, requires exact
+file/manifest membership and verifies recovered checksums. Positive-control
+extraction and oversized/compressed no-extraction fixtures passed the root's
+independent self-test, along with shell syntax and ShellCheck. A recovered
+failed diagnostic never promotes the original run to a green verdict; the
+mandatory green records, source hashes and Moshi budgets remain unchanged.
+
+Disposable VAST instance `53804203` started the exact combined candidate
+`d24366cbcbb9018e33262ad37a24d734d4d75167`, with 128,483 MB reported RAM,
+16 effective CPU cores and 200 GB disk. Compilation uses the allocated 16
+jobs; tests remain serial to avoid known allocator-counter interference.
+Direct SSH confirmed the clean exact HEAD and live workspace-test process.
+The 19 completed source/focused/metadata/converter checks, including FireRed
+full tests and consumer Clippy and Mimi all-target model Clippy, each recorded
+exit zero. Workspace verification was still running at this snapshot, so no
+full-workspace, Moshi source-cache or recovered-packet verdict is claimed.
+
+This worker is source-only: no model weight, preset execution, HF token,
+Apple worker or upload is involved. Evidence recovery and destruction,
+including instance storage and authoritative absence readback, are required
+before its lifecycle is complete. No unrelated account resource was modified.
+
+A future reference-only correction remains outside the frozen candidate.
+It preserves an authenticated CPU packet before optional CUDA diagnostics,
+but root review found a production callback-binding defect and requested a
+correction and a production-bound regression test. It is not accepted, merged,
+remotely verified or used as real-reference evidence by this snapshot.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
