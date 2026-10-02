@@ -3616,6 +3616,35 @@ observed after pruning, not separately for every unselected candidate; Torch
 tie correspondence remains open. A revised capture candidate is still under
 implementation and has not been accepted, committed or declared parity-green.
 
+### 2026-10-02 decoder capture review rejection (06:38 UTC)
+
+The separate, uncommitted source-capture candidate with runner SHA-256
+`2bdf1f67837609bc62d22268b2cc0812b614483dbcf892cbc4ad6b40d822ffe3`
+is not accepted. Its implementer-reported twelve stdlib tests exercise a
+one-layer, one-beam, one-step fixture; that scope does not prove the fixed
+sixteen-layer, three-beam upstream capture path. Root independently reproduced
+the step-wide ordering rejection when a second layer input follows the first
+layer output. The actual source performs this nested sequence for every layer.
+
+Root re-read the authenticated decoder source, SHA-256
+`f0dd5d0ba224ec0be9d2778d3d4ae514ef5ab24c879436aad756353b81f4eedb`.
+At line 92 the observed pruned scores are already `[N,B]`, not `[N,B*B]`;
+the full candidate scores precede pruning. At line 121 the length-penalty
+tensor has the `[N,B]` length shape, not a scalar shape. The loop-exit anchor
+is outside the loop and cannot be required once per step. These are source
+contract defects, not tolerance failures. The candidate also needs explicit
+role-specific cross-attention observation-only handling, complete index/final
+state payload retention, and bounded allocation checks before tensor copies
+and list materialization. Its broad full-array hashing fallback is not an
+acceptable substitute for a lossless bounded production path.
+
+Corrections and multi-layer, multi-step, three-beam model-free regressions were
+delegated to the implementation owner. No source-capture commit, weight run,
+CPU parity, Apple verdict or upload is authorized by this review. The recovery
+controller remains a separate candidate targeting frozen
+`87adbdafe507888df05a861f1f2c15035f73195f`; the rejected capture is not included.
+The full public-catalog and security completion scope remains unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
