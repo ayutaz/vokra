@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 Linux gate and next family replay (23:24 UTC):** XCodec2
+> now passes all 76 named Linux stdlib tests at fixed `a5e4c810`, with no
+> skips. Source archive inspection still stops at the relative-lock-path
+> preflight, so this is not dependency approval or model parity. Its worker
+> `53933207` and storage are independently absent. A new code-only family
+> replay is live on owned `53934208` with 48 allocated cores; its terminal
+> gates and destruction remain pending. Preserve all 194 rows; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-named-linux-gate-and-new-family-replay-2324-utc).
+
 > **2026-10-02 source-only Linux replay (23:10 UTC):** owned worker
 > `53932071` is terminal with exit 24: all 76 XCodec2 stdlib tests ran without
 > skips, but three subprocess tests could not find `uv` on PATH. The source

@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 Linux gate and next family replay (23:24 UTC):** the fixed
+> XCodec2 Linux suite passes 76/76 without skips, but the source collector
+> still requires a canonical absolute lock path before archive inspection.
+> Its old worker is destroyed. Continue the same new code-only controller
+> job on `53934208`, frozen at FireRed `89354416`, OWSM `a9007c64` and
+> XCodec2 `a5e4c810`; do not retarget a live job to the separate decoder
+> candidate. Final packet checksums, terminal gates and destruction remain
+> pending. Source-only V11 is independently offline-tested, not yet rented.
+> Scaleway remains last; see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-named-linux-gate-and-new-family-replay-2324-utc).
+
 > **2026-10-02 source-only Linux replay (23:10 UTC):** a separate disposable
 > XCodec2 worker terminated before archive inspection because three of its
 > 76 no-skip tests could not resolve the authenticated task-owned `uv` in a

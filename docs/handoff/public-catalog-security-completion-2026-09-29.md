@@ -6631,6 +6631,67 @@ no upload or withdrawal occurred. Source/license closure, independent
 real-weight VAST CPU evidence, final Scaleway/no-fallback, security/CI and
 separately authorized publication/disposition remain required.
 
+### 2026-10-02 named Linux gate and new family replay (23:24 UTC)
+
+The distinct XCodec2 V10 replay is terminal with controller exit 25.
+The authenticated bootstrap and corrected task-owned UV PATH work: the
+fixed `a5e4c810f853c1d0c25d1df78635f115d7c7d153` Linux suite passes all
+76 tests in 5.197 seconds, with zero failures, errors or skips. Root
+independently counted 76 named cases and 76 success markers in the verbose
+recovered log, SHA-256
+`79d9e1f9284fac7028fcdd1c4fbde70e0a40a1c31508f8c75fe93f6c02e8737d`.
+The actual Linux UAPI/missing-Python-export, seal failure/FD closure,
+incomplete installed-seal/FD closure and immutable memfd snapshot tests are
+named and successful. This closes the failed model-free Linux sealing leg,
+not real-weight reference or Apple parity.
+
+The next collector phase stops before archive transport: `--lock uv.lock`
+produces a noncanonical parent `.` and the sealed-snapshot gate refuses it.
+Keep that gate; use the exact absolute lock path rather than weakening the
+producer. No source archive packet or installed-build verdict was produced.
+Owned worker `53933207` and its storage were destroyed. Root's fresh
+individual API returns `instances: null`; its complete account API has
+`next_token: null`, neither ID nor exact label, zero Vokra instances and one
+unrelated instance untouched.
+
+The corrective source-only V11 has SHA-256
+`6bfdd4aa4fb93db7d2a620525b19631da3c13377d36f15bb745ee91c8f7eccd3`.
+Root reviewed the exact diff and reproduced its full offline suite, including
+the actual collector CLI with only the runtime gate mocked and an archive
+boundary sentinel replacing transport. Relative input is rejected; the
+actual pinned absolute lock reaches that sentinel. Syntax, ShellCheck, the
+24 producer tests and fake lifecycle suite pass. V11 has not been rented,
+and this mocked offline proof does not approve actual dependency execution.
+The held five-input transfer is unchanged and was not retried.
+
+Root also independently passes the retargeted family controller's full
+offline suite, including the actual retained-source four-test generator and
+nine-test registry. The immutable file is
+`/private/tmp/vokra-family-model-free-vast-controller-v8-20261003.sh`, SHA-256
+`eb9586f597e742a57996484e96c0504927daee0764f8f20c4568ae41d7fa7f99`;
+its internal controller/label prefix remains V7, so identify it by this exact
+file digest and allocation label, not the filename alone. The frozen inputs
+are FireRed `893544169f6e87922c6760462a43b01978d4ac77`, OWSM
+`a9007c643eaf4ce9ccda007ea82ddc3f9e959f23` (30 expected focused tests) and
+XCodec2 `a5e4c810f853c1d0c25d1df78635f115d7c7d153` (76 no-skip tests).
+
+The new code-only replay is live on owned `53934208`, label
+`vokra-family-model-free-v7-20261003-20261002T232218Z-80331`. Root's direct
+API readback confirms actual and intended status `running`, 48 effective
+allocated cores, 200-GB disk and total price `$0.20/h` (API floating-point
+representation is slightly lower). The local controller session is still
+live; do not restart it or mutate its frozen inputs. Work is capped at
+6,000 seconds with a separate 120-second cleanup lane. Terminal workspace,
+Clippy, security and focused results, recovered checksums, and owned-ID/
+label destruction are pending. This worker receives source bundles only,
+not an HF key, actual model/config/tokenizer or source dependency archives.
+The separate decoder candidate is not substituted into this running wave.
+
+All 194 rows remain accounted for. No independent real-weight CPU or final
+Scaleway/no-fallback result, owner/legal decision or publication status is
+promoted by the Linux unit gate. Preserve the last dated metadata-only
+136 full / 58 unresolved snapshot as metadata, not Apple completion.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
