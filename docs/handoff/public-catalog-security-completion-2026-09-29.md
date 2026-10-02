@@ -3411,6 +3411,40 @@ or Apple verification verdicts. PR #152 was freshly read as OPEN, draft and
 BLOCKED at `152a3695508ed7372ae7cfd06a18e53e11af1fee`; its isolated SBV2
 repair is still unpushed, so no new CI or merge result is claimed.
 
+### 2026-10-02 accepted recovery correction and new active replay (05:20 UTC)
+
+The separately frozen recovery correction has SHA-256
+`effa82e425e9c8a2666b85d49d5907256920800b0324898a9203cd43ac50762f`.
+Root reviewed its diff and independently passed shell syntax, ShellCheck and
+the full offline controller self-test, including the source-budget positive
+control, unknown-name diagnostic rejection, bootstrap staging assertions and
+explicit focused/ABI failure chaining. The implementer's independent full
+self-test also exited zero. Historical controller `7f8595...` is unchanged.
+Diagnostic SSH step fields say `process_exit`, not a completed gate verdict.
+
+A separate controller at SHA-256
+`c363807fff2654c733f853d06ea9df8dcfd4df970969218aa440a5b5988f9fbe`
+changes only the default checkout and target HEAD to clean candidate
+`04571ee1c020d822be9056568e39b1fede1d9a65`. Root reviewed that two-line
+retargeting and passed syntax/ShellCheck; its full offline self-test also
+passed under the implementer. Mandatory green records, source hash pins,
+cleanup rules and frozen Moshi budgets are unchanged.
+
+The fresh prelaunch account read contained no Vokra worker and only the
+unrelated `ralomi-*` resource, which was not modified. VAST instance
+`53808967` was then created for exactly this source-only replay, with 16
+effective CPU cores, 128,483 MB RAM, 200 GB disk and an observed total rate
+of USD 0.1237037037/hour. Direct SSH confirmed the exact clean target HEAD,
+18 completed step exit files equal to zero and the live all-feature model
+Clippy process. The new run's CosyVoice and VibeVoice manifests measured
+334,054 and 433,176 bytes respectively; these new-run measurements do not
+recover the old failed run's unobserved bytes or rejected filename.
+
+Workspace, final audit, recovered packet, Moshi and cleanup results remain
+pending at this snapshot. No model/preset execution, weights, HF token,
+Apple run or upload is involved. The lifecycle must recover small evidence
+and destroy this instance and its storage before completion is claimed.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
