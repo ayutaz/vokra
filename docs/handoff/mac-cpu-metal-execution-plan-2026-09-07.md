@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 source-only Linux replay (23:10 UTC):** a separate disposable
+> XCodec2 worker terminated before archive inspection because three of its
+> 76 no-skip tests could not resolve the authenticated task-owned `uv` in a
+> child process. It and its storage are destroyed; root confirmed individual
+> and complete account absence. Correct the controller PATH and repeat the
+> same fixed scope only after review. Separately committed Clippy corrections
+> and the full-encoder candidate still need exact-head remote gates, while the
+> new decoder remains unaccepted. Scaleway remains the last hardware stage;
+> see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-source-only-linux-replay-and-corrective-source-review-2310-utc).
+
 > **2026-10-02 terminal family replay (22:48 UTC):** the code-only
 > controller is terminal and its owned worker `53926242` is independently
 > absent. Do not restart it. Workspace and OWSM focused tests pass, but

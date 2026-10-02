@@ -6557,6 +6557,80 @@ the metadata-only 136 full / 58 unresolved snapshot unchanged. Independent
 real-weight CPU, final Apple/no-fallback, security and separately authorized
 publication/disposition gates remain open.
 
+### 2026-10-02 source-only Linux replay and corrective source review (23:10 UTC)
+
+Root independently reviewed the immutable XCodec2 V9 controller, SHA-256
+`4115b7d1259904b72a8cdf42a771c6d89f585c3bae88902e15025cc2f6fbbdb8`,
+and reproduced its full offline suite: 24 source-producer/consumer tests plus
+the fake lifecycle, recovery, signal and authenticated-bootstrap cases pass.
+The exact clean target remains
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153`. This did not approve dependency
+execution or real model work. Two admission attempts stopped at the fresh
+offer gate before any create call; their selected offer was absent from that
+query's result. They were not failed or retained instances.
+
+The subsequent admitted source-only replay used owned instance `53932071`,
+label `vokra-xcodec2-source-audit-20261002T230553Z-94731`, with 200-GB disk
+and observed total price `$0.07481481481481482/h`. The controller pinned and
+verified the UV 0.12.5 archive before extraction, installed CPython 3.12.14,
+and authenticated the fixed candidate HEAD. Its Linux stdlib leg ran all
+76 tests in 4.473 seconds, without skips, but ended with three errors. All
+three are `FileNotFoundError: uv` in subprocess CLI-negative tests: the
+authenticated task-owned binary was invoked by absolute path but its
+directory was not exported into PATH. The controller is terminal with exit
+24, not a 76-test pass. The source-only collector was never reached; neither
+of the two pinned PyPI sdists, installed builds nor any actual model payload
+was acquired by that collector. A separate immutable V10 correction is
+assigned to expose only the authenticated binary to subprocesses and to
+recover verbose named-test evidence before the same scope is repeated.
+
+The bounded failure log was recovered at
+`/private/tmp/vokra-xcodec2-source-audit-v9c-evidence-20261003/logs/failure-stdlib.log`.
+The controller destroyed `53932071`, including its storage. Root's independent
+fresh individual readback returns `instances: null`; the complete account
+readback has `next_token: null`, neither the exact ID nor label, zero Vokra
+instances and one unrelated instance left untouched. No failed worker is a
+restart target, and no storage is retained.
+
+The isolated SBV2 one-element-loop correction is reviewed and committed at
+clean FireRed child `893544169f6e87922c6760462a43b01978d4ac77`, directly on
+`a3fb0fc2`. It preserves checked last-dimension conversion and the existing
+`emb_g.weight` fallback. Root reproduced formatting, diff, zero-dependency
+and forbidden-symbol checks and all five normal commit hooks. The identical
+reviewed commit was cherry-picked into a separate OWSM child, clean
+`a9007c643eaf4ce9ccda007ea82ddc3f9e959f23`, directly on the accepted
+`94a8341c` full encoder. Its five normal commit gates also pass. No local
+Rust compile/test or push occurred; the 30 source-defined OWSM tests and both
+new Clippy HEADs still require remote verification.
+
+Root rejected the prepared family V6 controller because its complete FireRed
+source record still used compact JSON, while the actual registry mutation
+test requires a spaced size field. A full-schema record alone therefore does
+not close both earlier registry failures. A new V7 is assigned with the
+production serialization, actual nine-test registry and four-test generator
+executed against retained primary source, plus the corrected frozen HEADs;
+no live family replay is authorized by the old V6 self-test alone.
+
+The separate 18-layer ordinary OWSM decoder candidate is also unaccepted.
+Root's full diff review found invented GELU behavior: the fixed upstream
+`TransformerDecoder` constructs `PositionwiseFeedForward` without an
+activation override, and that authenticated constructor uses ReLU. Its new
+claimed AST proof actually used whole-file string positions, not role-local
+method bodies. Corrections must use the actual retained primary sources,
+semantic mutations and full 18-layer composition tests before review; tiny
+attention tests and inventory checks are insufficient. A 5,000-position
+implementation safety bound must not be described as authenticated target
+configuration. No decoder compile, real-weight, independent reference or
+Apple result is inferred.
+
+All 194 public rows remain in scope. The last dated metadata-only 136 full /
+58 unresolved snapshot is not an Apple-pass count and is not refreshed by
+this code/source replay. The held five-input transfer was not retried, no HF
+key was sent to this worker, no model or target config was run locally, and
+no upload or withdrawal occurred. Source/license closure, independent
+real-weight VAST CPU evidence, final Scaleway/no-fallback, security/CI and
+separately authorized publication/disposition remain required.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

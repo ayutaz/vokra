@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 source-only Linux replay (23:10 UTC):** owned worker
+> `53932071` is terminal with exit 24: all 76 XCodec2 stdlib tests ran without
+> skips, but three subprocess tests could not find `uv` on PATH. The source
+> archive collector was not reached. Root independently confirmed destruction
+> and complete account ID/label absence, with no Vokra worker remaining.
+> Reviewed SBV2 Clippy fixes are committed in separate FireRed and OWSM
+> candidates; their exact-head remote gates remain pending. The new decoder
+> candidate failed source review and requires correction. Preserve all 194
+> rows; see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-source-only-linux-replay-and-corrective-source-review-2310-utc).
+
 > **2026-10-02 terminal family replay (22:48 UTC):** worker `53926242`
 > is terminal, not an overall pass. Workspace tests passed 8,239 with zero
 > failures and 108 explicit ignores; OWSM's 28 focused tests passed without
