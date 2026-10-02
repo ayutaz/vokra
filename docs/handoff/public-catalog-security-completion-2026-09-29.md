@@ -3197,6 +3197,23 @@ recovery, exact-head remote verification and the remaining real-reference
 work; Scaleway remains the final hardware leg rather than a substitute for
 these missing gates.
 
+The subsequently reviewed correction is committed in a separate clean
+checkout as `53192b06eb6111ce15982cba875f319923bc533d` (two files, 54
+insertions and 34 deletions). The mask fixture retains the extreme stored K/V
+row and uses the correct three-entry mask for two past frames plus one current
+query. Its original masked-versus-past-only equality, unmasked difference,
+causal and incremental comparisons remain, with an additional all-masked
+rejection. No production mask validation or numerical bound changed. Consumer
+target checks remain runtime fail-closed on Linux x86_64 little-endian only;
+the ignored real-weight v2 OPEN verdict remains intentionally failing.
+Root independently passed format, diff, zero-dependency and forbidden-symbol
+checks. This new commit is neither remotely verified nor pushed.
+
+A fresh all-pages VAST inventory after destruction returned no Vokra
+instance. The sole account instance was the unrelated stopped
+`ralomi-development-41259f7-20261001-urgent-03`, which was not modified; this
+is not a claim that the entire account has no resources or storage charges.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
