@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-02 reviewed-diagnostic replay supersession (19:25 UTC):** a
+> distinct code-only V7 replay at clean `8f98e110` is running on owned
+> `53905822`, with 28 allocated/build cores independently confirmed. It
+> preserves the exact comparison/rejection gates and bounded lifecycle;
+> no terminal or parity pass is inferred. All 194 rows, final Apple gates
+> and the unapproved archive transfer boundary remain unchanged; see the
+> [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-diagnostic-replay-and-complete-security-readback-1925-utc).
+
 > **2026-10-02 terminal integrated-replay supersession (19:10 UTC):** V5
 > at exact clean `39b7570f` ended with one FireRed negative-test diagnostic
 > failure, not a full workspace pass. The BOOL/schema and OWSM stem cases,

@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-02 reviewed-diagnostic replay supersession (19:25 UTC):** the
+> exact clean `8f98e110` code candidate is now being verified on owned
+> disposable `53905822`; independent API/SSH confirm both HEADs and 28
+> allocated/build cores. Terminal gates and destruction remain pending.
+> Additional source receipts and the fresh complete security readback do
+> not promote any model row; the separate archive transfer is still held.
+> Preserve all 194 rows; see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-diagnostic-replay-and-complete-security-readback-1925-utc).
+
 > **2026-10-02 terminal integrated-replay supersession (19:10 UTC):** the
 > clean `39b7570f` V5 code replay is terminal, not successful. FireRed's
 > BOOL correction and the new OWSM stem tests pass, but one resealed mask

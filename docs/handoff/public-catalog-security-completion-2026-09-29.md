@@ -5739,6 +5739,68 @@ No local model execution, HF credential transfer, artifact upload, PR
 mutation, merge or Scaleway allocation occurred. Preserve all 194 public
 rows, the metadata-only 136 full / 58 unresolved split and the final audit.
 
+### 2026-10-02 reviewed diagnostic replay and complete security readback (19:25 UTC)
+
+Root reviewed the complete FireRed diagnostic-only diff in isolated clean
+candidate `8f98e110dc61864a8b0f002ce10486825ecb6da8`, following commits
+`070a8758` and `8f98e110`. Every mask/lineage/KV comparison remains exact;
+no mutated input is accepted and no negative test or parity bound is relaxed.
+Root caught the later `lineage step` diagnostic mismatch before renting,
+returned it for correction, and independently passed fmt, forbidden-symbols,
+zero-deps and diff checks (session `29562`, exit zero). Rust tests remain
+remote-only. The consumer file SHA-256 is
+`9053ed2413cd0ce1af85e19adf08595e06c86237770083fcab8935f6e7624212`.
+
+V7 controller SHA-256 is
+`9e43114241ae0149ca06b37cd4a7c5e9c15598ea7ee49d79a097ba78283cc1d6`.
+Root reviewed the full mechanical retarget, Bash syntax, ShellCheck and the
+implementer's terminal-zero 15-case offline run (session `71178`); root did
+not repeat the unchanged full lifecycle suite. V6's frozen controller digest
+is unchanged. The separately authorized source-git-bundle replay started in
+session `59021`, logs
+`/private/tmp/vokra-clean-heads-model-free-logs.qyG9Ea`, owned worker
+`53905822`, exact label
+`vokra-clean-heads-model-free-v7-20261003-20261002T191742Z-58723`.
+Fresh API and read-only SSH in session `12948` independently confirm running
+status, exact model/XCodec2 HEADs, 28 allocated/build cores, 200-GB disk and
+USD `0.1488888888888889` per hour, below the unchanged USD 0.20 cap.
+Toolchain setup exits zero and workspace compilation has begun; terminal
+gates, full evidence recovery and storage-inclusive destruction are pending.
+Poll the same job; do not restart after an observation timeout. This is not
+the denied archive transfer or a model/reference/Apple run.
+
+Two further bounded ESPnet packets authenticate inference/beam/scorer/loading
+source, without executing upstream code:
+`/private/tmp/vokra-owsm-s2t-inference-source-receipts-20261003`, manifest
+`59ea644715e0f8fadb4a831929332da4c1334bf0bc484d6d2eaafae7a062c4a0`,
+and `/private/tmp/vokra-owsm-inference-scorer-source-receipts-20261003`,
+manifest `9f061daaa45740476718300581043188d981c38c591bc0a733d2a1bffffb0d81`.
+Root independently verified all ten API/raw/AST identities and size bounds.
+Inference uses `[sos, language, task]`, appends `notime` only when timestamp
+prediction is disabled, and conditionally prepends valid previous text.
+These source facts preserve the earlier authenticated 1,172-tensor structural
+binder; they do not resolve effective model configuration, payload execution,
+tokenizer identity, complete native inference or independent CPU/Apple parity.
+
+The fresh complete GitHub alert readback retains three pages of 100/100/9
+records, exact HTTP/Link receipts and bounded raw JSON under
+`/private/tmp/vokra-security-critical-readback-20261003`. Root independently
+recomputed 209 unique open alerts: three critical, 31 high, 82 medium and
+93 low; 182 have patched-version metadata. The decoded JSON SHA-256 is
+`fc3bfbeb2ac0ed26c137a9383f6a41b55b9c922b92f903a2548e7f210fedff2a`.
+This is a current observation, not alert closure. CosyVoice3 remains an
+inventory-only, no-lock, forbidden-soxr composite route; available patched
+versions do not establish a compatible, approved reference environment.
+No dependency is installed and no approval is inferred from metadata.
+
+The implementer removed only ten exact, clean, terminal V6/V7 synthetic
+work directories totaling `3458160` KiB (about 3.30 GiB), retaining input
+bundles and every small proof for reconstruction. Production packets, frozen
+input candidates and the active job were not touched. No local model work,
+HF credential transfer/upload, PR mutation, merge or Scaleway allocation
+occurred. The archive five-file approval is still outstanding. All 194 rows
+and the metadata-only 136 full / 58 unresolved split remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
