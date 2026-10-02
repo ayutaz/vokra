@@ -4404,6 +4404,75 @@ Rust compilation, model run, upload, push or PR mutation was performed during
 this readback. All 194 public rows and the 58 unresolved-row denominator
 remain in scope; no row was promoted by these source and fake-only findings.
 
+### 2026-10-02 immediate-EOS correction and bootstrap review (10:49 UTC)
+
+The previous goal turn clarified the objective but did not change implementation
+or complete a verification gate. This continuation made a concrete source
+correction authoritative: the isolated clean commit
+`087ed12485987f528062c9c0caea0b2acbddbc83`, based on native trace head
+`d328a5a401dc07f6cd4890bb0e8fa6fc51aa6b58`, contains the two reviewed Python
+binding/test files and a dated design record. Root independently passed all
+21 focused binding tests in 1.515 seconds through offline UV Python 3.12,
+with ResourceWarning treated as an error. These are standard-library fake
+producer tests, not real immediate-EOS numerical parity.
+
+Only the direct final-hypothesis `new_hyp.yseq` role permits a metadata-only
+`torch.int64` tensor of shape `[0]`, zero elements and bytes, and the canonical
+SHA-256 of empty bytes. Generic zero extents, nested empty tensors, scalar
+and mapping replacements, wrong dtypes and non-metadata payloads remain
+rejected. Selected-digest paths and numerical bounds are unchanged. The
+reviewed binder and test SHA-256 values are respectively
+`9ffde9756cb96d1e93913d3a964bb8a6172a96e1bd8ce66ee5232a4ee0bee457`
+and `929b16c3ecdbb31006bf044b892880b3f67d18aab4c937b85905c8632e7290fd`.
+The commit is clean; the original frozen native-trace checkout is preserved.
+Formatting, forbidden-symbol, zero-dependency, fixture-EOL, pipefail lint,
+documentation-reference and runbook-path checks passed for this slice.
+
+Root also independently passed the four actual canonical generator unittest
+cases in 1.112 seconds with the authenticated v5 source record. No persistent
+fixture build or model execution was performed by that verification. The
+bootstrap input remains clean
+`e8e585b4fb2a8dea0c593488d381ef6c94052cc7`; its generator SHA-256 is
+`2c5018efa36f4848e6f11f682f958396b7eedcdc93456c789b408ebf8a846d27`.
+The authenticated source record SHA-256 is
+`11c96d58909bb2863e2e92b2f1420b4545d7e7b5a08021e8b90954210293475b`.
+
+The Rust reader draft now mirrors the semantic-role restriction. Root found
+and returned a further whole-reader test setup error: the canonical fake
+producer's original `yseq` is an encoded sequence, not a tensor carrying
+`raw_bytes_hashed`. The correction replaces that actual sequence slot without
+inventing source-byte accounting. A raw-byte rejection diagnostic was also
+made contextual so a negative test proves the intended validator, not any
+panic. Latest reviewed reader SHA-256 is
+`3f79aacc702c57b16bbb013ef973c5cb5e1dcf1db6bf6e017441928584806602`.
+Formatting and diff hygiene pass; Rust compilation/tests, the canonical
+checked fixture and real-weight comparison remain unproved.
+
+The bootstrap controller is not yet approved for paid execution. Review
+requires a portable bounded runner on this Mac, whole create/work/destroy
+offline lifecycle cases, signal-safe cleanup, and bounded evidence recovery.
+Mock shell outputs are control-flow tests, not actual producer output. The
+official UV installer was retrieved for hash review only and was not executed
+locally: version 0.12.22, SHA-256
+`58488ae8dbd0773134c92c85e901430e33f99d975bd7f929d26aa9ab0c2f9390`.
+Only that exact installer is approved for the remote bootstrap.
+
+Fresh paginated VAST readback using the approved existing environment reports
+zero Vokra instances, one unrelated instance and a null next token. The
+initial sandbox DNS failure and stale saved-key 401 were diagnostic failures,
+not proof of absence; the subsequent authenticated API succeeded. No new
+allocation or unrelated-resource mutation occurred. PR #152 remains draft at
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, with 76 successful and three
+skipped checks. PR #174 remains draft and behind at
+`f4879d4ffd948144c4abc385255bdf5964c94f33`; its link-check rerun failed on
+18 GitHub HTTP 503/504 responses. That failure is not a green CI result and
+was not hidden by exclusions or a merge.
+
+No new real-weight run, Apple run, HF publication, push, PR mutation or merge
+occurred in this continuation. All 194 public rows remain in scope, and the
+58 unresolved code/artifact classifications are not promoted by these
+mechanism-only tests.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
