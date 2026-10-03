@@ -7617,6 +7617,70 @@ from this disabled draft. Full source/dependency/composite owner closure,
 independent real-weight CPU, final Apple/no-fallback and publication remain
 open; all 194 public rows are preserved.
 
+## 2026-10-03 actual-path and current-scope review (04:25 UTC)
+
+Root commits the reviewed recovery-space/controller record normally as
+`1c609174d0b3c1d7dc2e93f832c09ec5d8910f3d` (three management documents,
+68 insertions). All five normal compile-free hooks pass and the root worktree
+is clean. Doc references, runbook citations and diff hygiene also pass.
+
+Authenticated fixed-source inspection confirms that parent Moshi reset
+traverses child streaming states directly, then reaches `_MHAState.reset`
+and `RingKVCache.reset`; it does not call the child's `reset_streaming`
+method. The fixed DSM caller itself uses one fresh streaming context without
+an intervening reset. That narrower caller does not prove general lifecycle
+support. A four-file correction replaces the direct-main wrapper with cache
+reset wrappers. Root reads its complete diff and independently passes all
+14 stdlib synthetic tests in terminal tool result `b81353`, without Torch,
+upstream imports, model access, network or Cargo.
+
+Root nevertheless rejects that uncommitted correction: an incomplete
+multi-layer reset still permits complete/capture/reset-record consumption;
+stale-cache reset identity is unchecked; and an all-false reset failure can
+lose its poison after an all-false retry. The tests also need the genuine
+parent-to-state-to-cache bypass and upstream device normalization topology.
+The implementation owner is assigned those bounded corrections and their
+regressions. No real KV values, numerical parity or hardware verdict is
+inferred from the 14 synthetic passes.
+
+Root also reads the entire 421-line V22 draft and its handoff at SHA-256
+`0c023ab2389ed051c8f244d18d62af131cecec7eb2b49738b838165de2024e59`.
+Its 31 validator cases pass independently in terminal session `19708`,
+exit zero; `--run` exits 78 before any provider/SSH/network action.
+Frozen V21 still hashes to `f754c533e95871e126684481dba6db121a016de4bc5efe54453da33130bcb83a`.
+The draft is not accepted: extra fixture files can make negative cases pass
+for the wrong reason, several mutations are no-ops, Python summaries are
+parsed as Rust, remote cwd/source environment are incomplete, the original
+source-receipt revision chain is discarded, recovery caps are unenforced,
+and bootstrap/create/pagination/ownership/cleanup paths are unproved or
+incorrect. Require reuse of the actual audited lifecycle in a new file and
+tiny fault fixtures against the real generated leaf; do not restart V21.
+
+Fresh read-only GitHub queries retain main
+`97447185361a37af64c1b30fe87e8e2618d96e20` and 19 open PRs, all draft.
+PR #152 remains clean at `dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`,
+with 76 successful and three skipped checks. Dependabot alert #159 remains
+open and critical: `GHSA-53q9-r3pm-6pq6`, Torch in
+`tools/parity/xcodec2/uv.lock`, patched floor 2.6.0. The current local project
+and lock still pin Torch 2.5.0. Neither code-only passes nor clean CI settle
+that advisory, package-license closure or real-weight execution.
+
+SpeechT5's current 28-package compact audit already binds its active
+Transformers 5.10.4 / Torch 2.13.0+cpu project and lock. Do not mechanically
+repeat that audit as though it were missing. Its current approval scope is
+`6ee461bab29ef90b6d425f5ca179eb79ac7cd5e0278db1c4c2a28efa4834f8c1`,
+while the checked-in historical approval names `99116b392c560ec40c574589305492f35d9d30e8e2f44a9c03392885c77e85ba`.
+Current operator/native/build-only review and authenticated API smoke remain
+open. Historical approvals or Apple results cannot be transferred to changed
+scopes, nor described as missing solely from an older decision table.
+
+The retained row-level TSV is rehashed to
+`9ef3eb07f12a98de7f425dcd75b98f4cd1be45ab1d3907aafeca2626196cdd56`.
+All 194 metadata rows remain in scope (136 route/artifact-full, 58 explicitly
+unresolved). Detailed review of priority families is not a hardware audit of
+every row. No provider allocation, model acquisition, upstream/reference
+execution, upload, PR mutation or Scaleway action occurs in this review.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

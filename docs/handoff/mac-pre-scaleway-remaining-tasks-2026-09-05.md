@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 actual-path review (04:25 UTC):** root independently passes
+> 14 synthetic KV-tap tests and 31 V22 validator checks, but rejects both
+> candidates for uncovered production-state and lifecycle paths. Corrections
+> remain in progress; V22 is disabled and no new worker is allocated. Current
+> SpeechT5 approval has a different scope from its historical approval, and
+> XCodec2's critical Torch alert remains open. Preserve all 194 rows and see
+> the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-path-and-current-scope-review-0425-utc).
+
 > **2026-10-03 recovery-space and controller review (04:09 UTC):** root
 > removes only 64 terminal synthetic XCodec2 bundle duplicates after exact
 > hash comparison and complete-history backup verification; logs and primary

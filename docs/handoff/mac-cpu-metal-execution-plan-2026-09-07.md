@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 actual-path review (04:25 UTC):** fix mixed-generation KV
+> consumption during incomplete resets and test the real parent/state/cache
+> topology. Require the next controller's actual leaf, original source-receipt
+> chain, bounded recovery and cleanup failure paths to pass, not merely its
+> validators. Historical owner approvals and Apple measurements apply only
+> to their recorded scopes; inspect later dependency changes before reuse.
+> Scaleway stays last; see the
+> [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-path-and-current-scope-review-0425-utc).
+
 > **2026-10-03 recovery-space and controller review (04:09 UTC):** restore
 > local recovery headroom by removing only independently backed-up terminal
 > duplicate bundles. V22 remains `PENDING_REVIEW`: require the real tracked
