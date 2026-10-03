@@ -6,6 +6,14 @@
   "platform": "linux-x86_64",
   "pyproject_sha256": "289c96a0775a7e013dccc579810a4b18fcf573d79536fdd84e05db3ea4733bcc",
   "uv_lock_sha256": "d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4",
+  "source_digests": {
+    "dependency_audit.py": "f6d8a4fa59c11192c0319055626b85b90e3a86fff64ce20157714a3652503244",
+    "dependency_guard.py": "18b8dd228831531bb574b1d1c7e3c1a781d78bead846abab9fa19e264ed42c63",
+    "collect_dependency_evidence.py": "b8754c2946de03a346539a5f77e4e78b08ee71e9591fac769fae65363f604407",
+    "inspect_locked_sdist_sources.py": "a17ef3fb4b124bff5a53f22d2ee67afb353ed85e3c1016e8a1392a0dfaae1958",
+    "build_derived_locked_sdists.py": "b0712410a1cc28d67aeaa8629e2ba5ffb559362964457e386e154fad76b8b98f",
+    "dump_reference.py": "8e0cecc231c5c5f8d416c52c677bdcc7b7e0a6fcca4debc07d6f0df1c02e41ce"
+  },
   "expected_linux_closure_rows": 63,
   "expected_linux_external_rows": 62,
   "package_rows": [],

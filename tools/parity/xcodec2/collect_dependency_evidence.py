@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
@@ -43,6 +44,14 @@ MAX_ARCHIVE_MEMBERS = 10000
 MAX_MEMBER_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_REDIRECTS = 3
+MAX_COLLECTION_SECONDS = 15 * 60
+MAX_TOTAL_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024
+# This is a streamed-I/O budget, not a retained-memory allowance.  A Linux
+# Torch wheel can legitimately exceed 256 MiB; archive/installed comparison
+# passes are bounded and counted, and no whole unpacked payload is retained.
+MAX_TOTAL_UNPACKED_BYTES = 8 * 1024 * 1024 * 1024
+MAX_TOTAL_RETAINED_BYTES = 8 * 1024 * 1024
+MAX_REPORT_BYTES = 32 * 1024 * 1024
 LICENSE_NAMES = {"license", "licence", "copying", "notice", "copyright", "eula", "end_user_license", "end-user-license"}
 NATIVE_SUFFIXES = {".so", ".pyd", ".dylib", ".dll"}
 ELF_MAGIC = b"\x7fELF"
@@ -52,14 +61,74 @@ class EvidenceError(ValueError):
     """A fail-closed evidence error."""
 
 
+class CollectionBudget:
+    """One aggregate deadline and byte ledger for a collection attempt."""
+
+    def __init__(self, seconds: float = MAX_COLLECTION_SECONDS) -> None:
+        self.deadline = time.monotonic() + seconds
+        self.artifact_bytes = 0
+        self.unpacked_bytes = 0
+        self.retained_bytes = 0
+
+    def check(self) -> None:
+        if time.monotonic() >= self.deadline:
+            raise EvidenceError("aggregate collection deadline exceeded")
+
+    def add_artifact(self, size: int) -> None:
+        self.check()
+        if size < 0 or self.artifact_bytes + size > MAX_TOTAL_ARTIFACT_BYTES:
+            raise EvidenceError("aggregate artifact byte cap exceeded")
+        self.artifact_bytes += size
+
+    def add_unpacked(self, size: int) -> None:
+        self.check()
+        if size < 0 or self.unpacked_bytes + size > MAX_TOTAL_UNPACKED_BYTES:
+            raise EvidenceError("aggregate unpacked byte cap exceeded")
+        self.unpacked_bytes += size
+
+    def add_retained(self, size: int) -> None:
+        self.check()
+        if size < 0 or self.retained_bytes + size > MAX_TOTAL_RETAINED_BYTES:
+            raise EvidenceError("aggregate retained-license byte cap exceeded")
+        self.retained_bytes += size
+
+
+def remaining_timeout(budget: CollectionBudget | None, ceiling: float = 60.0) -> float:
+    """Return a timeout bounded by the same monotonic collection deadline."""
+
+    if budget is None:
+        return ceiling
+    remaining = budget.deadline - time.monotonic()
+    if remaining <= 0:
+        raise EvidenceError("aggregate collection deadline exceeded")
+    return max(0.1, min(ceiling, remaining))
+
+
+def set_response_timeout(response: Any, timeout: float) -> bool:
+    """Refresh an urllib socket timeout before every bounded body read."""
+
+    candidates = [getattr(response, "raw", None)]
+    file_object = getattr(response, "fp", None)
+    candidates.append(getattr(file_object, "raw", None))
+    for raw in candidates:
+        socket = getattr(raw, "_sock", None)
+        if socket is not None and hasattr(socket, "settimeout"):
+            socket.settimeout(timeout)
+            return True
+    return False
+
+
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path, budget: CollectionBudget | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
+            if budget is not None:
+                budget.check()
+                budget.add_unpacked(len(chunk))
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -96,7 +165,7 @@ def is_license_path(name: str) -> bool:
     return base in LICENSE_NAMES or any(base.startswith(prefix + sep) for prefix in LICENSE_NAMES for sep in (".", "-", "_"))
 
 
-def archive_license_files(path: Path) -> list[dict[str, Any]]:
+def archive_license_files(path: Path, budget: CollectionBudget | None = None) -> list[dict[str, Any]]:
     names: set[str] = set()
     total = 0
     license_total = 0
@@ -125,6 +194,9 @@ def archive_license_files(path: Path) -> list[dict[str, Any]]:
         data = reader()
         if len(data) != size or size > MAX_LICENSE_BYTES:
             raise EvidenceError("license member size changed or exceeded bound")
+        if budget is not None:
+            budget.add_unpacked(len(data))
+            budget.add_retained(len(data))
         found.append({"path": clean, "bytes": size, "sha256": sha256_bytes(data), "content_base64": base64.b64encode(data).decode("ascii")})
 
     suffix = path.name.casefold()
@@ -180,7 +252,10 @@ def fetch_artifact(
     temporary: Path,
     fetcher: Callable[[str], tuple[str, bytes]] | None = None,
     opener_factory: Callable[[Any], Any] | None = None,
+    budget: CollectionBudget | None = None,
 ) -> dict[str, Any]:
+    if budget is not None:
+        budget.check()
     url, expected_hash = artifact.get("url"), artifact.get("hash")
     expected_size = artifact.get("size")
     if not isinstance(url, str) or not isinstance(expected_hash, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_hash):
@@ -204,11 +279,13 @@ def fetch_artifact(
             count = output.stat().st_size
             if count <= 0 or count > MAX_ARTIFACT_BYTES:
                 raise EvidenceError("cached artifact exceeds bounded size")
-            observed = sha256_file(output)
+            observed = sha256_file(output, budget)
         except OSError as exc:
             raise EvidenceError(f"cached artifact read failed: {type(exc).__name__}") from exc
         if expected_size is not None and count != expected_size or "sha256:" + observed != expected_hash:
             raise EvidenceError("cached artifact bytes do not match lock")
+        if budget is not None:
+            budget.add_artifact(count)
         return {"url": url, "final_url": None, "cache_reused": True, "bytes": count, "sha256": observed, "temporary": str(output)}
 
     cached = reuse_verified()
@@ -221,6 +298,8 @@ def fetch_artifact(
             raise EvidenceError("test fetcher changed artifact identity")
         if len(body) > MAX_ARTIFACT_BYTES or expected_size is not None and len(body) != expected_size or "sha256:" + sha256_bytes(body) != expected_hash:
             raise EvidenceError("test artifact bytes do not match lock")
+        if budget is not None:
+            budget.add_artifact(len(body))
         output.write_bytes(body)
         return {"url": url, "final_url": final, "bytes": len(body), "sha256": sha256_bytes(body), "temporary": str(output)}
     digest = hashlib.sha256()
@@ -229,19 +308,26 @@ def fetch_artifact(
     try:
         opener = (opener_factory or build_opener)(SafeRedirects(trace, url))
         request = Request(url, headers={"Accept": "application/octet-stream", "User-Agent": "vokra-xcodec2-evidence/1"})
-        with opener.open(request, timeout=60) as response, output.open("xb") as stream:
+        timeout = remaining_timeout(budget)
+        with opener.open(request, timeout=timeout) as response, output.open("xb") as stream:
             created = True
             final = urljoin(url, response.geturl())
             validate_url(final)
             if urlsplit(final).path != urlsplit(url).path:
                 raise EvidenceError("response redirect changed locked artifact path")
             while True:
+                if budget is not None:
+                    budget.check()
+                if budget is not None and not set_response_timeout(response, remaining_timeout(budget)):
+                    raise EvidenceError("response has no bounded socket timeout")
                 chunk = response.read(1 << 20)
                 if not chunk:
                     break
                 count += len(chunk)
                 if count > MAX_ARTIFACT_BYTES:
                     raise EvidenceError("artifact exceeds bounded size")
+                if budget is not None:
+                    budget.add_artifact(len(chunk))
                 digest.update(chunk)
                 stream.write(chunk)
     except EvidenceError:
@@ -290,7 +376,7 @@ def safe_dist_path(dist: metadata.Distribution, entry: Any) -> Path | None:
     return resolved
 
 
-def installed_license_files(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], list[str]]:
+def installed_license_files(dist: metadata.Distribution, budget: CollectionBudget | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     result: list[dict[str, Any]] = []
     unsafe: list[str] = []
     total = 0
@@ -305,13 +391,17 @@ def installed_license_files(dist: metadata.Distribution) -> tuple[list[dict[str,
         size = path.stat().st_size
         if size > MAX_LICENSE_BYTES or total + size > MAX_LICENSE_TOTAL_BYTES:
             raise EvidenceError(f"publisher license bounds exceeded: {relative}")
+        if budget is not None:
+            budget.add_unpacked(size)
         data = path.read_bytes()
+        if budget is not None:
+            budget.add_retained(len(data))
         result.append({"path": relative, "bytes": size, "sha256": sha256_bytes(data), "content_base64": base64.b64encode(data).decode("ascii")})
         total += size
     return result, unsafe
 
 
-def native_evidence(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], list[str]]:
+def native_evidence(dist: metadata.Distribution, budget: CollectionBudget | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     native: list[dict[str, Any]] = []
     failures: list[str] = []
     for entry in sorted(dist.files or [], key=str):
@@ -323,14 +413,19 @@ def native_evidence(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], 
                 failures.append(f"unsafe native path: {relative}")
             continue
         try:
+            if budget is not None:
+                budget.check()
             with path.open("rb") as stream:
                 magic = stream.read(4)
             if not (Path(relative).suffix.casefold() in NATIVE_SUFFIXES or ".so." in name or magic == ELF_MAGIC):
                 continue
-            item: dict[str, Any] = {"path": relative, "bytes": path.stat().st_size, "sha256": sha256_file(path), "elf": {"format": "non-elf", "needed": [], "inspection": "not-applicable"}}
+            item: dict[str, Any] = {"path": relative, "bytes": path.stat().st_size, "sha256": sha256_file(path, budget), "elf": {"format": "non-elf", "needed": [], "inspection": "not-applicable"}}
             if magic == ELF_MAGIC:
                 try:
-                    result = subprocess.run(["readelf", "-d", str(path)], capture_output=True, text=True, timeout=60, check=False)
+                    timeout = 60.0 if budget is None else max(0.1, min(60.0, budget.deadline - time.monotonic()))
+                    result = subprocess.run(["readelf", "-d", str(path)], capture_output=True, text=True, timeout=timeout, check=False)
+                    if budget is not None:
+                        budget.check()
                     needed = sorted(match.group(1) for line in result.stdout.splitlines() if (match := re.search(r"\(NEEDED\).*\[([^]]+)\]", line)))
                     item["elf"] = {"format": "elf", "needed": needed, "inspection": "ok" if result.returncode == 0 else "error", "readelf_returncode": result.returncode}
                     if result.returncode != 0:
@@ -343,7 +438,7 @@ def native_evidence(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], 
     return native, failures
 
 
-def installed_payload_hashes(dist: metadata.Distribution, targets: set[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def installed_payload_hashes(dist: metadata.Distribution, targets: set[str], budget: CollectionBudget | None = None) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Hash selected installed payload files without reading them into RAM."""
     result: dict[str, dict[str, Any]] = {}
     failures: list[str] = []
@@ -357,13 +452,15 @@ def installed_payload_hashes(dist: metadata.Distribution, targets: set[str]) -> 
             failures.append(f"unsafe installed binding path: {relative}")
             continue
         try:
-            result[relative] = {"path": relative, "bytes": path.stat().st_size, "sha256": sha256_file(path)}
+            if budget is not None:
+                budget.check()
+            result[relative] = {"path": relative, "bytes": path.stat().st_size, "sha256": sha256_file(path, budget)}
         except OSError as exc:
             failures.append(f"installed binding read failed {type(exc).__name__}: {relative}")
     return result, failures
 
 
-def wheel_record_entries(path: Path) -> tuple[list[dict[str, Any]], str]:
+def wheel_record_entries(path: Path, budget: CollectionBudget | None = None) -> tuple[list[dict[str, Any]], str]:
     """Read and validate the publisher RECORD inventory from a wheel."""
     if not path.name.casefold().endswith(".whl"):
         raise EvidenceError("publisher RECORD requires a locked wheel")
@@ -371,6 +468,8 @@ def wheel_record_entries(path: Path) -> tuple[list[dict[str, Any]], str]:
     record_bytes: bytes | None = None
     with zipfile.ZipFile(path) as archive:
         for info in archive.infolist():
+            if budget is not None:
+                budget.check()
             clean = safe_member(info.filename)
             parts = PurePosixPath(clean).parts
             if len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "RECORD":
@@ -379,6 +478,8 @@ def wheel_record_entries(path: Path) -> tuple[list[dict[str, Any]], str]:
                     raise EvidenceError("publisher RECORD exceeds bound")
                 with archive.open(info, "r") as stream:
                     record_bytes = stream.read(MAX_LICENSE_BYTES + 1)
+                if budget is not None:
+                    budget.add_unpacked(len(record_bytes))
     if len(record_members) != 1 or record_bytes is None or len(record_bytes) > MAX_LICENSE_BYTES:
         raise EvidenceError("wheel must contain exactly one bounded RECORD")
     try:
@@ -422,7 +523,7 @@ def is_wheel_data_relocation(relative: str) -> bool:
     return any(part.endswith(".data") for part in PurePosixPath(relative).parts)
 
 
-def archive_required_inventory(path: Path) -> dict[str, dict[str, Any]]:
+def archive_required_inventory(path: Path, budget: CollectionBudget | None = None) -> dict[str, dict[str, Any]]:
     """Independently inventory archive LICENSE/native/METADATA members."""
     if not path.name.casefold().endswith(".whl"):
         raise EvidenceError("archive inventory requires a locked wheel")
@@ -452,6 +553,8 @@ def archive_required_inventory(path: Path) -> dict[str, dict[str, Any]]:
                     if not chunk:
                         break
                     count += len(chunk)
+                    if budget is not None:
+                        budget.add_unpacked(len(chunk))
                     if license_member and (count > MAX_MEMBER_BYTES or license_total + count > MAX_LICENSE_TOTAL_BYTES):
                         raise EvidenceError(f"archive license bounds exceeded: {clean}")
                     if count > MAX_ARTIFACT_BYTES:
@@ -474,7 +577,7 @@ def archive_required_inventory(path: Path) -> dict[str, dict[str, Any]]:
     return result
 
 
-def archive_member_hashes(path: Path, targets: set[str]) -> dict[str, dict[str, Any]]:
+def archive_member_hashes(path: Path, targets: set[str], budget: CollectionBudget | None = None) -> dict[str, dict[str, Any]]:
     """Stream-hash selected wheel members without loading native payloads in RAM."""
     if not path.name.casefold().endswith(".whl"):
         raise EvidenceError("installed-build binding requires a locked wheel")
@@ -497,6 +600,8 @@ def archive_member_hashes(path: Path, targets: set[str]) -> dict[str, dict[str, 
                     if not chunk:
                         break
                     count += len(chunk)
+                    if budget is not None:
+                        budget.add_unpacked(len(chunk))
                     if count > MAX_ARTIFACT_BYTES:
                         raise EvidenceError(f"wheel binding member exceeds bound: {clean}")
                     digest.update(chunk)
@@ -504,14 +609,14 @@ def archive_member_hashes(path: Path, targets: set[str]) -> dict[str, dict[str, 
     return result
 
 
-def compare_wheel_payloads(path: Path, installed: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
-    records, record_path = wheel_record_entries(path)
+def compare_wheel_payloads(path: Path, installed: dict[str, dict[str, Any]], budget: CollectionBudget | None = None) -> tuple[dict[str, Any], list[str]]:
+    records, record_path = wheel_record_entries(path, budget=budget)
     required = {entry["path"] for entry in records if not is_generated_installer_path(entry["path"])}
-    archive_inventory = archive_required_inventory(path)
+    archive_inventory = archive_required_inventory(path, budget=budget)
     required.update(archive_inventory)
     if any(is_wheel_data_relocation(relative) for relative in required):
         raise EvidenceError("wheel .data relocation is unsupported; an authenticated mapping is required")
-    archive = archive_member_hashes(path, required)
+    archive = archive_member_hashes(path, required, budget=budget)
     failures: list[str] = []
     comparisons: list[dict[str, Any]] = []
     record_by_path = {entry["path"]: entry for entry in records}
@@ -549,7 +654,7 @@ def wheel_tags(url: str) -> set[tuple[str, str, str]]:
     return {(python, abi, platform_name) for python in python_tag.split(".") for abi in abi_tag.split(".") for platform_name in platform_tag.split(".")}
 
 
-def installed_wheel_info(dist: metadata.Distribution) -> dict[str, Any]:
+def installed_wheel_info(dist: metadata.Distribution, budget: CollectionBudget | None = None) -> dict[str, Any]:
     candidates = []
     for entry in sorted(dist.files or [], key=str):
         relative = str(entry)
@@ -562,7 +667,11 @@ def installed_wheel_info(dist: metadata.Distribution) -> dict[str, Any]:
     if len(candidates) != 1:
         raise EvidenceError("installed distribution must contain exactly one WHEEL file")
     relative, path = candidates[0]
+    if budget is not None:
+        budget.check()
     data = path.read_bytes()
+    if budget is not None:
+        budget.add_unpacked(len(data))
     tags: set[tuple[str, str, str]] = set()
     for line in data.decode("utf-8").splitlines():
         if line.startswith("Tag:"):
@@ -598,34 +707,34 @@ def metadata_fields(dist: metadata.Distribution) -> dict[str, Any]:
     }
 
 
-def inspect_distribution(row: dict[str, Any], record: dict[str, Any], temporary: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
+def inspect_distribution(row: dict[str, Any], record: dict[str, Any], temporary: Path, budget: CollectionBudget | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
     dist: metadata.Distribution = record["distribution"]
-    wheel = installed_wheel_info(dist)
+    wheel = installed_wheel_info(dist, budget=budget)
     artifact_kind, locked_artifact, matched_tags = choose_artifact(row, set(tuple(tag.split("-")) for tag in wheel["tags"]))
-    artifact = fetch_artifact(locked_artifact, temporary)
-    publisher, unsafe = installed_license_files(dist)
-    native, native_failures = native_evidence(dist)
+    artifact = fetch_artifact(locked_artifact, temporary, budget=budget)
+    publisher, unsafe = installed_license_files(dist, budget=budget)
+    native, native_failures = native_evidence(dist, budget=budget)
     if artifact_kind == "locked_wheel":
-        wheel_records, _ = wheel_record_entries(Path(artifact["temporary"]))
+        wheel_records, _ = wheel_record_entries(Path(artifact["temporary"]), budget=budget)
         wheel_record_paths = {entry["path"] for entry in wheel_records}
-        archive_inventory = archive_required_inventory(Path(artifact["temporary"]))
+        archive_inventory = archive_required_inventory(Path(artifact["temporary"]), budget=budget)
         binding_targets = {entry["path"] for entry in wheel_records if not is_generated_installer_path(entry["path"])} | set(archive_inventory)
     else:
         wheel_record_paths = set()
         archive_inventory = {}
         binding_targets = {item["path"] for item in native} | {item["path"] for item in publisher}
-    installed_payload, binding_failures = installed_payload_hashes(dist, binding_targets)
+    installed_payload, binding_failures = installed_payload_hashes(dist, binding_targets, budget=budget)
     installed_build_binding: dict[str, Any]
     wheel_binding: dict[str, Any] | None = None
     if artifact_kind == "locked_wheel":
-        wheel_binding, wheel_failures = compare_wheel_payloads(Path(artifact["temporary"]), installed_payload)
+        wheel_binding, wheel_failures = compare_wheel_payloads(Path(artifact["temporary"]), installed_payload, budget=budget)
         binding_failures.extend(wheel_failures)
         installed_build_binding = wheel_binding
     else:
         installed_build_binding = {"status": "UNVERIFIED", "reason": "locked sdist bytes do not identify the installed build payload; an authenticated build/RECORD proof is required"}
         binding_failures.append("installed build identity is unverified for locked sdist")
     sdist_evidence: list[dict[str, Any]] = []
-    wheel_license_evidence = archive_license_files(Path(artifact["temporary"])) if artifact_kind == "locked_wheel" else []
+    wheel_license_evidence = archive_license_files(Path(artifact["temporary"]), budget=budget) if artifact_kind == "locked_wheel" else []
     failures = list(native_failures) + binding_failures + [f"unsafe publisher license path: {path}" for path in unsafe]
     if artifact_kind == "locked_wheel":
         for relative, item in archive_inventory.items():
@@ -647,8 +756,8 @@ def inspect_distribution(row: dict[str, Any], record: dict[str, Any], temporary:
         elif not isinstance(sdist, dict):
             failures.append("missing primary LICENSE/NOTICE bytes and locked sdist fallback")
         else:
-            fallback = fetch_artifact(sdist, temporary)
-            sdist_evidence = archive_license_files(Path(fallback["temporary"]))
+            fallback = fetch_artifact(sdist, temporary, budget=budget)
+            sdist_evidence = archive_license_files(Path(fallback["temporary"]), budget=budget)
             if not sdist_evidence:
                 failures.append("locked sdist has no primary LICENSE/NOTICE bytes")
     chosen = publisher or sdist_evidence
@@ -699,20 +808,21 @@ def collect(expected_head: str) -> dict[str, Any]:
     failures = [] if closure_facts["exact"] else ["installed distributions do not exactly match reachable Linux uv.lock closure"]
     with tempfile.TemporaryDirectory(prefix="xcodec2-dependency-evidence-") as temporary_name:
         temporary = Path(temporary_name)
+        budget = CollectionBudget()
         for key in real_keys:
             found = records.get(identity(*key), [])
             if len(found) != 1:
                 failures.append(f"installed closure is not one-to-one: {identity(*key)}")
                 continue
             try:
-                package, license_row, detail, row_failures = inspect_distribution(rows[key], found[0], temporary)
+                package, license_row, detail, row_failures = inspect_distribution(rows[key], found[0], temporary, budget)
                 package_rows.append(package)
                 license_rows.append(license_row)
                 package_evidence.append(detail)
                 failures.extend(f"{identity(*key)}: {failure}" for failure in row_failures)
             except (EvidenceError, OSError, ValueError) as exc:
                 failures.append(f"{identity(*key)}: {exc}")
-    return {
+    report = {
         "schema": "vokra-xcodec2-dependency-evidence-v1",
         "status": "BLOCKED_FACTUAL_COLLECTION" if failures else "BLOCKED_OWNER_REVIEW",
         "publication": "NO_UPLOAD",
@@ -728,6 +838,16 @@ def collect(expected_head: str) -> dict[str, Any]:
         "factual_failures": sorted(set(failures)),
         "model_activity": {"model_code_imported": False, "weights_acquired": False, "weights_imported": False, "weights_executed": False, "audio_acquired": False, "audio_imported": False, "audio_executed": False, "source_repo_downloaded": False, "cargo_invoked": False, "uploaded": False},
     }
+    report["collection_budget"] = {
+        "max_seconds": MAX_COLLECTION_SECONDS,
+        "max_artifact_bytes": MAX_TOTAL_ARTIFACT_BYTES,
+        "max_unpacked_bytes": MAX_TOTAL_UNPACKED_BYTES,
+        "max_retained_bytes": MAX_TOTAL_RETAINED_BYTES,
+        "used_artifact_bytes": budget.artifact_bytes,
+        "used_unpacked_bytes": budget.unpacked_bytes,
+        "used_retained_bytes": budget.retained_bytes,
+    }
+    return report
 
 
 def write_atomic(output: Path, report: dict[str, Any]) -> None:
@@ -740,7 +860,26 @@ def write_atomic(output: Path, report: dict[str, Any]) -> None:
         raise EvidenceError("output and sidecar must be absent")
     output.parent.mkdir(parents=True, exist_ok=True)
     assert_safe_path(output.parent)
+    def preflight(value: Any, depth: int = 0) -> int:
+        if depth > 32:
+            raise EvidenceError("report nesting exceeds bound")
+        if isinstance(value, str):
+            if len(value.encode("utf-8")) > MAX_REPORT_BYTES:
+                raise EvidenceError("report string exceeds output bound")
+            return len(value.encode("utf-8"))
+        if isinstance(value, (bytes, bytearray)):
+            raise EvidenceError("report contains raw bytes")
+        if isinstance(value, dict):
+            return sum(preflight(key, depth + 1) + preflight(item, depth + 1) for key, item in value.items())
+        if isinstance(value, (list, tuple)):
+            return sum(preflight(item, depth + 1) for item in value)
+        return 0
+
+    if preflight(report) > MAX_REPORT_BYTES:
+        raise EvidenceError("aggregate report output cap exceeded")
     payload = (canonical(report) + "\n").encode("utf-8")
+    if len(payload) > MAX_REPORT_BYTES:
+        raise EvidenceError("serialized report output cap exceeded")
     temporary = output.parent / f".{output.name}.{os.getpid()}.tmp"
     try:
         with temporary.open("xb") as stream:

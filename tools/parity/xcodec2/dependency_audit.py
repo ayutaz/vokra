@@ -29,6 +29,15 @@ MANIFEST = PROJECT / "license_gate_manifest.json"
 ROWS = PROJECT / "dependency_audit.json"
 SCHEMA = "vokra-xcodec2-dependency-audit-v1"
 MANIFEST_SCHEMA = "vokra-xcodec2-license-gate-v1"
+SOURCE_DIGEST_FILES = (
+    "dependency_audit.py",
+    "dependency_guard.py",
+    "collect_dependency_evidence.py",
+    "inspect_locked_sdist_sources.py",
+    "build_derived_locked_sdists.py",
+    "dump_reference.py",
+)
+MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 TARGET_ENV = {
     "implementation_name": "cpython",
     "platform_machine": "x86_64",
@@ -84,6 +93,27 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def source_digest_map() -> dict[str, str]:
+    """Return the bounded, hash-bound production helper source set.
+
+    The manifest deliberately excludes the manifest and row files themselves;
+    those are already bound by the project/rows hashes and including either
+    would create a self-referential hash.  Every helper used before model
+    import is nevertheless covered by this explicit map.
+    """
+    result: dict[str, str] = {}
+    for relative in SOURCE_DIGEST_FILES:
+        path = PROJECT / relative
+        try:
+            stat = path.lstat()
+        except OSError as exc:
+            raise AuditError(f"source helper is unreadable: {relative}") from exc
+        if not path.is_file() or path.is_symlink() or stat.st_size > MAX_SOURCE_FILE_BYTES:
+            raise AuditError(f"source helper is not a bounded regular file: {relative}")
+        result[relative] = sha256_file(path)
+    return result
 
 
 def canonical(value: Any) -> str:
@@ -316,6 +346,7 @@ def load_contract(expected_head: str | None = None) -> dict[str, Any]:
         "manifest_sha256": sha256_file(MANIFEST),
         "dependency_audit_sha256": sha256_file(ROWS),
         "collector_sha256": sha256_file(PROJECT / "collect_dependency_evidence.py"),
+        "source_digests": source_digest_map(),
     }
     closure = reachable_lock_identities(lock)
     validate_gate_documents(manifest, rows, actual, closure)
@@ -331,6 +362,9 @@ def validate_gate_documents(manifest: dict[str, Any], rows: dict[str, Any], actu
         raise AuditError("manifest target contract drifted")
     if project_contract.get("pyproject_sha256") != actual["pyproject_sha256"] or project_contract.get("uv_lock_sha256") != actual["uv_lock_sha256"] or project_contract.get("dependency_audit_sha256") != actual["dependency_audit_sha256"]:
         raise AuditError("manifest does not bind project/lock/rows hashes")
+    expected_sources = actual.get("source_digests")
+    if not isinstance(expected_sources, dict) or project_contract.get("source_digests") != expected_sources:
+        raise AuditError("manifest does not bind audited helper source digests")
     dependency_contract = manifest.get("dependency_audit")
     if not isinstance(dependency_contract, dict) or dependency_contract.get("rows_file") != "dependency_audit.json" or dependency_contract.get("collector") != "collect_dependency_evidence.py" or dependency_contract.get("status") != "BLOCKED_PENDING_PRIMARY_BYTES" or type(dependency_contract.get("owner_review_required")) is not bool or dependency_contract["owner_review_required"] is not True:
         raise AuditError("manifest dependency audit contract drifted")
@@ -341,6 +375,8 @@ def validate_gate_documents(manifest: dict[str, Any], rows: dict[str, Any], actu
         raise AuditError("dependency rows are not fail-closed")
     if rows.get("pyproject_sha256") != actual["pyproject_sha256"] or rows.get("uv_lock_sha256") != actual["uv_lock_sha256"]:
         raise AuditError("dependency rows do not bind project/lock hashes")
+    if rows.get("source_digests") != expected_sources:
+        raise AuditError("dependency rows do not bind audited helper source digests")
     if set(closure) != EXPECTED_LINUX_CLOSURE:
         raise AuditError("Linux closure identity set differs from the audited UV target tree")
     if rows.get("expected_linux_closure_rows") != len(closure) or rows.get("expected_linux_external_rows") != len(closure) - 1:

@@ -14,6 +14,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import dependency_audit as audit
+
 
 ROOT = Path(__file__).resolve().parent
 PYPROJECT = ROOT / "pyproject.toml"
@@ -160,6 +162,13 @@ def _validate_documents(pyproject: dict, lock: dict) -> None:
 def _validate_files(pyproject_text: str, lock_text: str) -> None:
     pyproject, lock = _parse_documents(pyproject_text, lock_text)
     _validate_documents(pyproject, lock)
+    manifest = audit.strict_json(audit.MANIFEST)
+    rows = audit.strict_json(audit.ROWS)
+    expected = audit.source_digest_map()
+    if manifest.get("project", {}).get("source_digests") != expected:
+        raise AssertionError("license manifest helper source digest binding drifted")
+    if rows.get("source_digests") != expected:
+        raise AssertionError("dependency rows helper source digest binding drifted")
 
 
 def _validate_installed_environment() -> None:
@@ -180,9 +189,14 @@ def _validate_official_decoder() -> None:
     # package/source hash checks before returning this class.
     for name in FORBIDDEN_LOCK_ROWS:
         sys.modules[name] = None
-    from dump_reference import import_official_decoder
+    from dump_reference import (
+        import_official_decoder,
+        validate_execution_authorization,
+        validate_preimport_runtime,
+    )
 
-    decoder = import_official_decoder()
+    validate_execution_authorization()
+    decoder = import_official_decoder(validate_preimport_runtime())
     if decoder.__module__ != "xcodec2.vq.codec_decoder_vocos":
         raise AssertionError(f"unexpected decoder module: {decoder.__module__}")
     if decoder.__name__ != "CodecDecoderVocos":

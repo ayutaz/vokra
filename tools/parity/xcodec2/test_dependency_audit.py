@@ -13,12 +13,80 @@ import tempfile
 import tomllib
 import unittest
 import zipfile
+from types import SimpleNamespace
 
 import collect_dependency_evidence as collector
 import dependency_audit as audit
+import dump_reference as reference
 
 
 class DependencyAuditTests(unittest.TestCase):
+    def _fake_runtime(self, root: Path):
+        """Build real tiny distributions for the shared pre-import gate."""
+
+        packages = {}
+        source_bytes = {
+            "xcodec2/vq/codec_decoder_vocos.py": b"decoder-source\n",
+            "xcodec2/vq/bs_roformer5.py": b"transformer-source\n",
+            "torchtune/modules/position_embeddings.py": b"rope-source\n",
+        }
+        for name, version in reference.EXPECTED_DISTRIBUTIONS.items():
+            package_file = reference.EXPECTED_PACKAGE_FILES[name]
+            dist_info = f"{name.replace('-', '_')}-{version}.dist-info"
+            files = {package_file: b"# synthetic package\n"}
+            if name == "xcodec2":
+                files.update({path: value for path, value in source_bytes.items() if path.startswith("xcodec2/")})
+            if name == "torchtune":
+                files["torchtune/modules/position_embeddings.py"] = source_bytes["torchtune/modules/position_embeddings.py"]
+            if name == "torch":
+                files["torch/libtiny.so"] = b"\x7fELFsynthetic"
+            for relative, value in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(value)
+            record_path = f"{dist_info}/RECORD"
+            record = []
+            for relative, value in sorted(files.items()):
+                digest = base64.urlsafe_b64encode(hashlib.sha256(value).digest()).decode().rstrip("=")
+                record.append(f"{relative},sha256={digest},{len(value)}")
+            record.append(f"{record_path},,")
+            record_file = root / record_path
+            record_file.parent.mkdir(parents=True, exist_ok=True)
+            record_file.write_text("\n".join(record) + "\n", encoding="utf-8")
+            packages[name] = type(
+                "FakeDistribution",
+                (),
+                {
+                    "metadata": {"Name": name},
+                    "version": version,
+                    "files": [*files, record_path],
+                    "locate_file": lambda self, relative, base=root: base / str(relative),
+                },
+            )()
+        return packages, source_bytes
+
+    def _with_fake_runtime(self, root: Path):
+        packages, source_bytes = self._fake_runtime(root)
+        original_distribution = reference.importlib.metadata.distribution
+        original_constants = (
+            reference.DECODER_SOURCE_SHA256,
+            reference.TRANSFORMER_SOURCE_SHA256,
+            reference.TORCHTUNE_ROPE_SHA256,
+        )
+        reference.importlib.metadata.distribution = lambda name: packages[name]
+        reference.DECODER_SOURCE_SHA256 = hashlib.sha256(source_bytes["xcodec2/vq/codec_decoder_vocos.py"]).hexdigest()
+        reference.TRANSFORMER_SOURCE_SHA256 = hashlib.sha256(source_bytes["xcodec2/vq/bs_roformer5.py"]).hexdigest()
+        reference.TORCHTUNE_ROPE_SHA256 = hashlib.sha256(source_bytes["torchtune/modules/position_embeddings.py"]).hexdigest()
+        return packages, original_distribution, original_constants
+
+    def _restore_fake_runtime(self, original_distribution, original_constants):
+        reference.importlib.metadata.distribution = original_distribution
+        (
+            reference.DECODER_SOURCE_SHA256,
+            reference.TRANSFORMER_SOURCE_SHA256,
+            reference.TORCHTUNE_ROPE_SHA256,
+        ) = original_constants
+
     def test_linux_closure_and_fail_closed_documents(self) -> None:
         lock = tomllib.loads(audit.LOCK.read_text(encoding="utf-8"))
         closure = audit.reachable_lock_identities(lock)
@@ -61,6 +129,7 @@ class DependencyAuditTests(unittest.TestCase):
             "pyproject_sha256": audit.sha256_file(audit.PYPROJECT),
             "uv_lock_sha256": audit.sha256_file(audit.LOCK),
             "dependency_audit_sha256": audit.sha256_file(audit.ROWS),
+            "source_digests": audit.source_digest_map(),
         }
         policy_tampered = copy.deepcopy(manifest)
         policy_tampered["policy"]["automatic_exceptions"] = True
@@ -70,6 +139,36 @@ class DependencyAuditTests(unittest.TestCase):
         hash_tampered["dependency_audit_sha256"] = "0" * 64
         with self.assertRaises(audit.AuditError):
             audit.validate_gate_documents(manifest, rows, hash_tampered, closure)
+        source_tampered = copy.deepcopy(actual)
+        source_tampered["source_digests"]["collect_dependency_evidence.py"] = "0" * 64
+        with self.assertRaises(audit.AuditError):
+            audit.validate_gate_documents(manifest, rows, source_tampered, closure)
+
+    def test_reference_defers_third_party_imports_until_preflight(self) -> None:
+        tree = ast.parse(
+            (Path(__file__).parent / "dump_reference.py").read_text(encoding="utf-8")
+        )
+        top_level_imports = {
+            alias.name.split(".", 1)[0]
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        top_level_from = {
+            node.module.split(".", 1)[0]
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        self.assertNotIn("torch", top_level_imports | top_level_from)
+        self.assertNotIn("numpy", top_level_imports | top_level_from)
+        self.assertNotIn("gguf", top_level_imports | top_level_from)
+        source = (Path(__file__).parent / "dump_reference.py").read_text(encoding="utf-8")
+        self.assertLess(source.index("validate_patched_runtime()"), source.index("import numpy as np"))
+        main_start = source.index("def main()")
+        self.assertLess(
+            source.index("    validate_execution_authorization()", main_start),
+            source.index("    import numpy as np", main_start),
+        )
 
     def test_archive_license_bytes_are_literal_and_traversal_safe(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xcodec2-audit-test-") as directory:
@@ -125,6 +224,186 @@ class DependencyAuditTests(unittest.TestCase):
             binding, failures = collector.compare_wheel_payloads(clean_path, tampered)
             self.assertEqual(binding["status"], "BLOCKED")
             self.assertEqual(len(failures), 2)
+
+    def test_collector_aggregate_caps_fail_closed(self) -> None:
+        budget = collector.CollectionBudget()
+        old_cap = collector.MAX_TOTAL_ARTIFACT_BYTES
+        try:
+            collector.MAX_TOTAL_ARTIFACT_BYTES = 4
+            budget.add_artifact(4)
+            with self.assertRaises(collector.EvidenceError):
+                budget.add_artifact(1)
+        finally:
+            collector.MAX_TOTAL_ARTIFACT_BYTES = old_cap
+        with tempfile.TemporaryDirectory(prefix="xcodec2-output-cap-") as directory:
+            old_report_cap = collector.MAX_REPORT_BYTES
+            try:
+                collector.MAX_REPORT_BYTES = 16
+                with self.assertRaises(collector.EvidenceError):
+                    collector.write_atomic(Path(directory) / "report.json", {"value": "x" * 17})
+            finally:
+                collector.MAX_REPORT_BYTES = old_report_cap
+        expired = collector.CollectionBudget(seconds=-1)
+        body = b"payload"
+        artifact = {
+            "url": "https://files.pythonhosted.org/packages/expired.whl",
+            "hash": "sha256:" + collector.sha256_bytes(body),
+            "size": len(body),
+        }
+        with tempfile.TemporaryDirectory(prefix="xcodec2-timeout-") as directory:
+            with self.assertRaises(collector.EvidenceError):
+                collector.fetch_artifact(
+                    artifact,
+                    Path(directory),
+                    lambda _url: (_ for _ in ()).throw(AssertionError("expired budget fetched")),
+                    budget=expired,
+                )
+
+    def test_installed_hash_license_native_paths_honor_shared_deadline(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xcodec2-deadline-test-") as directory:
+            root = Path(directory)
+            (root / "demo").mkdir()
+            (root / "demo/LICENSE").write_bytes(b"MIT\n")
+            (root / "demo/libdemo.so").write_bytes(b"\x7fELFsynthetic")
+            fake = type(
+                "FakeDistribution",
+                (),
+                {
+                    "files": ["demo/LICENSE", "demo/libdemo.so"],
+                    "locate_file": lambda self, relative: root / str(relative),
+                },
+            )()
+            expired = collector.CollectionBudget(seconds=-1)
+            with self.assertRaises(collector.EvidenceError):
+                collector.installed_license_files(fake, budget=expired)
+            with self.assertRaises(collector.EvidenceError):
+                collector.native_evidence(fake, budget=expired)
+            with self.assertRaises(collector.EvidenceError):
+                collector.installed_payload_hashes(fake, {"demo/libdemo.so"}, budget=expired)
+
+    def test_response_timeout_refreshes_urllib_fp_socket_and_fails_closed_without_one(self) -> None:
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.values = []
+
+            def settimeout(self, value: float) -> None:
+                self.values.append(value)
+
+        socket = FakeSocket()
+        response = SimpleNamespace(raw=None, fp=SimpleNamespace(raw=SimpleNamespace(_sock=socket)))
+        self.assertTrue(collector.set_response_timeout(response, 1.25))
+        self.assertEqual(socket.values, [1.25])
+        self.assertFalse(collector.set_response_timeout(SimpleNamespace(raw=None, fp=None), 1.25))
+        with self.assertRaises(collector.EvidenceError):
+            collector.remaining_timeout(collector.CollectionBudget(seconds=-1))
+
+    def test_decoder_preimport_source_has_no_boolean_bypass(self) -> None:
+        source = (Path(__file__).parent / "dump_reference.py").read_text(encoding="utf-8")
+        self.assertNotIn("prevalidated", source)
+        self.assertIn("_PreimportProof", source)
+
+    def test_preimport_gate_rejects_wrong_distribution_before_module_import(self) -> None:
+        class FakeDistribution:
+            metadata = {"Name": "numpy"}
+            version = "0.0.0"
+            files = []
+
+            def locate_file(self, _relative: str) -> Path:
+                return Path("/nonexistent")
+
+        original = reference.importlib.metadata.distribution
+        try:
+            reference.importlib.metadata.distribution = lambda _name: FakeDistribution()
+            with self.assertRaisesRegex(RuntimeError, "numpy version"):
+                reference.validate_preimport_runtime()
+        finally:
+            reference.importlib.metadata.distribution = original
+        self.assertNotIn("torch", sys.modules)
+        self.assertNotIn("xcodec2", sys.modules)
+
+    def test_preimport_gate_validates_real_tiny_record_and_origins(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xcodec2-preimport-real-") as directory:
+            root = Path(directory)
+            _, original_distribution, original_constants = self._with_fake_runtime(root)
+            old_path = list(sys.path)
+            removed = {name: sys.modules.pop(name, None) for name in reference.EXPECTED_MODULE_NAMES}
+            try:
+                sys.path.insert(0, str(root))
+                proof = reference.validate_preimport_runtime()
+                self.assertEqual(proof.versions["xcodec2"], "0.1.5")
+                self.assertIn("torch/libtiny.so", proof.record_digests["torch"])
+            finally:
+                sys.path[:] = old_path
+                for name, module in removed.items():
+                    if module is not None:
+                        sys.modules[name] = module
+                self._restore_fake_runtime(original_distribution, original_constants)
+
+    def test_preimport_gate_rejects_record_tamper_shadow_and_symlink_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xcodec2-preimport-negative-") as directory:
+            root = Path(directory)
+            _, original_distribution, original_constants = self._with_fake_runtime(root)
+            old_path = list(sys.path)
+            removed = {name: sys.modules.pop(name, None) for name in reference.EXPECTED_MODULE_NAMES}
+            try:
+                sys.path.insert(0, str(root))
+                (root / "numpy/__init__.py").write_bytes(b"tampered\n")
+                with self.assertRaisesRegex(RuntimeError, "RECORD bytes mismatch"):
+                    reference.validate_preimport_runtime()
+                self._restore_fake_runtime(original_distribution, original_constants)
+                _, original_distribution, original_constants = self._with_fake_runtime(root)
+                shadow = root / "shadow"
+                (shadow / "numpy").mkdir(parents=True)
+                (shadow / "numpy/__init__.py").write_bytes(b"shadow\n")
+                sys.path.insert(0, str(shadow))
+                with self.assertRaisesRegex(RuntimeError, "origin mismatch"):
+                    reference.validate_preimport_runtime()
+                sys.path.pop(0)
+                self._restore_fake_runtime(original_distribution, original_constants)
+                _, original_distribution, original_constants = self._with_fake_runtime(root)
+                external = root / "external-numpy"
+                (external / "numpy").mkdir(parents=True)
+                (external / "numpy/__init__.py").write_bytes(b"external\n")
+                (root / "numpy").rename(root / "numpy-real")
+                (root / "numpy").symlink_to(external / "numpy", target_is_directory=True)
+                with self.assertRaisesRegex(RuntimeError, "symlink ancestry"):
+                    reference.validate_preimport_runtime()
+            finally:
+                sys.path[:] = old_path
+                for name, module in removed.items():
+                    if module is not None:
+                        sys.modules[name] = module
+                self._restore_fake_runtime(original_distribution, original_constants)
+
+    def test_decoder_import_requires_preimport_proof(self) -> None:
+        source = (Path(__file__).parent / "dump_reference.py").read_text(encoding="utf-8")
+        self.assertNotIn("prevalidated", source)
+        with self.assertRaises(TypeError):
+            reference.import_official_decoder()  # type: ignore[call-arg]
+
+    def test_blocked_manifest_stops_callable_before_official_import(self) -> None:
+        proof = reference._PreimportProof({}, {}, reference._PREIMPORT_NONCE)
+        original = reference.install_official_rope_import
+        called = []
+        try:
+            reference.install_official_rope_import = lambda: called.append(True)
+            with self.assertRaisesRegex(RuntimeError, "blocked by the existing audit/owner contract"):
+                reference.import_official_decoder(proof)
+        finally:
+            reference.install_official_rope_import = original
+        self.assertEqual(called, [])
+        with self.assertRaisesRegex(RuntimeError, "blocked by the existing audit/owner contract"):
+            reference.gguf_tensor(object(), ())
+        self.assertNotIn("numpy", sys.modules)
+
+    def test_malformed_audit_contract_stops_direct_tensor_gate(self) -> None:
+        original = reference.audit.load_contract
+        try:
+            reference.audit.load_contract = lambda: {"manifest": {}}
+            with self.assertRaisesRegex(RuntimeError, "blocked by the existing audit/owner contract"):
+                reference.gguf_tensor(object(), ())
+        finally:
+            reference.audit.load_contract = original
 
     def test_collector_has_no_model_imports(self) -> None:
         for filename in ("dependency_audit.py", "collect_dependency_evidence.py"):

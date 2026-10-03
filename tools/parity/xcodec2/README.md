@@ -89,7 +89,21 @@ rejects Transformers, tokenizers, Typer, and shellingham lock or installed
 rows, verifies that xcodec2's resolved dependency edges follow the patched
 pair, verifies separate Linux CPU and macOS arm64 lock rows, runs tamper cases
 for override/source/platform/dependency-edge reintroduction, and exercises
-only the official decoder source/API contract. A successful documents-only
+only the official decoder source/API contract. Before any Torch, NumPy, GGUF,
+or XCodec2 import, the reference performs a metadata-only preflight: each
+audited distribution must expose the exact version, a bounded, duplicate-free
+RECORD whose installed file hashes and sizes match, a regular package entry
+whose importlib origin is that same distribution, and the fixed XCodec2/TorchTune
+source hashes. Symlink ancestry and same-version shadow modules are rejected.
+This is installed-byte/RECORD evidence only, not archive authentication or a
+license/owner approval. The direct CLI, decoder-import callable, and
+dependency guard also read the existing audit/owner contract before any
+third-party import; the current `BLOCKED_PENDING_PRIMARY_BYTES`, `NO_UPLOAD`,
+and unresolved-owner state together therefore fails closed. `NO_UPLOAD` alone
+is not treated as an execution prohibition for a future separately reviewed
+private reference scope. No environment variable or proof object can override
+the current blocked state. A
+successful documents-only
 guard does not certify ABI compatibility on a target host, the full model API,
 real-weight execution, or CPU/Metal parity; those require the recorded VAST
 follow-up.
@@ -140,6 +154,18 @@ uv run --frozen python collect_dependency_evidence.py \
   --output /tmp/xcodec2-dependency-evidence.json \
   --expected-head <exact-clean-lowercase-40-hex>
 ```
+
+The collector also applies one aggregate monotonic deadline (15 minutes),
+8-GiB artifact input cap, 8-GiB aggregate streamed-unpacked-I/O cap, 8-MiB
+retained-license cap, and 32-MiB serialized output cap in addition to the
+per-artifact/member limits. The unpacked cap covers bounded streaming reads
+without retaining a whole wheel in memory; archive inventory and installed
+binding comparisons may perform separate bounded passes, and every pass is
+counted against this aggregate I/O budget. The audit and gate manifest bind
+SHA-256 digests
+for every pre-import helper (`dependency_audit.py`, `dependency_guard.py`,
+the collector, locked-sdist inspector, derived-sdist builder, and
+`dump_reference.py`); changing one of these files invalidates the contract.
 
 The output is an audit packet only. It must not be uploaded or used as a
 publication/sign-off record without separate owner/legal review.
