@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 bounded synthetic-copy cleanup (09:32 UTC):** root removes
+> only two clean, bundle-backed work roots from a completed synthetic test,
+> preserving their outputs/logs and a full counterpart. Available space
+> recovers above the 2 GiB floor. The A13 offline test then stops at an
+> unrelated-directory permission error; fix task-prefix enumeration before
+> retrying. No new provider allocation or model verdict is claimed. See the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-bounded-synthetic-copy-cleanup-0932-utc).
+
 > **2026-10-03 SSH failure and local-space boundary (09:28 UTC):** the
 > corrected exact-HEAD bundles reach owned VAST `53991834`, but the first
 > SSH operation exits 255 before remote work. Worker and storage are destroyed;

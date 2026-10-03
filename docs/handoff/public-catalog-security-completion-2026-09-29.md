@@ -8323,6 +8323,47 @@ is not an Apple-completion count; preserve the whole 194-row scope and all
 remaining source/legal, real-weight CPU, final Apple/no-fallback, exact-head
 security/CI and public-artifact reconciliation gates.
 
+## 2026-10-03 bounded synthetic-copy cleanup (09:32 UTC)
+
+After root documentation commit `ef01c02641bca97d7f10523236f7a012caeb0566`,
+root independently verifies the two retained complete-history input bundles
+and the retained successful synthetic counterpart. The model bundle is
+57,926,048 bytes, SHA-256
+`ff04d8b18a30db3d8d90dbafeaba40cc7ec40321d3bef7db41427ab75712cba9`,
+at exact `db26d377f90c308e690e37a0871195c712d88a80`. The XCodec bundle is
+57,600,230 bytes, SHA-256
+`7d944ce4f6ef408a815860ad9dde380decbf0b79c4a0b48d50c42bb362a94ac9`,
+at exact `e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`. Both are retained
+under `/private/tmp/vokra-clean-heads-model-free-logs.OthKNz/self/`.
+
+Root rechecks all four candidate repositories as clean, confirms UID 501
+and non-symlink directories, then deletes only these two reproducible work
+roots, deletion session `4557` terminal zero:
+
+- `/private/tmp/vokra-clean-heads-model-free-logs.OthKNz/self/state-failed-leg/root/vokra-clean-heads-model-free-20261003/work`
+- `/private/tmp/vokra-clean-heads-model-free-logs.OthKNz/self/state-preflight-failure/root/vokra-clean-heads-model-free-20261003/work`
+
+Each work root was 357,904 KiB. Their input directories are empty; outputs,
+case logs, origin shell, lifecycle markers, retained bundles and the complete
+successful counterpart are not removed. The cases' completion outputs and
+failure logs are synthetic results, not numerical or cloud verdicts; no
+persisted live session/PID handle exists for those old cases. Source/Git
+content can be reconstructed from the verified bundles. Root checks absence
+of only the selected work roots and continued presence of both bundles and
+case logs. Available space rises to 2,533,124 KiB immediately after cleanup
+and is 2,529,856 KiB at this checkpoint, above the unchanged 2 GiB floor.
+
+Frozen paired A13 SHA-256
+`4b774ab6e561c923e5f2604df374719c73a1ede97d9ae506b2a1cfd1f569a807`
+passes root syntax/hash checks. Its root offline test nevertheless exits one
+before lifecycle cases: the temporary-directory-count regression enumerates
+unrelated `/private/tmp` entries and encounters an OS permission denial.
+Require task-prefix-only enumeration; do not relax filesystem permissions
+or bypass hooks. A13 also still uses the A12 log prefix, so the regression
+prefix must be aligned in the next frozen correction. No provider, model,
+workspace Cargo, publication or Apple execution occurs in this checkpoint.
+All 194 rows and the outstanding end-to-end gates remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

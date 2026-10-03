@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 bounded synthetic-copy cleanup (09:32 UTC):** two exact clean
+> synthetic work roots are removed only after complete-history bundle and
+> retained-copy verification; logs and outputs stay intact. Local headroom
+> is restored, but A13's offline test hits a directory-enumeration permission
+> error before its lifecycle cases. Require a task-prefix-only correction
+> and independent pass before allocation. Preserve all 194 rows and final
+> Scaleway gates; see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-bounded-synthetic-copy-cleanup-0932-utc).
+
 > **2026-10-03 SSH failure and local-space boundary (09:28 UTC):** exact-HEAD
 > bundle preparation is corrected, but paired model-free A10 stops at its
 > first SSH operation; no remote model-free or real-weight verdict advances.
