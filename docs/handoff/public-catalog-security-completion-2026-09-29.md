@@ -8851,6 +8851,68 @@ there is no full outer acceptance or permission to activate `--run`.
 No provider/model/Cargo run occurs. All 194 rows, source/legal boundaries,
 real-weight CPU gates and final Scaleway CPU/Metal/no-fallback remain required.
 
+## 2026-10-03 independent regression review and bundle cleanup (11:23 UTC)
+
+Root starts from clean management HEAD
+`8b7f6b7956b4b1c675622600c47be36103acd431`. No live root test, transfer or
+cloud process remains. The accepted `a552efb2` bounded-helper snapshot is
+preserved; it does not accept later edits. Frozen candidates receive an
+independent body review rather than being promoted from their authors'
+reports:
+
+| Reviewed candidate | Concrete finding | Required countermeasure |
+|---|---|---|
+| V6 `b125f414` | `transfer_bounded()` launches its supervisor in the background but has no subsequent PID tracking, wait/status propagation or shell-option restoration tail. | Restore the full lifetime contract and exercise the actual transfer helper, including nonzero status, deadline and parent interruption cases. |
+| Harness `72ff24f2` | Its actual producer pin remains `a552efb2`, despite the reported `f472ee3a` update. Its inline-command matcher recognizes `python -S -c` but the allowed branch accepts only stdin `-`, rejecting the real bounded supervisor. | Bind the final reviewed producer hash and forward both exact stdlib invocation contracts without duplicating arguments or permitting unknown commands. |
+| Same harness | Diagnostic execution uses nonexistent `remote-root/bin` rather than the prepared mock bin directory; parent-signal leaf cases fall through without marked live descendants. Stdin hashes are self-hashes, not a comparison with the expected rendered body. | Fix mock isolation, phase synchronization, finite watcher/reaping, marked descendant assertions and exact expected-body comparison. |
+| V6 parent INT test | A background subshell is assumed to install a working INT trap. | Use a launch contract that resets inherited signal disposition and finite wait/cleanup; do not infer INT coverage from TERM coverage. |
+
+The final finding has actual language-level evidence, not just inspection.
+Root runs a tiny `/bin/bash` 3.2 probe: a background subshell installs an INT
+trap, receives INT and nevertheless prints `parent_normal_exit`; its wait
+status is zero and the trap does not run. This probe executes no controller,
+provider, model or upstream code. Candidate `7f37a138` restores the transfer
+tail on inspection, but runtime transfer/parent-signal acceptance is still
+absent. Initialization signal races are also returned to the controller
+owner. Both owners retain narrow, non-overlapping script ownership; root
+does not author implementation fixes or activate `--run`.
+
+Separately, independent inspection and fresh root type/UID/hash/sole-HEAD
+checks establish that the following six old transfer bundles have complete
+same-HEAD recovery copies in the retained actual A19 directory
+`/private/tmp/vokra-qwen-bigvgan-model-free-a19.uvyJi3`. Root deletion session
+`47796` terminates zero; only these six files are removed:
+
+| Old trial directory under `/private/tmp` | Removed `candidate.bundle` | Removed `bigvgan.bundle` |
+|---|---|---|
+| `vokra-qwen-bigvgan-model-free-a10.KGitcy` | 57,705,238 bytes; SHA-256 `b505c6b80b169b879dc5837f65bad839c168c98f78961cae3f0806b815ecf8f8` | 57,734,788 bytes; SHA-256 `0d76ff88d74b7a5ff7f339728294c87694296dfa7b82988e7fc7fdc94fb70fde` |
+| `vokra-qwen-bigvgan-model-free-a14.Zw2FIQ` | 57,676,361 bytes; SHA-256 `b0498b4adc1f198514d04bd239c1d48c15eb646ef91459c76db1556355e4376c` | 57,645,578 bytes; SHA-256 `60e55e2b35bd4b8caec3a9e33810f617ed90569262e32ba43884138182041c8a` |
+| `vokra-qwen-bigvgan-model-free-a15.MSS6BW` | 57,634,313 bytes; SHA-256 `7d96ef9d4be4a2bfd78c741de2c1f3597cbee79f7998644fd180658777b55360` | 57,684,109 bytes; SHA-256 `9af87a9e43e4b92885d01e9231c4ed46dc4eff7806ccad021ae6720e5e6210fa` |
+
+Removed total is 346,080,387 bytes (about 330 MiB). All original trial
+directories, logs, readbacks and unique outputs remain. The retained A19
+bundle digests and sole HEADs are rechecked and match the preceding cleanup
+record. Their complete Git histories reconstruct the old contents; the
+differently packed old archive streams are not recoverable byte-for-byte.
+Immediately after deletion, free space is 2,061,892 KiB, still below the
+unchanged 2,097,152-KiB floor. Subsequent readback at 11:19:51 UTC is
+1,759,100 KiB and at 11:23:16 UTC is 1,684,024 KiB; these changes do not prove
+that all other disk consumption belongs to Vokra. No full fixture generation,
+new transfer, local model or provider allocation is started below the floor.
+An additional bounded read-only audit identifies large task directories but
+does not prove them disposable; unique clones, logs and caches remain intact
+pending exact backup/use checks.
+
+The unchanged A19 BigVGAN working-directory and raw-metadata binding failures,
+and Qwen license stop, remain separate unresolved source/fact gates. The
+denied local source inspection is not rerouted or bypassed. No fresh cloud API
+query, legal approval, primary-source packet, model-row advancement or Apple
+result is claimed. The retry gate remains: corrected frozen inputs, genuine
+primary validators, independently passed focused/full lifecycle tests and
+sufficient recovery headroom. Preserve already-green exact-head Cargo rather
+than repeating it. All 194 public rows and final Scaleway CPU/Metal/no-fallback
+verification remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

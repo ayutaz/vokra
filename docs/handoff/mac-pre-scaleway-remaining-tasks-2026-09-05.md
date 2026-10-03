@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 independent regression review (11:23 UTC):** root finds a
+> missing transfer wait/status tail, a stale harness pin and an inline-command
+> rejection defect in the unaccepted candidates. An actual Bash 3.2 probe also
+> shows that the proposed background-parent INT test ignores the signal.
+> Return these defects for correction, not another unchanged cloud retry.
+> Six additional semantically redundant bundles are removed after backup
+> verification; original logs and canonical bundles remain. Space is still
+> below the 2 GiB floor. See the
+> [review and cleanup evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-regression-review-and-bundle-cleanup-1123-utc).
+
 > **2026-10-03 redundant transfer-bundle cleanup (11:07 UTC):** root
 > removes only two pre-allocation bundles after independent inspection and
 > retained complete-history/same-HEAD verification. Original logs and actual

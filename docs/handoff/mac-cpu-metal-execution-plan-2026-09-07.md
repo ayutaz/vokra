@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 independent regression review (11:23 UTC):** do not accept
+> a candidate from syntax checks or its author's completion report alone.
+> Correct the missing transfer supervision tail, exact mock-command contract
+> and parent INT launch semantics before the frozen focused/full tests.
+> Verified redundant bundle cleanup does not restore the required recovery
+> headroom yet; cloud activation remains disabled. See the
+> [review and cleanup evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-regression-review-and-bundle-cleanup-1123-utc).
+
 > **2026-10-03 redundant transfer-bundle cleanup (11:07 UTC):** safely
 > remove redundant pre-allocation Git transfer archives, keeping original
 > logs and verified actual-run backups. Do not call differently packed
