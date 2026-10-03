@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 corrected replay and native PCM boundary (07:01 UTC):**
+> V24 passes root's 53 independent offline cases at fixed correction
+> `52e4ddbe`. After two pre-create offer misses, session `94842` creates owned
+> eight-core VAST worker `53978818`; SSH and tool bootstrap pass, but the run
+> is live and no code/source recovery or cleanup outcome is claimed yet.
+> The candidate already has a private native Mimi-to-LM-to-tokenizer PCM chain;
+> public ASR, independent real-weight parity and Apple gates remain deferred.
+> Preserve all 194 rows and see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-corrected-replay-and-native-pcm-boundary-0701-utc).
+
 > **2026-10-03 actual source-batch failure and correction (06:45 UTC):**
 > root passes the activated V23's 53 offline cases and executes clean `0f26b6ea`
 > on disposable VAST `53977035`. The three source legs and their 26/26/16

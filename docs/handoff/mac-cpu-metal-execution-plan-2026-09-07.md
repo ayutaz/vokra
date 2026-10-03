@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 corrected replay and native PCM boundary (07:01 UTC):**
+> root independently passes V24's 53 cases, then starts distinct exact-head
+> replay `52e4ddbe` on owned VAST `53978818` / live session `94842`. Keep the
+> same handle and recover small evidence before destroying worker/storage;
+> tool bootstrap is not a workspace or model pass. Reuse the existing private
+> DSM PCM chain without merging its policy with historical MLX or enabling
+> public ASR before independent real-weight gates. Scaleway remains last;
+> see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-corrected-replay-and-native-pcm-boundary-0701-utc).
+
 > **2026-10-03 actual source-batch failure and correction (06:45 UTC):**
 > activated V23 passes root's 53 offline cases, then fails workspace compilation
 > at exact `0f26b6ea` on VAST `53977035`. Its 26/26/16 source-profile tests

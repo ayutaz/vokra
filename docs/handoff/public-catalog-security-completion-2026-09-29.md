@@ -7990,6 +7990,46 @@ unresolved classification is not Apple completion. Independent real-weight
 CPU results, legal decisions, final Apple CPU/Metal/no-fallback, exact-head
 security/CI and separately authorized public reconciliation remain open.
 
+## 2026-10-03 corrected replay and native PCM boundary (07:01 UTC)
+
+Root's independent V24 session `1117` is terminal zero with 53/53 offline
+shared-path cases and unchanged controller SHA-256
+`7026300c313606812c035537ce4a856d55224a96ceeb3a8f7b6f467a7b1605bc`.
+The capped partial-source fixture reports `VALIDATED_FOR_REVIEW_ONLY`, not
+model readiness. V24 fixes the execution HEAD at clean
+`52e4ddbebfeb32cb5f7aa241580b2493b20ecdb0` and assembles the source-profile
+packet before workspace compilation. Frozen V23 remains historical.
+
+Actual sessions `64079` and `40652` terminate one before instance creation:
+their selected 36- and 14-core offers disappear from the fresh pre-create
+search. No cloud worker or storage is created by either attempt. A distinct
+attempt, session `94842`, creates owned worker `53978818`, label
+`vokra-kyutai-source-kv-vast-v24-20261003-85980`, on an available eight-core
+offer at USD 0.07481481481481482/hour with 200 GB requested storage. Its logs
+are in `/private/tmp/vokra-kyutai-source-kv-v24-logs.Yx9e85`. Provider readback
+and both SSH probes succeed; Rust 1.99.0 and UV-managed Python 3.12.14 bootstrap
+complete. Session `94842` is confirmed live at this checkpoint: no workspace,
+Clippy, primary-recovery or cleanup outcome is inferred yet. Continue observing
+that same handle, recover bounded evidence and destroy this owned worker and
+storage; do not restart merely because an observation times out.
+
+A source-only review of the corrected candidate also distinguishes its
+private native PCM session from the public caller-text bridge. The existing
+private DSM route already composes authenticated local artifact construction,
+Mimi encoding, streaming LM steps, greedy token selection and tokenizer text
+rendering. This is implementation preparation, not authenticated real-weight
+execution or independent parity. The separate historical MLX and DSM padding
+policies must not be combined, and public `transcribe` remains explicitly
+deferred. Exact composite source/artifact/tokenizer identities, dependency and
+legal closure, official-caller evidence, independent real-weight CPU parity and
+final Apple CPU/Metal/no-fallback results are still required.
+
+Qwen3-TTS's separate model-free controller and BigVGAN's remote metadata leaf
+remain under review; neither has performed a production run. Preserve all 194
+rows and the metadata-only 136 full / 58 unresolved snapshot. No model weights,
+configs, tokenizers or presets are acquired or executed in this code/source
+wave, no HF credential is forwarded, and no public artifact changes.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
