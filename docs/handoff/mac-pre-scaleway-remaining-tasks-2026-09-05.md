@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 official KV preparation review (03:52 UTC):** root accepts
+> bounded independent KV snapshots after full source review and nine offline
+> tests. Normal commit `2c0f855e` is integrated with the empty tracked-Python
+> closure correction as clean candidate `11d97f14`; root independently passes
+> the latter's 19 PCM tests. These are preparation, not real-weight parity.
+> Live V21 remains fixed at `1cbc4abc` / `a5e4c810`; individual workspace,
+> Clippy and security exits are zero, but final recovery and destruction are
+> pending. Preserve all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-official-kv-preparation-review-0352-utc).
+
 > **2026-10-03 integrated candidate and live code replay (03:34 UTC):** root
 > reviews clean integrated candidate `858bfa46` and independently passes its
 > 18 model-free PCM tests. Its native KV tests still need a later exact-head

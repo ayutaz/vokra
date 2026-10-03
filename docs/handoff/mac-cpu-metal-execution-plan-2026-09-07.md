@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 official KV preparation review (03:52 UTC):** reviewed
+> snapshot adapter `2c0f855e` and empty-closure correction `9829a0f0` are
+> integrated at `11d97f14`, with nine tap and 19 PCM offline tests passing.
+> Keep the three native KV Rust tests `NOT_RUN` until a later exact-head
+> remote replay. Do not retarget live V21, promote synthetic source envelopes
+> to primary acquisition, or use decoder-only approval for composite PCM.
+> Recover and verify V21 evidence before destroying its owned worker/storage;
+> Scaleway stays last. See the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-official-kv-preparation-review-0352-utc).
+
 > **2026-10-03 integrated candidate and live code replay (03:34 UTC):** keep
 > live V21 fixed at `1cbc4abc` / `a5e4c810`; do not add later candidate
 > `858bfa46` to its running scope. Recover and authenticate small evidence,

@@ -7450,6 +7450,67 @@ All 194 public rows remain in scope. The metadata-only 136 full / 58
 unresolved split is not real-weight or Apple completion. No source/license,
 CPU parity, Apple/no-fallback or publication verdict advances here.
 
+## 2026-10-03 official KV preparation review (03:52 UTC)
+
+The corrected official main-transformer KV tap supersedes the earlier source
+review rejection, not the outstanding execution verdict. Root reads all 745
+implementation lines, 408 test lines and both documents, compares the retained
+official `RingKVCache.complete()` and `_complete_kv()` source, and independently
+passes nine offline stdlib tests with no skips. The implementation authenticates
+both base storage and exact K/V shape, stride, storage offset, dtype and device.
+It creates detached, bounded snapshots before subsequent ring writes can
+overwrite them. Event/byte and poison guards precede upstream complete/reset
+calls; partial reset clears only selected poisoned batches. Patch restoration
+attempts each owned patch independently. Type-name checks remain scope checks,
+not upstream source authentication.
+
+Normal logical commit `2c0f855e2c4aaabf50a52a227571c31a71186743`, parent
+`fc977f3b7637d7f3c8249cccf594d33971fee019`, contains only the adapter, its
+tests, README and dated handoff. Its implementation SHA-256 is
+`42032a71fa95e925f27f4e995cae45cbd83fcd0329f17fa24fa11370d7c26920`;
+test SHA-256 is
+`8fec95c1dc5b823b89e314ec75af0f5bdb87f3a6f5b67864b71f0e03758ec493`.
+No upstream/Torch/model execution, network acquisition, Cargo or push occurs.
+
+Separately, normal commit `9829a0f0521d8a335faa4afd6fb0e9ae188b564d`, parent
+`858bfa464fb0b101b1d4f1a4f8bc56cd96bdc088`, permits zero-byte tracked Python
+files only in the supplemental source closure. Required DSM/Moshi roles
+remain strictly positive and exact-hash bound. Root reviews the full four-file
+diff and independently passes 19 PCM tests, including a tiny real Git checkout
+with an empty tracked `__init__.py`, missing-file and wrong-zero-hash cases.
+The tiny checkout substitutes source identity constants for a synthetic caller;
+it proves validator orchestration, not an actual upstream checkout. Capture
+implementation SHA-256 is
+`b624d5fb75a0814fa4740625a811d946f344ef9c4cdb7a8609ed36d8abd1a285`;
+test SHA-256 is
+`312867a6b0a41e0f76f6c9cc260c60f5c3c3f83f458958e23d0835a3c1b1f742`.
+
+The reviewed tap is cherry-picked into that existing isolated integration tree
+as clean HEAD `11d97f14964d21482741cd0a7a5dee9d408f2b77`, parent
+`9829a0f0521d8a335faa4afd6fb0e9ae188b564d`. Root verifies exact implementation
+hashes and the eight-file combined scope. The implementation owner reruns all
+19 PCM and nine tap tests, diff hygiene, AST, forbidden-symbol and zero-dependency
+gates. The three native KV Rust tests are still `NOT_RUN`. Full primary source,
+dependency/native-owner, composite license/approval, actual precision/context,
+independent real-weight PCM/CPU and Apple gates remain open.
+
+The independent read-only VAST probe in terminal session `46518` reports zero
+exits for workspace tests, workspace Clippy, cargo-deny, cargo-audit, decoder
+source, OWSM source and OWSM focused tests. Its remaining Cargo process is live.
+Controller session `42297` remains live and fixed at `1cbc4abc` / `a5e4c810`;
+these partial observations do not establish its terminal result. Required
+checksums, source receipts, remaining contracts and destruction readbacks must
+still be recovered and verified. New `11d97f14` must not inherit that older
+HEAD's results or enter its running scope.
+
+Root's targeted disk check reports about 0.87 GiB free, so no new clone or large
+local environment is created. Source-only collector preparation uses existing
+retained primary bytes and synthetic API envelopes; its local test success is
+not a newly acquired full source closure. All 194 public rows remain in scope,
+and the metadata-only 136 full / 58 unresolved classification is not a hardware
+completion count. No owner sign-off, real-weight/Apple verdict or publication
+authorization is invented.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
