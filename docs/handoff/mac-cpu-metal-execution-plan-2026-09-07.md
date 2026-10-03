@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 recovery headroom and live paired replay (10:36 UTC):**
+> frozen A19 reaches SSH readiness on owned `54000184` / session `44590`.
+> Follow the same live handle, recover authenticated evidence, then destroy
+> worker/storage and verify absence. This model-free wave is not real-weight
+> parity or Apple verification. Separate source-only correction remains
+> unaccepted; preserve all 194 rows and final Scaleway ordering. See the
+> [checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-headroom-and-live-paired-replay-1036-utc).
+
 > **2026-10-03 post-fix environmental checks (10:28 UTC):** frozen A19's
 > actual paired verification has not passed. Both attempts stop before
 > allocation (restricted DNS, then insufficient local recovery space).

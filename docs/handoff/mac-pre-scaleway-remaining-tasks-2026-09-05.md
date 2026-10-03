@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 recovery headroom and live paired replay (10:36 UTC):**
+> remove only two clean synthetic checkouts after independent inspection and
+> full-history bundle verification; retain all outputs/logs/backups. Frozen
+> A19 starts owned `54000184`, session `44590`, and reaches SSH readiness on
+> probe 19. Keep that live handle; no paired result or model-row promotion
+> is claimed. See the
+> [checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-headroom-and-live-paired-replay-1036-utc).
+
 > **2026-10-03 post-fix environmental checks (10:28 UTC):** two A19
 > attempts terminate before instance creation: restricted-network offer
 > lookup fails DNS, then the network-authorized retry refuses insufficient

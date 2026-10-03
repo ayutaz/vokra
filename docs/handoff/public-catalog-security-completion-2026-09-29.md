@@ -8590,6 +8590,51 @@ Do not repeat the accepted `52e4ddbe` workspace run to recover source bytes.
 No legal, numerical, public-artifact or Apple verdict changes; all 194 rows
 and the Scaleway-last gates remain in scope.
 
+## 2026-10-03 recovery headroom and live paired replay (10:36 UTC)
+
+Root resumes from clean `c025fabac59069e7e6ebcc9d94aa693be0838a7e`.
+Independent cleanup inspection finds only two clean, completed synthetic
+checkouts under `/private/tmp/vokra-clean-heads-model-free-logs.OthKNz/self/`
+`state-success/root/vokra-clean-heads-model-free-20261003/work/`:
+`model` at `db26d377f90c308e690e37a0871195c712d88a80` and `xcodec` at
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`, approximately 350 MiB total.
+Both have no untracked/ignored files or unique external test results; they
+are owned regular directories with no symlink boundary. Root verifies the
+retained complete-history bundles and their unchanged digests recorded at
+10:03, then removes only those two work roots. Deletion is terminal zero;
+selected-path absence and both retained bundles are checked. All case
+outputs, logs, markers and backup history remain outside the removed roots,
+so the checkouts can be reconstructed. The earlier retained-counterpart
+statement describes the older snapshot, not a requirement to retain this
+reproducible checkout indefinitely.
+
+Available space immediately rises from 2,019,868 to 2,381,640 KiB.
+A later readback shows 2,979,708 KiB; the additional external change is not
+attributed to this deletion. An authorized read-only offer query, session
+`69703` terminal zero, finds eight offers within the existing $0.20/hour
+ceiling; no instance is created by that query. Root reconfirms frozen A19,
+its leaf/wrapper hashes, both clean input heads and their complete-history
+bundles. The operational launcher additionally reserves the unchanged
+2 GiB recovery floor plus 115,422,927 bytes for bundles and 64 MiB for
+bounded evidence before activating the tested controller.
+
+Actual session `44590` is live on owned `54000184`, exact label
+`vokra-qwen3-tts-mf-v1-20261003T103414Z-93402`, at approximately
+$0.136296/hour. Retain evidence in
+`/private/tmp/vokra-qwen-bigvgan-model-free-a19.uvyJi3`. Its SSH readiness
+log records eighteen 255 results followed by zero on probe 19; remote work
+starts. Do not restart this live run or claim a paired pass from readiness.
+The frozen scope is Qwen3-TTS dependency/API and BigVGAN primary metadata,
+without models, HF credentials, workspace Cargo or upload. Recover small
+authenticated output or failure diagnostics, destroy this owned worker and
+storage, and independently verify absence after termination.
+
+The separate source-only V6 correction is delegated as a small file-only
+change, with no provider, bundle or large fixture generation. It remains
+unaccepted until actual-path fault tests and root review. All 194 catalog
+rows, owner/legal boundaries, real-weight CPU gates, final Scaleway
+CPU/Metal/no-fallback gates and separate publication authorization remain.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
