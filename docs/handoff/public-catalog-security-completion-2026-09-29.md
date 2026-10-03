@@ -8551,6 +8551,45 @@ and zero Vokra instances are recorded above, with the unrelated instance
 untouched. The next paired VAST wave must bind these exact tested bytes and
 retain failure diagnostics; it has not run at this snapshot.
 
+## 2026-10-03 post-fix environmental checks (10:28 UTC)
+
+At clean management head `ef9b9dd0701a075688925c04f8e1ceb85bb8e69e`,
+the frozen, independently tested A19 bytes remain unchanged at SHA-256
+`6920f84221eb61f09f9386f0e98c0a9a0002b11100fc2613190d1651a37ace63`.
+Actual session `72498` terminates two during offer lookup: the restricted
+network reports DNS resolution failure for the provider host. No create call
+occurs. Retain controller evidence in
+`/private/tmp/vokra-qwen-bigvgan-model-free-a19.BoEFB9`; its cleanup record
+is `cleanup_rc=0 instance=none`. This is not evidence of a provider outage
+or a regression in the corrected remote job.
+
+The network-authorized retry also terminates two, at `local_free_floor`,
+before bundles, offer lookup or resource creation. Its retained directory
+is `/private/tmp/vokra-qwen-bigvgan-model-free-a19.dMeWo9`, again with
+`cleanup_rc=0 instance=none`. Available local space drops to 186,052 KiB
+and later recovers to 2,023,580 KiB, still below the unchanged
+2,097,152-KiB recovery floor. The reason for these external capacity changes
+has not been established; do not attribute them to this job or delete
+unrelated data to force allocation. No additional cleanup is performed.
+
+An independent network-authorized read-only complete account query,
+session `92970` terminal zero, succeeds with `all_pages_complete=true`,
+one account instance and zero Vokra instances. The unrelated instance is
+untouched. Neither actual attempt creates a worker or begins model-free
+remote validation. Do not label them successful production verification.
+
+The source-only implementer reports no V6 output, fixture, bundle, test or
+provider mutation because of the capacity boundary. Frozen V5 remains
+unchanged and disabled. Resume this independent correction only with safe
+headroom and require its actual outer-lifecycle failure matrix; absence of
+a new implementation is not acceptance. For the paired path, reuse frozen
+A19 without another speculative rewrite, verify capacity before creation,
+and use the already-approved network path rather than repeating the denied
+lookup. Retain original exit/reason/logs and destroy only owned resources.
+Do not repeat the accepted `52e4ddbe` workspace run to recover source bytes.
+No legal, numerical, public-artifact or Apple verdict changes; all 194 rows
+and the Scaleway-last gates remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

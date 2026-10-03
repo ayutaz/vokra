@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 post-fix environmental checks (10:28 UTC):** frozen A19's
+> actual paired verification has not passed. Both attempts stop before
+> allocation (restricted DNS, then insufficient local recovery space).
+> Authorized read-only VAST access succeeds; zero Vokra instances are present.
+> Keep unproved source-only V5 disabled and withhold resource creation until
+> recovery headroom is available. Reuse already-green exact-head Cargo;
+> preserve all 194 rows and Scaleway-last ordering. See the
+> [environmental readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-post-fix-environmental-checks-1028-utc).
+
 > **2026-10-03 independently verified failure countermeasures (10:17 UTC):**
 > root accepts A19's reviewed paired-controller corrections and full offline
 > failure regression, not real VAST verification. Use only the frozen tested

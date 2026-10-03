@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 post-fix environmental checks (10:28 UTC):** two A19
+> attempts terminate before instance creation: restricted-network offer
+> lookup fails DNS, then the network-authorized retry refuses insufficient
+> local recovery space. Both record `cleanup_rc=0 instance=none`. A fresh
+> authorized read-only query succeeds and confirms zero Vokra instances;
+> leave the unrelated account instance untouched. Do not retry allocation
+> below the unchanged 2 GiB floor, or claim an actual model-free pass from
+> the accepted offline regressions. See the
+> [environmental readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-post-fix-environmental-checks-1028-utc).
+
 > **2026-10-03 independently verified failure countermeasures (10:17 UTC):**
 > frozen paired controller A19 passes root's full offline regression, including
 > eight normal-shell failure modes, original log/exit retention and compound
