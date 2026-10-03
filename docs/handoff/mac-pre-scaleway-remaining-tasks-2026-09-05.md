@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 bounded reference preparation (05:22 UTC):** root accepts
+> the fixed six-file XCodec2 source collector at clean integrated `dd7db2cf`,
+> independently passing 22 offline tests and the normal commit gates. No
+> upstream bytes or weights are acquired by that acceptance. The official
+> original-conversion source is now identified at a separate immutable
+> revision; its receipt and mapping review remain pending. V22 remains
+> disabled while endpoint, pre-transfer caps and cleanup-signal paths are
+> corrected. Preserve all 194 rows and see the
+> [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-bounded-reference-preparation-and-transfer-safety-review-0522-utc).
+
 > **2026-10-03 primary evidence recovery (04:58 UTC):** root verifies the
 > original SpeechT5 full audit, whose project/lock hashes match the current
 > environment; avoid repeating the full audit merely to recover its existing

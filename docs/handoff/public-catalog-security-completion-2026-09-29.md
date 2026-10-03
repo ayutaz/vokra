@@ -7773,6 +7773,58 @@ execution, publication, push, PR mutation or Scaleway action occurs in this
 checkpoint. All 194 public rows and their actual final hardware gates remain
 in scope.
 
+## 2026-10-03 bounded reference preparation and transfer-safety review (05:22 UTC)
+
+Root accepts the source-only XCodec2 collector after complete implementation
+and test review, then independently runs its 22 stdlib tests through offline
+UV/Python 3.12 with `-S`: zero failures in 0.031 seconds. Deep output paths,
+portable temporary paths, fixed-source identity checks, deterministic Linux/
+Mac execution gates and fake-response transport faults are covered. This is
+synthetic orchestration evidence only; no real source, model or numerical
+execution occurs. The three files are normally committed as clean integrated
+`dd7db2cf61be539a2e046c884741632a263dc5ae`, descended from accepted `07e04668`.
+Diff checks, forbidden-symbol and zero-dependency gates pass; the runbook gate
+reports 1,142 citations across 130 runbooks and 484 distinct paths. All five
+normal pre-commit checks pass; no hook bypass, push or PR mutation occurs.
+
+Metadata-only official GitHub API readbacks bind the `v5.13.0` tag object
+`d9055545a3a17df7ba8682e36d88c9bf4122c7c6` to code commit
+`6af945f436d85f2b0c5dff9b14feccd27b1d470b`. The comparison shows that the
+non-causal fix `7f5d5d1aaca3cc3d236c80ec8cb34d06f08a5fb8` is ancestral.
+At that fixed release, the XCodec2 directory has five files and no checkpoint
+converter. The collector therefore holds only those five source files and
+the repository license, not a dependency/import closure or a conversion
+mapping. The annotated tag reports `verification.verified=false`; this is
+an authenticated metadata readback, not a claim of a verified tag signature.
+
+A separate official API readback identifies original-conversion commit
+`9b6af5d77de78f0a57a098b2809009ad6ec0cfe3` and its
+`src/transformers/models/xcodec2/convert_xcodec2_checkpoint.py`: 15,239 bytes,
+Git blob `9b925564edab74774d225da25285091bff678391`. Its repository license is
+11,418 bytes, Git blob `68b7d66c97d66c58de883ed0c451af2b3183e6f3`.
+No converter body is recovered or executed in this checkpoint. Prepare a
+separate immutable source receipt and review the mapping rather than infer
+old/new checkpoint or decoder equivalence. The old Torch critical alert,
+CC-BY-NC weight boundary and independent real-weight gate remain open.
+
+Root's full V22 review finds remaining production issues after the implementer
+reports 42 offline cases passing: an unchecked proxy host takes precedence
+over the validated direct endpoint, a nonzero remote output-cap preflight is
+recorded but not enforced before recovery transfers, and signal traps are
+removed before final cleanup. Require corrections and actual shared-path
+fault coverage. The public provider entry point remains `PENDING_REVIEW`;
+the reported fixture count is not root acceptance or a real cloud result.
+
+The latest complete account readback at 05:06 UTC exits zero with
+`next_token=null`, zero Vokra instances and one unrelated stopped instance;
+the unrelated resource is untouched. Current local recovery headroom is
+about 2.87 GiB; no storage cleanup is performed in this checkpoint. Historical
+clone candidates contain dangling histories and are retained. There is no
+allocation, local model acquisition/execution, upstream numerical execution,
+publication or Scaleway action. All 194 public rows and their final hardware
+gates remain in scope; the 136 code/artifact-full versus 58 unresolved
+classification is not a count of hardware-complete models.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

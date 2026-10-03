@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 bounded reference preparation (05:22 UTC):** the accepted
+> `dd7db2cf` collector prepares a fixed, VAST-only source identity slice,
+> not a numerical oracle or dependency closure. Keep the original-conversion
+> revision distinct from the native-model release; review the actual mapping
+> before choosing a secure real-weight route. Require V22's direct-endpoint
+> validation, enforced pre-transfer size checks, bounded partial diagnostics
+> and interruption-safe destruction before allocation. Scaleway remains
+> last; see the
+> [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-bounded-reference-preparation-and-transfer-safety-review-0522-utc).
+
 > **2026-10-03 primary evidence recovery (04:58 UTC):** reuse the verified
 > original SpeechT5 full audit for its unchanged dependency facts; resolve
 > only missing primary legal evidence and the current operator scope. For
