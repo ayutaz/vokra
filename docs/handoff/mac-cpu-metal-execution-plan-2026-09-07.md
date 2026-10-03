@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 actual source-batch failure and correction (06:45 UTC):**
+> activated V23 passes root's 53 offline cases, then fails workspace compilation
+> at exact `0f26b6ea` on VAST `53977035`. Its 26/26/16 source-profile tests
+> pass, but primary bytes are not recovered and native-KV/full-source legs are
+> not reached. Logs are recovered and the worker/storage are independently
+> confirmed destroyed. Replay reviewed correction `52e4ddbe` before claiming
+> a code or model gate. BigVGAN preparation `af462cff` has only offline
+> evidence; Qwen's separate controller remains unaccepted. Final Apple and
+> all 194-row completion gates remain open; see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-source-batch-failure-and-correction-0645-utc).
+
 > **2026-10-03 capacity and independent lifecycle review (06:26 UTC):** root
 > independently passes frozen V23's 52 shared-path cases, including realistic
 > multi-suite Cargo summaries and interruption cleanup. Review its minimal

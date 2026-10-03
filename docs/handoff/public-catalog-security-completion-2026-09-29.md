@@ -7923,6 +7923,73 @@ unresolved split is not an Apple-completion count. Source/legal closure,
 independent real-weight CPU parity, final Apple CPU/Metal/no-fallback evidence,
 current CI/security review and separately authorized publication remain ahead.
 
+## 2026-10-03 actual source-batch failure and correction (06:45 UTC)
+
+Root independently accepts activated V23 SHA-256
+`1ec35f619430cd5524a0a58a48f9bf03593f4f0e223850948d7489e855248633`:
+session `71112` terminates zero with 53/53 actual shared-path offline cases.
+This supersedes the earlier disabled-entry checkpoint, not a model verdict.
+Production session `22092` then creates only owned worker `53977035`, label
+`vokra-kyutai-source-kv-vast-v23-20261003-26087`, for exact clean implementation
+HEAD `0f26b6ea256d198d7d479da44aedf09353b1c908`. Its selected offer has 14
+effective CPU cores, 200 GB requested storage and USD 0.1985185185185185/hour.
+No HF credential, model/checkpoint/config/tokenizer/preset acquisition or model
+execution is part of this source/code run.
+
+The modern and original XCodec2 source collectors and the five-file SpeechT5
+primary legal-context collector each exit zero. Their recovered tests pass
+26, 26 and 16 respectively, without skips. Workspace compilation, however,
+exits 101 on Rust 1.99.0 with E0689 at line 1497 of
+`crates/vokra-models/src/kyutai_stt/streaming_lm.rs` (candidate-only; does not exist in this checkout): the new test's
+untyped frame counter cannot resolve `saturating_sub`. No workspace pass
+count, Clippy pass, native-KV test pass or full Kyutai-source acquisition is
+claimed for this HEAD. The remote leaf exits 101, the complete-output
+preflight exits one, and the diagnostic preflight exits zero. Controller
+session `22092` is terminal one, not a green lifecycle run.
+
+Recovered diagnostics are retained in
+`/private/tmp/vokra-kyutai-source-kv-v23-logs.x2SvPA`. The 3,312-byte workspace
+log SHA-256 is
+`6005d4d3fc4ef1eaea19577b2d14195ade402a0f8ee10e740e657edccc94f1ac`.
+The controller assembles its primary source packet only after the workspace
+legs; consequently, the acquired profile bytes are not recovered by this
+failed run. Exit-zero acquisition logs do not substitute for authenticated
+local primary receipts or legal approval. Reacquire/recover the bounded source
+packet during the corrected replay rather than promoting these logs.
+
+Automatic cleanup passes both individual-null and complete-pagination checks.
+Root's separate session `73243` also terminates zero, confirms
+`53977035` has `instances=null`, and reads a complete `next_token=null`
+account inventory with zero Vokra rows. The one unrelated exited instance is
+untouched. Worker storage is not retained.
+
+Root reviews Luna's isolated one-line correction, changing only the test loop
+to `0usize..5`, and commits it as
+`52e4ddbebfeb32cb5f7aa241580b2493b20ecdb0`. The fixed checkout is clean.
+That isolated clone initially has no installed Git-hook setting; root runs
+the normal five compile-free gates explicitly in session `74736`, terminal
+zero, and installs the standard hook setting for subsequent commits. This
+does not prove corrected-head compilation or numerical parity. Frozen V23 and
+its old execution HEAD are not retargeted; a separate replay is being bound to
+the correction.
+
+Separately, root reviews the three-file BigVGAN metadata-only collector,
+including fixed-endpoint admission, per-read deadlines, final-read socket
+closure, response caps and synthetic evidence markers. Independent offline
+self-test and diff hygiene pass; normal commit gates pass with 190 fixture
+pins and 306 shell files. Clean preparation commit
+`af462cffda14e97b044d3ebd718b23c08572c841` contains no manifest approval or
+primary acquisition. The six-test generic suite remains `NOT_RUN` locally
+after the earlier hook refusal and is assigned to VAST, not retried locally.
+Its three real metadata responses and per-variant license/card bytes are still
+absent. Qwen3-TTS's separate controller remains disabled after root finds
+additional recovery-deadline, endpoint/ownership and fault-coverage defects.
+
+All 194 rows remain in scope. The retained 136 code/artifact-full and 58
+unresolved classification is not Apple completion. Independent real-weight
+CPU results, legal decisions, final Apple CPU/Metal/no-fallback, exact-head
+security/CI and separately authorized public reconciliation remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

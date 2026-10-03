@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 actual source-batch failure and correction (06:45 UTC):**
+> root passes the activated V23's 53 offline cases and executes clean `0f26b6ea`
+> on disposable VAST `53977035`. The three source legs and their 26/26/16
+> tests exit zero, but workspace compilation fails with Rust E0689 before
+> native-KV/full-source verification. Diagnostic logs, not the primary source
+> packet, are recovered; the worker and storage are destroyed and independently
+> absent. Reviewed one-line test typing correction `52e4ddbe` still needs its
+> own VAST replay. BigVGAN metadata preparation `af462cff` is independently
+> self-tested, not acquired or approved. Retain all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-source-batch-failure-and-correction-0645-utc).
+
 > **2026-10-03 capacity and independent lifecycle review (06:26 UTC):** root
 > removes 140 authenticated duplicate mock input Git bundles while retaining
 > valid backups, checkouts and logs. Recovery headroom is about 8 GiB at this
