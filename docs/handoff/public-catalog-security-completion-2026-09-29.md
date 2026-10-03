@@ -9657,6 +9657,41 @@ this terminal CI nor the source-only diagnostics approve real-weight parity,
 Apple/no-fallback work, source correction review or publication. The blocked
 read-only source-diff review is not retried or accepted by proxy.
 
+### Safe Git review contract and accepted source-pin correction
+
+The preceding review hold is superseded for source-diff review only. Root
+reads the trusted local-model guard and its tests: literal `git -C` diff/show
+inspection requires both `--no-ext-diff` and `--no-textconv`, preventing
+external helpers. The earlier command omitted these protections. The existing
+guard's complete self-test passes, and the protected read-only Git command
+then succeeds. No hook edit, override, alternate reader or local model
+execution is needed. The original refusal remains historical evidence;
+calling it a confirmed hook defect would be incorrect.
+
+Root reviews the actual two-file correction and independently passes five
+synthetic source-audit tests and `git diff --check`. The candidate is fixed
+in a separate clean commit
+`48731912a7dcf7d2a6ac3d9a5da7a77cf2a7c471`, based on `52e4ddbe`.
+Only the auditor's exact API body pin and matching receipt change, with
+regressions rejecting the legacy snapshot and changed source identities.
+Auditor SHA-256 is
+`eaed38ff84f43be238c86871f06bd5b077a52199151bb9b113ccb769cd359a1b`;
+receipt SHA-256 is
+`9b29f2aa8b278497a23b42dc54476a52cae4d8ce6bba776a06a3876ad555824b`.
+The original source packet, caller raw SHA/blob and NOT_RUN scope remain
+unchanged. The separate candidate clone has no configured Git hooks path;
+normal commit success is not claimed as hook execution. Root independently
+passes all five cheap equivalents: fmt, forbidden symbols, first-party
+Cargo.lock, 190 fixture pins and pipefail lint (306 files).
+
+This closes the source correction's review hold, not the actual
+raw/API/receipt audit. That actual local audit remains unexecuted under the
+maintainer guard; prepare a bounded source-only remote run without a model,
+package import, Cargo or upload. The correction is not pushed or integrated
+into the main worktree. Full dependency/owner approval, independent real-weight
+CPU parity and Apple CPU/Metal/no-fallback remain required. Inventory counts
+and all 194 completion gates are unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

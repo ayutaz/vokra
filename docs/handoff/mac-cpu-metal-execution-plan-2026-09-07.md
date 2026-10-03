@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 source-pin review acceptance:** use the existing literal Git
+> inspection contract, not a hook override. The reviewed two-file Kyutai
+> correction is fixed at clean `48731912`; synthetic tests/static gates pass.
+> Next is bounded actual source-only authentication on the remote worker,
+> not repeated Cargo, local model execution or inferred Apple completion.
+> See the [accepted correction and remaining scope](public-catalog-security-completion-2026-09-29.md#safe-git-review-contract-and-accepted-source-pin-correction).
+
 > **2026-10-03 PR #152 actual Linux acceptance:** the fixed production-entry
 > model-free leaf passes at `b0add994`, and owned VAST resources are destroyed
 > with individual-null/closed-inventory confirmation. Fresh exact-head CI

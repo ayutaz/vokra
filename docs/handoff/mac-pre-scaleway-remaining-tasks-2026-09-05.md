@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 source-pin review acceptance:** existing safe Git inspection
+> flags resolve the review hold without modifying a hook. Root reviews and
+> commits the two-file Kyutai source-pin correction at `48731912`; five
+> synthetic tests and five cheap static gates pass. Actual source audit,
+> model execution and Apple validation remain unexecuted. See the
+> [review contract and exact correction](public-catalog-security-completion-2026-09-29.md#safe-git-review-contract-and-accepted-source-pin-correction).
+
 > **2026-10-03 PR #152 actual Linux acceptance:** exact `b0add994` passes
 > 32 tests with zero skips and three static gates on VAST; recovered process
 > statuses and all ten log hashes pass. The worker and storage are destroyed.
