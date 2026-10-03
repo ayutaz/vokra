@@ -173,7 +173,7 @@ consent, disclosure, and model rights before release or deployment.
 - VOICEVOX、A.I.VOICE、CoeFont、VOICEROID、UTAU等を利用する場合は、対象モデルとキャラクターごとの現行利用規約を一次資料で確認し、必要な許諾・表示・配布条件を記録する。Vokraはこれらの許諾を提供・保証しない。
 - 日本法の適用・判例の評価は、具体的な利用形態を踏まえて法務確認する。
 
-根拠: [個人情報の保護に関する法律（e-Gov法令検索）](https://laws.e-gov.go.jp/law/415AC0000000057)（2026-08-30確認）。
+根拠: [個人情報の保護に関する法律（e-Gov法令API）](https://laws.e-gov.go.jp/api/1/lawdata/415AC0000000057)（2026-08-30確認）。
 
 ---
 
@@ -319,7 +319,7 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 - [Google Play AI-generated content policy overview](https://support.google.com/googleplay/android-developer/answer/14094294)
 - [Apple App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)
 - [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html)
-- [個人情報の保護に関する法律（e-Gov法令検索）](https://laws.e-gov.go.jp/law/415AC0000000057)
+- [個人情報の保護に関する法律（e-Gov法令API）](https://laws.e-gov.go.jp/api/1/lawdata/415AC0000000057)
 - [HHS: Covered Entities and Business Associates](https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html)
 - [HHS: Business Associates](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/business-associates/index.html)
 - [Kadrey v. Meta case — U.S. District Court, Northern District of California](https://cand.uscourts.gov/cases-e-filing/cases/323-cv-03417-vc/kadrey-et-al-v-meta-platforms-inc)
