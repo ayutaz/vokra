@@ -9692,6 +9692,50 @@ into the main worktree. Full dependency/owner approval, independent real-weight
 CPU parity and Apple CPU/Metal/no-fallback remain required. Inventory counts
 and all 194 completion gates are unchanged.
 
+### Source-only remote activation refused before execution
+
+The bounded source-only leaf is independently reviewed after correcting a
+truncated API revision and isolating Python startup with `python -I -S`.
+Frozen leaf SHA-256 is
+`f1c97921e7775ac887f39d213a91ff8484d4a2836a135a09057c7d6eb8cdb5ed`
+(6,881 bytes); its input manifest SHA-256 is
+`10e821bfd5ba18c6b1989656a4003ab84ddc2e4d5fd19556ae5b8fbb3d5e8668`.
+The six planned transfer inputs are that leaf/manifest, the reviewed auditor
+and matching receipt, and the retained public DSM raw/API files. The leaf
+verifies exact hashes, five synthetic tests, actual source authentication
+and bounded evidence; `producer_commit` identifies the clean input origin,
+not a remote Git checkout. Model execution, package import, HF credential,
+Cargo and upload remain outside this run.
+
+Root's manager activation is rejected by auto-review at process creation:
+the unpublished auditor/receipt's disclosure to an external VAST worker
+requires specific transfer authorization. None of this activation's local
+manager, instance creation, SSH transfer, remote audit or cleanup runs.
+Do not record a lease, source-audit failure/PASS or successful destruction
+from this refusal. No indirect controller, alternate transfer route or local
+actual-audit workaround is attempted. The latest successful closed VAST
+inventory immediately before activation contains zero Vokra workers and
+two unrelated running workers (`54015246`, `54019631`); both are untouched.
+Obtain authorization for these six exact hash-bound inputs, source-only
+purpose and disposable-worker scope before retrying activation.
+
+Unaffected investigation advances: an isolated Python-3.12 core-only lock
+for setuptools 84 / jaraco.text 4.3 / packaging 26.3 fixes 16 small wheel
+artifacts, totaling 2,916,977 bytes. Root independently verifies all 16
+artifact size/hashes and complete RECORD payload coverage, with zero native
+members and no package import/execution. Isolated project SHA-256 is
+`39cb61521d1bf938ffe3e888c3c1463cb81ee65c43b5eef81096397fcb6110f1`;
+lock SHA-256 is
+`2622eacd2c691a505940a42a86802496945898f9e86f8fbb63e1c9c759d576fd`.
+Root identifies a one-character Typer wheel-hash transcription defect in
+the narrative receipt and requests correction; the actual lock/artifact
+digest is intact. This is not a change to the XCodec2 target lock. The
+official setuptools wheel still includes LGPL autocommand; the isolated
+external graph does not remove those bytes or approve a derived wheel.
+Source-preserving de-vendoring design and owner/legal/runtime compatibility
+remain separate gates. No model status, numerical bound or public artifact
+is promoted by these static facts.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

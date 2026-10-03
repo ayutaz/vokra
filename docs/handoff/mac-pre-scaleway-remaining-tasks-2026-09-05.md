@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 external source-transfer hold:** auto-review refuses the
+> hash-bound source-only VAST activation before process creation. No new
+> worker, transfer or actual source audit runs; no workaround is attempted.
+> Root independently verifies an isolated 16-wheel dependency packet, not
+> a derived-wheel/license approval. See the
+> [activation boundary and unaffected evidence](public-catalog-security-completion-2026-09-29.md#source-only-remote-activation-refused-before-execution).
+
 > **2026-10-03 source-pin review acceptance:** existing safe Git inspection
 > flags resolve the review hold without modifying a hook. Root reviews and
 > commits the two-file Kyutai source-pin correction at `48731912`; five

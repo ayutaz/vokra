@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 external source-transfer hold:** obtain specific authorization
+> for the six hash-bound source-only inputs before remote activation. The
+> rejected manager does not create a worker or execute the actual audit.
+> Static 16-wheel closure facts advance separately; they do not authorize
+> package execution or resolve official setuptools' LGPL payload. See the
+> [refusal and residual gates](public-catalog-security-completion-2026-09-29.md#source-only-remote-activation-refused-before-execution).
+
 > **2026-10-03 source-pin review acceptance:** use the existing literal Git
 > inspection contract, not a hook override. The reviewed two-file Kyutai
 > correction is fixed at clean `48731912`; synthetic tests/static gates pass.
