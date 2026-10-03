@@ -7,6 +7,12 @@
 > a derived-wheel/license approval. See the
 > [activation boundary and unaffected evidence](public-catalog-security-completion-2026-09-29.md#source-only-remote-activation-refused-before-execution).
 
+> **2026-10-03 static dependency review:** root verifies the corrected
+> 137-source / 61-request / 68-candidate hash inventory. Six dynamic calls
+> and generated-script reachability remain unresolved; no derived wheel,
+> package execution or model row is approved. See the
+> [limited static acceptance and residual gates](public-catalog-security-completion-2026-09-29.md#setuptools-static-reachability-correction-and-limited-acceptance).
+
 > **2026-10-03 source-pin review acceptance:** existing safe Git inspection
 > flags resolve the review hold without modifying a hook. Root reviews and
 > commits the two-file Kyutai source-pin correction at `48731912`; five

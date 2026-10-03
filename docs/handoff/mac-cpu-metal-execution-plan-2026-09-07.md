@@ -7,6 +7,13 @@
 > package execution or resolve official setuptools' LGPL payload. See the
 > [refusal and residual gates](public-catalog-security-completion-2026-09-29.md#source-only-remote-activation-refused-before-execution).
 
+> **2026-10-03 static dependency review:** corrected source/API provenance
+> passes root's independent static replay and member/hash checks. Keep the
+> six dynamic calls and generated paths unresolved, and require backend
+> compatibility and owner/legal gates before any derived-package execution.
+> This does not lift the external-transfer hold or prove Apple completion.
+> See the [limited acceptance](public-catalog-security-completion-2026-09-29.md#setuptools-static-reachability-correction-and-limited-acceptance).
+
 > **2026-10-03 source-pin review acceptance:** use the existing literal Git
 > inspection contract, not a hook override. The reviewed two-file Kyutai
 > correction is fixed at clean `48731912`; synthetic tests/static gates pass.

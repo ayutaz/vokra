@@ -9750,6 +9750,53 @@ tools; root's independent audit uses uv-managed stdlib Python, neither
 imports the inspected packages. Preserve this distinction from package
 execution and from the refused external transfer.
 
+### Setuptools static reachability correction and limited acceptance
+
+Root rejects the initial static reachability result before accepting it:
+dotted `jaraco` roots were omitted, same-name symbols in unrelated modules
+could supply false candidates, and parsing reopened a wheel after its hash
+check. Additional review requires real branch context, enforcement of the
+JSON output cap and actual provider member/hash metadata instead of guessed
+module filenames. A package's empty `__init__.py` must remain discoverable.
+Luna corrects these bounded defects in a separate temporary audit directory;
+earlier reports are preserved, not retrospectively called successful.
+
+The frozen corrected auditor SHA-256 is
+`9b86859b3a1607617d2a6061b9451f3c5ec0125aca18a328fc4fe1dce66a35d8`.
+Root reviews the changes and independently executes the synthetic self-test
+and fixed-input static audit, both exit zero, with offline uv-managed
+Python 3.12 `-I -S`. Root's separate output is byte-identical to Luna's
+781,216-byte corrected report, SHA-256
+`25ef57b0e25967dffa0b2c4c7c12250888c9bb58624ec5e4662e05d2081342e0`.
+Retained evidence is in
+`/private/tmp/vokra-setuptools84-static-reachability-20261003/`:
+`reachability_audit.py`, `reachability.v4.corrected.json`,
+`reachability.root-reviewed-v4.json` and `README.v4.md`.
+
+The report records the existing sixteen locked wheels, twelve vendored
+distributions, 137 non-vendor setuptools Python members and 61 imported API
+requests. Root independently checks the complete 137-member set and each
+source size/hash against the official wheel, then verifies all 68 API
+candidate member hashes against their exact retained provider wheels.
+Parsing uses authenticated in-memory bytes, not a second path read. These
+are static source/member candidates, not runtime API compatibility proofs.
+
+Five recognized literal dynamic calls and six unresolved variable-target
+calls remain. Python 3.12's stdlib `tomllib` branch is hash-bound; the
+generated script's `importlib.metadata` / `importlib_metadata` /
+`pkg_resources` fallback is explicitly unresolved and not fully covered by
+normal AST inspection. The report retains `UNAPPROVED_STATIC_FACTS`,
+`reachability_complete: false` and false execution flags. No package is
+installed/imported/built, no vendor is removed, and no derived wheel,
+license exception, model parity or Apple promotion is accepted.
+
+The separate six-input Kyutai external-transfer authorization hold remains
+unchanged. No VAST activation is retried, no worker is created and no source
+authentication or cloud-cleanup verdict is inferred from this static work.
+Resolve authorization and the remaining dynamic/resource, backend and
+owner/legal gates before the respective execution steps; all 194 model-row
+completion requirements remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
