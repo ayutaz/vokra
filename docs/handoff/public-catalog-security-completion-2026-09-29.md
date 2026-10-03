@@ -7734,6 +7734,45 @@ project instance. It is not modified. No new allocation, model acquisition,
 upstream execution, upload, push, PR mutation or Scaleway action occurs in
 this checkpoint. All 194 public rows remain in the completion denominator.
 
+## 2026-10-03 primary evidence recovery and official reference candidate (04:58 UTC)
+
+The original SpeechT5 full audit is recovered, not regenerated: 277,065 bytes,
+SHA-256 `bcd5c811713a23f0373db17039d3c3844968c75936388ef55d445c7643443082`.
+Root independently verifies the hash, parses its schema and policy, and
+compares its project/lock hashes against the current files. They match
+`a6f51a2e3300ba0b8750dca6050c6fc2d645e657c8a507dcfc334c291d9e0bff`
+and `36d0f01df62e4d9f90f80d4c7d15bfa9df612b5a4f99ad4716c1c62458a6864b`.
+The audit records clean historical head
+`a7eb478e1d6cd42e920767aade102f2e8738746c`, raw dependency/native facts,
+build-only tools absent, and no Torch/model import, model acquisition,
+license classification, owner sign-off or upload. Its embedded historical
+approval is not an approval for the current manifest. This supersedes the
+04:36 statement that the original artifact was still sought, without
+promoting the current operator/legal gate or API/real-weight tests.
+
+The official [HKUSTAudio Transformers-native checkpoint card](https://huggingface.co/HKUSTAudio/xcodec2-hf)
+documents `decode(audio_codes).audio_values` and identifies noncommercial
+weights. The [official Transformers X-Codec2 documentation](https://huggingface.co/docs/transformers/main/en/model_doc/xcodec2)
+dates the contribution to 2026-06-25, and its
+[upstream implementation directory](https://github.com/huggingface/transformers/tree/main/src/transformers/models/xcodec2)
+contains a checkpoint converter and native model implementation. These
+primary sources change the next action: investigate a released, immutable
+Transformers reference and its conversion mapping rather than assuming the
+old `xcodec2==0.1.5` dependency pin is the only official route. No exact
+version/revision, old/new weight identity, decoder equivalence, dependency
+license closure or numerical result is established by these pages. The
+critical old-Torch alert remains open; no lock change or approval occurs.
+
+V22 implementation is still under review. The offline fixture must not
+enable the public provider entry point through environment variables, touch
+physical remote bootstrap paths on the maintainer Mac, or substitute a
+handwritten receipt builder for the actual first-party collector. Passing
+synthetic validator counts alone is not production lifecycle evidence.
+No allocation, local model execution, model acquisition, upstream numerical
+execution, publication, push, PR mutation or Scaleway action occurs in this
+checkpoint. All 194 public rows and their actual final hardware gates remain
+in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

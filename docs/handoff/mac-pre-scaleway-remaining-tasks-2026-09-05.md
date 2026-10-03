@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 primary evidence recovery (04:58 UTC):** root verifies the
+> original SpeechT5 full audit, whose project/lock hashes match the current
+> environment; avoid repeating the full audit merely to recover its existing
+> facts. Current legal/operator review remains pending. Official publisher
+> and Transformers documentation identify a native XCodec2 reference
+> candidate, not yet a pinned or numerically verified replacement for the
+> old PyPI route. V22 remains unaccepted; retain all 194 rows and see the
+> [dated evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-primary-evidence-recovery-and-official-reference-candidate-0458-utc).
+
 > **2026-10-03 accepted KV preparation (04:36 UTC):** corrected parent-driven
 > reset transactions are normally committed as `42ba5cf2`, followed by the
 > upstream citation fix at clean integrated `07e04668`. Root independently

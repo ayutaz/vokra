@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 primary evidence recovery (04:58 UTC):** reuse the verified
+> original SpeechT5 full audit for its unchanged dependency facts; resolve
+> only missing primary legal evidence and the current operator scope. For
+> XCodec2, investigate the official Transformers-native decoder and upstream
+> conversion mapping before deciding a secure pinned reference environment.
+> Do not infer old/new checkpoint equivalence or close the Torch advisory
+> from documentation alone. V22 needs a fail-closed public entry point and
+> real shared-path fault coverage before allocation. Scaleway remains last;
+> see the [dated evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-primary-evidence-recovery-and-official-reference-candidate-0458-utc).
+
 > **2026-10-03 accepted KV preparation (04:36 UTC):** use clean integrated
 > `07e04668` and 20 tap tests for the next reviewed source/KV wave. Do not
 > transfer the previous V21 result to this changed head. Before allocation,
