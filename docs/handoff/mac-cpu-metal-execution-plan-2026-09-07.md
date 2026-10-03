@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 terminal code-only readback (02:30 UTC):** session `20301`
+> terminates with exit zero and all 66 recovered checksums match. Its worker
+> and storage are destroyed and independently absent. Do not restart this
+> session or transfer its result to new `1cbc4abc`; review and fault-test the
+> new controller before a distinct exact-head run. Independent PCM capture
+> and real-weight CPU/Apple gates remain pending; see the
+> [terminal readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-only-readback-0230-utc).
+
 > **2026-10-03 integrated PyTorch PCM and source-audit readback (02:26 UTC):**
 > require a new immutable replay for clean combined `1cbc4abc`; do not retarget
 > the live `a0ef540a` code-only job. Include all 24 PCM tests, the retained

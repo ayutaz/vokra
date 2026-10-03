@@ -7217,6 +7217,36 @@ Scaleway allocation occurs in this checkpoint. Preserve all 194 public rows,
 the dated metadata-only 136 full/58 unresolved classification, independent
 real-weight CPU evidence and final Apple CPU/Metal/no-fallback requirements.
 
+## 2026-10-03 terminal code-only readback (02:30 UTC)
+
+This supersedes the live-job status in the 02:26 record, not its frozen scope.
+Session `20301` is terminal with exit zero at model/OWSM
+`a0ef540a2cd77838f6521898e08f72fd8dc353aa` and XCodec2
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153`. Root independently verifies all
+66 recovered manifest entries; manifest SHA-256 is
+`40fb64c9a5c025f0ee9c683e092e291d0e281a1f44d7af6fe46d732bc672e885`.
+Every one of the 35 recovered exit files is zero. Workspace tests report
+307 suites, 8,287 passed, zero failed and 108 ignored. All 13 exact named
+Kyutai bridge/streaming-guard tests and OWSM's 40 focused tests pass with
+zero ignores; XCodec2 reports 76 tests and no skip. Both warning-denied Clippy
+legs, source-contract legs, cargo-deny and cargo-audit pass.
+
+Controller cleanup returns zero. Owned worker `53951140` and its 200-GiB
+storage are destroyed; root's fresh individual API returns null and complete
+account readback explicitly has `next_token: null`, no Vokra row and one
+unrelated account row, left unchanged. Do not poll, restart or SSH this
+retired worker. Model/source payloads are not kept as a cloud handoff.
+
+Clean integrated `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32` is a later candidate
+and cannot inherit this exact-head pass. Its 24 PCM tests and three retained
+source-audit tests still need remote execution. The separate controller draft
+requires additional source/PCM fault cases before rent. The corrected PCM
+capture draft also remains unaccepted pending root review; synthetic schema
+or instrumentation tests do not establish an independent numerical reference.
+No real-weight result, owner/legal approval, Apple/no-fallback verdict or
+publication advances. All 194 public rows and the dated metadata-only
+136 full/58 unresolved classification remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

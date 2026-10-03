@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 terminal code-only readback (02:30 UTC):** frozen `a0ef540a`
+> replay terminates with exit zero: 307 workspace suites, 8,287 passed,
+> zero failed and 108 ignored; focused Kyutai 13, OWSM 40 and XCodec2 76 pass
+> without skips. Root verifies all 66 recovered checksums. Owned worker
+> `53951140` and storage are destroyed and independently absent; complete
+> VAST readback has no Vokra row. New combined `1cbc4abc` still needs its
+> own tests; neither independent PCM nor real-weight/Apple parity is proved.
+> See the [terminal readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-only-readback-0230-utc).
+
 > **2026-10-03 integrated PyTorch PCM and source-audit readback (02:26 UTC):**
 > root normally commits reviewed combined candidate `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32`,
 > preserving the streaming guards and historical MLX policy while adding the
