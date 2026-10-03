@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 repeated-failure investigation (09:55 UTC):** hold new VAST
+> allocations, not the catalog goal. Require exact production shell context,
+> per-leg exit/reason retention, bounded diagnostics independent of successful
+> output manifests, and cleanup/readback fault tests before retrying. A15
+> reaches SSH readiness but does not establish a model-free pass. Preserve
+> already-green code evidence, all 194 rows and final Scaleway gates; see the
+> [root-cause record](public-catalog-security-completion-2026-09-29.md#2026-10-03-repeated-failure-investigation-0955-utc).
+
 > **2026-10-03 bounded synthetic-copy cleanup (09:32 UTC):** two exact clean
 > synthetic work roots are removed only after complete-history bundle and
 > retained-copy verification; logs and outputs stay intact. Local headroom

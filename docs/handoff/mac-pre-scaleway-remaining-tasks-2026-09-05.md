@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 repeated-failure investigation (09:55 UTC):** stop further
+> allocations until production-context regression and bounded failure-log
+> recovery are independently accepted. A14's helper changed caller shell
+> flags; A15 corrects that and reaches SSH readiness, but its incomplete
+> BigVGAN manifest aborts before useful diagnostics are recovered. The
+> collector's original failure remains unknown. Do not repeat green Cargo or
+> advance any model row; preserve all 194 rows and see the
+> [root-cause record](public-catalog-security-completion-2026-09-29.md#2026-10-03-repeated-failure-investigation-0955-utc).
+
 > **2026-10-03 bounded synthetic-copy cleanup (09:32 UTC):** root removes
 > only two clean, bundle-backed work roots from a completed synthetic test,
 > preserving their outputs/logs and a full counterpart. Available space

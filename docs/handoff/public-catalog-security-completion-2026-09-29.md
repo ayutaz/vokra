@@ -8364,6 +8364,86 @@ prefix must be aligned in the next frozen correction. No provider, model,
 workspace Cargo, publication or Apple execution occurs in this checkpoint.
 All 194 rows and the outstanding end-to-end gates remain in scope.
 
+## 2026-10-03 repeated-failure investigation (09:55 UTC)
+
+At root management head `37082099b1c9025fff938dfdf10cbcc4cfb85c72`,
+the owner requests diagnosis and countermeasures rather than another blind
+retry. Root holds further VAST allocations until the orchestration regressions
+and failure-evidence recovery pass independent review. This does not pause or
+reduce the full 194-row catalog objective.
+
+### Confirmed causes and test blind spots
+
+| Failure | Confirmed cause / evidence | Countermeasure and acceptance boundary |
+|---|---|---|
+| Raw-SHA bundle creation | A9 advertises no ref and stops before allocation. | A10 uses literal `HEAD`, verifies the expected commit and advertised ref, and gets past actual bundle preparation. Keep this pre-allocation gate. |
+| Temporary directory failure | A11's `readonly name="$(mktemp ...)"` masks `ENOSPC`; subsequent paths are invalid. | Assign and check first, then mark readonly. Keep the 2 GiB free-space floor; never lower it to make a test pass. |
+| SSH readiness exits on first probe | A14's `bounded` helper globally re-enables `set -e` before returning 255. Its conditional-function fixture suppresses that shell behavior. | A15 captures `wait` in an explicit conditional without changing caller flags; test the outer lifecycle in a normal `set -e` subshell, not only `if run_live`. |
+| Actual collector failure is not diagnosable | A15 runs unconditional BigVGAN `sha256sum` under `set -e` with five required files absent. The remote job exits before later reason classification; successful-artifact recovery requires those missing files. | Record each leg's exit/reason before manifest operations; recover a separate capped diagnostic packet even when success manifests do not exist. Preserve the original nonzero result. |
+| Source-only outer lifecycle remains unproved | Frozen source-only V5's exposed self-test never calls its provider lifecycle. Independent audit also finds incomplete partial-create parsing, reset transfer deadlines and absent failure-log recovery. | Keep activation disabled. Require actual shared-path create/readiness/leaf/transfer/signal/cleanup fault tests, bounded JSON/logs and complete exact-label ownership readback. |
+
+Root independently reproduces the Bash semantics without files, models,
+network or Cargo in function cell `4008`: readonly assignment around a failing
+substitution returns zero; a function called as an `if` condition continues
+after `false` and can report success; a helper that restores `set -e` aborts
+its caller at return 255; the explicit `if wait` version lets the caller
+capture 255 normally. These are orchestration failures, not evidence of a
+numerical-parity or GPU-performance problem.
+
+### Actual A14 and A15 outcomes
+
+Frozen A14 SHA-256 is
+`a7bfe1d304b2ef7f01c63a5c2eb3263659d9539b16c11849c5c65b3013df8df6`.
+Root offline session `46533` passes, but actual session `55342` exits 255
+with an empty readiness log. Owned `53994450` is destroyed; fresh independent
+session `20551` confirms absence and complete account pagination, with one
+unrelated instance left untouched. This is direct evidence that the old
+conditional fixture missed a production-shell failure.
+
+Frozen A15 SHA-256 is
+`8461e717ff92b9ce6893cdb95a1b669bffe60ad9a1ad423089eded94459519c8`.
+Root session `99682` passes its normal-shell regression. Actual session
+`54931` reaches readiness on probe 17 after sixteen 255 results and clones
+both exact candidate heads. It then exits one. Retain actual evidence in
+`/private/tmp/vokra-qwen-bigvgan-model-free-a15.MSS6BW`.
+Its remote log reaches BigVGAN manifest creation and names five absent output
+files, but does not contain the original collector log or its recorded exit.
+The exact collector failure cannot be reconstructed from those warnings;
+do not invent a network, API, package or license cause. Earlier Qwen
+audit/API failures could coexist, but the bootstrap-failure path returns
+before BigVGAN and is not an explanation for reaching that manifest command.
+Cleanup records zero for owned `53995269`; the retained individual receipt is
+null and the complete exact-label receipt is empty. A fresh independent
+post-destroy confirmation is still pending at this snapshot.
+
+### Recovery correction under review; no new allocation
+
+Luna prepares A16 at SHA-256
+`4848dcd87b3275dce8c9b437570b3eb38192aa480949dd0d558b54e65255fb13`;
+root does **not** accept it for activation. Review finds that BigVGAN logs
+are selected from the wrong directory, logs above 1 MiB prevent the whole
+diagnostic packet, only a generic remote-job exit is retained, manifest
+failure still bypasses reason recording, and diagnostic failure overwrites
+the original status. A bounded correction is delegated with normal-shell
+bootstrap/audit/API/BigVGAN failure tests and exact log/reason assertions.
+Syntax or agent self-test claims alone are not acceptance.
+
+Local available space is 790,468 KiB at the last readback, below the unchanged
+2 GiB floor. Large synthetic fixtures and new allocations are withheld.
+Only independently authenticated, reproducible duplicate test work roots may
+be removed; actual run evidence, outputs, source and complete-history backups
+remain preserved. Root's process-inventory diagnostic is denied by the OS;
+no alternate permission-bypassing inspection is attempted.
+
+PR #152's dated independent readback at 09:41:48 UTC is open and **draft**,
+remote head `dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, with 76 successful,
+three skipped and zero pending/failing checks. These checks still do not cover
+local `b0add994`. No model-free pass, source/legal approval, real-weight parity,
+HF upload or Apple verdict is added by this investigation. Reuse the accepted
+`52e4ddbe` code result rather than rerun green workspace Cargo for missing
+source bytes. Final Scaleway/no-fallback and public-artifact reconciliation
+remain required across the unchanged catalog scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
