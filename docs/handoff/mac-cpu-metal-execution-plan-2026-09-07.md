@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 recovered-source correction acceptance (13:31 UTC):** the
+> one-document repair passes root's offline test, fixed primary-source
+> size/blob verification and all six unchanged recovered-packet validators.
+> Reuse the accepted exact-hash packet; do not repeat the paid retrieval.
+> This closes the observed source-packet completeness failure, not native
+> implementation, dependency/owner approval, real-weight parity or Apple
+> execution. See the
+> [actual correction verdict and residual boundary](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovered-source-correction-acceptance-1331-utc).
+
 > **2026-10-03 actual source recovery and first-failure diagnosis:** V8's
 > reviewed activation passes root's normal-entry offline tests before its
 > source-only VAST run. Actual transport succeeds; strict full-source

@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 recovered-source correction acceptance (13:31 UTC):** root
+> authenticates the single missing 1,088-byte license and independently
+> passes all six unchanged validators on a separate 129-file packet.
+> All 128 original file hashes/copies and owner/legal/execution fields are
+> preserved. No second lease, model execution, approval or Apple promotion;
+> the original collector itself remains unmodified. See the
+> [bounded correction and exact hashes](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovered-source-correction-acceptance-1331-utc).
+
 > **2026-10-03 actual source recovery and first-failure diagnosis:** the
 > separately reviewed V8 retrieves all 128 primary text/metadata files on
 > VAST, but terminates 1 at the strict full-source gate. The fixed Moshi tree

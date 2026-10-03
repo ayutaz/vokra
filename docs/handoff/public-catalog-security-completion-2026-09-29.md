@@ -9421,6 +9421,61 @@ the metadata-only 136 code/artifact-full / 58 unresolved split and remaining
 owner/legal, independent real-weight CPU, Apple CPU/Metal/no-fallback,
 exact-head security/CI and separately authorized publication gates.
 
+## 2026-10-03 recovered-source correction acceptance (13:31 UTC)
+
+This supersedes the preceding under-review correction checkpoint, not the
+original V8 terminal 1. Root reviews Luna's bounded repair at SHA-256
+`4b8495ad36b114a430ebe4d531218f7fd805e4bd9a86d7330e7abd03a8eeedff`
+and independently runs its actual `--self-test`: exit zero. Tests exercise
+the real packet rewrite with offline synthetic bytes, held versus flat row
+schemas, preserved originals, duplicate JSON, bad blob, oversized payload
+and the actual redirect handler. Synthetic output is explicitly marked and
+cannot be confused with a production source receipt. The no-network-flag
+CLI returns 2 before recovery. No full lifecycle matrix is rerun.
+
+Root's first scoped real GET returns 2 due to the restricted environment's
+DNS failure; it creates no recovered packet. A separately network-enabled
+execution of the same reviewed fixed-URL operation returns **zero**. This
+is a 1,088-byte primary legal-text retrieval only, with no credential,
+model/config/tokenizer/preset, dependency, provider, Cargo or upload access.
+The payload matches Git blob `b93be90515ccd0b9daedaa589e42bf5929693f1f`
+and SHA-256
+`da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93`.
+The network-scope correction is not a license/identity-gate bypass.
+
+The fresh output is
+`/private/tmp/vokra-recovered-primary-source-op22vh18/packet`; its separate
+parent correction receipt SHA-256 is
+`549aaf6dd615892f51e7adb05ef360a8d7f5d16c98b316280f08d4216325cf33`.
+Corrected flat manifest SHA-256 is
+`85223a7ac8b947eaeafa7b2f337a1ac60dea84a75d44ee0c607df72ad25d6342`;
+corrected source receipt SHA-256 is
+`3e51e7174fea2b6a3640fc8a146ec07faec9e73aa5053162552ead3caaf04004`.
+Counts are 129 flat files / 112 held files. Existing license receipt names
+are unchanged; the missing document is `moshi-license-0006.txt`.
+
+Root's actual normal V10 `--validate-recovered` invocation terminates
+**zero**: manifest, receipt, flat directory, packet files, full source
+receipt and source profiles all PASS. Existing validators and their limits
+remain unchanged. Root additionally verifies all 128 original hashes,
+byte-identical copied payloads and the exact single added license row in
+each relevant manifest. Repository Python rows, other repositories and
+source profiles are unchanged. Original receipt fields, including
+`manifest_self_hash=NOT_SELF_HASHED_MANIFEST_LAST`, owner review REQUIRED,
+legal approval NOT_DONE, publication NO_UPLOAD and false model/execution
+flags, are preserved. No second paid lease or 128-file download is needed.
+
+This accepts the corrected authentic source-only packet. The original
+collector body is neither inspected nor modified after the earlier guard
+denial; do not claim that its internals or future collection behavior are
+fixed. Future work should use the accepted exact-hash packet and this
+bounded repair evidence rather than repeating the deficient collection.
+Checkout-validation, independent upstream/reference execution, dependency
+and owner/legal closure, native composite completion, real-weight CPU and
+final Apple CPU/Metal/no-fallback verdicts remain separate gates. The
+194-row denominator and 136 metadata-full / 58 unresolved split do not
+change. PR #152's local correction still needs its own actual Linux verdict.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
