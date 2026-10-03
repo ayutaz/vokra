@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 integrated candidate and live code replay (03:34 UTC):** keep
+> live V21 fixed at `1cbc4abc` / `a5e4c810`; do not add later candidate
+> `858bfa46` to its running scope. Recover and authenticate small evidence,
+> then destroy owned `53959731` and storage and verify complete readback.
+> Correct official KV history snapshots, storage-region identity and
+> pre-mutation poison/budget guards before real capture. A separate bounded
+> full-Python source-receipt collector is preparation only, not an acquired
+> checkout or execution approval. Scaleway stays last; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-integrated-candidate-and-live-code-replay-0334-utc).
+
 > **2026-10-03 PCM/KV preparation readback (03:15 UTC):** source-only capture
 > `fc977f3b` passes root's 18 offline tests; native KV observation `6c015bb9`
 > still needs its three exact-head remote Rust tests. Integrate these reviewed

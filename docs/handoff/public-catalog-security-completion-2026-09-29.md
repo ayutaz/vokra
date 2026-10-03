@@ -7383,6 +7383,73 @@ No row advances, no new provider is allocated by this preparation, and all
 194 public rows remain in scope. Final Apple/no-fallback and publication
 remain separate gates.
 
+## 2026-10-03 integrated candidate and live code replay (03:34 UTC)
+
+Root independently completes V21's offline self-test in session `76959`
+with exit zero, including its positive Mimi raw/API validation and the
+missing-role, hash and identity negative cases. Controller SHA-256 is
+`f754c533e95871e126684481dba6db121a016de4bc5efe54453da33130bcb83a`.
+Root compares the generated tiny-fixture controller with that frozen file:
+only the eight intended repository, HEAD and count substitutions differ.
+Those synthetic provider/source outputs are not primary receipt acquisition
+or real code/numerical evidence.
+
+After fresh complete account readback has zero Vokra instances, the distinct
+authorized code-only run starts at 03:25 UTC on owned worker `53959731`,
+label `vokra-family-model-free-v21-20261003-20261003T032514Z-49548`.
+Session `42297` remains live. The provider records 32 effective CPU cores,
+257,589 MiB RAM, 200 GB disk and USD 0.17555555555555558/hour. Its fixed
+model/OWSM HEAD is `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32` and
+XCodec2 HEAD is `a5e4c810f853c1d0c25d1df78635f115d7c7d153`.
+The scope is model-free Rust/Python/static verification plus the exact three
+fixed-revision Moshi Python raw/API receipts. No HF credential is transferred,
+and no model, tokenizer, configuration, preset or package-reference workload
+is authorized by this run. Terminal verdicts, recovered checksums and owned
+worker/storage destruction are still pending. The earlier `a0ef540a` pass
+cannot be transferred to this new HEAD.
+
+Separately, implementation snapshot
+`b068ab9abf5dd527b2240dbe8035deed8a525ac2`, parent `1cbc4abc`, combines
+the already reviewed native KV observation and source-only PCM capture
+preparation. Documentation correction
+`858bfa464fb0b101b1d4f1a4f8bc56cd96bdc088` is the current clean integrated
+HEAD. Root verifies all four implementation/README hashes equal the reviewed
+standalone bytes, checks the complete six-file integration scope, reviews
+the dated handoff corrections, and independently passes all 18 offline
+stdlib PCM tests. Diff hygiene passes. The three native KV Rust tests remain
+`NOT_RUN`; this candidate needs a separate later exact-head remote run and
+must not retarget live V21. Preparation review is recorded in normal root
+management commit `367206c948a3224cf9eaf2027655fcbde325ab5e`.
+
+The new, uncommitted official KV tap is not accepted for capture. Root reads
+its complete source, tests and handoffs and finds that retained borrowed ring
+views can be overwritten by later frames, resets or eviction. Pointer-only
+storage identity cannot distinguish K/V regions within the shared real
+backing tensor. Poison and reset-budget guards occur after upstream mutation,
+and a partial reset can incorrectly clear a poison. Assigned corrections
+must preserve source dtype in bounded snapshots or establish an immediate
+ephemeral consumer, validate exact storage regions, and reject inadmissible
+operations before mutation. Its five reported synthetic tests are not real
+upstream or numerical evidence. Full tracked-Python source receipt preparation
+is also assigned separately; it has not acquired a checkout or resolved the
+dependency/license/owner closure.
+
+To preserve local recovery space, root removes only three redundant bundles
+from the terminal synthetic debug directory
+`/private/tmp/vokra-clean-heads-model-free-logs.4UkT3M`. All logs and source
+receipts remain. The live-run input bundles in
+`/private/tmp/vokra-clean-heads-model-free-logs.97TzDj` are byte-identical
+and independently verified as complete-history backups: model/OWSM SHA-256
+`172870252098b86c1b20d848bd66ef7a73b721c38c0051e438fd87b05c40ba71`,
+XCodec2 SHA-256
+`87c1a296db86b52e11ff4392db4111b562d96efb4aeb35e3238d75c6f9dd0b35`.
+The old directory drops from about 165 MiB to 544 KiB. No unique commit or
+evidence is removed, and the live-run inputs are not modified.
+
+All 194 public rows remain in scope. The metadata-only 136 full / 58
+unresolved split is not real-weight or Apple completion. No source/license,
+CPU parity, Apple/no-fallback or publication verdict advances here.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

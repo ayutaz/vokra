@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 integrated candidate and live code replay (03:34 UTC):** root
+> reviews clean integrated candidate `858bfa46` and independently passes its
+> 18 model-free PCM tests. Its native KV tests still need a later exact-head
+> run. Separate frozen `1cbc4abc` / `a5e4c810` code-only V21 is live on owned
+> worker `53959731`; terminal results, primary receipt recovery and destruction
+> remain pending. A new official KV tap fails root review on borrowed-history
+> and pre-mutation guards and must be corrected. No real-weight or Apple row
+> advances; retain all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-integrated-candidate-and-live-code-replay-0334-utc).
+
 > **2026-10-03 PCM/KV preparation readback (03:15 UTC):** root normally
 > commits source-only PCM capture preparation `fc977f3b`, independently passing
 > 18 model-free tests. Separate native KV observation `6c015bb9` is reviewed
