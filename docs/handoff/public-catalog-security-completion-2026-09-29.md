@@ -9604,6 +9604,48 @@ The [upstream vendored-license issue](https://github.com/pypa/setuptools/issues/
 is supporting context, not a license exception, implementation acceptance
 or execution permission. No derived setuptools candidate is accepted yet.
 
+### Reacquired API snapshot and review hold
+
+The fixed DSM Contents API envelope is independently reacquired: HTTP 200,
+zero redirects, 12,946 bytes, SHA-256
+`c07733a52c67cbb78536de4ba6e8cbdbdd6a5a4ec7d169e8ee03ab356ee9062e`.
+Retained path is
+`/private/tmp/vokra-kyutai-dsm-api-envelope-20261003-op22vh18/github-contents-stt_from_file_pytorch.json`;
+its acquisition receipt SHA-256 is
+`478dfa65fc8e9894778c6aca02ec503f5ddb6f5ab847ebbfc20203075d47188d`.
+Root verifies these file digests and fixed path/type/base64/size/blob/API/raw
+URL metadata against the accepted source. Decoded bytes are the same
+8,452-byte caller with the same raw SHA and Git blob. The old API envelope
+bytes are unavailable, so do not assert why its `b8f00e...` digest differs.
+
+A separate receipt candidate preserves every original identity/scope field
+except the new API body digest. Root's auditor-body review finds that both
+receipt validation and the observed-result comparison also hard-pin the old
+API digest; updating only the receipt would certainly fail. No worker is
+rented for that known failure. Luna prepares a separate two-file correction
+based on `52e4ddbe`, preserving the original tree and source packet, with the
+new fixed API snapshot and explicit old-pin rejection. Luna reports five
+synthetic self-tests passing, not actual raw/API/receipt authentication.
+
+Root's combined review/self-test command is refused before execution by the
+maintainer local-memory hook. A separate read-only `git diff` is also
+refused by the same hook. Root does not retry the blocked reads via another
+path, agent or flag, and does not accept, commit, execute or publish the
+source correction. This is a review hold, not a source-audit PASS or a model
+failure. Normal PR/CI monitoring remains unaffected. Fresh PR #152 readback
+is 75 successes / three skips / one pending Unity packaging job / zero
+failures; keep that intermediate count distinct from terminal CI.
+
+Separately, primary [jaraco.text history](https://jaracotext.readthedocs.io/en/stable/history.html)
+identifies its v4.2.0 autocommand-to-Typer replacement. The bounded static
+v4.3.0 wheel audit retains a 14,328-byte artifact, SHA-256
+`07a06a9eaf8b7eee54f2fec816565ef1eec5aa78fc81e4f1c3131ad09ff45a9a`,
+with the known helper names and no autocommand/vendor payload. This is only
+a promising replacement component: its external jaraco/context/functools,
+more-itertools and typer-slim edges are not fixed in the current XCodec2
+closure. No complete derived wheel, API compatibility proof, license
+approval, package execution or lock change is accepted.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
