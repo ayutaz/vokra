@@ -7334,6 +7334,55 @@ New `1cbc4abc` remote code verification and remote-only Mimi primary receipt
 collection remain pending. No provider is allocated by this review, and no
 model, Apple or publication verdict advances. All 194 rows remain in scope.
 
+## 2026-10-03 PCM/KV preparation readback (03:15 UTC)
+
+Root independently passes all 18 offline stdlib tests and normally commits
+the reviewed source-only capture preparation at clean
+`fc977f3b7637d7f3c8249cccf594d33971fee019`, based on `a0ef540a`.
+Capture, tests and README SHA-256 values are respectively
+`6ecfaad7e78ff3bbed184353cba40a9ff98490b781ddc5df212cde9ce15d3e2d`,
+`462b87d755555dda5fc9ae37b47f42e3dd2673b0b014399f8951d6643e0ff92d`
+and `1a65cbf3d576681ee6a256631f07a3b5ea2f21b01c8e402da06c94f81540bd95`.
+The five compile-free commit hooks pass, including 190 fixture pins and
+306 shell files. No push or real upstream execution occurs.
+
+This supersedes the rejected preparation, not its execution verdict. The
+candidate binds installed RECORD files to locked archive members, rejects
+pending native-owner dispositions, preflights no-clobber output, bounds
+archive iteration and capture budgets, and admits executable import origins
+before their loaders run. Tests use tiny synthetic ZIP/ELF/filesystem bytes,
+not acquired dependencies. The positive orchestration still substitutes the
+fixed-source checkout validator and upstream numerical caller; its focused
+source test uses a simulated Git readback. Neither is evidence of an actual
+complete upstream checkout, dependency closure or numerical reference.
+
+Separately, reviewed native observation is fixed at clean
+`6c015bb9e2e2824e1411838a950bac83d6aba948`, based on `1cbc4abc`.
+`KyutaiSttStreamingLmLayerKvView` borrows existing per-layer positions and
+row-major key/value slices without changing arithmetic or eviction. Root
+reviews the lazy first-frame fix and exact context-window/geometry guards;
+all three source-defined Rust tests remain `NOT_RUN`. The existing Rust
+public-API snapshot scans core/ops/capi, not models, so that snapshot is not
+changed by this models-only view. The earlier fixed replay must not be
+retargeted to either later candidate.
+
+Retained official Moshi `transformer.py` at
+`e6a55d2722a65870ef52a6c9f6ecfc0e90f38362` has raw SHA-256
+`f5a73d752a5bde1eda2b0b14bebd13fd81db81017d361782a07164580a687622`
+and API-body SHA-256
+`be42048eda224e70264c1d91456d42fb81aece8bb18244e372d7948c689b911d`.
+Its `RingKVCache` stores `(2, batch, KV heads, capacity, head width)`;
+`complete()` returns the official keys, values and absolute positions.
+Reset changes offsets without zeroing old tensor bytes. The independent tap
+must identify main-transformer layer caches, preserve native dtype, and use
+the returned positions to select valid chronological rows. Do not derive
+reference values from Vokra or confuse this state with LMGen's scheduling
+cache. Actual `kv_repeat`, dtype/context, streaming lifecycle, full primary
+dependency/license/owner closure and real-weight parity remain unresolved.
+No row advances, no new provider is allocated by this preparation, and all
+194 public rows remain in scope. Final Apple/no-fallback and publication
+remain separate gates.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

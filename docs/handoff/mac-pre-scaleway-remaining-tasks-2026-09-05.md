@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 PCM/KV preparation readback (03:15 UTC):** root normally
+> commits source-only PCM capture preparation `fc977f3b`, independently passing
+> 18 model-free tests. Separate native KV observation `6c015bb9` is reviewed
+> and committed, but its three Rust tests remain `NOT_RUN`. Neither candidate
+> is the fixed `1cbc4abc` remote scope. Official transformer receipts identify
+> the distinct per-layer ring-cache tap; actual KV values, dependency/legal
+> closure and real-weight/Apple parity remain open. Preserve all 194 rows; see
+> the [preparation record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcmkv-preparation-readback-0315-utc).
+
 > **2026-10-03 PCM oracle review (02:54 UTC):** root independently passes
 > all 13 model-free tests, but full source review rejects the candidate's
 > pre-import, dependency and native-owner gates. The synthetic orchestration

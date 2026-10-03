@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 PCM/KV preparation readback (03:15 UTC):** source-only capture
+> `fc977f3b` passes root's 18 offline tests; native KV observation `6c015bb9`
+> still needs its three exact-head remote Rust tests. Integrate these reviewed
+> histories into a new clean candidate before any later combined replay; do
+> not retarget the fixed `1cbc4abc` controller. Capture official transformer
+> KV results, not LMGen scheduling-cache values, after the real source,
+> dependency and owner gates close. Scaleway stays last; see the
+> [preparation record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcmkv-preparation-readback-0315-utc).
+
 > **2026-10-03 PCM oracle review (02:54 UTC):** 13 local synthetic tests pass,
 > but they do not validate the real dependency/source/artifact gates. Correct
 > pre-import bytecode/source membership, installed artifact binding, unresolved
