@@ -8974,6 +8974,65 @@ provider query, model/checkpoint/config/tokenizer/preset access, workspace
 Cargo, publication or new Apple result occurs. The original source/legal
 blockers and all 194-row final gates remain open.
 
+## 2026-10-03 independent cleanup-regression acceptance (11:47 UTC)
+
+At clean management HEAD `5279a7e2`, root independently replays the corrected
+source-only V6 with `--self-test-bounded`. Session `46805` terminates zero.
+The before/after SHA-256 is
+`8d202d861e71b99556699a1e64617adff1f5cd48734f841fa3247da5724e48e2`;
+the immutable snapshot
+`/private/tmp/vokra-primary-source-bulk-v6-8d202d861e71b99556699a1e64617adff1f5cd48734f841fa3247da5724e48e2.sh`
+is independently hash-verified. The earlier failed `f9c1f4fd` bytes were not
+archived as a snapshot; retain their failed run evidence, not an invented
+claim of immutable byte retention.
+
+Actual focused output reports transfer-group and bounded-primitive PASS,
+stdin length/hash preservation, exit 23, timeout 124, marker failure 125,
+parent INT 130 and TERM 143, leader-exited surviving-descendant cleanup,
+descendant absence, caller errexit restoration, strict stable JSON,
+symlink/FIFO rejection, duplicate/nonfinite/type rejection and diagnostic
+marker checks. The signal fixture also prints `Terminated: 15`; its actual
+aggregate status is zero. This closes the reproduced focused cleanup
+regression, not the full controller or real-provider gate. The correction
+reaps the direct child during finite TERM grace and still kills a surviving
+owned group; permission errors are not silently accepted.
+
+Root separately executes `--self-test-render-stdin`, terminating zero:
+
+| Rendered body | Bytes | SHA-256 |
+|---|---:|---|
+| Bootstrap | 1,517 | `a8fd0f7cdae2faa20d2952e43adbb2a8611e4ed6a88f1c6097ef2c424d4f2dea` |
+| Leaf | 15,527 | `d57f1ab04dae5524b81d4fc90bf57ed1418b320d25c8c736ed2b8c92bed6c9b7` |
+| Bootstrap + literal backslash/zero separator + leaf | 17,046 | `844ee0be78de78e481d80026a65de40f2ead63169d132ee1855e9a21627834ba` |
+
+Before a full replay, independent static review catches that the harness
+plain-concatenates the captured bodies while the frozen producer includes
+the two-byte literal separator. Return that concrete test-contract defect
+to its owner. Correct only the harness composition; preserve the expected
+hash and frozen producer. Corrected harness SHA-256 is
+`d6bc4d5e5f26798632d5bdf2f6fb0b3eebc19316d8b494acd549cec7bd0889c1`.
+Root independently passes syntax and its standalone `--self-test-tools`
+contract, including size/UID, symlink and unknown-argument cases. The 22-mode
+full shared-path matrix is authorized for bounded offline execution but
+has no accepted terminal result at this snapshot. No producer activation,
+new provider lease, model access, workspace Cargo or upload occurs.
+
+A separate read-only PR #152 audit confirms clean local correction
+`b0add994b4d0350c338e60cb29b8165d8145fe32` and documents the exact model-free
+32-stdlib-test plus three-helper Linux verification scope. The README's
+embedded `696238a` candidate reference is stale; do not use it as the leaf
+pin. Existing remote CI on `dd6f0154` does not cover the local correction.
+Installed/native evidence, primary license bytes, owner approval and actual
+model parity remain unproved. No tests or provider operations are performed
+by this read-only audit.
+
+The original A19 BigVGAN working-directory/raw-metadata defects and Qwen
+license stop remain separate unresolved gates. Do not retry unchanged A19,
+weaken primary validators, reroute denied source inspection, or repeat the
+already-green exact-head workspace run. Counts remain 136 code/artifact-full
+and 58 unresolved across all 194 public rows; Apple CPU/Metal/no-fallback,
+legal and publication decisions retain their separate evidence boundaries.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

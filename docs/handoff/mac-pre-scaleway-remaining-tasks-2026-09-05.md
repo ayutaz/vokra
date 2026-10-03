@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 independent cleanup-regression acceptance (11:47 UTC):**
+> root passes frozen V6 `8d202d86`'s focused tests, including transfer
+> supervision, parent INT/TERM, descendant reaping, strict snapshots and
+> bounded diagnostics. This supersedes the preceding focused failure, not
+> the pending full outer matrix. Root also catches and returns a harness
+> combined-body hash mismatch before replay; model/source/legal readiness
+> and all 194-row Apple gates remain unchanged. See the
+> [focused acceptance and remaining retry gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-cleanup-regression-acceptance-1147-utc).
+
 > **2026-10-03 recovery capacity and cleanup regression diagnosis (11:36 UTC):**
 > remove 20 exact clean synthetic clones only after complete-history bundle,
 > HEAD, ignored-file and non-symlink ancestor checks. Logs/outputs/backups

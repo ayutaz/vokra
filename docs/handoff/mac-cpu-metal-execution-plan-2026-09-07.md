@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 independent cleanup-regression acceptance (11:47 UTC):**
+> exact frozen V6 `8d202d86` passes root's focused actual replay after direct
+> child reaping and parent-signal corrections. The rendered SSH bodies are
+> independently pinned; correct the harness's missing separator rather than
+> changing the producer or expected hash. Full shared-path fault acceptance
+> is still pending, so cloud activation stays disabled. See the
+> [focused acceptance and remaining retry gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-cleanup-regression-acceptance-1147-utc).
+
 > **2026-10-03 recovery capacity and cleanup regression diagnosis (11:36 UTC):**
 > local headroom now exceeds the unchanged floor after verified clone cleanup.
 > This permits bounded offline verification, not cloud activation. The actual
