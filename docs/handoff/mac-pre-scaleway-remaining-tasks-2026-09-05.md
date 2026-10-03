@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 lifecycle root-cause review (12:21 UTC):** root independently
+> passes the actual rendered helper's focused faults, but the next full
+> matrix still fails its positive path after packet completion. The EXIT
+> cleanup outlives function-local state; tiny paired Bash probes reproduce
+> that scope defect. Require structural cleanup-lifetime correction and
+> actual end-to-end teardown, not another unchanged retry or a partial PASS.
+> See the [cause/action and acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-03-lifecycle-root-cause-review-1221-utc).
+
 > **2026-10-03 harness coverage audit and directional tool contracts (12:10 UTC):**
 > add owned-PID absence, oversized-diagnostic content/truncation and packet
 > trigger checks to previously unexecuted modes. Root catches wrong transfer

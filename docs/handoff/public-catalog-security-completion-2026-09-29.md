@@ -9179,6 +9179,70 @@ missing verdict as a new reason to repeat Cargo. No live model inventory is
 reacquired, no model row is promoted, and all 194-row source/legal, real-weight
 CPU, final Apple/no-fallback and publication gates remain in scope.
 
+## 2026-10-03 lifecycle root-cause review (12:21 UTC)
+
+At clean management HEAD `91705aa6`, root reviews the actual diff from the
+immutable `3ed7a5cc` producer to frozen candidate
+`2a6c7beaa69f1245eb5d55e29b095f0c4dcf8ab0aacb4b76c8659f63fbbd16ba`.
+The rendered remote helper now starts its supervisor asynchronously, owns
+the resulting PID and removes the unrelated outer-helper variables. Root
+actual session `82904` terminates zero: positive rendered execution, strict
+rejection of invented sources, exit 23, timeout 124, log-cap 125, parent
+INT 130 / TERM 143 and recorded leader/descendant absence, plus the separate
+transfer-parent regressions. Root session `33777` also terminates zero for
+the bounded/HEAD/transfer regressions. These are fixture results, not
+authenticated primary-source or model parity verdicts.
+
+An initial rendered-test attempt fails before fixture execution because the
+default UV cache is outside the permitted writable scope. The actual accepted
+run explicitly uses `/private/tmp/vokra-docs-uv-cache` and `UV_OFFLINE=1`;
+the cache error is not attributed to the remote helper. Producer hashes
+match before/after. Root renderer exits zero with bootstrap 1,517 bytes,
+unchanged SHA-256 `a8fd0f7cdae2faa20d2952e43adbb2a8611e4ed6a88f1c6097ef2c424d4f2dea`,
+leaf 16,345 bytes, SHA-256
+`00db283d1e343c7e0f4c9eced038af9be9ee917ba56372a6e172b4f855651f5a`,
+and literal-backslash/zero-separated combined SHA-256
+`f8c721027395aaf14fe637cbd8a04d80fc427b3fb5829c6453f28df8f632bd4b`.
+
+Harness candidate
+`2c3c7634fc2fde9be4cf2ef0eba1cc1aa99e19497c3b8eeddde3a3c39f2b2953`
+then runs the actual full matrix once, session `23388`, terminal one. Its
+first ten negative modes reach their intended failures. `fixture-positive`
+now completes the rendered leaf and fixture packet checks, but exits one:
+`line 1585: logdir: unbound variable`. Root reads the original stdout,
+stderr, provider/transport trace and controller function. The EXIT trap calls
+cleanup after `source_only_run_live` returns and its local state has expired.
+The trace contains a mock create and packet transfer but no destroy/readback;
+neither positive teardown nor the full matrix passes. Original evidence is
+retained in `/private/tmp/vokra-primary-source-bulk-faults.AGdOfi` (6,604 KiB).
+
+Two independent tiny Bash probes distinguish the lifecycle defect: an EXIT
+trap referring to an expired normal function local fails unbound; the same
+local in a function-subshell lifetime remains visible at that scope's EXIT.
+This supports correcting the lifetime boundary, not defaulting an absent
+variable to an empty value. The implementation owner must audit all cleanup
+state, preserve original phase status, and prove owned cleanup/readback
+exactly once through the actual CLI on success, failure and interruption.
+The rendered signal tests also lack an explicit elapsed-time assertion, and
+the shell's two-second supervisor safeguard can overlap Python's two-second
+group-cleanup grace. Keep those as unresolved acceptance risks, not measured
+timing guarantees.
+
+| Failure class | Cause/evidence | Required action before retry |
+|---|---|---|
+| Paired A19 BigVGAN tests | Wrong test working-directory root in recovered logs. | Correct the exact runner scope and verify the real test entry point; do not repeat the same inputs. |
+| A19 metadata/legal stops | Raw-API descriptor binding and Qwen license closure remain unproved. | Acquire/review the missing primary facts; do not relax identity or legal gates. |
+| Rendered helper | Foreground execution followed by a background PID reference and unrelated cleanup variables. | Actual rendered-body regressions now pass independently; this does not accept the outer lifecycle. |
+| Outer success cleanup | EXIT trap outlives function-local state; no mock destroy/readback occurs. | Structural lifetime fix and actual success/failure/signal teardown tests, then the full matrix. |
+| Test coverage | Wrong SCP direction or outer tests labelled as rendered-parent coverage could miss the intended failure. | Preserve fault scope; require actual direction, recorded owned PIDs, original status and diagnostics. |
+
+Unchanged reruns and replacement leases remain withheld. Review a newly
+frozen structural correction before updating pins or replaying the matrix.
+No new provider, local model execution, Cargo, PR mutation or publication
+occurs. All 194 rows, authentic source recovery, owner/legal closure,
+real-weight CPU/reference, final Apple CPU/Metal/no-fallback and separate
+artifact-publication gates remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

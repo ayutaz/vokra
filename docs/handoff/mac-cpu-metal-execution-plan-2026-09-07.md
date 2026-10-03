@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 lifecycle root-cause review (12:21 UTC):** separate the
+> independently passed rendered helper from the failed outer positive EXIT
+> cleanup. Review all trap-owned state and supervision grace periods as a
+> lifecycle, then require the actual CLI's teardown and full fault matrix.
+> Do not weaken a gate or activate cloud work from a focused pass. See the
+> [cause/action and acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-03-lifecycle-root-cause-review-1221-utc).
+
 > **2026-10-03 harness coverage audit and directional tool contracts (12:10 UTC):**
 > preserve each original fault's scope and require actual intended failures,
 > not a different transfer direction or an unrelated test's PASS label.
