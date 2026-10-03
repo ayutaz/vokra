@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 import-gate and bulk-transfer review (07:55 UTC):** preserve
+> the actual green `52e4ddbe` code result while preparing source-only replay.
+> Require real collector/receipt validators and one allowlisted bulk packet;
+> a multi-operand SCP command is not proof of one connection. PR #152 needs a
+> common pre-import execution gate for its blocked primary/native/owner scope;
+> its 29 passing stdlib tests are not execution authorization. No new worker
+> is allocated and a fresh complete readback has no Vokra instances. Scaleway
+> remains last; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-import-gate-and-bulk-transfer-review-0755-utc).
+
 > **2026-10-03 terminal code pass and incomplete source recovery (07:40 UTC):**
 > exact `52e4ddbe` passes workspace, default/all-feature Clippy and the named
 > PCM/KV/source tests, but V24's serial transfer exceeds the shared recovery

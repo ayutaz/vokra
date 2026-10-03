@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 import-gate and bulk-transfer review (07:55 UTC):** root
+> independently passes 29 tiny stdlib tests for the uncommitted PR #152
+> correction, but confirms that its installed RECORD/origin checks do not
+> authorize imports while the primary/native/owner manifest is blocked.
+> Require the assigned shared execution gate and bounded collector fixes
+> before acceptance. Source-only recovery must transfer one validated packet,
+> not 128 remote operands to one SCP invocation. No replacement worker is
+> allocated; fresh complete VAST readback confirms zero Vokra instances.
+> Keep all 194 rows and final Apple gates; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-import-gate-and-bulk-transfer-review-0755-utc).
+
 > **2026-10-03 terminal code pass and incomplete source recovery (07:40 UTC):**
 > exact `52e4ddbe` passes workspace tests (8,223 passed, zero failed, 108
 > ignored across 307 result-bearing suites), both Clippy legs and the named

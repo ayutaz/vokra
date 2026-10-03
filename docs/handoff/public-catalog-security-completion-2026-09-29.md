@@ -8095,6 +8095,61 @@ Metal/no-fallback, exact-head CI/security and separately authorized public
 reconciliation are required. No model weights/configs/tokenizers/presets,
 HF credential transfer, upload or Scaleway execution occurs in this checkpoint.
 
+## 2026-10-03 import-gate and bulk-transfer review (07:55 UTC)
+
+The estimate-only reply changed no implementation or external state. This
+continuation independently revalidates the next actions against clean root
+`72ac4a4c` and clean implementation candidate `52e4ddbe`, preserving the
+already recorded actual code pass and failed source recovery separately.
+
+Fresh GitHub readback of PR #152 is terminal zero at unchanged
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`: it remains draft, `CLEAN` /
+`MERGEABLE`, with 76 successful and three skipped completed checks. Those
+checks do not cover the new, uncommitted eight-file correction. Root reviews
+its full diff through literal Git inspection with external diff and textconv
+disabled and independently runs 29 tiny stdlib tests, terminal zero with no
+skips. No real package, native payload or model is imported by these tests.
+
+The correction improves installed RECORD hashes/sizes, import origins and
+symlink handling, but installed RECORD is not publisher/archive authentication
+or owner approval. The implementer confirms that direct `dump_reference.py`
+does not consult the blocked manifest and that the installed-environment
+branch of `dependency_guard.py` can import the official decoder despite
+`BLOCKED_PENDING_PRIMARY_BYTES`. Root assigns a shared, stdlib-only execution
+gate before both direct and callable official imports. Do not invent an
+approved record or let a Boolean/environment variable or the in-process proof
+object authorize this blocked scope. Additional deadline corrections cover
+the real urllib socket path and cached-file reads; repeated streamed reads
+must be counted and documented honestly. The later reported 30-test revision
+still needs root's final review and independent verification before commit.
+
+The paired Qwen/BigVGAN controller remains disabled. Root identifies a fresh
+remote-shell dependency on undeclared BigVGAN cap constants and incomplete
+receipt-digest checks, then assigns explicit cap bindings and real receipt
+comparisons. Root's attempted independent self-test at initial SHA
+`301ed26ecaeca8b666abb680ea5cb6c131af8dfe41d871026e3da10af0249cba`
+prints a pass but exits two after the file changes during execution. It is
+invalid evidence, not an accepted root pass. Freeze the revised file and bind
+terminal exit zero to identical before/after hashes before activation.
+
+The source-only recovery draft also remains disabled. Its first harness counts
+one SCP command with 128 remote operands, not one connection. The reviewed
+[OpenSSH portable SCP source](https://raw.githubusercontent.com/openssh/openssh-portable/master/scp.c)
+(OpenBSD revision 1.278, dated 2026-10-01; read on 2026-10-03) reconnects inside
+the remote-to-local operand loop. Require one validated packet/file transfer,
+strict member/type/size/hash checks before materialization, bounded subprocess
+and log handling, and reuse of the existing four collectors and original
+full/profile receipt validators. Do not replace actual collection with an
+arbitrary synthetic 128-row manifest or replay green Cargo for missing bytes.
+
+Fresh independent VAST API session `52976` is terminal zero: `53978818` has
+`instances=null`; complete account readback has explicit `next_token=null`,
+zero Vokra-labelled instances and one unrelated instance left untouched.
+No replacement VAST or Scaleway worker is provisioned. No HF credential is
+forwarded and no artifact is downloaded, executed or published in this review.
+All 194 rows, real-weight CPU/reference, final Apple CPU/Metal/no-fallback,
+exact-head CI/security and separately authorized publication remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
