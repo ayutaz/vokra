@@ -8913,6 +8913,67 @@ sufficient recovery headroom. Preserve already-green exact-head Cargo rather
 than repeating it. All 194 public rows and final Scaleway CPU/Metal/no-fallback
 verification remain in scope.
 
+## 2026-10-03 recovery capacity and cleanup regression diagnosis (11:36 UTC)
+
+At clean management HEAD `2d0da2da`, a bounded independent audit identifies
+reconstructible synthetic Git clones in exactly two completed test trees:
+`/private/tmp/vokra-clean-heads-model-free-logs.4bEewl` and
+`/private/tmp/vokra-clean-heads-model-free-logs.wubo0T`. Each contains five
+cases: `state-failed-leg`, `state-preflight-failure`, `state-slow-cleanup`,
+`state-success` and `state-unknown`. Within each case, the exact target suffix
+is `root/vokra-clean-heads-model-free-v2-20261003/work/model` or `work/xcodec`.
+An initial root existence check stops because the reported shorthand omitted
+that hierarchy; no deletion occurs from the shorthand. Root obtains the
+observed absolute paths and independently checks all 20 targets again.
+
+Every clone is UID 501, non-symlink and clean, with no ignored or untracked
+entry in the read-only `git clean -ndx` preview. All ancestor directories are
+also checked for ownership and symlink absence. Model clone HEAD is
+`7b6b49cd192b31f392350922c8765e8e0a1234eb`; XCodec clone HEAD is
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`. Each tree retains verified
+complete-history bundles under `self/`: model SHA-256
+`8eb8c427b0ae2ad75e6d973f6dedc1704f1f3881a65f1d82df8c640d32b84570`
+(57,927,701 bytes), XCodec SHA-256
+`7d944ce4f6ef408a815860ad9dde380decbf0b79c4a0b48d50c42bb362a94ac9`
+(57,600,230 bytes). Both copies authenticate those clone HEADs and their
+complete reachable histories. There is no live task handle using the clones.
+
+Root removes only the 20 validated clones with explicit absolute targets.
+Deletion session `51204` terminates zero. Logs, outputs, case directories and
+all four bundles remain; their Git contents can reconstruct the removed
+clones. The independent pre-deletion total is 3,579,120 KiB (about 3.41 GiB).
+The two retained trees are now 113,724 and 113,568 KiB. Free space immediately
+afterward is 5,286,476 KiB, above the unchanged 2,097,152-KiB floor and tiny
+fixture reserve; 11:36:16 UTC readback is 6,333,208 KiB. Later fluctuations are
+not attributed exclusively to this cleanup. The capacity hold is lifted only
+for reviewed bounded offline verification, not model execution or allocation.
+
+Root reviews and runs exact V6 candidate
+`f9c1f4fdd3a9cddbb0f3867767f98b32e4de5f20bd9a9ca2e31e4ca48b13197c`
+with `--self-test-bounded`. Session `63331` terminates one, reporting
+`PermissionError: [Errno 1] Operation not permitted` in its process-group
+cleanup. No focused or full pass is inferred. Root preserves the failed
+verdict and uses tiny UV/Python-3.12 stdlib probes to separate the conditions:
+
+- TERM against a live directly owned group succeeds.
+- TERM against a directly owned shell with a short-lived descendant succeeds.
+- A query against an already reaped group returns `ProcessLookupError`.
+- TERM, a short delay, then KILL **before** reaping reproduces `PermissionError`.
+- The same sequence with `child.poll()` before KILL returns
+  `ProcessLookupError`: the group is absent.
+
+These actual paired results support the unreaped-group cleanup diagnosis;
+they do not prove a general sandbox prohibition or full controller acceptance.
+Return the correction to the owner: reap the direct child during finite TERM
+grace, then terminate a genuinely surviving group even if its leader exited.
+Do not treat every permission error as success. Root also returns concrete
+marker-failure regression defects (wrong cleanup function, missing injection
+binding and a non-failing injected branch). Static-only later candidates are
+not substituted for an independently passed run. No unchanged cloud retry,
+provider query, model/checkpoint/config/tokenizer/preset access, workspace
+Cargo, publication or new Apple result occurs. The original source/legal
+blockers and all 194-row final gates remain open.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 recovery capacity and cleanup regression diagnosis (11:36 UTC):**
+> local headroom now exceeds the unchanged floor after verified clone cleanup.
+> This permits bounded offline verification, not cloud activation. The actual
+> focused run fails; paired shell/process probes isolate unreaped-group KILL
+> behavior. Require direct-child reaping plus surviving-descendant cleanup,
+> not blanket `PermissionError` suppression, and independently replay the
+> corrected exact file. See the
+> [capacity and diagnosis record](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-capacity-and-cleanup-regression-diagnosis-1136-utc).
+
 > **2026-10-03 independent regression review (11:23 UTC):** do not accept
 > a candidate from syntax checks or its author's completion report alone.
 > Correct the missing transfer supervision tail, exact mock-command contract

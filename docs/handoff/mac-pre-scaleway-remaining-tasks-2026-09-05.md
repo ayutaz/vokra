@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 recovery capacity and cleanup regression diagnosis (11:36 UTC):**
+> remove 20 exact clean synthetic clones only after complete-history bundle,
+> HEAD, ignored-file and non-symlink ancestor checks. Logs/outputs/backups
+> remain; the recovery floor is restored. A focused candidate run still fails:
+> tiny paired probes reproduce KILL rejection for an exited, unreaped process
+> group, but absence after reaping. Correct and test the cleanup lifecycle;
+> do not ignore permission errors or advance model readiness. See the
+> [capacity and diagnosis record](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-capacity-and-cleanup-regression-diagnosis-1136-utc).
+
 > **2026-10-03 independent regression review (11:23 UTC):** root finds a
 > missing transfer wait/status tail, a stale harness pin and an inline-command
 > rejection defect in the unaccepted candidates. An actual Bash 3.2 probe also
