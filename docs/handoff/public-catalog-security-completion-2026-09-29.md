@@ -8263,6 +8263,66 @@ final Apple CPU/Metal/no-fallback, exact-head security/CI and public-artifact
 reconciliation remain required. Scaffold tests and failed execution preparation
 do not promote any model row.
 
+## 2026-10-03 SSH failure and local-space boundary (09:28 UTC)
+
+At clean root head `830b5abc32bdab631bdacf952a695926e88f786e`, root
+independently passes paired A10 offline session `35441` and verifies its
+unchanged SHA-256
+`e95aca152a8c399489efa85789825ed176f4d5cc5a3d3e1813e17e992d43c7fc`.
+The corrected shared helper creates bundles from advertised `HEAD` and checks
+the exact fixed commit; actual execution now gets past the old empty-bundle
+failure. Function cell `3929` / session `33635` is terminal 255. Owned VAST
+`53991834`, label `vokra-qwen3-tts-mf-v1-20261003T091040Z-19228`, has
+128,480 MiB RAM and 200 GB disk, at the selected offer's $0.1237037037/hour.
+Its API reports running, but the first SSH operation fails before remote
+directory creation or model-free work. API running is not SSH readiness.
+An unavailable direct port correctly selects the validated proxy endpoint;
+that fact alone does not prove the cause of the SSH failure.
+
+Retain `/private/tmp/vokra-qwen-bigvgan-model-free-a10.KGitcy`, including
+the 57,705,238-byte candidate bundle, 57,734,788-byte BigVGAN bundle, provider
+and destruction receipts. Cleanup records `cleanup_rc=0 instance=53991834`.
+The individual API is null and the all-pages exact-label readback is empty.
+Root independently confirms absence in session `1042`; the later fresh
+session `16442` also exits zero and reports complete account pagination,
+zero instances and no Vokra instances. No unrelated resource is modified.
+
+Frozen A11 adds bounded SSH probes on the same instance, endpoint, identity
+and known-hosts path. Its root offline invocation exits one before entering
+the fixture because `mktemp` fails with `ENOSPC`: observed available space is
+119,176 KiB. The old readonly assignment masks that failure and subsequent
+directory/log writes fail at unintended root paths. No provider is called.
+A12 explicitly validates temporary-directory creation and is prepared, not
+independently accepted. Root additionally finds that conditional fixture
+calls disable shell errexit: a readiness failure must explicitly return,
+and the timeout regression must prove no directory/transfer/bootstrap work
+occurs, not merely a later nonzero exit. A further narrow correction and
+adequate local headroom remain required before any retry. Preserve logs,
+authenticated sources and Git backups during any synthetic-data cleanup.
+
+Root independently passes frozen source-only leaf V9 session `78284` at
+unchanged SHA-256
+`edef78ad919c83069e1aba8530e158032bbeb86ea877391dea6a92154acc6104`.
+The actual rendered path rejects invented full/profile bytes and exercises
+bounded transfer and child-process cleanup. This accepts leaf preparation
+only; the source-only provider lifecycle remains a draft, and no replacement
+authenticated 128-file packet is recovered. Do not rerun the already-green
+workspace merely to recover source evidence.
+
+A read-only Nano audit confirms that the existing source inspector and
+dependency auditor already cover the required preparation; do not add a
+duplicate inspector. The current exact Python closure's 35 review rows are
+unresolved, current owner approval remains unsigned, real VAST API/native
+closure facts and independent real-weight parity are missing, and the
+historical Full-stamped Nano artifact still requires a corrected replacement.
+Old weight sign-off does not approve this new dependency/operator scope.
+
+No local model acquisition/execution, new real-weight verdict, HF upload or
+Scaleway allocation occurs. The metadata-only 136 full / 58 unresolved split
+is not an Apple-completion count; preserve the whole 194-row scope and all
+remaining source/legal, real-weight CPU, final Apple/no-fallback, exact-head
+security/CI and public-artifact reconciliation gates.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

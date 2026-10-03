@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 SSH failure and local-space boundary (09:28 UTC):** exact-HEAD
+> bundle preparation is corrected, but paired model-free A10 stops at its
+> first SSH operation; no remote model-free or real-weight verdict advances.
+> Owned `53991834` is destroyed and fresh full inventory is empty. Review and
+> independently test bounded SSH readiness, fail-closed temporary-directory
+> creation and sufficient local recovery headroom before retrying. Do not
+> replay already-green Cargo. Final Scaleway and all 194 rows remain required;
+> see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-ssh-failure-and-local-space-boundary-0928-utc).
+
 > **2026-10-03 actual pre-allocation failure (09:06 UTC):** Qwen/BigVGAN V9
 > passes independent offline lifecycle tests, then fails actual Git bundle
 > preparation before any create call. Fix and verify advertised exact HEADs;

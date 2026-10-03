@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 SSH failure and local-space boundary (09:28 UTC):** the
+> corrected exact-HEAD bundles reach owned VAST `53991834`, but the first
+> SSH operation exits 255 before remote work. Worker and storage are destroyed;
+> a fresh complete account readback reports zero instances. The next offline
+> test stops at local `ENOSPC`, not at a model gate. Require independently
+> verified fail-closed temporary-directory and SSH-readiness handling before
+> retrying. Preserve all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-ssh-failure-and-local-space-boundary-0928-utc).
+
 > **2026-10-03 actual pre-allocation failure (09:06 UTC):** independently
 > tested Qwen/BigVGAN V9 stops before provider allocation because raw-SHA-only
 > Git bundle creation produces no advertised ref. Cleanup records
