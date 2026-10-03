@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-04 JST source-only authorization supersession:** the owner
+> authorizes the six fixed inputs, encrypted SSH and disposable-worker
+> destruction, with the storage-inclusive $0.20/hour ceiling. The actual
+> first attempt fails before transfer at SSH readiness. Corrected transport
+> connects and transfers the inputs on the second attempt, but uv bootstrap
+> fails before source authentication. Both workers and data are independently
+> confirmed destroyed. Preserve and diagnose the failed attempts, rather than
+> repeat unchanged activation or infer source,
+> model or Apple success. See the [bounded actual run](public-catalog-security-completion-2026-09-29.md#2026-10-04-jst-approved-source-only-transport-attempt).
+
 > **2026-10-03 external source-transfer hold:** obtain specific authorization
 > for the six hash-bound source-only inputs before remote activation. The
 > rejected manager does not create a worker or execute the actual audit.

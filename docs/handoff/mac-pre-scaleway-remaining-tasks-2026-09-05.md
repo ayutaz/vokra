@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-04 JST source-transfer authorization and transport failure:** the
+> owner approves the six fixed source-only inputs and a disposable VAST
+> worker capped at $0.20/hour including storage. The first run stops at SSH
+> readiness. The corrected transport's second run connects and transfers the
+> inputs, then stops at uv bootstrap before source authentication. Workers
+> `54044547` and `54045481` and their data are destroyed; root independently
+> verifies individual null and absence from the closed inventory. The prior
+> authorization hold is resolved
+> for this exact scope only; model/Apple/publication gates are unchanged.
+> See the [actual transport verdict](public-catalog-security-completion-2026-09-29.md#2026-10-04-jst-approved-source-only-transport-attempt).
+
 > **2026-10-03 external source-transfer hold:** auto-review refuses the
 > hash-bound source-only VAST activation before process creation. No new
 > worker, transfer or actual source audit runs; no workaround is attempted.

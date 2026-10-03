@@ -9797,6 +9797,86 @@ Resolve authorization and the remaining dynamic/resource, backend and
 owner/legal gates before the respective execution steps; all 194 model-row
 completion requirements remain in scope.
 
+## 2026-10-04 JST approved source-only transport attempt
+
+The owner's `ok` specifically approves the six fixed Kyutai source-only
+inputs named in the preceding activation record: auditor, receipt, retained
+DSM raw source, retained GitHub API envelope, leaf and manifest. The scope is
+encrypted SSH, no model/HF token/project `.env` disclosure, source auditing
+only, a disposable VAST worker with a storage-inclusive $0.20/hour ceiling,
+small evidence recovery and destruction including data. This supersedes the
+specific external-transfer authorization hold, not model/package execution,
+owner/legal, parity, Apple or publication gates.
+
+Default CLI authentication returns an error object even with CLI exit zero.
+Using only the existing project's `VAST_API_KEY` as the CLI environment
+override succeeds; no key is printed, rotated or stored in CLI configuration.
+Root reviews the local-only lifecycle controller and independently runs its
+eleven synthetic tests, including actual Bash newline/checksum/tar primitives
+and cleanup after failed recovery. Controller SHA-256 for this attempt is
+`6570c92a908b276430b3940474026e2a69b77a4bc7ee1dc97f49c0fd140d2ba2`.
+It is not a seventh transfer input. The frozen six input hashes and source
+producer commit `48731912` remain unchanged.
+
+The actual run creates worker `54044547`, exact label
+`vokra-kyutai-source-audit-20261004-83bcf38f8c`, at a quoted storage-inclusive
+$0.18888888888888888/hour with 200 GB disk. It terminates exit two at
+`SSH readiness failed rc=255`. The direct starting port and the API's mapped
+SSH port agree, and the isolated known-hosts file remains empty. Because the
+first controller discards SSH stderr, the underlying network/host/startup
+cause is **not established**. Do not label this as authentication failure,
+source-audit failure or a model failure. There is no transfer, recovered
+source-audit evidence or leaf/self-test/audit exit verdict.
+
+The controller's finally cleanup records `complete`, with no cleanup errors.
+Root separately verifies explicit individual `instances: null`, then the
+all-pages inventory's empty owned-ID/label set. Unrelated workers `54015246`
+and `54019631` remain untouched. The failed receipt is retained at
+`/private/tmp/vokra-kyutai-approved-activation-evidence-20261004/controller-result.json`.
+Do not reuse this directory or historical instance as a live worker.
+
+The next bounded transport correction must wait for actual running state,
+refresh correctly paired direct/proxy endpoints, retain sanitized SSH error
+classes and prove direct-failure/proxy-success and failure-cleanup paths.
+No unchanged rental retry, local actual source audit, full provision, model
+download, package import, Cargo or upload is authorized by this result.
+All 194 row gates and the metadata-only 136 full / 58 unresolved classification
+remain unchanged.
+
+### Corrected SSH transport and bootstrap first failure
+
+Root reviews the paired direct/proxy endpoint and running-state correction,
+including the real `ports["22/tcp"]` list of `HostPort` strings. The local-only
+controller is fixed at SHA-256
+`4e1022b65c11b675da50c3ae499caf049e23d713a1f5531d6210deeadf23c7d2`;
+root independently passes thirteen synthetic tests. Read-only key inspection
+confirms the existing default local Ed25519 public key matches a registered
+VAST key; no key is created, changed or disclosed in the record.
+
+The bounded second run creates worker `54045481`, label
+`vokra-kyutai-source-audit-20261004-6650a893a7`, at a storage-inclusive
+$0.14074074074074072/hour. It records fourteen `refused` classifications,
+then succeeds on the fifteenth SSH attempt using the direct endpoint.
+Encrypted transfer of the six frozen inputs succeeds. This is actual
+transport evidence, not proof of the underlying cause of the first worker's
+unrecorded SSH error.
+
+The second run terminates exit two at `pinned uv bootstrap failed rc=3`,
+before leaf or source-audit execution. Root identifies a concrete rendered
+command defect: curl's `-o` and destination occur after `--`, so they are
+interpreted as URLs rather than output arguments. The bootstrap stdout/stderr
+were discarded in this version, so the exact failing remote subprocess is
+not established solely by that receipt. Require a no-network tiny-file
+causal regression, correct option ordering and fixed sanitized bootstrap
+stage markers before another run; do not repeat this unchanged controller.
+
+Root independently verifies worker `54045481` as explicit individual null
+and both owned IDs/labels absent from the all-pages inventory. The same two
+unrelated IDs remain untouched. The preserved second receipt is
+`/private/tmp/vokra-kyutai-approved-activation-evidence-v2-20261004/controller-result.json`.
+No source-audit result, model/package execution, parity, Apple verdict or
+artifact update follows from this transport-only progress.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
