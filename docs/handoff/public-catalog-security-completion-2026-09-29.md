@@ -7567,6 +7567,56 @@ final Apple/no-fallback and publication gates remain open. Keep all 194 public
 rows; neither this preparation nor V21's older exact-head code pass promotes
 the metadata-only 136 full / 58 unresolved split to hardware completion.
 
+## 2026-10-03 recovery-space and controller review (04:09 UTC)
+
+Root's narrowly scoped read-only inventory finds 301 old controller log roots
+with large top-level bundles, including 234 terminal synthetic roots marked
+`cleanup_rc=0 instance=7`. This is local debug data, not a provider-instance
+count. Before removal, a filtered process check finds no live matching
+controller. Root hashes and byte-compares exactly 64 `xcodec.bundle` copies
+against retained backup
+`/private/tmp/vokra-clean-heads-model-free-logs.zUpL0K/xcodec.bundle`.
+Every copy is 57,600,230 bytes with SHA-256
+`7d944ce4f6ef408a815860ad9dde380decbf0b79c4a0b48d50c42bb362a94ac9`.
+`git bundle verify` confirms complete history, including HEAD
+`e6552853d5dcba0ca1bbe7e07f74914ea9a0f2cf`, its remote tip and `v0.3.0` tag.
+
+Only those exact 64 redundant files are removed in terminal session `41155`,
+exit zero (3,686,414,720 apparent bytes). The backup is rehashed and reverified
+afterwards. All source receipts, logs, model bundles, unique histories and
+unrelated directories remain. Deleted copies can be restored from that
+byte-identical complete-history backup. Local free-space readback increases
+from approximately 0.77 GiB to 4.85 GiB; this does not relax the next provider
+job's minimum recovery-space guard.
+
+Targets are `xcodec.bundle` in log roots with the prefix
+`/private/tmp/vokra-clean-heads-model-free-logs.` and the following exact
+suffixes:
+
+```text
+0ST4jy 1lGE0H 26v8EF 2EYLcw 2IIdHk 2VZwxL 2q26Cf 3CD916
+3CsALk 3QiaM9 3ZUdaR 4BWDFe 4ilf4j 4xrMCw 5G4JM8 5P8GHy
+5mEQvc 6THtpB 6fN5rh 6xlmEy 7nHeny 7sBLsg 873Ot5 8Ihghb
+8iyIfE 9A788g 9AB98u 9BCom6 9NGEhY AHh8QA AJynaH ASUvsC
+Aao5Xg B4V473 BF2Q25 BG4eAB BJjVcO BRYNFs BVvCD5 C8VHYx
+CURwnq CUwwMU CgBs4X CqG6FU D2r1GR D3s8Kj D5pcgi DVUInt
+EgJmfU F2Sudb F3CMHT F9MmYA FDKGLJ FRPCWU FtCTsh GAu5Pu
+GKXtc5 Ghv4jy GnLSCL H6eEcs HaGI7K Hce8Nk HewFHK HvUCaq
+```
+
+Root also reads the complete 117-line V22 draft and its handoff. It safely
+refuses provider execution, but does not implement the requested remote
+source/KV wave. Its self-test calls separate handwritten `audit`, `envelope`,
+`deadline` and `clean` functions rather than actual production paths; its
+empty-list cleanup example differs from the real individual-null contract.
+These 31 toy checks cannot establish actual collector, native Rust, recovery
+or lifecycle coverage. The implementation owner is assigned to reuse the
+reviewed real VAST lifecycle and tracked collector, with fault tests against
+the actual leaf/harness and tiny input bundles. No new provider is authorized
+from this disabled draft. Full source/dependency/composite owner closure,
+independent real-weight CPU, final Apple/no-fallback and publication remain
+open; all 194 public rows are preserved.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

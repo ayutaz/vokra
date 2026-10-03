@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 recovery-space and controller review (04:09 UTC):** restore
+> local recovery headroom by removing only independently backed-up terminal
+> duplicate bundles. V22 remains `PENDING_REVIEW`: require the real tracked
+> source collector, exact-head Rust tests, bounded evidence recovery and
+> provider destruction with complete readbacks. Do not accept standalone
+> shadow validators as lifecycle tests or promote code/source preparation to
+> real-weight readiness. Scaleway stays last; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-space-and-controller-review-0409-utc).
+
 > **2026-10-03 terminal V21 code/source readback (04:02 UTC):** V21
 > terminates with authenticated small evidence and owned worker/storage
 > destruction. Do not restart it or transfer its code-only result to new

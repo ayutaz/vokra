@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 recovery-space and controller review (04:09 UTC):** root
+> removes only 64 terminal synthetic XCodec2 bundle duplicates after exact
+> hash comparison and complete-history backup verification; logs and primary
+> receipts remain. Local free space is about 4.8 GiB. The next V22 script is
+> still a disabled draft: its standalone toy checks do not verify the actual
+> collector, Rust legs or provider lifecycle. Implementation of those actual
+> paths is assigned before any new provision. Keep all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-space-and-controller-review-0409-utc).
+
 > **2026-10-03 terminal V21 code/source readback (04:02 UTC):** fixed
 > `1cbc4abc` / `a5e4c810` replay exits zero; root verifies 80 recovered
 > checksums, 8,293 workspace passes and the three primary Moshi raw/API
