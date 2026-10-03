@@ -7877,6 +7877,52 @@ PR mutation or Scaleway action occurs. All 194 rows and their final hardware
 gates remain in scope; 136 code/artifact-full and 58 unresolved are still
 route classifications, not hardware-complete counts.
 
+## 2026-10-03 capacity and independent lifecycle review (06:26 UTC)
+
+Root restores local recovery headroom without removing worktrees or primary
+evidence: 140 terminal offline mock input Git-bundle duplicates, totaling
+8,086,885,744 bytes, are compared with retained valid parent bundles before
+removal. Twenty parent bundles, all checkouts and test logs remain available.
+One intermediate cleanup command uses the wrong legacy directory name for
+84 nonexistent paths and exits one; it is not recorded as a successful
+112-file deletion. Root inspects the actual unversioned paths, verifies those
+84 existing copies with independent fail-closed checks and removes only that
+corrected explicit file list. Starting headroom is about 1.6 GiB, the immediate
+post-cleanup measurement is about 9.0 GiB, and the 06:26 measurement is about
+8.1 GiB. These are point-in-time readings, not guaranteed future capacity.
+
+Frozen V23 SHA-256
+`ccd6a1230ae82635952cb55abd986ace16d7d8d3afc9a6d7355be39e6dba2985`
+passes root's complete offline self-test: session `81583`, terminal exit zero,
+52/52 cases. The corrected validator accepts realistic Cargo summary suffixes,
+requires zero failures in every summary and a nonzero aggregate pass count,
+and rejects the exercised zero-workspace and failed-workspace fixtures.
+Partial-diagnostic caps now cover all added source/workspace logs before
+transfer. The actual TERM fixture records exit 143 and mock destruction.
+Earlier root sessions `23348` and `33541` are failures, not passes: inherited
+`UV_NO_SYNC` warnings contaminated mock JSON in the first, and the second
+TERM launcher attempted an unwritable default UV cache. Explicitly unsetting
+`UV_NO_SYNC` and selecting a writable task cache resolves those environment
+failures without changing the frozen controller. Its public production entry
+is still disabled; a bounded activation delta is assigned for separate review.
+The clean integrated execution HEAD remains `0f26b6ea`, not a new model result.
+
+The fresh complete VAST readback has `next_token=null`, zero Vokra instances
+and one unrelated exited instance, which is untouched. GitHub main remains
+`97447185361a37af64c1b30fe87e8e2618d96e20` and is an ancestor of the integrated
+candidate. No provider mutation, local model acquisition/execution or code
+push occurs at this checkpoint. A local BigVGAN metadata-only HTTP proposal
+is rejected by the memory hook before execution and is not retried; the three
+non-base primary receipts remain unacquired. Their remote-only collector is
+being prepared separately. Qwen3-TTS's current full dependency evidence still
+needs recovery/regeneration; model-free fact collection does not release its
+four unresolved Torch/TorchAudio rows or authorize real-weight execution.
+
+All 194 public rows remain in scope. The 136 code/artifact-full and 58
+unresolved split is not an Apple-completion count. Source/legal closure,
+independent real-weight CPU parity, final Apple CPU/Metal/no-fallback evidence,
+current CI/security review and separately authorized publication remain ahead.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

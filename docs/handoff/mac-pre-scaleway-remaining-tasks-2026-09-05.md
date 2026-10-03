@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 capacity and independent lifecycle review (06:26 UTC):** root
+> removes 140 authenticated duplicate mock input Git bundles while retaining
+> valid backups, checkouts and logs. Recovery headroom is about 8 GiB at this
+> checkpoint. Frozen V23 passes root's 52 offline cases, but its public
+> production entry remains disabled pending a separately reviewed activation
+> delta. No worker is allocated and no real-weight or Apple verdict advances.
+> Keep all 194 rows and see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-capacity-and-independent-lifecycle-review-0626-utc).
+
 > **2026-10-03 reviewed source-batch checkpoint (05:40 UTC):** clean
 > integrated `0f26b6ea` contains separately pinned XCodec2 source profiles
 > and the bounded five-file SpeechT5 primary legal-context collector. Root

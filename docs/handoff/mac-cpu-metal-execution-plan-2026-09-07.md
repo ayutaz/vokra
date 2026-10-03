@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 capacity and independent lifecycle review (06:26 UTC):** root
+> independently passes frozen V23's 52 shared-path cases, including realistic
+> multi-suite Cargo summaries and interruption cleanup. Review its minimal
+> production activation before allocating the fixed `0f26b6ea` source/code
+> worker; do not substitute fixture results for primary receipts or parity.
+> Current Qwen3-TTS dependency facts and the three non-base BigVGAN license
+> receipts still need their own bounded remote work. Scaleway stays last;
+> see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-capacity-and-independent-lifecycle-review-0626-utc).
+
 > **2026-10-03 reviewed source-batch checkpoint (05:40 UTC):** freeze clean
 > integrated `0f26b6ea` for a distinct model-free VAST wave. Root accepts
 > V22's 46 offline actual-path lifecycle cases; V22 itself stays disabled
