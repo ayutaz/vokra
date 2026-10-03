@@ -6765,6 +6765,63 @@ source-only controller is being prepared separately, with no archive
 acquisition, installation, config parsing or new allocation authorized by
 that preparation alone.
 
+## 2026-10-03 terminal code-only family replay and decoder candidate (00:04 UTC)
+
+The same V8 controller session terminates with exit zero; its internal V7
+label remains unchanged. Exact code-only targets are FireRed
+`893544169f6e87922c6760462a43b01978d4ac77`, full-encoder OWSM
+`a9007c643eaf4ce9ccda007ea82ddc3f9e959f23` and XCodec2
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153`. Root independently verifies all
+59 recovered file checksums, three HEADs, transferred bundle hashes and the
+actual FireRed API/raw/record byte and Git-blob identity. Recovered evidence
+totals 777,239 bytes; collection-manifest SHA-256 is
+`a4bd60e6df0041f958e4d09aaf04d2dadd9fe3698ce3f66edab4f8c6fb8dbb7b`.
+All 31 exit files are zero.
+
+Workspace all-target/all-feature tests finish across 307 suites with 8,239
+passed, zero failed and 108 explicit ignores. The 702,158-byte workspace log
+has SHA-256
+`4baf06a563dd77a717a584f1b88db3da01af732316bc1b4dd55efe34975af04e`.
+Workspace and OWSM all-target/all-feature Clippy with warnings denied, deny
+and audit finish with exit zero. OWSM's focused 30 named tests pass without
+ignores. FireRed instrumentation/capture/PCM/binding/generator/registry pass
+their required 12/33/6/21/4/9 counts; XCodec2 passes its required 76 tests
+without skips. These are model-free source/structure and regression gates,
+not real-weight reference or Apple parity. Explicit workspace ignores do not
+become passed tests. The recorded configuration uses 48 build jobs within
+253,536,256 KiB of effective cgroup-bounded RAM.
+
+Owned `53934208`, exact label
+`vokra-family-model-free-v7-20261003-20261002T232218Z-80331`, and its storage
+are destroyed. The controller records `cleanup_rc=0`; root subsequently
+obtains `instances: null` from the individual API and an independent
+`show instances-v1 --all --raw` response with explicit `next_token: null`.
+Neither exact ID nor label remains. There are zero Vokra instances and one
+unrelated instance, which was not modified. Do not restart the old terminal
+session or leave storage for an unspecified future task.
+
+The separate ordinary-decoder correction is committed at
+`3f963df624f0842709da7013d870af5fa022703f`; the clean integration candidate
+adds only the reviewed SBV2 Clippy correction and is fixed at
+`0c616382ebd000491b85bcf612b5b5ce1eb4075a`. Root reviews selected ordinary-path
+residual ordering and typed helper inputs, reproduces the actual authenticated
+three-role/44,034-byte source self-test with 19 rejected mutations, and runs
+all five normal compile-free hooks on the integration candidate. It defines
+40 focused Rust tests without ignores; compilation, Clippy and execution at
+this new HEAD remain pending and cannot borrow the earlier 30-test verdict.
+The tiny tests remain self-consistency, not an independent numerical oracle.
+
+The next family controller remains inert during phase-specific fault review.
+The separate PyYAML controller also remains unaccepted: actual focused
+collector tests alone do not validate its production remote paths, packet
+consumer or lifecycle. Correct and exercise those boundaries before any
+separately reviewed source-only allocation. No new model/archive acquisition,
+dependency installation, HF upload, withdrawal or Scaleway run occurs in this
+closing review. The earlier two-sdist license-file absence remains factual
+blocked evidence, not a conclusion about every possible upstream grant.
+All 194 rows and the last dated metadata-only 136 full / 58 unresolved
+snapshot remain in scope; no Apple-pass or full-model completion is promoted.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

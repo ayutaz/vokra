@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 terminal code-only family replay (00:04 UTC):** job
+> `53934208` is terminal with exit zero and authenticated recovered evidence.
+> Its worker/storage are destroyed and independently absent; do not poll or
+> restart that old session. The separate ordinary-decoder candidate is clean
+> at `0c616382`, but its 40 focused Rust tests and exact-head Clippy have not
+> run. Require a reviewed, independently fault-tested new controller before
+> that distinct code-only replay. Keep source/license and real-weight gates
+> separate; Scaleway remains last. See the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-only-family-replay-and-decoder-candidate-0004-utc).
+
 > **2026-10-02 actual sdist inspection (23:45 UTC):** source-only V11
 > closes the absolute-lock-path transport failure, not license approval:
 > both authenticated sdists lack primary license members. Keep execution and

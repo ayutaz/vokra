@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 terminal code-only family replay (00:04 UTC):** the same
+> frozen job on `53934208` finishes successfully. Root authenticates all 59
+> recovered checksums: workspace 8,239 passed / zero failed / 108 explicit
+> ignores, OWSM 30 passed without ignores, and all named FireRed/XCodec2
+> source-only gates pass. Worker and storage are independently absent in
+> individual and complete paginated API readbacks; no Vokra instance remains.
+> A separate reviewed decoder candidate is fixed at `0c616382` with 40
+> source-defined Rust tests still requiring remote execution. Neither code-only
+> result closes real-weight, owner/legal or final Apple gates. Preserve all
+> 194 rows; see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-only-family-replay-and-decoder-candidate-0004-utc).
+
 > **2026-10-02 actual sdist inspection (23:45 UTC):** the distinct
 > XCodec2 source-only V11 replay recovered both exact public sdists and a
 > checksum-verified packet. Its 76 Linux tests pass without skips, but both
