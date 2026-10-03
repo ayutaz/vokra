@@ -9736,6 +9736,20 @@ Source-preserving de-vendoring design and owner/legal/runtime compatibility
 remain separate gates. No model status, numerical bound or public artifact
 is promoted by these static facts.
 
+The narrative receipt correction subsequently completes: corrected receipt
+SHA-256 is `101555f2ec5cd0532727b247f72ba8a299382a7aa43c7a86eb2f3d45d1978ecd`;
+handoff SHA-256 is
+`eb1681c5209bf39dc2039554b8c7e1f4604c520d58512375b72ddc9702bd4c3f`.
+Root reads the finite design, SHA-256
+`fd1199eec9832b18c9e6ca003839c6c65321f4cbed5dba55406ad6eee5106170`,
+covering twelve vendored distributions, import/resource reachability,
+unchanged retained source, deterministic RECORD and negative-test gates.
+It is a reviewed design only: no derived wheel, backend compatibility or
+license approval exists. Luna's static inspection uses shell archive/hash
+tools; root's independent audit uses uv-managed stdlib Python, neither
+imports the inspected packages. Preserve this distinction from package
+execution and from the refused external transfer.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
