@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 actual pre-allocation failure (09:06 UTC):** independently
+> tested Qwen/BigVGAN V9 stops before provider allocation because raw-SHA-only
+> Git bundle creation produces no advertised ref. Cleanup records
+> `instance=none`; require exact-HEAD bundle correction before retrying.
+> Source-only rendered-path tests reject invented primary bytes, not establish
+> source readiness. Preserve all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-production-path-tests-and-pre-allocation-failure-0906-utc).
+
 > **2026-10-03 recovery headroom and CI readback (08:29 UTC):** root removes
 > only 112 authenticated, reproducible synthetic cap-test files while retaining
 > logs, source and Git history. PR #152 remains open at `dd6f0154` with 76

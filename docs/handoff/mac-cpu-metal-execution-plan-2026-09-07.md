@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 actual pre-allocation failure (09:06 UTC):** Qwen/BigVGAN V9
+> passes independent offline lifecycle tests, then fails actual Git bundle
+> preparation before any create call. Fix and verify advertised exact HEADs;
+> do not repeat green Cargo or claim a cloud/model result. Source-only recovery
+> still needs final bounded transport review and a source-only outer lifecycle.
+> All 194 rows and final Scaleway gates remain required; see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-production-path-tests-and-pre-allocation-failure-0906-utc).
+
 > **2026-10-03 recovery headroom and CI readback (08:29 UTC):** preserve logs,
 > source and Git history after removing only authenticated synthetic cap-test
 > padding. Require final bounded recovery/verification review and exact-head

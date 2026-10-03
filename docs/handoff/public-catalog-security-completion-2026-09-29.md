@@ -8211,6 +8211,58 @@ accepted production or model results. All 194 rows, independent real-weight
 CPU evidence, final Apple CPU/Metal/no-fallback and publication gates remain
 required.
 
+## 2026-10-03 independent production-path tests and pre-allocation failure (09:06 UTC)
+
+At root documentation head `4ba7d302`, both actual input checkouts are clean:
+Qwen `df4c2dbf51ea4f9c5977d45ae5c2abecb6040fff` and BigVGAN
+`af462cffda14e97b044d3ebd718b23c08572c841`. Root independently verifies
+their pinned dependency files, the BigVGAN leaf and the safe provider wrapper.
+The Qwen API work directory must not pre-exist; the corrected shared remote
+path and that rejection case pass the frozen V7 offline test, session `81578`.
+
+The activated paired V8 then passes offline session `51379`, but root finds
+that conditional-call shell semantics can swallow an intermediate override
+rejection. Frozen V9 fixes this with explicit returns. Root independently
+passes V9's full offline session `30071` and verifies that even default-valued
+provider/SSH/SCP/identity overrides exit two before allocation. V9 SHA-256 is
+`48211e39f551c28ae143ebc4f519456037eeac2861fc1846adc5718822daae73`.
+
+Actual V9 execution, function cell `3916`, is terminal two: both bundle
+helpers use a raw commit SHA without an advertised ref and Git refuses the
+empty bundles. The run stops before offer search or instance creation.
+Retained log directory
+`/private/tmp/vokra-qwen-bigvgan-model-free-v9.eCE7tM` contains
+`cleanup_rc=0 instance=none`. Require bundle creation from `HEAD`, independently
+verified against the fixed candidate SHA, and explicit helper failure returns
+before retrying. The offline fixture did not cover this actual Git preparation
+path. No new Qwen API, BigVGAN metadata, real-weight or Apple result is claimed.
+
+Root also independently passes source-only V6 session `41726` at unchanged
+SHA `1c14c4dececcff2e79396a6b250c9cda3760764f65ffe37ba76d101ad9bf5550`.
+Its rendered remote leaf executes the real flatten and packet-building paths
+over 111 invented full-source rows plus the 17 profile/bundle rows; original
+strict validators reject those invented bytes. V7 session `8577` also exits
+zero, but its operation-marker list is not proof that two builder bodies are
+identical. Final process-group cleanup and bounded transport review remain
+pending; there is no authenticated replacement source packet. Original V5
+`318c1358...` was overwritten by its implementer and has no recovered backup;
+do not cite it as a retained immutable script. V1–V4 and the later frozen
+versions remain available.
+
+The PR #152 transfer bundle independently verifies as complete history at
+`b0add994b4d0350c338e60cb29b8165d8145fe32`: 57,385,353 bytes, SHA-256
+`a88a00db99e49bff50b05f52464c919e65de257153e4797afb047b0df95362d7`.
+Its V5 leaf requires all three pinned base scripts at their exact remote
+paths and a new cold checkout. This is transfer preparation, not the actual
+Linux 32-test/helper replay, PR CI, import authorization or publication.
+
+No maintainer-local model acquisition/execution, workspace Cargo, HF credential
+forwarding, artifact upload or Scaleway allocation occurs in this checkpoint.
+The whole 194-row scope, owner/legal, independent real-weight CPU/reference,
+final Apple CPU/Metal/no-fallback, exact-head security/CI and public-artifact
+reconciliation remain required. Scaffold tests and failed execution preparation
+do not promote any model row.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
