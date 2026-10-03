@@ -8688,6 +8688,74 @@ V5/A19 stay unchanged. All 194 rows, source/legal boundaries, real-weight
 CPU gates, final Scaleway CPU/Metal/no-fallback and separate publication
 permission remain required.
 
+## 2026-10-03 recurrence-prevention review (10:54 UTC)
+
+Root starts this review at clean management HEAD
+`06f0304a374f9121d51395aa4187b6787744c36f`. No new provider allocation,
+model download/execution or Cargo run is made. The latest independent owned
+resource absence evidence remains session `2993` at the preceding checkpoint;
+it is not represented as a new provider query in this review.
+
+Repeated attempts must be classified before another retry:
+
+| Scope and evidence | Cause or remaining uncertainty | Action / acceptance requirement |
+|---|---|---|
+| Original V24: exact-head workspace green, only ten of 128 source files recovered | Serial recovery exhausts its 300-second budget | Recover the missing packet in one bounded bulk transfer; do not rerun already-green Cargo to retrieve bytes. |
+| A19 BigVGAN: three of six tests error on `/root/tools/parity/` | Tests/self-test derive their repository root from the launch working directory | Correct the launch/root contract and add a regression from a different directory. Detailed source inspection remains refused by the trusted local hook; do not route around that refusal. |
+| A19 BigVGAN: `sibling descriptor not bound to raw API` | The original raw fields were not recovered; the precise mismatch is unknown | Recover the small raw descriptor/validation diagnostics before selecting a field-level fix. Preserve identity checks; do not relax them to obtain green. |
+| A19 Qwen: audit exits two, factual license gate blocked | This is a legal/factual gate, not evidence of a transient package-install error | Resolve the exact source/dependency facts and hash-bound decision separately. Generic autonomy approval does not invent sign-off. |
+| Source-only V6/harness, not accepted | Previous fixtures could fail before the intended branch, or substitute a permissive mock for actual execution | Require positive controls, exact phase/reason/status assertions and the normal shared lifecycle. Synthetic transport acceptance must remain distinct from production primary-source acceptance. |
+
+Root reviews harness candidate `424a5888` and subsequent `3a72da0c`,
+and the V6 candidate read as
+`870d88f03ccf406f4a1ee331ee407c9b7da73aeec73c23d45c885eb4a0349b0f`.
+These hashes are review checkpoints only, not frozen accepted inputs.
+The review identifies missing pre-inventory label argument, asynchronous
+stdin preservation, mutation of caller `errexit`, recovery/cleanup budgets
+not fully governed by one absolute phase deadline, incomplete regular-file
+snapshot checks, broad diagnostic filename suffixes and skipped oversized
+logs instead of capped excerpts. The positive fixture contract also remains
+unfinished. None of these candidate findings is retroactively asserted to
+have caused A19's original logged failures.
+
+Two tiny, model-free shell probes independently confirm the language-level
+risks: a 14-byte fixture piped to a background `wc -c` without explicit stdin
+redirection is read as zero bytes, and a helper that sets `+e` then `-e`
+changes a caller initially running without `errexit` to enabled. These probes
+do not execute any controller, model or provider command. Their exact
+corrections and integration assertions are delegated to the controller owner;
+the independent harness owner is responsible for testing the same lifecycle,
+not a second implementation. Root returns both candidates for correction.
+
+Before any new source-only lease, require all of the following together:
+
+1. Finish the known controller/harness correction checklist, agree the explicit
+   tiny-fixture dispatcher contract, and freeze both files with matching hashes.
+   Syntax/ShellCheck or a partially prepared test matrix is not acceptance.
+2. Execute and independently review the complete offline matrix: positive
+   transport and one-time SSH recovery; ambiguous creation and strict paginated
+   ownership recovery; foreign/duplicate/malformed identities; permanent SSH
+   failure; inbound and recovery deadline exhaustion; original leaf failure;
+   bounded diagnostic excerpts; unsafe/oversized packet rejection; INT/TERM
+   descendant termination and owned-only destroy/readback. Each negative case
+   must demonstrate its intended branch, not merely return nonzero.
+3. Assert actual bootstrap/leaf stdin bytes and hashes, explicit `root@host`
+   transport, unchanged caller shell options, and production validators'
+   rejection of synthetic source receipts. No invented full 111-file receipt
+   or 128-file primary packet may be promoted to source readiness.
+4. Retain the original failure, small diagnostics and final cleanup receipts.
+   Keep tiny fixtures within 32 MiB total and the unchanged 2 GiB local recovery
+   floor. No full test clone/bundle is needed for this regression matrix.
+5. Retry only the corrected, frozen failing scope. Leave A19 and V5 unchanged;
+   do not repeat the unchanged paired model-free wave while its original
+   BigVGAN and Qwen blockers remain unresolved.
+
+This review changes the acceptance plan and records concrete defects; it does
+not claim that the returned implementation is fixed or that the fault matrix
+has passed. No new cloud cost, model-row promotion, Apple result, owner/legal
+sign-off or publication is claimed. Full-catalog scope remains all 194 rows;
+the retained 136-full/58-unresolved code inventory is not blanket Apple parity.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

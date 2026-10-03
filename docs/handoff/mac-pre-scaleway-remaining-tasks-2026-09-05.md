@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 recurrence-prevention review (10:54 UTC):** unchanged cloud
+> retries remain suspended. Separate the logged BigVGAN working-directory
+> defect, unresolved raw-metadata binding and Qwen legal stop from newly
+> identified source-only controller/harness defects. Tiny shell probes
+> reproduce asynchronous stdin loss and caller shell-option mutation; these
+> are candidate risks, not retroactive diagnoses of A19. Require the full
+> shared-path fault matrix and fixed-input acceptance before another lease.
+> No model row is promoted. See the
+> [cause/action/retry gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-recurrence-prevention-review-1054-utc).
+
 > **2026-10-03 paired terminal diagnosis (10:40 UTC):** session `44590`
 > terminates one with recovered original logs. Qwen API exits zero, dependency
 > audit remains license-blocked; BigVGAN tests use the wrong working-directory

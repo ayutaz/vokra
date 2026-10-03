@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 recurrence-prevention review (10:54 UTC):** keep live
+> allocation disabled until a frozen controller and independent harness
+> prove normal-shell execution, preserved SSH stdin, phase-specific absolute
+> deadlines, bounded original diagnostics and owned-resource-only cleanup.
+> Do not repeat the unchanged paired inputs or already-green workspace run.
+> Licensing and missing primary metadata are separate blockers, not retryable
+> transient errors. All 194 rows and final Apple gates remain. See the
+> [cause/action/retry gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-recurrence-prevention-review-1054-utc).
+
 > **2026-10-03 paired terminal diagnosis (10:40 UTC):** live replay is now
 > terminal one, not a successful paired gate. Bounded diagnostics retain the
 > license stop, wrong-root BigVGAN tests and descriptor-binding failure.
