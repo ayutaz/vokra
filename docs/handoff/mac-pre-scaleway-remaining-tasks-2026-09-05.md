@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 redundant transfer-bundle cleanup (11:07 UTC):** root
+> removes only two pre-allocation bundles after independent inspection and
+> retained complete-history/same-HEAD verification. Original logs and actual
+> A19 bundles remain. These are Git-content-equivalent, not byte-identical
+> backups. Local space remains below the unchanged 2 GiB floor, so full
+> fixture/transfer execution is still withheld. Later V6/harness corrections
+> are candidates, not accepted runs. See the
+> [cleanup and remaining gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-redundant-transfer-bundle-cleanup-1107-utc).
+
 > **2026-10-03 actual Bash 3.2 primitive verification (11:01 UTC):** root
 > independently passes frozen V6 `a552efb2`'s bounded-helper tests: stdin
 > bytes/hash, exit/timeout status, INT/TERM descendant cleanup and shell-option

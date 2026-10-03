@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 redundant transfer-bundle cleanup (11:07 UTC):** safely
+> remove redundant pre-allocation Git transfer archives, keeping original
+> logs and verified actual-run backups. Do not call differently packed
+> bundles byte-identical. Local recovery headroom still misses the 2 GiB
+> floor; retain the full-test/cloud hold while static corrections continue.
+> The focused primitive pass does not accept the full outer controller.
+> See the [cleanup and remaining gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-redundant-transfer-bundle-cleanup-1107-utc).
+
 > **2026-10-03 actual Bash 3.2 primitive verification (11:01 UTC):**
 > exact frozen `a552efb2` passes root's normal-shell bounded-helper replay,
 > including stdin and interruption regressions. Require the separate full

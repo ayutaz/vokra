@@ -8803,6 +8803,54 @@ The preceding independently verified owned-resource destruction remains the
 cloud evidence; no fresh API query is claimed here. All 194 rows and final
 Apple/no-fallback gates remain in scope.
 
+## 2026-10-03 redundant transfer-bundle cleanup (11:07 UTC)
+
+At management HEAD `95eb57a7`, the independent bounded-helper pass is
+recorded and normal commit gates have passed. Subsequent space readback falls
+to 1,983,424 KiB, below the unchanged 2,097,152-KiB floor. Root has no live
+test/commit process or cloud worker. This is a local recovery-capacity hold,
+not a model failure or proof that all external disk consumption is Vokra's.
+
+An independent agent audits only the two transfer bundles from pre-allocation
+failure directory `/private/tmp/vokra-qwen-bigvgan-model-free-a19.BoEFB9`.
+Root then freshly checks the four files' regular/non-symlink type, UID 501,
+size, digest and advertised sole HEAD, and verifies the retained actual A19
+bundles' complete history. Session `36961` terminates zero after removing
+only the old `candidate.bundle` and `bigvgan.bundle` in that failure directory.
+No directory, checkout, model, unique raw receipt or log is deleted.
+
+| Scope | Removed pre-allocation bundle | Retained actual-run bundle | Verified sole HEAD |
+|---|---|---|---|
+| Qwen candidate | 57,673,503 bytes; SHA-256 `f73279708fed493577ed591604e1f7df3ddb8852eccc8c96b809aa5ce781603b` | 57,674,781 bytes; SHA-256 `4b5a8dcec185553dcfcfac7cfcae07ea6e234ea3cacd1337d4699c79906b3218` | `df4c2dbf51ea4f9c5977d45ae5c2abecb6040fff` |
+| BigVGAN candidate | 57,749,424 bytes; SHA-256 `3ce21770e686abd6b1fc4cdfd9d6cf3a06eb36ba0cd8e4d8f2879461801724fc` | 57,687,387 bytes; SHA-256 `dbf86e454b0522054e9e129f4879c501a4abd91955ab1856f8077a21aed27961` | `af462cffda14e97b044d3ebd718b23c08572c841` |
+
+Retained bundles are in
+`/private/tmp/vokra-qwen-bigvgan-model-free-a19.uvyJi3`. The old failure
+directory still contains `offers.json` and `controller.log`. Removed total
+is 115,422,927 bytes (about 110 MiB). Packing bytes differ: the old archive
+streams are not recoverable byte-for-byte, but their exact Git HEADs and
+complete reachable history are reconstructible from the retained bundles.
+This semantic redundancy, not a claim of matching file hashes, is the cleanup
+decision. Immediately afterwards available space is 2,088,296 KiB; the later
+readback is 2,087,740 KiB, still below the floor. No full fixture test or new
+transfer is started, and no unrelated files are removed to force capacity.
+The separately retained synthetic-model/XCodec bundles are not removed:
+attempted ancestor checks against the A19 checkouts return invalid commit
+names, so those are not proved redundant recovery copies.
+
+The accepted primitive snapshot is retained at
+`/private/tmp/vokra-primary-source-bulk-v6-a552efb20d445591985b66531cbada94dd04c46a41757b4a40b1991e2a8c5536.sh`
+with its unchanged full SHA-256. A subsequent V6 candidate is frozen at
+`ef18aaeb6bd863f3471c47eb6abeaecd079fa9313a89a183d65c94f754e4728a`;
+its owner reports stable-provider-JSON and diagnostic-marker tests, but root
+has not independently replayed those additions. Harness candidate `30178844`
+is also unexecuted and still pins the earlier helper while its integration
+contract is being corrected. Root's review returns mock-path, actual rendered
+inline-command, diagnostic archive and signal/deadline integration gaps;
+there is no full outer acceptance or permission to activate `--run`.
+No provider/model/Cargo run occurs. All 194 rows, source/legal boundaries,
+real-weight CPU gates and final Scaleway CPU/Metal/no-fallback remain required.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
