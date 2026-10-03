@@ -1,5 +1,17 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 combined candidate and live replay (00:32 UTC):** reviewed
+> FireRed and ordinary-decoder OWSM histories are now preserved together at
+> clean `dc7afa5e`, rather than treating files absent from a different baseline
+> as deletions. Root passes the normal five compile-free gates and genuine
+> decoder-source self-test. A separate supplemental ANTLR receipt validator
+> is committed at `f28259c0`, with eight retained-input tests passing; it does
+> not approve dependency execution or publication. New owned VAST `53940991`
+> is running the combined code-only scope with 48 effective build jobs. A
+> compiler warning needs a separate correction; terminal verdicts, evidence
+> recovery and destruction are pending. Preserve all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-combined-candidate-primary-receipt-validation-and-live-replay-0032-utc).
+
 > **2026-10-03 terminal code-only family replay (00:04 UTC):** the same
 > frozen job on `53934208` finishes successfully. Root authenticates all 59
 > recovered checksums: workspace 8,239 passed / zero failed / 108 explicit

@@ -6822,6 +6822,77 @@ blocked evidence, not a conclusion about every possible upstream grant.
 All 194 rows and the last dated metadata-only 136 full / 58 unresolved
 snapshot remain in scope; no Apple-pass or full-model completion is promoted.
 
+## 2026-10-03 combined candidate, primary receipt validation and live replay (00:32 UTC)
+
+Root compares the two reviewed candidate histories rather than interpreting
+their different baselines as authorization to delete FireRed work. The new
+isolated merge is clean at `dc7afa5e4c6bf5057f2efb1a63902e339034a881`, tree
+`8fea6db12bbebc7845c3ff907e1741affd5cab2c`, with parents
+`893544169f6e87922c6760462a43b01978d4ac77` and
+`0c616382ebd000491b85bcf612b5b5ce1eb4075a`. Only the four expected OWSM/NOTICE
+paths differ from the FireRed parent; they match the accepted OWSM candidate
+byte-for-byte. All other FireRed tracked content is preserved. Root passes
+the normal five compile-free gates and the genuine three-role decoder-source
+self-test. The 40 focused Rust tests remain self-consistency, not an
+independent real-weight numerical oracle.
+
+A new source-only supplemental helper is reviewed and committed separately
+at `f28259c0abb5823498522b3f61dbb689f0c17441`, directly on XCodec2
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153`. It changes only the helper, its
+tests and the XCodec2 parity README; runtime and approval state are unchanged.
+Root first reproduces four invalid-input acceptances in the uncommitted
+candidate (changed status, setup member hash, collector hash and duplicate
+artifact), then verifies their fail-closed corrections. The final helper
+pins the original 30,952-byte source packet and 143,165-byte lock, all four
+producer identities, both unique artifacts, five primary receipt files and
+the actual ANTLR setup-member linkage. It rejects duplicate/non-finite JSON,
+symlink paths, oversized reads, FIFO inputs, missing tag proof and output
+overwrite. Root passes all eight tests with the explicit retained inputs,
+the normal five compile-free hooks and the same validator/writer through its
+explicit genuine self-test. Its root-produced supplemental receipt is 3,259
+bytes, SHA-256
+`04d8b90cb4279aa6bba9ae1af477c9aec6392918b64d9d705da835b7b0c1ad16`.
+Path-dependent receipt bytes need not equal another run's output.
+
+The supplemental primary evidence binds the upstream
+[ANTLR 4.9.3 license](https://github.com/antlr/antlr4/blob/4.9.3/LICENSE.txt)
+and [Python setup source](https://github.com/antlr/antlr4/blob/4.9.3/runtime/Python3/setup.py)
+to tag commit `e4c1a74c66bd5290364ea2b36c97cd724b247357`. The 527-byte setup
+SHA-256 matches the inspected locked sdist. Retained API-text copies add one
+terminal newline; raw license/setup bytes are unchanged and decoded content,
+SHA-256 and Git blob identities are checked. This supplements, rather than
+rewrites, the original package-license-file absence. Output remains
+`REVIEW_REQUIRED` / `OWNER_REVIEW_REQUIRED` / `UNAPPROVED_NO_EXECUTION` /
+`NO_UPLOAD`; the exact XCodec2 package-linked primary license, installed-build
+proof and owner/legal decisions remain unresolved. No archive is reacquired
+and no upstream package is imported, built or installed in this review.
+
+Root's complete pre-rent VAST readback has explicit `next_token: null`, zero
+Vokra instances and one unrelated instance left untouched. Root passes V12's
+full offline lifecycle/fault suite with the genuine reviewed inspector hook,
+then independently reviews V13's retarget-only diff, shell syntax and
+ShellCheck. V13 SHA-256 is
+`049e82fe46a5aacc27dbafb5053228e24c4f76dd8a778ffb0031875fc637cefd`;
+protocol/body is unchanged. Root also separately runs the genuine inspector
+on the final combined tree. The new owned worker is `53940991`, label
+`vokra-family-model-free-v13-20261003-20261003T002634Z-9847`, at a verified
+200-GB-disk-inclusive price of approximately USD 0.20/hour. Independent API
+readback says running; independent SSH through the controller's already
+trusted gateway host key confirms both combined HEADs and unchanged XCodec2
+HEAD. Effective cgroup-bounded RAM is 253,536,256 KiB with 48 build jobs.
+
+The same run is still live, not green. Compilation emits an unused-variable
+warning for `hidden` in the new tiny decoder test helper, which would fail
+warnings-denied Clippy. Root confirms the unused binding in source and
+assigns a separate correction; do not retarget or restart the live worker.
+Continue the remaining gates, recover authenticated small evidence and
+destroy this owned worker and storage with independent readbacks. The new
+PyYAML controller remains explicitly run-disabled and unaccepted pending
+actual producer/validator and lifecycle proof. No actual model, HF credential
+transfer, upload, withdrawal or Scaleway run occurs. All 194 rows, the last
+dated metadata-only 136 full / 58 unresolved snapshot, real-weight CPU gates
+and final Apple CPU/Metal/no-fallback scope remain unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

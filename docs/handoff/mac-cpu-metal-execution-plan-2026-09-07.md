@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 combined candidate and live replay (00:32 UTC):** continue the
+> same owned code-only worker `53940991`, frozen at combined FireRed/OWSM
+> `dc7afa5e` and XCodec2 `a5e4c810`; do not retarget it to a correction or the
+> separately committed ANTLR receipt helper. Root authenticates the reviewed
+> retarget-only controller and independently confirms exact remote HEADs and
+> 48 build jobs. The unused decoder test-helper binding requires correction
+> in a separate candidate, not a warning suppression. Terminal gates,
+> authenticated recovery and owned-worker/storage destruction remain pending.
+> Dependency/model execution and final Apple verdicts remain separate; see
+> the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-combined-candidate-primary-receipt-validation-and-live-replay-0032-utc).
+
 > **2026-10-03 terminal code-only family replay (00:04 UTC):** job
 > `53934208` is terminal with exit zero and authenticated recovered evidence.
 > Its worker/storage are destroyed and independently absent; do not poll or
