@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 actual source recovery and first-failure diagnosis:** V8's
+> reviewed activation passes root's normal-entry offline tests before its
+> source-only VAST run. Actual transport succeeds; strict full-source
+> validation stops at a missing pinned license candidate. Recover that one
+> primary document into a separate packet and rerun unchanged validators,
+> not the 128-file retrieval or a new paid worker. This is not license
+> approval, model execution, parity or Apple completion. See the
+> [cause, actual exits and recovery boundary](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-primary-source-recovery-and-missing-license-diagnosis).
+
 > **2026-10-03 full lifecycle recurrence acceptance (12:55 UTC):** frozen
 > V7 and the independently reviewed harness pass root's actual full normal
 > CLI replay, including 22 lifecycle faults and subsequent bulk regressions.

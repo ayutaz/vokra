@@ -9333,6 +9333,94 @@ retries. All 194 public rows, owner/legal decisions, independent real-weight
 VAST CPU/reference, final Scaleway Apple CPU/Metal/no-fallback, exact-head
 CI/security and separately authorized artifact publication remain in scope.
 
+## 2026-10-03 actual primary-source recovery and missing-license diagnosis
+
+At clean management HEAD `61951bad`, root reviews the separate V8 activation
+delta. Frozen producer SHA-256 is
+`ada43094dba7bc4bb84f252026418bcc04ec536e585cf45f8609dddf3ae048bc`;
+the matching harness is
+`94a4c0fc93c774b74624f2c2f932223d7692ba0733dece73559059a9db063cd6`.
+Root's actual normal `--self-test` session `93117` terminates zero with all
+22 lifecycle cases, the bulk positive/ten negatives, strict synthetic
+rejection and actual activation-preflight rejection. The executable rejected
+provider's call marker is absent. All 260 retained metadata files are
+hash-checked; final receipt SHA-256 is
+`0af83c0aac3c291a430c034593753453cba18abba8e357db884ae1556612f6f0`.
+The remote source collector, rendered bootstrap/leaf and existing strict
+validators remain byte-identical to the accepted V7 bodies. This accepts
+source-only orchestration, not sources or models.
+
+The subsequent real source-only session `18329` terminates **1**, not PASS.
+Owned VAST instance `54014752` uses 14 effective CPU cores and a 200-GB disk;
+the selected offer's compute rate is $0.1985185/hour. The GPU is not used:
+this task retrieves primary text and Git metadata, not model tensors.
+The clean remote checkout is
+`52e4ddbebfeb32cb5f7aa241580b2493b20ecdb0`. Infrastructure bootstrap installs
+the reviewed pinned UV/Python/basic tools; the collector's no-package-install
+restriction refers to model/reference dependency installation, not to an
+absence of infrastructure bootstrap. No model, checkpoint, tokenizer,
+config, preset, upstream Python import, Cargo or upload runs.
+
+| Actual stage | Result and retained evidence |
+|---|---|
+| Manifest and allowlist | 128 files / 1,233,698 bytes; manifest SHA-256 `1f6c595e3c0d142f284883121eedb2c642a8a899ba74f2aa1019be93a09cea91`. |
+| Full source receipt transfer | 111 held files / 943,257 bytes; source receipt SHA-256 `fc63ff920338ba931adf35fa710c3b002b538c1c321855d68b7c588c33125938`. |
+| Archive and flat packet | 130 members / 1,325,509 bytes; transport, flat-file and packet-byte checks pass. |
+| Final full-source validation | FAIL. Do not upgrade the earlier 10/128 recovery or this terminal 1 into source readiness. |
+| Cleanup | Owned destroy and individual-null plus closed pagination/label-absence readbacks pass; the 200-GB worker storage is not retained. |
+
+Original recovery at
+`/private/tmp/vokra-primary-source-bulk-live.hX3FZK/received` remains unchanged.
+Root compares the recovered receipt's Python and license paths against the
+fixed recursive Git-tree metadata. The 99 Python paths match, with no missing
+or extra entries. The Moshi tree is not truncated, and contains one omitted
+license candidate, `moshi/LICENSE.audiocraft`: mode `100644`, 1,088 bytes,
+Git blob `b93be90515ccd0b9daedaa589e42bf5929693f1f`, at fixed revision
+`e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`. The
+[official document at that revision](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/LICENSE.audiocraft)
+is MIT with Meta attribution. This single document does not decide the
+model/weight license, dependency closure or owner approval. The collector
+body is not inspected following a local guard denial; do not invent its
+internal filtering cause or reroute that denied inspection.
+
+Root independently executes the separately frozen read-only V10 validator
+(`c03dd3e2e603dc7f3289796b8cf39e909f0c373a8402d1fd080257f5d51dec93`)
+through its normal `--validate-recovered` CLI. Original packet exit is 1:
+manifest, receipt, flat files, packet files and source profiles pass; only
+full receipt fails. An unrelated historical path is rejected with exit 1;
+`--run` and unsupported `--self-test` each return 78. Existing validators
+are unchanged. This helper is not a newly accepted production controller or
+a substitute for the V8 fault matrix.
+
+The bounded corrective action is to verify the single fixed primary-license
+GET against its size/Git blob, copy the original into a fresh separate
+`/private/tmp/vokra-recovered-primary-source-<component>/packet`, append the
+missing candidate without renumbering existing files and recompute receipts.
+Expected corrected counts are **112 held files / 129 flat files**, not 128
+after silently dropping a license. Original hashes, fail-closed owner/legal
+and no-upload/no-model fields must remain preserved; a separate correction
+receipt binds the original and corrected packets. At this checkpoint the
+Luna repair is under review and no corrected-packet PASS is claimed. Require
+actual unchanged-validator exit zero before any downstream source use. Do
+not repeat the successful retrieval, allocate a replacement worker or lower
+the license completeness gate.
+
+Fresh independent safe-wrapper API session `18557` terminates zero at
+13:17 UTC. Complete account inventory proves owned `54014752` absent,
+**zero Vokra instances**, **one other/non-Vokra instance**, and zero volumes.
+The other instance is outside this campaign and is left untouched. The earlier
+12:36/12:58 zero-instance snapshots are historical, not the latest account
+state. A separate status SSH probe returns 255/empty after cleanup and is
+not evidence of a completed remote stage.
+
+Fresh PR #152 read-only session `49751` terminates zero: OPEN, draft,
+MERGEABLE/CLEAN, 76 successful checks and three skips at public head
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`. Those checks do not cover local
+correction `b0add994`; no PR mutation or merge occurs. Preserve all 194 rows,
+the metadata-only 136 code/artifact-full / 58 unresolved split and remaining
+owner/legal, independent real-weight CPU, Apple CPU/Metal/no-fallback,
+exact-head security/CI and separately authorized publication gates.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

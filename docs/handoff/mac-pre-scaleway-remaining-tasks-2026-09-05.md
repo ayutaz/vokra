@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 actual source recovery and first-failure diagnosis:** the
+> separately reviewed V8 retrieves all 128 primary text/metadata files on
+> VAST, but terminates 1 at the strict full-source gate. The fixed Moshi tree
+> contains one omitted `moshi/LICENSE.audiocraft`; five other recovered-data
+> checks pass. Preserve originals and recover only that pinned license into
+> a separate packet, without weakening the gate or repeating the lease.
+> Owned worker `54014752` and storage are destroyed. The fresh 13:17 account
+> readback has zero Vokra instances, one other instance and zero volumes;
+> do not describe that as an empty account. See the
+> [actual recovery and bounded corrective action](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-primary-source-recovery-and-missing-license-diagnosis).
+
 > **2026-10-03 full lifecycle recurrence acceptance (12:55 UTC):** root's
 > actual normal-entry replay terminates zero with all 22 intended lifecycle
 > cases and the subsequent bulk-transfer/rejection tests. Cleanup lifetime,
