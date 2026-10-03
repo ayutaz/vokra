@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 recovery headroom and CI readback (08:29 UTC):** preserve logs,
+> source and Git history after removing only authenticated synthetic cap-test
+> padding. Require final bounded recovery/verification review and exact-head
+> evidence for local `b0add994`; PR #152's 76 successful and three skipped
+> checks apply only to remote `dd6f0154`. No replacement worker is allocated.
+> All 194 rows and final Scaleway gates remain open; see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-headroom-and-exact-head-ci-readback-0829-utc).
+
 > **2026-10-03 committed import gate (08:04 UTC):** isolated correction
 > `b0add994` passes 32 independent stdlib tests and normal commit gates;
 > current primary/native/owner execution remains blocked. Require an actual

@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 recovery headroom and CI readback (08:29 UTC):** root removes
+> only 112 authenticated, reproducible synthetic cap-test files while retaining
+> logs, source and Git history. PR #152 remains open at `dd6f0154` with 76
+> successful and three skipped checks; these do not cover local correction
+> `b0add994`. Source recovery revisions remain under review; no new worker or
+> model verdict is claimed. Preserve all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-headroom-and-exact-head-ci-readback-0829-utc).
+
 > **2026-10-03 committed import gate (08:04 UTC):** the isolated PR #152
 > correction is clean at `b0add994`, with 32 independent stdlib tests and
 > normal commit gates passed, but is not pushed or legally/model approved.

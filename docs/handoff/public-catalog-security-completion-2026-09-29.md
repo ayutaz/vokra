@@ -8180,6 +8180,37 @@ allocation, model acquisition, HF upload or Apple execution occurs here.
 All 194 rows and the remaining real-weight, legal and final Apple gates stay
 in scope; an estimate is not a completion result.
 
+## 2026-10-03 recovery headroom and exact-head CI readback (08:29 UTC)
+
+Root verifies 112 obsolete synthetic cap-test files in 31 terminal paired-V2
+fixture directories by exact path, regular-file ownership, size and complete
+content SHA-256 before deleting only those files. The removed logical size is
+553,547,736 bytes. Their zero/NUL-padding contents are reproducible from the
+retained frozen mock constructors; they are not primary source or model data.
+Recorded fixture process IDs are absent, no directory symlinks are found,
+and controllers, logs, Git bundles, checkouts and all other files are retained.
+Do not cite these deleted negative fixtures as retained evidence. Subsequent
+filesystem readback reports 5,793,348 KiB available; the APFS availability
+change is not attributed solely to the removed logical bytes.
+
+The CLI's saved credential first returns a JSON 401 error despite exit zero.
+Root's authorized retry uses the existing `.env` VAST key in the subprocess
+environment only, without logging it, putting it in arguments or changing
+credential settings. Individual readback then returns `error=false` and
+`instances=null` for destroyed owned worker `53978818`. This individual
+readback is not a new complete-account inventory. No replacement worker is
+allocated in this checkpoint.
+
+Fresh GitHub readback confirms PR #152 is open and `CLEAN` at unchanged
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, with 76 successful and three
+skipped checks, all completed. The clean `b0add994` correction is still local;
+those checks do not cover it. Root also re-runs the three model-free audit,
+collector and documents-only guard self-tests successfully. Bounded source
+recovery and model-free verification revisions remain under review, not
+accepted production or model results. All 194 rows, independent real-weight
+CPU evidence, final Apple CPU/Metal/no-fallback and publication gates remain
+required.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
