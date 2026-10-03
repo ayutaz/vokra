@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 accepted KV preparation (04:36 UTC):** corrected parent-driven
+> reset transactions are normally committed as `42ba5cf2`, followed by the
+> upstream citation fix at clean integrated `07e04668`. Root independently
+> passes all 20 model-free tap tests. This supersedes the earlier KV draft
+> rejection, not the outstanding real-weight or Apple gates. V22 still needs
+> actual production-path fault coverage; SpeechT5's current approval and
+> primary native/build legal evidence remain open. All 194 rows stay in scope;
+> see the [dated acceptance](public-catalog-security-completion-2026-09-29.md#2026-10-03-accepted-kv-preparation-and-execution-boundaries-0436-utc).
+
 > **2026-10-03 actual-path review (04:25 UTC):** root independently passes
 > 14 synthetic KV-tap tests and 31 V22 validator checks, but rejects both
 > candidates for uncovered production-state and lifecycle paths. Corrections

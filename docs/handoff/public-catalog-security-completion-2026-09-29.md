@@ -7681,6 +7681,59 @@ unresolved). Detailed review of priority families is not a hardware audit of
 every row. No provider allocation, model acquisition, upstream/reference
 execution, upload, PR mutation or Scaleway action occurs in this review.
 
+## 2026-10-03 accepted KV preparation and execution boundaries (04:36 UTC)
+
+This record supersedes the KV draft rejection at 04:25 UTC; that earlier
+measurement remains historical evidence. Root reviews the corrected actual
+parent/state/cache reset topology and accepts the bounded four-file change
+normally committed as `42ba5cf2ed2dacd0800167f512309e4f215a39b1`.
+The correction blocks capture/complete during incomplete multi-layer resets,
+commits one generation only after every bound cache resets, retains poison
+after failure or incomplete-context exit, and restores wrapped methods.
+No new tensor arithmetic or reference numbers are introduced.
+
+The separately reviewed upstream caller citation correction is normally
+committed as `07e04668195bc4910f01c5ed73bb19f0552dfe79`. All five normal hooks
+pass and that integrated worktree is clean. Root independently reruns the
+20 stdlib synthetic tap tests on that exact head: 20 passed, zero skipped,
+in 0.007 seconds, terminal tool result `389fd5`. The integrated runbook gate
+also passes (1,140 anchored citations, 129 runbooks, 482 paths).
+These prove preparation only. The three native KV Rust tests on this head,
+full primary source acquisition, composite dependency/legal closure,
+independent real-weight CPU parity and Apple CPU/Metal/no-fallback remain
+unverified; earlier V21 code-only results are not reused for this new head.
+
+Root reads the complete 681-line V22 controller at SHA-256
+`a191855ac4ea68008af674108f3c095af42609a27d548e06639bb75475bd6fc2`.
+Syntax and all 31 production-validator cases pass independently; session
+`4746` terminates with exit zero. The installed Vast CLI's own help confirms
+that `show instances-v1 --all --raw` is supported, correcting the earlier
+unverified suspicion about that command. Nevertheless the draft remains
+disabled and unaccepted: its mock lifecycle does not invoke the actual
+production controller or generated leaf; destruction lacks a fresh exact
+ID/label owner recheck; cleanup/recovery lack a shared total deadline;
+remote bootstrap PATH and allocated/cgroup CPU/RAM are not carried through;
+and recovered source rows need actual Git-blob binding and named-test exit
+receipts. The implementation owner is assigned these bounded corrections
+with tiny fixtures, without local Cargo, model execution or provision.
+
+SpeechT5's current manifest SHA-256 is
+`63a508e172a2c0a753ce434eef20d7fe2b731a04a476cf979cc16868d0a639e6`;
+its compact current audit is
+`2ce6275c59c9dcf9731438f355484360bc1ee7ab36268a4caac17d872f71a434`.
+The audit binds the Torch 2.13.0+cpu native libgomp bytes and reports the
+patchelf build-only tool absent from the final environment, but does not
+itself retain the primary GCC-exception/patchelf license text needed for a
+new operator decision. The original full-audit artifact is sought before
+any repeat audit. Current scope `6ee461...` remains pending; historical scope
+`99116...` is not substituted, and no speculative sign-off is recorded.
+
+A fresh complete Vast readback in terminal session `8418` reports
+`next_token: null`, zero Vokra-labelled workers and one unrelated stopped
+project instance. It is not modified. No new allocation, model acquisition,
+upstream execution, upload, push, PR mutation or Scaleway action occurs in
+this checkpoint. All 194 public rows remain in the completion denominator.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

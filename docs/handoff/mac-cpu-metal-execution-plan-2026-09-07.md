@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 accepted KV preparation (04:36 UTC):** use clean integrated
+> `07e04668` and 20 tap tests for the next reviewed source/KV wave. Do not
+> transfer the previous V21 result to this changed head. Before allocation,
+> require the actual production controller/leaf/recovery/cleanup fault tests,
+> exact owner recheck before destruction and jointly bounded deadlines.
+> SpeechT5's old approval does not authorize its changed dependency scope;
+> recover primary legal evidence before deciding that scope. Scaleway stays
+> last; see the [dated acceptance](public-catalog-security-completion-2026-09-29.md#2026-10-03-accepted-kv-preparation-and-execution-boundaries-0436-utc).
+
 > **2026-10-03 actual-path review (04:25 UTC):** fix mixed-generation KV
 > consumption during incomplete resets and test the real parent/state/cache
 > topology. Require the next controller's actual leaf, original source-receipt
