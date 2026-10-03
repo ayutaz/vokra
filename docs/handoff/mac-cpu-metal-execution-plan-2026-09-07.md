@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 concrete BigVGAN call-contract diagnosis (10:03 UTC):**
+> the original outer call violates the pinned leaf's fresh/non-overlapping
+> output contract. Correct both real paths and the fixture's preconditions,
+> retain the earliest failed leg and bounded log excerpts, and independently
+> test the normal production shell context before retrying. Zero Vokra
+> instances are confirmed; keep all 194 rows and final Apple gates. See the
+> [dated diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-bigvgan-call-contract-and-cleanup-confirmation-1003-utc).
+
 > **2026-10-03 repeated-failure investigation (09:55 UTC):** hold new VAST
 > allocations, not the catalog goal. Require exact production shell context,
 > per-leg exit/reason retention, bounded diagnostics independent of successful

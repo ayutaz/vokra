@@ -8444,6 +8444,67 @@ HF upload or Apple verdict is added by this investigation. Reuse the accepted
 source bytes. Final Scaleway/no-fallback and public-artifact reconciliation
 remain required across the unchanged catalog scope.
 
+## 2026-10-03 BigVGAN call contract and cleanup confirmation (10:03 UTC)
+
+After management root-cause commit
+`59c77d791a68753def81aa9424b86e995a11f6bf`, root examines the pinned real
+BigVGAN leaf, not only the controller's replacement fixture. Frozen A15 line
+572 creates `$work/big/evidence`; line 594 passes that existing directory as
+`--evidence-dir` and its child as `--output-dir`. Real leaf SHA-256
+`87184a9392d5e8d25cd126ab74d3abb206b99fe1c1bdc874d19733d936fb6b31`
+lines 182–190 require both paths to be absent and non-overlapping, then create
+the evidence directory inside the leaf. Root and an independent Luna source
+review agree that the call violates both guards. If the preceding host/UV/repo
+checks pass, the leaf rejects existing evidence before its own tests or
+collector; even removing that directory alone leaves the overlap violation.
+The controller's fake leaf previously used permissive `mkdir -p` and checked
+neither condition. This is a concrete integration defect, not an inferred HF
+network or collector defect. The original leaf exit/log still was not retained,
+so do not claim its exact observed exception or that the actual collector ran.
+
+A17 corrects the real invocation to fresh, separate `metadata-output` and
+`metadata-evidence` siblings and gives the fixture both preconditions. Its
+SHA-256 is
+`279b6b890ec5a877183e25fb4f4eb6794d4dbc532f52e30fc874dcdb34069740`;
+root passes syntax/hash and reviews the full delta. Activation is still
+withheld: aggregate diagnostic excerpts can exceed their cap, first-failure
+recording happens too late for early returns, and log-content/adversarial
+packet assertions are incomplete. Those bounded corrections are delegated;
+no production retry is performed on an unaccepted revision.
+
+The two exit-code layers also differ: the real leaf expects its internal
+metadata collector to return blocked code 2, validates that output, and then
+returns 0 itself. Its `die` paths return 2. Treating outer leaf code 2 as
+normal therefore misclassifies a guard or validation error. Require outer
+leaf code 0 only; record any nonzero leaf result as a failed leg, with its
+original code and log. Test missing output after a zero-return fixture
+separately from an explicit nonzero leaf failure. These two contracts must
+not be conflated in another permissive replacement fixture.
+
+Fresh independent individual readback for `53995269` is null. Complete
+account pagination returns success, one unrelated instance and no Vokra
+labels. The retained 6,133-byte inventory receipt
+`/private/tmp/vokra-qwen3-tts-cleanup-readback-20261003.json` has SHA-256
+`466e8c8e222b739a17dd748b7af2bac2e6f0da76fac42873b8b748134bf458b5`;
+root rechecks its hash and regular-file type. The unrelated resource is not
+modified. Old empty-account snapshots must not replace this newer readback.
+
+Root additionally authenticates and removes only the completed synthetic
+`state-slow-cleanup` and `state-unknown` work roots under
+`/private/tmp/vokra-clean-heads-model-free-logs.OthKNz/self/`, deletion
+session `90521` terminal zero. Each is 357,904 KiB, with the same clean exact
+model/XCodec heads and verified complete-history bundles recorded at 09:32.
+Root confirms selected-path absence and preserved output directories; all
+logs, case markers, input bundles and the successful counterpart remain.
+Source/Git content remains reconstructible. Available space is 1,507,172 KiB
+immediately afterward, still below the 2 GiB floor. A later independent
+environment readback shows 4,940,764 KiB; that larger external change is not
+attributed to these two deletions. No additional deletion is performed:
+the audited remaining synthetic tree has no safe 650-MiB duplicate candidate,
+and the actual V24 log tree has no `self` subtree. Offline regression can now
+resume, but new VAST allocation remains held pending review and test evidence.
+No public model row, legal approval, numerical result or Apple gate advances.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

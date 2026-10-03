@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 concrete BigVGAN call-contract diagnosis (10:03 UTC):**
+> independent source review finds that A15 pre-creates the leaf's evidence
+> directory and nests its output there, violating two explicit leaf guards.
+> The permissive fixture missed both. Correct to fresh disjoint siblings and
+> require failure-log regressions before new allocation. Fresh paginated VAST
+> readback confirms zero Vokra instances; the unrelated instance is untouched.
+> See the [diagnosis and cleanup record](public-catalog-security-completion-2026-09-29.md#2026-10-03-bigvgan-call-contract-and-cleanup-confirmation-1003-utc).
+
 > **2026-10-03 repeated-failure investigation (09:55 UTC):** stop further
 > allocations until production-context regression and bounded failure-log
 > recovery are independently accepted. A14's helper changed caller shell
