@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 PCM oracle review (02:54 UTC):** 13 local synthetic tests pass,
+> but they do not validate the real dependency/source/artifact gates. Correct
+> pre-import bytecode/source membership, installed artifact binding, unresolved
+> native-owner handling and environment/source origin consistency before any
+> real capture. New exact-head code-only replay remains separate and Scaleway
+> stays last; see the [review record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcm-oracle-review-0254-utc).
+
 > **2026-10-03 source-only audit readback (02:46 UTC):** corrected V24's
 > immutable PyYAML source-only job terminates with exit zero and verified
 > evidence recovery/destruction. Do not promote its explicit `UNAPPROVED`,

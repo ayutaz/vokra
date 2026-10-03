@@ -7301,6 +7301,39 @@ own verification. All 194 public rows and the dated metadata-only 136 full /
 58 unresolved classification remain; real-weight CPU and final Apple
 CPU/Metal/no-fallback, legal/owner and publication gates stay separate.
 
+## 2026-10-03 PCM oracle review (02:54 UTC)
+
+Root reads the complete 1,296-line capture, 426-line test file and README.
+The capture SHA-256 is
+`b2f452da1bf262de5e7b1a247b63763ea6ef796a31d9622f65d7adb86394cbe1`;
+the test SHA-256 is
+`222cbbb82d7ea682d3695ef52faa43ccb9efbae40d65d1a58db396c9915f3a25`.
+An independent offline UV/Python 3.12 stdlib run passes all 13 tests without
+upstream imports, network or model execution. Actual dependency files are now
+opened and hashed, an improvement over the previous metadata-only candidate.
+This review does not accept the draft for execution.
+
+The remaining concrete defects are pre-import admission of ignored bytecode
+or extra source; lock rows with no selected distribution bypassing artifact
+matching; incomplete RECORD entries and no binding between installed files
+and the locked archive; a native disposition explicitly requiring owner
+review being accepted for capture; and checking an existing output only after
+the caller has run. Record-count and metadata/output budgets also need checks
+before allocation. The documented `python -S` entrypoint does not add its
+bound dependency environment to the import path, while the installed Moshi
+origin requirement conflicts with the separate authenticated source checkout.
+Lazy imports during the caller require origin validation as well.
+
+The positive orchestration test mocks the source, dependency, artifact and
+loaded-origin validators, so its success does not prove a complete accepted
+filesystem path. Root returns these findings to the same bounded implementer,
+requiring an actual small synthetic filesystem test and focused negatives;
+real primary identities, license approvals and parity values must not be
+invented. Scheduling-cache capture is still not transformer per-layer KV.
+New `1cbc4abc` remote code verification and remote-only Mimi primary receipt
+collection remain pending. No provider is allocated by this review, and no
+model, Apple or publication verdict advances. All 194 rows remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

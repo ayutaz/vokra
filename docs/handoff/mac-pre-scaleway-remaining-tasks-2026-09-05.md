@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 PCM oracle review (02:54 UTC):** root independently passes
+> all 13 model-free tests, but full source review rejects the candidate's
+> pre-import, dependency and native-owner gates. The synthetic orchestration
+> bypasses actual identity validators and is not numerical evidence. Require
+> the assigned corrections before execution; preserve all 194 rows and see
+> the [review record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcm-oracle-review-0254-utc).
+
 > **2026-10-03 source-only audit readback (02:46 UTC):** corrected PyYAML V24
 > completes at fixed `e8b93b4b`; root verifies both locked artifact identities
 > and their primary license bytes. Native LibYAML closure and owner review
