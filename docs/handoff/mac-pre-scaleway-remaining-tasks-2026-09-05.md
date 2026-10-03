@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 paired terminal diagnosis (10:40 UTC):** session `44590`
+> terminates one with recovered original logs. Qwen API exits zero, dependency
+> audit remains license-blocked; BigVGAN tests use the wrong working-directory
+> root and its metadata validator rejects raw-API descriptor binding. Do not
+> rerun unchanged inputs or relax legal/identity gates. Owned `54000184` and
+> storage are destroyed, with fresh independent absence/zero-Vokra readback.
+> Source-only V6 remains under correction, not accepted. See the
+> [terminal diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-paired-terminal-diagnosis-and-independent-cleanup-1040-utc).
+
 > **2026-10-03 recovery headroom and live paired replay (10:36 UTC):**
 > remove only two clean synthetic checkouts after independent inspection and
 > full-history bundle verification; retain all outputs/logs/backups. Frozen

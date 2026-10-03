@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 paired terminal diagnosis (10:40 UTC):** live replay is now
+> terminal one, not a successful paired gate. Bounded diagnostics retain the
+> license stop, wrong-root BigVGAN tests and descriptor-binding failure.
+> Require source/fact corrections and their regressions before another wave;
+> do not replace missing evidence with assumptions. Owned worker/storage are
+> independently absent. All 194 rows and final Apple gates remain. See the
+> [terminal diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-paired-terminal-diagnosis-and-independent-cleanup-1040-utc).
+
 > **2026-10-03 recovery headroom and live paired replay (10:36 UTC):**
 > frozen A19 reaches SSH readiness on owned `54000184` / session `44590`.
 > Follow the same live handle, recover authenticated evidence, then destroy

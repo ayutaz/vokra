@@ -8635,6 +8635,59 @@ unaccepted until actual-path fault tests and root review. All 194 catalog
 rows, owner/legal boundaries, real-weight CPU gates, final Scaleway
 CPU/Metal/no-fallback gates and separate publication authorization remain.
 
+## 2026-10-03 paired terminal diagnosis and independent cleanup (10:40 UTC)
+
+The frozen A19 replay at the preceding checkpoint is now authoritative
+terminal one, session `44590`. Its diagnostic receipt records `remote_rc=1`
+and `diagnostic_rc=0`. Unlike the earlier incomplete-artifact failure, the
+original per-leg reasons and capped logs are actually retained in
+`/private/tmp/vokra-qwen-bigvgan-model-free-a19.uvyJi3/diagnostics`:
+
+- Bootstrap exits zero. Qwen dependency audit exits two with
+  `license gate remains factually BLOCKED`; `first_failure=audit:2` is
+  preserved. Do not treat that legal stop as authorization or invent a
+  package/security conclusion from the single-line log.
+- Qwen model-free API exits zero. Its log reports the all-variant validator
+  digest `e4a10c6dbed47a8b2399bd119e6cf4be62fd777defebfbab454d14d40ccb9eb8`,
+  and the summary records `checkpoint_load=NOT_PERFORMED`, `NO_UPLOAD` and
+  pending owner approval. The aggregate success packet is rejected, so its
+  underlying API JSON is not retained locally. This is a successful logged
+  API leg, not a complete dependency/reference/parity packet.
+- BigVGAN runs six unit tests; three error when tests or `self_test()` use
+  `Path.cwd()` and attempt the variant manifest under `/root/tools/parity/`
+  instead of the checked-out repository. The actual trace demonstrates a
+  working-directory integration defect before those fixture assertions.
+- Its collector/leaf exit two and log
+  `sibling descriptor not bound to raw API`, followed by metadata-output
+  validation failure. Three fixed metadata requests are recorded. The
+  mismatching descriptor/raw fields are not in the recovered diagnostic
+  packet, so the precise field-level cause is not established. Do not
+  loosen binding or claim primary metadata acceptance.
+
+Cleanup records zero for owned `54000184`; retained individual receipt is
+`instances:null` and the exact-label receipt is complete and empty. Fresh
+independent session `2993` terminates zero with individual absence, complete
+account pagination, one unrelated instance and zero Vokra instances. No
+unrelated resource is changed; owned worker/storage are not retained.
+
+Root's attempted read-only source inspection of the BigVGAN tests/collector
+and Qwen dependency-audit script is refused by the trusted local model-safety
+hook. It is not rerouted through another path or delegated to evade that
+denial. The logged causes above remain the verified boundary; detailed
+source correction/review is still pending. No new allocation is made to
+repeat unchanged inputs.
+
+Source-only V6 is a separate unaccepted 97,832-byte patch. Root's full diff
+review identifies still-missing actual outer-lifecycle fault tests, missing
+pagination-key validation in recovery, diagnostic selection that rejects a
+directory containing other artifacts, and signal/snapshot/reaping gaps.
+Corrections and actual shared-path tiny fixtures (at most 32 MiB, no full
+clones/bundles/provider/models/Cargo) are delegated at restored headroom;
+do not promote syntax or fixture-injection wiring to acceptance. Frozen
+V5/A19 stay unchanged. All 194 rows, source/legal boundaries, real-weight
+CPU gates, final Scaleway CPU/Metal/no-fallback and separate publication
+permission remain required.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
