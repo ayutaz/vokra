@@ -9076,6 +9076,60 @@ required before changing the pin and attempting the full matrix again.
 No cloud allocation, model execution, publication or model-row promotion
 occurs; all 194 rows and final Scaleway gates remain in scope.
 
+## 2026-10-03 causal focused acceptance and rendered-leaf diagnosis (11:59 UTC)
+
+Root reviews the corrected HEAD reader and independently runs exact
+`3ed7a5cc9d900d3565c17e588b94ec3a6251fe335180362ef1d4dcac9d0f2089`
+with `--self-test-bounded`. Session `34653` terminates zero and the source
+hash matches before and after. The immutable same-hash snapshot is also
+independently verified. Actual output includes the previous transfer,
+signal/descendant, JSON and diagnostic checks plus HEAD access-time
+acceptance, mtime/content/inode/path rejection, cap, relative/non-ASCII and
+symlink/FIFO/ancestor checks. Mutation cases retain side-effect reports and
+require exact `head changed after read`, not just any nonzero status;
+NUL and non-ASCII content require their intended diagnostics. The access-time
+case is an explicit injected predicate test, not a captured original kernel
+mutation. A first attempted real `utime` injection correctly failed because
+ctime changed too; it was not accepted by ignoring ctime.
+
+Root's actual renderer run terminates zero with unchanged body lengths and
+hashes from the 11:47 record. An external `READ_HEAD_TEST_MUTATION=atime`
+renderer invocation terminates one with the exact override-rejection reason.
+The normal reader still binds stable descriptor/path identity and excludes
+access time only. Do not describe the focused result as full acceptance.
+
+The harness then changes only its producer pin to the reviewed exact head;
+SHA-256 is
+`599cf708fb310283f2d3f61e70005c14388515f27984355d1e9003479df75881`.
+Actual full-matrix session `66946` terminates one. The following ten negative
+cases reach their expected status/reason/ownership checks before the loop
+advances: `foreign`, `duplicate`, `missing-token`, `incomplete`, `schema`,
+`nonfinite`, `owner-mismatch`, `create-nonzero`, `create-ambiguous` and
+`ssh-255-always`. Root independently samples retained original status and
+cleanup readbacks. This is partial matrix progress, not 22-case acceptance.
+
+`fixture-positive` fails with `source-leaf`. Root reads the original stderr
+and actual captured leaf body at
+`/private/tmp/vokra-primary-source-bulk-faults.Oj6cCg/fixture-positive`:
+line 90 reports `$!: unbound variable`. That body matches the fixed 15,527-byte
+leaf hash. Its `run_bounded` invokes UV in the foreground, then reads a
+background PID and references unrelated undefined `child_file` and
+`had_errexit` cleanup variables. These are concrete rendered-helper defects;
+neither a model result nor an unreliable upstream transient explains this
+stop. The complete retained test tree is 4,208 KiB.
+
+Return the implementation correction to the rendered helper's owner.
+Require consistent supervision, original exit status and defined cleanup
+state, plus regressions that execute the actual rendered body for positive,
+exit-23, timeout-124, oversized-log-125 and parent-signal/descendant cases.
+Outer focused coverage alone did not exercise this separate helper. Do not
+retry the unchanged full matrix or activate cloud work. A corrected rendered
+body legitimately changes its hash and must be re-reviewed and repinned;
+do not relax the expected-body checks to accommodate failure. No new worker,
+model/checkpoint/config/tokenizer/preset execution, workspace Cargo or
+publication occurs. Original A19 source/legal blockers, all 194 rows and
+final Apple CPU/Metal/no-fallback gates remain separate pending work.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

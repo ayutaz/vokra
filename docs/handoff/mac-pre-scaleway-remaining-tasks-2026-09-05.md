@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 causal focused acceptance and rendered-leaf diagnosis (11:59 UTC):**
+> root passes corrected `3ed7a5cc`'s focused replay and rejects external test
+> injection. The actual full matrix reaches ten intended negative cases,
+> then fails its positive rendered leaf: foreground execution is followed
+> by an unbound background-PID reference and unrelated cleanup variables.
+> Correct and test the actual rendered helper, not only the outer wrapper;
+> no cloud retry or model promotion. See the
+> [focused result and positive-path diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-causal-focused-acceptance-and-rendered-leaf-diagnosis-1159-utc).
+
 > **2026-10-03 full-matrix first-failure review (11:52 UTC):** the actual
 > matrix stops in the first fixture's HEAD reader before provider logic.
 > Preserve `head changed`, not a full pass. Whole-stat comparison includes

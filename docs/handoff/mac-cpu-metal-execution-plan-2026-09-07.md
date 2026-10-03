@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 causal focused acceptance and rendered-leaf diagnosis (11:59 UTC):**
+> frozen `3ed7a5cc` passes root's focused HEAD/transfer/signal regression;
+> the full matrix does not pass. Ten negative cases precede a concrete
+> positive-path failure in the actual rendered remote helper. Require that
+> helper's own bounded exit/log/interruption regressions before new pinning
+> and replay. Keep activation disabled and all 194 final gates in scope.
+> See the [focused result and positive-path diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-causal-focused-acceptance-and-rendered-leaf-diagnosis-1159-utc).
+
 > **2026-10-03 full-matrix first-failure review (11:52 UTC):** stop at the
 > observed pre-provider HEAD-read failure. Harden the capped no-follow stable
 > reader without ignoring content/identity changes, and require a causal
