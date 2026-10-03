@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 harness coverage audit and directional tool contracts (12:10 UTC):**
+> add owned-PID absence, oversized-diagnostic content/truncation and packet
+> trigger checks to previously unexecuted modes. Root catches wrong transfer
+> scope/direction before another full run and independently passes the tiny
+> upload-failure/diagnostic-download tests. Rendered parent-signal coverage
+> must not be borrowed from the outer helper. PR #152's fresh green checks
+> still cover its old public head, not the local correction. See the
+> [coverage and exact-head record](public-catalog-security-completion-2026-09-29.md#2026-10-03-harness-coverage-audit-and-directional-tool-contracts-1210-utc).
+
 > **2026-10-03 causal focused acceptance and rendered-leaf diagnosis (11:59 UTC):**
 > root passes corrected `3ed7a5cc`'s focused replay and rejects external test
 > injection. The actual full matrix reaches ten intended negative cases,

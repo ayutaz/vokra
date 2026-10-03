@@ -9130,6 +9130,55 @@ model/checkpoint/config/tokenizer/preset execution, workspace Cargo or
 publication occurs. Original A19 source/legal blockers, all 194 rows and
 final Apple CPU/Metal/no-fallback gates remain separate pending work.
 
+## 2026-10-03 harness coverage audit and directional tool contracts (12:10 UTC)
+
+At clean management HEAD `b840c500`, read-only review of the remaining
+unexecuted harness modes identifies missing owned-PID absence assertions for
+child-signal/deadline cases, absent oversized-diagnostic body/truncation
+checks, an external `truncate` dependency and insufficient transfer-fault
+scope evidence. Return these concrete gaps to the harness owner while the
+separate rendered helper is corrected; do not report unexecuted modes as
+passed or allocate a replacement worker.
+
+The harness now records leader/descendant IDs and requires both absent after
+child-signal/deadline completion. The oversized fixture uses offline UV and
+stdlib to write 4,194,305 nonempty bytes; its diagnostic check binds original
+and kept sizes, `trunc=1`, marker text and exact recovered log content.
+Packet faults retain explicit symlink/oversized-header trigger records.
+Those trigger records alone do not prove an independently captured internal
+validator reason; keep the full-case verdict unaccepted until actual replay.
+
+Root catches two transfer corrections that would test the wrong condition:
+allowing the initial input upload and failing only later packet downloads
+would replace the original `bundle-transfer` failure; putting the input
+failure guard in the download branch would never trigger on an upload.
+Return both defects before any full retry. Preserve the original initial
+`integrated.bundle` upload fault, fail it exactly once with 255, require no
+source-packet transfer afterward, and still allow bounded diagnostic
+downloads. Standalone tests exercise the actual fixture SCP in both
+directions: failed upload with no destination, successful normal upload with
+matching bytes, and successful diagnostic download despite the fault mode.
+
+Final reviewed harness SHA-256 at this snapshot is
+`53cd8fa8a3c1f3d155dd1dc64322274d5964ee4d871c003f156526f98ca2a840`.
+Root independently passes syntax and `--self-test-tools`, including those
+three directional cases. The producer pin remains the immutable reviewed
+`3ed7a5cc`; there is no new full-matrix acceptance. Root also rejects a draft
+rendered-helper test that merely calls the outer transfer signal test and
+labels it rendered-parent coverage. Require the actual rendered process's
+interruption and descendant cleanup before claiming that scope. No draft
+completion report, syntax check or substituted test activates `--run`.
+
+Fresh read-only GitHub PR #152 session `91966` terminates zero at 12:07:22 UTC:
+OPEN, draft, MERGEABLE/CLEAN, public HEAD
+`dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`, 76 SUCCESS and three SKIPPED.
+This does not cover local correction `b0add994` or constitute permission to
+merge it. No push, PR mutation or CI rerun occurs. Preserve the already-green
+exact-head workspace evidence rather than treating an older family record's
+missing verdict as a new reason to repeat Cargo. No live model inventory is
+reacquired, no model row is promoted, and all 194-row source/legal, real-weight
+CPU, final Apple/no-fallback and publication gates remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

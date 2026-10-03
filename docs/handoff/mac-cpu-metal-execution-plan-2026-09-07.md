@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 harness coverage audit and directional tool contracts (12:10 UTC):**
+> preserve each original fault's scope and require actual intended failures,
+> not a different transfer direction or an unrelated test's PASS label.
+> Independent tiny SCP-direction regressions pass; the strengthened full
+> matrix and actual rendered-parent cases remain unaccepted. Public PR #152
+> CI does not cover `b0add994`; do not repeat the already-green workspace run.
+> See the [coverage and exact-head record](public-catalog-security-completion-2026-09-29.md#2026-10-03-harness-coverage-audit-and-directional-tool-contracts-1210-utc).
+
 > **2026-10-03 causal focused acceptance and rendered-leaf diagnosis (11:59 UTC):**
 > frozen `3ed7a5cc` passes root's focused HEAD/transfer/signal regression;
 > the full matrix does not pass. Ten negative cases precede a concrete
