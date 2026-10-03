@@ -1,5 +1,18 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 terminal combined replay (01:12 UTC):** session `91310`
+> is terminal with exit one; do not restart or retarget it. Root verifies all
+> 63 recovered checksums and passing workspace/OWSM/XCodec2 test legs, but
+> both Clippy legs fail. Worker `53940991` and its storage are destroyed and
+> independently absent; no Vokra worker remains. Clean reviewed correction
+> `741ba4a213a07b927dd052f64dce6de52945bd31` needs a distinct exact-head
+> replay after the next candidate is reviewed. Kyutai PCM composition and a
+> genuine per-layer streaming decoder are separate implementation scopes,
+> not full-ASR or parity verdicts. Source-only controller tests do not approve
+> archive acquisition or dependency execution. Keep all 194 rows, real-weight
+> CPU/reference and final Apple/no-fallback gates; Scaleway remains last.
+> See the [terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-combined-replay-correction-and-generation-source-0112-utc).
+
 > **2026-10-03 combined candidate and live replay (00:32 UTC):** continue the
 > same owned code-only worker `53940991`, frozen at combined FireRed/OWSM
 > `dc7afa5e` and XCodec2 `a5e4c810`; do not retarget it to a correction or the

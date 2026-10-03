@@ -6945,6 +6945,76 @@ storage-inclusive destruction remain pending. No new paid allocation,
 model execution, HF credential transfer/publication, PR mutation or Scaleway
 run occurs in this checkpoint. The full 194-row goal remains unchanged.
 
+## 2026-10-03 terminal combined replay, correction and generation source (01:12 UTC)
+
+The management baseline is clean `20427439adeb7dea5eda9006b5f263f871494f3e`.
+This checkpoint supersedes the earlier live-job observations, not their
+historical evidence. Controller session `91310` is now terminal with exit
+one. It preserved combined FireRed/OWSM
+`dc7afa5e4c6bf5057f2efb1a63902e339034a881` and XCodec2
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153` throughout the run.
+
+Root authenticates all 63 recovered files, totaling 805,875 bytes, against
+collection manifest SHA-256
+`75851cc38d1359c8b8e2509f697360f79713aa5c628acf9c880b2df49eaf2b96`.
+The actual workspace totals are 307 result-bearing suites, 8,274 passed,
+zero failed and 108 explicit ignores. OWSM's 40 named tests and XCodec2's
+76 Linux stdlib tests pass without ignores/skips. All named FireRed test,
+source-authentication and capture contracts, the three-role decoder-source
+leg, cargo-deny and cargo-audit pass. This is code-only evidence, not an
+independent real-weight reference or Apple verdict.
+
+Workspace and OWSM Clippy both exit 101. The actual log identifies 24
+missing public documentation items, one indexed mask loop and one unused
+test-helper binding. Root reviews a separate correction at clean
+`741ba4a213a07b927dd052f64dce6de52945bd31`: one file, 32 insertions and three
+deletions, accurate component-only API documentation, equivalent mask
+iteration after the existing exact-length check, and removal of the unused
+binding. Normal commit hooks pass all five compile-free gates. This commit
+was not substituted into V13 and has no remote compile/Clippy verdict yet.
+
+After bounded evidence recovery, the controller destroys its exact owned
+worker `53940991` and records `cleanup_rc=0`. Root makes additional fresh
+read-only API calls: the individual response has `instances: null`; the
+complete paginated response explicitly has `next_token: null`, neither
+owned ID nor label, and zero Vokra-labelled instances. The one unrelated
+account instance is not modified. No worker or storage is retained for this
+wave, and no replacement is rented at this checkpoint.
+
+Root also independently authenticates seven small primary-source roles at
+Moshi revision `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`: `lm.py`,
+`lm_utils.py`, `loaders.py`, `sampling.py`, `transformer.py`,
+`LICENSE-APACHE` and `LICENSE-MIT`. All API-decoded bytes equal the raw
+receipts, with matching SHA-256 and Git blob identities; Python roles pass
+AST parsing only. Total raw size is 116,210 bytes; the receipt manifest
+SHA-256 is
+`9438a1c26fb9d89d03b4d8f4075e82df9212c94614f1afde1f13b643bcdf9da6`.
+These source facts define initial embedding rows, delayed token-cache writes
+and a distinct per-layer circular KV cache. They do not establish the
+caller-level EOS/flush policy, an effective model config or actual reference
+execution. A real stateful single-frame decoder component is assigned in
+a separate candidate; the PCM bridge remains under corrective review.
+Synthesized wiring tests are self-consistency only, never an independent
+oracle. Public loading/transcription remains fail-closed.
+
+The source-only PyYAML lifecycle review finds two real false-proof risks:
+V10's default self-test exits before reaching its signal child, and V11
+accepts a caller-controlled provider path plus that provider's own hash.
+Those versions remain frozen and unaccepted. V12 pins the fake-provider body
+independently and root reproduces its default offline suite to exit zero;
+V13 additionally uses a dedicated execution marker and the default
+provider's own read-only hash in negative tests; root reproduces its default
+offline suite to terminal exit zero as well. Actual acquisition remains
+disabled, and broader bounded regular-file/JSON input review is still open.
+No actual PyYAML archive, dependency import/install, model payload, HF
+credential transfer/publication, PR change or Scaleway execution occurs here.
+
+The full 194-row completion objective is unchanged. The last dated live
+metadata audit remains 136 code/artifact-full and 58 unresolved, not 136
+hardware-complete models. Source/license decisions, strict native routes,
+independent real-weight CPU parity, final Apple CPU/Metal/no-fallback and
+separately authorized public-artifact reconciliation remain required.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

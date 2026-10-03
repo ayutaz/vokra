@@ -1,5 +1,17 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 terminal combined replay (01:12 UTC):** frozen code-only
+> V13 is terminal with exit one, not an overall pass. Root verifies all 63
+> recovered checksums: workspace 8,274 passed / zero failed / 108 explicit
+> ignores, OWSM 40 passed and XCodec2 76 passed without skips. Workspace and
+> OWSM Clippy fail on decoder documentation, an indexed mask loop and an
+> unused binding. Reviewed separate correction `741ba4a2` passes the normal
+> five compile-free commit gates, but still needs its own remote replay.
+> Worker `53940991` and storage are independently absent in fresh individual
+> and complete paginated readbacks; no Vokra instance remains. Preserve all
+> 194 rows and the dated metadata-only classification, not a hardware-complete
+> count; see the [terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-combined-replay-correction-and-generation-source-0112-utc).
+
 > **2026-10-03 combined candidate and live replay (00:32 UTC):** reviewed
 > FireRed and ordinary-decoder OWSM histories are now preserved together at
 > clean `dc7afa5e`, rather than treating files absent from a different baseline
