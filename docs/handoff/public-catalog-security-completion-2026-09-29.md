@@ -8756,6 +8756,53 @@ has passed. No new cloud cost, model-row promotion, Apple result, owner/legal
 sign-off or publication is claimed. Full-catalog scope remains all 194 rows;
 the retained 136-full/58-unresolved code inventory is not blanket Apple parity.
 
+## 2026-10-03 actual Bash 3.2 primitive verification (11:01 UTC)
+
+This review begins at clean management HEAD
+`abddd031a4a69c0836aa50c65e4fdc510a8510b2`. Root confirms the actual local
+`bash` resolves to `/bin/bash`, version `3.2.57`. A tiny shell probe rejects
+the candidate's dynamic file-descriptor syntax with
+`exec: {diagnostic_fd}: not found`, while a reserved-FD probe preserves the
+14-byte stdin fixture. A separate tiny probe reproduces `root: unbound
+variable` from the harness's combined local declaration. Both are actual
+shell evidence, without executing any model, upstream code or provider.
+
+The controller owner corrects the Bash compatibility issue and supplies a
+proper focused dispatcher. Root reviews its bounded-helper and primitive-test
+bodies, then runs the frozen exact file
+`/private/tmp/vokra-primary-source-bulk-v24-derived-outer-v6-20261003.sh`,
+SHA-256
+`a552efb20d445591985b66531cbada94dd04c46a41757b4a40b1991e2a8c5536`,
+with `--self-test-bounded`. Session `75127` terminates zero. Hash checks before
+and after match; Bash syntax also passes. The actual helper, not a substitute,
+reports all of these passed:
+
+- Stdin has 14 bytes and the expected SHA-256.
+- Child exit 23 and timeout exit 124 are retained.
+- Actual INT and TERM produce 130 and 143 respectively, with the marked
+  descendants no longer alive.
+- The caller's enabled/disabled `errexit` states are restored.
+
+This accepts the focused bounded helper only. It does not prove that an
+interrupt delivered to the entire outer controller reaps all active transfer
+children or completes provider cleanup. It does not accept a synthetic
+receipt as genuine source bytes, the full 128-file packet, API/dependency
+closure, CPU/Metal parity or publication. The outer harness is still under
+correction and has not passed its full matrix.
+
+Root's remaining frozen-file review returns three bounded scopes to the
+controller owner: a common nonblocking regular/stable-FD provider snapshot
+loader with strict identity/row types; diagnostic archive overhead budgeting,
+status/exit priority and exact truncation-marker validation; and explicit
+production rejection of fixture-context environment overrides. The accepted
+primitive bytes must remain reproducible while later corrections are made.
+The independent harness owner continues normal-child integration using the
+producer's explicit tiny-fixture builder, without authoring a second provider
+lifecycle. No new VAST allocation, remote process or model execution is made.
+The preceding independently verified owned-resource destruction remains the
+cloud evidence; no fresh API query is claimed here. All 194 rows and final
+Apple/no-fallback gates remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

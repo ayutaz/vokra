@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 actual Bash 3.2 primitive verification (11:01 UTC):** root
+> independently passes frozen V6 `a552efb2`'s bounded-helper tests: stdin
+> bytes/hash, exit/timeout status, INT/TERM descendant cleanup and shell-option
+> restoration. This closes the focused recurrence risks, not the outer
+> lifecycle or primary-source gate. Full fault integration, provider snapshot
+> and diagnostic-archive corrections remain; no new lease or model verdict.
+> See the [focused evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-bash-32-primitive-verification-1101-utc).
+
 > **2026-10-03 recurrence-prevention review (10:54 UTC):** unchanged cloud
 > retries remain suspended. Separate the logged BigVGAN working-directory
 > defect, unresolved raw-metadata binding and Qwen legal stop from newly

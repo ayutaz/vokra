@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 actual Bash 3.2 primitive verification (11:01 UTC):**
+> exact frozen `a552efb2` passes root's normal-shell bounded-helper replay,
+> including stdin and interruption regressions. Require the separate full
+> outer fault matrix and remaining snapshot/diagnostic corrections before
+> cloud activation. No model or primary-source readiness is inferred; retain
+> all 194 rows and Scaleway-last ordering. See the
+> [focused evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-bash-32-primitive-verification-1101-utc).
+
 > **2026-10-03 recurrence-prevention review (10:54 UTC):** keep live
 > allocation disabled until a frozen controller and independent harness
 > prove normal-shell execution, preserved SSH stdin, phase-specific absolute
