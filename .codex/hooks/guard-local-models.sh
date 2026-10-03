@@ -30,7 +30,85 @@ is_help_or_self_test() {
 is_read_only_inspection() {
     local normalized="$1"
     printf '%s' "$normalized" | grep -Eq \
-        '^(git[[:space:]]+(status|diff|show|log|ls-files|rev-parse)|sha(256|512)sum|shasum|b3sum|md5|stat|file|ls|find|rg|grep|head|tail|jq|od|xxd|cmp|diff|wc|sort|awk|sed|cat)([[:space:]]|$)'
+        '^(sha(256|512)sum|shasum|b3sum|md5|stat|file|ls|find|rg|grep|head|tail|jq|od|xxd|cmp|diff|wc|sort|awk|sed|cat)([[:space:]]|$)|^git[[:space:]]+(status|diff|show|log|ls-files|rev-parse)([[:space:]]|$)'
+}
+
+is_literal_git_inspection() {
+    local command="$1" token subcommand="" path resolved
+    local index=1 count after_double_dash=0
+    local -a argv
+
+    case "$command" in
+        *'$('*|*'`'*|*'>'*|*'<'*|*'&'*|*'|'*|*';'*|*'\\'*|*'"'*|*"'"*) return 1 ;;
+    esac
+    read -r -a argv <<< "$command"
+    count="${#argv[@]}"
+    [ "$count" -ge 2 ] || return 1
+    [ "${argv[0]}" = git ] || return 1
+    while [ "$index" -lt "$count" ]; do
+        token="${argv[$index]}"
+        case "$token" in
+            -C)
+                index=$((index + 1))
+                [ "$index" -lt "$count" ] || return 1
+                path="${argv[$index]}"
+                case "$path" in
+                    /*) ;;
+                    *) return 1 ;;
+                esac
+                case "$path" in
+                    *'/../'*|*/..|*'/./'*|*/.|*'"'*|*"'"*) return 1 ;;
+                esac
+                [ -d "$path" ] && [ ! -L "$path" ] || return 1
+                resolved="$(CDPATH= cd -P -- "$path" 2>/dev/null && pwd -P)" || return 1
+                [ "$resolved" = "$path" ] || return 1
+                ;;
+            status|diff|show|log|ls-files|rev-parse)
+                subcommand="$token"
+                index=$((index + 1))
+                break
+                ;;
+            *) return 1 ;;
+        esac
+        index=$((index + 1))
+    done
+    [ -n "$subcommand" ] || return 1
+    local saw_no_ext_diff=0 saw_no_textconv=0
+    while [ "$index" -lt "$count" ]; do
+        token="${argv[$index]}"
+        if [ "$after_double_dash" -eq 1 ]; then
+            index=$((index + 1))
+            continue
+        fi
+        if [ "$token" = -- ]; then
+            after_double_dash=1
+            index=$((index + 1))
+            continue
+        fi
+        case "$token" in
+            --no-ext-diff) saw_no_ext_diff=1 ;;
+            --no-textconv) saw_no_textconv=1 ;;
+            --ext-diff|--textconv|--config*|--exec-path|--upload-pack=*|-c)
+                return 1
+                ;;
+            --short|--porcelain|--branch|--ahead-behind|--no-ahead-behind|--ignored|--no-renames|-u|-uno|-unormal|-uall|--stat|--name-only|--name-status|--check|--cached|--staged|--no-color|--color=never|--oneline|--decorate|--graph|--format=*|--abbrev-commit|--deleted|--modified|--others|--stage|--eol|--exclude-standard|--show-toplevel|--git-dir|--is-inside-work-tree|--verify|--abbrev-ref|--show-prefix|--show-cdup|--absolute-git-dir|--git-path|-U[0-9]*)
+                ;;
+            -*) return 1 ;;
+            *) ;;
+        esac
+        index=$((index + 1))
+    done
+    if [ "$subcommand" = diff ] || [ "$subcommand" = show ]; then
+        [ "$saw_no_ext_diff" -eq 1 ] && [ "$saw_no_textconv" -eq 1 ] || return 1
+    fi
+    return 0
+}
+
+is_explicit_git_external_helper() {
+    local normalized="$1"
+    printf '%s' "$normalized" | grep -Eq '^git([[:space:]]|$)' || return 1
+    printf '%s' "$normalized" | grep -Eq '(^|[[:space:]])(diff|show)([[:space:]]|$)' || return 1
+    printf '%s' "$normalized" | grep -Eq '(^|[[:space:]])(--ext-diff|--textconv)([[:space:]]|$)'
 }
 
 is_static_command() {
@@ -169,6 +247,8 @@ analyse_segment() {
     normalized="$(hook_normalize_segment "$segment")"
     [ -n "$normalized" ] || return 1
 
+    is_literal_git_inspection "$segment" && return 1
+
     # One immutable, hash-bound remote controller is allowed to carry its
     # remote archive inputs through this local hook.  The recognizer is exact:
     # it does not permit wrappers, aliases, substitutions, shell chaining, or
@@ -193,6 +273,10 @@ analyse_segment() {
     is_help_or_self_test "$normalized" && return 1
     is_static_command "$normalized" && return 1
     is_literal_git_add "$normalized" && return 1
+    if is_explicit_git_external_helper "$normalized"; then
+        echo "unsafe git external diff/textconv request"
+        return 0
+    fi
 
     if is_model_download "$normalized"; then
         echo "model/checkpoint download"
@@ -363,11 +447,39 @@ self_test() {
     check 'ordinary parity script is guarded' block 'uv run --project tools/parity python tools/parity/foo.py'
     check 'audit script is model-free' allow 'uv run --no-project python tools/audit/hf_mac_coverage.py'
     check 'static check script with marker' allow 'bash scripts/check-doc-references.sh model.gguf'
+    git_inspection_fixture="$(mktemp -d "${TMPDIR:-/tmp}/vokra-git-inspection.XXXXXX")"
+    git_inspection_fixture="$(CDPATH= cd -P -- "$git_inspection_fixture" 2>/dev/null && pwd -P)"
+    git_inspection_link="${git_inspection_fixture}-link"
+    ln -s "$git_inspection_fixture" "$git_inspection_link"
+    git_inspection_prefix="git -C $git_inspection_fixture"
+    check 'git -C status inspection' allow "$git_inspection_prefix status --short"
+    check 'git -C log inspection' allow "$git_inspection_prefix log --oneline -- tools/parity/probe.py"
+    check 'git -C ls-files inspection' allow "$git_inspection_prefix ls-files -- tools/parity/probe.py"
+    check 'git -C rev-parse inspection' allow "$git_inspection_prefix rev-parse --show-toplevel"
+    check 'git -C diff with helper protections' allow "$git_inspection_prefix diff --no-ext-diff --no-textconv -- model.gguf tools/parity/probe.py"
+    check 'git -C show with helper protections' allow "$git_inspection_prefix show --no-ext-diff --no-textconv HEAD -- model.gguf"
+    check 'git -C diff without helper ordinary path' allow "$git_inspection_prefix diff -- README.md"
+    check 'plain git diff inspection remains allowed' allow 'git diff -- tools/parity/probe.py'
+    check 'plain git show inspection remains allowed' allow 'git show HEAD:tools/parity/probe.py'
+    check 'plain git diff external helper rejected' block 'git diff --ext-diff -- tools/parity/probe.py'
+    check 'plain git show textconv rejected' block 'git show --textconv HEAD:tools/parity/probe.py'
+    check 'git -C external diff rejected' block "$git_inspection_prefix diff --ext-diff --no-textconv -- tools/parity/probe.py"
+    check 'git -C textconv rejected' block "$git_inspection_prefix show --no-ext-diff --textconv HEAD"
+    check 'git -C config remains ordinary Git' allow "git -c user.name=bot -C $git_inspection_fixture status"
+    check 'git env wrapper remains ordinary Git' allow "env GIT_EXTERNAL_DIFF=helper $git_inspection_prefix status"
+    check 'git symlink directory remains ordinary Git' allow "git -C $git_inspection_link status"
+    check 'git traversal directory remains ordinary Git' allow "git -C $git_inspection_fixture/../$(basename "$git_inspection_fixture") status"
+    check 'git unknown subcommand remains ordinary Git' allow "$git_inspection_prefix remote -v"
+    check 'git commit remains ordinary Git' allow 'git commit -m docs'
+    check 'git fetch remains ordinary Git' allow 'git fetch origin main'
+    check 'git bundle verify remains ordinary Git' allow 'git bundle verify candidate.bundle'
+    check 'git chained model execution rejected' block "$git_inspection_prefix diff --no-ext-diff --no-textconv -- tools/parity/probe.py && uv run --project tools/parity python tools/parity/foo.py"
+    rm -rf "$git_inspection_fixture" "$git_inspection_link"
     check 'literal git add parity source' allow 'git add -- tools/parity/new_probe.py'
     check 'literal git add checkpoint path' allow 'git add -- model.gguf'
     check 'git add chained model execution' block 'git add -- tools/parity/new_probe.py && uv run --project tools/parity python tools/parity/foo.py'
     check 'git -c add remains guarded' block 'git -c user.name=bot add -- tools/parity/new_probe.py'
-    check 'git commit remains guarded' block 'git commit --only -- tools/parity/new_probe.py -m docs'
+    check 'git commit with parity source remains guarded' block 'git commit --only -- tools/parity/new_probe.py -m docs'
     check 'prose false positive' allow 'echo "download model.gguf later"'
     check 'prose chained false positive' allow 'echo "ssh vast worker" && git status --short'
     if is_maintainer_mac Darwin && ! is_maintainer_mac Linux; then
