@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 streaming guard and PCM policy review (01:41 UTC):** root
+> verifies clean separate guard candidate `deba8c6a`, with five newly defined
+> tests still awaiting exact-head remote execution. The current combined
+> PCM session's raw-sample/floor padding and two initial LM calls are not
+> equivalent to the authenticated PyTorch caller's frame-ceiling padding
+> and one LM call per frame. Preserve the historical MLX policy and require
+> a separately source-bound native PyTorch route and independent PCM oracle.
+> Decoder-only parity cannot prove this composite. Root's full source-only
+> controller V19 offline test passes; acquisition remains disabled. Keep all
+> 194 rows and see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-streaming-guard-pcm-policy-and-offline-cleanup-review-0141-utc).
+
 > **2026-10-03 PCM integration and baseline correction (01:29 UTC):** root
 > reviews and normally commits the combined FireRed/OWSM/Kyutai candidate at
 > clean `3c15ea1d`, preserving the already merged incremental LM and private

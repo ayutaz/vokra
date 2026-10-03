@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 streaming guard and PCM policy review (01:41 UTC):** integrate
+> reviewed separate guard `deba8c6a` into a new clean combined HEAD before a
+> distinct model-free replay; no live job may be retargeted. Separately bind
+> the official PyTorch caller's frame padding and single-call LM schedule to
+> an actual private PCM engine/session route, preserving the historical MLX
+> contract. Require independent PCM reference evidence, not decoder-only
+> `forward_text` parity. Source-only controller V19 passes root's default
+> offline tests, including duplicate cleanup readback rejection, but its
+> acquisition path stays disabled. Scaleway remains the final hardware
+> stage; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-streaming-guard-pcm-policy-and-offline-cleanup-review-0141-utc).
+
 > **2026-10-03 PCM integration and baseline correction (01:29 UTC):** freeze
 > clean combined candidate `3c15ea1d8adc20e8b1643698ae61f27b45bc0836` for
 > review, not as a remote or full-ASR pass. Use the existing main-derived

@@ -7084,6 +7084,68 @@ real-weight CPU parity, final Apple CPU/Metal/no-fallback, security/CI and
 separately authorized public-artifact reconciliation remain unproved where
 their exact evidence is missing.
 
+## 2026-10-03 streaming guard, PCM policy and offline cleanup review (01:41 UTC)
+
+The management baseline is clean
+`918f77c690b3afcb4f5ae30a6866c54af5297c0e`. Root rechecks the clean separate
+streaming-LM guard candidate at
+`deba8c6a537ce134be5343100185c51462d78820`, accepted through the normal five
+compile-free commit gates. Its sole changed file is Kyutai's
+`streaming_lm.rs` in that main-derived candidate, not a file present in this
+older management checkout. Its SHA-256 is
+`793fee60f92f522e5f5140863532b8da7a49b5f4db47d55b2ac5138e92861aec`.
+The correction checks caller arguments and absolute-position overflow before
+neural/cache mutation, preflights aggregate KV/layer/scratch allocation bytes,
+and reserves bounded cache capacity. Partial neural failures still poison
+state; reset remains explicit. Existing source initialization, cache ordering,
+tracing and numerical bounds are preserved. Five new source-defined tests
+have not run locally or remotely. Combining this correction with `3c15ea1d`
+and obtaining a new immutable exact-head model-free replay remain pending.
+
+Root inspects the current combined `3c15ea1d` source and confirms an important
+reference-boundary mismatch. The legacy MLX-derived contract prepends 24,000
+raw samples, appends 84,000 samples and floors complete 1,920-sample frames;
+its empty-input schedule is 56 frames. Its private PCM control makes two LM
+calls for the first Mimi row, hiding the first sampled result. In contrast,
+the authenticated fixed DSM PyTorch caller recorded above rounds incomplete
+input up to a whole frame and applies ceiling to silence-prefix and delay
+frame counts, without an extra second of suffix. For the strict 1.0/2.5-second
+configuration at 12.5 frames/second, this is 13 prefix and 32 suffix frames
+(45 for empty input), with one LM call/output per encoded frame. Neither
+schedule stops generation early on EOS. They must not be treated as the same
+PCM policy or silently exchanged in historical evidence.
+
+A separate source-bound PyTorch native engine/session route is assigned to
+the implementation agent in an isolated candidate. The existing public
+loader remains fail-closed. The current decoder reference tool executes
+official `LMModel.forward_text` on explicit text/Mimi-code rows, not PCM
+encoding or the stateful `LMGen` loop; its scope is
+`KYUTAI_STT_DECODER_PARITY` and its streaming runtime status is
+`BLOCKED_NOT_EXECUTED`. An independent full PCM oracle and real-weight VAST
+measurement therefore remain separate requirements. Source authentication,
+native synthetic wiring and decoder parity do not satisfy those requirements.
+
+Root reviews source-only controller V19, SHA-256
+`79308aee6a05b6e7266aa596aca5e9dd6b4f2a7d1ce39b12b33fc00d369fec44`,
+and independently runs its default offline self-test to terminal exit zero
+(session `14894`). Actual collector tests pass six cases; production packet
+validation, bounded provider capture, partial owned-ID recovery, exact owned
+destruction and signal cleanup tests pass. New negative cases reach the
+actual cleanup path and reject duplicate `instances` keys in individual
+readback and duplicate `next_token` keys in complete paginated readback,
+while still destroying the fake owned instance. This is preparation-only
+evidence: no provider, network, actual archive or model was used. It is not
+Linux-specific zombie-reaping proof, nor diagnosis of the missing earlier
+V15 failure trace. V19's `--run` remains disabled. A distinct two-artifact
+PyYAML source-metadata proposal remains under review; previously rejected
+five-archive transfers are not retried or rerouted.
+
+No new paid VAST/Scaleway allocation, model execution, HF transfer/upload,
+push or PR mutation occurs at this checkpoint. Preserve the full 194-row
+objective and the dated 136 code/artifact-full / 58 unresolved classification;
+no row gains real-weight CPU, Apple/no-fallback or publication completion
+from these source and offline tests.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
