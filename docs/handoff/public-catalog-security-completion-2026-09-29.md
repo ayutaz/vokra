@@ -6893,6 +6893,58 @@ transfer, upload, withdrawal or Scaleway run occurs. All 194 rows, the last
 dated metadata-only 136 full / 58 unresolved snapshot, real-weight CPU gates
 and final Apple CPU/Metal/no-fallback scope remain unchanged.
 
+## 2026-10-03 source-fault review and Kyutai composition boundary (00:49 UTC)
+
+The review starts from clean management HEAD
+`5153b7519d76793e15531f59090e6b22adf95321`. A fresh metadata-only Hub audit
+still reports 194 public repositories, 193 GGUF repositories and 198 files:
+CPU code/artifact classification is 136 full, 43 partial, 14 without a binder
+and one non-artifact. Metal classification is 136 full, 57 CPU-blocked and
+one non-artifact, with no CPU-only row. The fresh all-pages Dependabot read
+still reports 209 open alerts, 182 with a named patched version: three
+critical, 31 high, 82 medium and 93 low. These observations are neither
+real-weight/hardware verdicts nor dependency repairs.
+
+Root independently runs the PyYAML source-only controller V8 and V9 offline
+suites to terminal exit zero (sessions `82022` and `81291`). V8 SHA-256 is
+`dfadd9c49f32b812d6ed261b3b3754d915124ca86f7192fdb96a597b5ed4837b`;
+V9 SHA-256 is
+`2a237c8c125560c99fc500d3064e330a8cda2ffbe1a32f900f0c44468cfa0e46`.
+Both authenticate the retained primary receipts, run the six collector tests
+and consume synthetic output from the actual accepted collector through the
+production packet validator. The shared create helper is exercised against
+a fake provider, not a real API. V9 additionally proves timed-out creation
+can recover a uniquely labelled owned instance using a separate finite
+reserve after the work deadline, then destroy it and check both readbacks.
+Foreign-only, duplicate-label and missing-pagination inputs remain rejected.
+
+The V9 finish-status cases return 130/143 and invoke `finish`; they do not
+deliver actual INT/TERM or execute the production signal traps. Root does
+not accept them as signal-lifecycle proof and assigns that specific missing
+test and possible partial-creation recovery correction to a new version.
+Bounded regular-file/JSON input review also remains open. Both frozen versions
+keep `--run` disabled at `PENDING_REVIEW`: no actual PyYAML archive is obtained,
+installed, imported or approved by these tests.
+
+Read-only Kyutai review confirms the existing native Mimi encoder and
+`KyutaiSttAsr::forward_text_logits` are separate execution components.
+`transcribe` still explicitly returns `NotImplemented`, and the wire-state
+tracks frames/tokens rather than decoder KV cache or generation state. A
+bounded PCM-to-Mimi-to-logits bridge is assigned in a separate candidate;
+explicit backend selection and caller-supplied text inputs must not invent
+initial-token, EOS, sampling or delay policy. Full transcription, independent
+real-weight CPU parity and final Apple CPU/Metal/no-fallback remain required.
+No implementation or public row is promoted by this investigation.
+
+Root repeatedly polls the same live controller session `91310` and reads
+the frozen worker's logs through its already trusted SSH host key. The
+workspace all-target run has progressed into benchmarks; no terminal pass
+is claimed. Worker `53940991` remains in use at the exact previously recorded
+HEADs, not retargeted or replaced. Its terminal evidence recovery and
+storage-inclusive destruction remain pending. No new paid allocation,
+model execution, HF credential transfer/publication, PR mutation or Scaleway
+run occurs in this checkpoint. The full 194-row goal remains unchanged.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
