@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 PR #152 actual Linux acceptance:** the fixed production-entry
+> model-free leaf passes at `b0add994`, and owned VAST resources are destroyed
+> with individual-null/closed-inventory confirmation. Require fresh exact-head
+> CI; keep the PR draft while package/license execution gates remain blocked.
+> Kyutai's native PCM/KV seam already exists, but independent real-weight
+> composite capture is still required. See the
+> [verdict and next-step boundary](public-catalog-security-completion-2026-09-29.md#2026-10-03-pr-152-actual-linux-acceptance).
+
 > **2026-10-03 recovered-source correction acceptance (13:31 UTC):** the
 > one-document repair passes root's offline test, fixed primary-source
 > size/blob verification and all six unchanged recovered-packet validators.

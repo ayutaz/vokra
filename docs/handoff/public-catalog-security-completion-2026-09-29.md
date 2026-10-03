@@ -9476,6 +9476,82 @@ final Apple CPU/Metal/no-fallback verdicts remain separate gates. The
 194-row denominator and 136 metadata-full / 58 unresolved split do not
 change. PR #152's local correction still needs its own actual Linux verdict.
 
+## 2026-10-03 PR #152 actual Linux acceptance
+
+This supersedes the preceding pending actual-Linux verdict for PR #152,
+not the source-only packet's approval boundary. Root rejects the proposed
+new production controller: literal `+` transfer operands, a pre-created
+leaf output directory, incomplete remote input verification and recovery,
+function-local EXIT cleanup lifetime, and deletion of failure evidence
+make its production path unsafe. Marker/contract tests do not exercise that
+path and are not execution acceptance. Do not activate this controller.
+
+Normal manager CLI/SSH operations instead use the already reviewed frozen
+V5 leaf and its three pinned bases. The first manager attempt also fails:
+`show instance --raw` returns a flat instance object, not a nested
+`instances` object; `destroy --raw` can return success text, not JSON.
+Root stops the readiness wait rather than paying through its deadline.
+Worker `54019371` runs no verification; its destroy is followed by a
+separate successful individual-null and closed-inventory readback.
+The failed local attempt and its evidence directory are retained at
+`/private/tmp/vokra-pr152-actual-linux-5ds4xsk9`.
+
+The corrected operation uses these observed provider contracts and captures
+the actual OS exits. Fresh offer `53849627` costs USD 0.15/hour within the
+unchanged ceiling. Owned worker `54019735` runs the model-free verification
+at exact clean `b0add994b4d0350c338e60cb29b8165d8145fe32`. All six transferred
+input hashes pass before clone or leaf execution. The full-history bundle
+SHA-256 is `a88a00db99e49bff50b05f52464c919e65de257153e4797afb047b0df95362d7`;
+V5 SHA-256 remains
+`371275c2b5c1c20da1b27be35371731e393a098bd1100ba640f9dfd5cfd1c8bf`.
+Pinned uv 0.12.5 is verified against its archive hash, Python 3.12 is
+prepared remotely, and `PYTHONDONTWRITEBYTECODE=1` preserves checkout
+cleanliness. No local model, third-party import/install, weight, tokenizer,
+configuration payload, HF credential, Cargo or upload is involved.
+
+Actual normal-entry verification is **32 tests, zero skips, zero failures**;
+the dependency audit, evidence collector and documents-only guard each
+return zero. Diff-check and tracked-lock checks pass; the leaf takes three
+seconds and the checkout remains clean, including ignored files. The
+operation handle `42718` terminates **zero** after recovery and cleanup.
+Recovered evidence is
+`/private/tmp/vokra-pr152-linux-fixed-di0xoh_q/vokra-xcodec2-pr152-v5-output-20261003`.
+Receipt SHA-256 is
+`32bb2dd6a22b4b38d5cb9ecdfb04b36e461957ec098b68191cbe38bce8ef6285`.
+Root verifies its digest, all ten referenced log sizes/hashes, actual
+32-test/no-skip output and all four process status files. A first local
+readback incorrectly expects a bare `0`; the retained status format is
+`completed`, `rc=0`, `bytes=...`. The corrected read-only verification passes
+without repeating any remote test or changing its evidence.
+
+Worker `54019735` and its storage are completely destroyed. Individual
+readback is `instances: null`; closed all-instance inventory contains no
+owned ID/label. Two other-project instances, `54015246` and `54019631`, are
+not modified. Do not describe this as an empty VAST account. The independent
+local compliance-scanner regression passes all eight cases.
+
+The correction is normally fast-forward pushed to the existing PR branch:
+`dd6f0154` to `b0add994`. The unchanged Rust/build/workflow diff and actual
+remote green evidence support the project-prescribed pre-push bypass of
+local broad Cargo; compliance was run separately. Old-head 76 successes
+and three skips are historical only. Fresh exact-head CI must pass. The
+PR remains draft: the locked setuptools distribution's LGPL bytes,
+package override, owner/legal decisions, independent real-weight reference
+and Apple/no-fallback gates are not approved by these static tests.
+
+The authenticated Kyutai source review also confirms that the native
+PyTorch PCM policy and borrowed KV view already exist at clean `52e4ddbe`.
+Read-only handoff SHA-256 is
+`a7b04a44fb921911bc9c883189661b568b27ba4fe030d73c40ed02e9f5d7ba7f`.
+The remaining independent reference must capture the official main-LM
+transformer `RingKVCache.complete()` returned positions/K/V, preserving
+dtype and distinguishing that cache from `LMGen` scheduling state, then
+compare real approved weights with the native layer view including reset
+and eviction. Recreating the existing seam or promoting synthetic fixtures
+would not close this gap. Composite source/dependency/owner gates remain
+separate. The 194-row denominator and 136 metadata-full / 58 unresolved
+split are unchanged; Scaleway remains the last hardware stage.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
