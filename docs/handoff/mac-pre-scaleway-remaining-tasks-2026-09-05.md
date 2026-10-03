@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 full lifecycle recurrence acceptance (12:55 UTC):** root's
+> actual normal-entry replay terminates zero with all 22 intended lifecycle
+> cases and the subsequent bulk-transfer/rejection tests. Cleanup lifetime,
+> genuine interruption handling and bounded fixture compaction are verified
+> without raising capacity limits. This is offline orchestration acceptance,
+> not authentic source recovery or a model/Apple verdict. VAST account
+> readbacks at 12:36/12:39 show zero instances and zero volumes. See the
+> [cause/fix and exact acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-03-full-lifecycle-recurrence-acceptance-1255-utc).
+
 > **2026-10-03 lifecycle root-cause review (12:21 UTC):** root independently
 > passes the actual rendered helper's focused faults, but the next full
 > matrix still fails its positive path after packet completion. The EXIT

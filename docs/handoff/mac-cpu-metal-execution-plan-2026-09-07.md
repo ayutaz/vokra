@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 full lifecycle recurrence acceptance (12:55 UTC):** frozen
+> V7 and the independently reviewed harness pass root's actual full normal
+> CLI replay, including 22 lifecycle faults and subsequent bulk regressions.
+> Require a separately reviewed, narrowly activated source-only candidate
+> before a paid worker; the accepted V7 still disables `--run`. Do not repeat
+> already-green Cargo, infer a legal approval, or promote synthetic evidence
+> to source/model/Apple completion. See the
+> [cause/fix and next execution gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-full-lifecycle-recurrence-acceptance-1255-utc).
+
 > **2026-10-03 lifecycle root-cause review (12:21 UTC):** separate the
 > independently passed rendered helper from the failed outer positive EXIT
 > cleanup. Review all trap-owned state and supervision grace periods as a

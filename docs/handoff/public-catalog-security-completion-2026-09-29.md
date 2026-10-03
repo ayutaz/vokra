@@ -9243,6 +9243,96 @@ occurs. All 194 rows, authentic source recovery, owner/legal closure,
 real-weight CPU/reference, final Apple CPU/Metal/no-fallback and separate
 artifact-publication gates remain in scope.
 
+## 2026-10-03 full lifecycle recurrence acceptance (12:55 UTC)
+
+At clean management HEAD `a664ef4d`, root reviews and independently executes
+the structural fixes rather than repeating unchanged cloud inputs. Frozen
+V7 producer SHA-256 is
+`fab153dfed70ac5a07bf7c9a6712be1d75b443fe9be00a30cdfce9ea31f0c9ce`;
+the final harness SHA-256 is
+`dba057d97e06f6ac96fbb301516dedba866599661f73a03612ef2126f520d249`.
+Implementation belongs to the existing Luna owners; root owns review,
+independent execution and this management record. Historical failed runs
+above remain failures and their original evidence is retained.
+
+| Observed issue | Cause and countermeasure | Actual verification |
+|---|---|---|
+| Normal positive EXIT cleanup | A function returns before its trap-owned locals are used. Finalize while the lifecycle state is alive, then disarm traps; do not substitute empty variables. | The actual positive dispatch returns zero, destroys only mock ID 7 with its exact label, and records individual null plus closed empty pagination. |
+| Interruption cleanup race / weak fixture | A signal can arrive during the supervisor wait; the old shell safeguard overlaps Python cleanup. Poll continuously with the reviewed grace, and use genuine inherited `SIG_IGN` descendants instead of a caught no-op trap. | Root focused session `88261` terminates zero with actual rendered INT 130 / TERM 143, recorded runner/leader/descendant absence and elapsed-time bounds; separate transfer signals pass. |
+| Padded byte-count receipts | Ordinary `wc` output contains whitespace; byte identity is not wrong. Parse a strict ASCII unsigned integer with surrounding whitespace, rejecting signs, junk, empty and multiple values. | Focused tool tests and exact bootstrap/leaf byte counts and hashes pass; body identity is unchanged. |
+| Harness parent-signal failure | Root session `36753` reaches actual INT 130 and cleanup, but the harness incorrectly requires nonempty error text for every negative mode. | Assert the successful signal receipt, actual target PID, original worker status, worker/leader/descendant absence and owned readbacks instead; ordinary failure reasons remain required. |
+| Aggregate fixture capacity | Root session `70421` completes the first 20 cases, then case 21 reaches 33,064 KiB against the unchanged 32,768-KiB cap; case 22 does not run. | After each fully asserted case, retain bounded original logs, trace, readbacks and digest receipts, hash the retained metadata, then remove only that fresh synthetic case's bulk data. The full replay now completes without raising the cap or lowering the 2-GiB free-space floor. |
+| Execution reporting | An owner invocation unintentionally runs all 22 cases and omits the nested OS exit code from its output; truncation is initially misreported as a stop. | Correct that report: `GGpYPC` has complete receipt/metadata evidence, but its OS exit is unknown. Require explicit terminal status and root's actual normal-entry replay before acceptance. |
+
+The first parent-harness failure is retained at
+`/private/tmp/vokra-primary-source-bulk-faults.jQjgno` (12,016 KiB); the
+capacity failure at `/private/tmp/vokra-primary-source-bulk-faults.xdlLLX`
+(33,064 KiB) is unchanged. The earlier positive case `EZfYNt` is also
+retained. A completed case retains original stdout/stderr/trace, status,
+producer/body digests, signal/PID receipts, destroy identity and readbacks.
+Each retained file is capped at 256 KiB; if truncated, its original size is
+explicitly recorded. Do not describe a truncated prefix as a complete log.
+Each per-case metadata manifest is hash-bound to the final receipt. Failed
+runs retain their active case originals; successful bulk data is disposable.
+
+Root independently checks the corrected single positive receipt, scope
+`single`, count 1/1, retained metadata at
+`/private/tmp/vokra-primary-source-bulk-validated-oG8xPa`, all metadata hashes
+and removal of that case's bulk directory. The owner records actual
+`single_rc=0` for cell `1917`. This does not stand in for the full matrix.
+
+Root's actual normal CLI session `71185` then terminates **zero** with
+`UV_CACHE_DIR=/private/tmp/vokra-docs-uv-cache`, `UV_OFFLINE=1` and an unused
+`SELF_TEST_ONLY=fixture-positive` environment value. The latter does not
+narrow execution: the final receipt explicitly records `scope=full22`,
+expected and actual count 22/22. Every intended failure/status, owned
+cleanup/readback, exact SSH stdin body, interruption and packet-trigger
+assertion executes. The normal outer test then also passes packet-builder
+identity, transfer-group regressions, one bulk positive and ten negatives,
+metadata-tamper rejection, strict production rejection of invented sources,
+and the disabled-live guard. Packet fault evidence proves its injected
+trigger and outer rejection, not an independently captured deeper diagnostic
+reason. Expected negative-test messages are not failed overall runs.
+
+Root independently hashes all **260** retained files and their metadata
+manifests at `/private/tmp/vokra-primary-source-bulk-validated-BdlQeG`.
+The final receipt SHA-256 is
+`8c8e7d61c78b3a097ac93e2464a1cead7f709182c4521d88f20c37146478ff39`.
+Producer and harness hashes match before/after; syntax checks pass. Root's
+separate bounded/HEAD/transfer session `68159` also terminates zero.
+The V7 rendered bootstrap is 1,517 bytes, SHA-256
+`a8fd0f7cdae2faa20d2952e43adbb2a8611e4ed6a88f1c6097ef2c424d4f2dea`;
+leaf is 17,094 bytes, SHA-256
+`eff92a40b1b43c596430c5ab40d9a1aa9de215c0e8ade3cabd2d4285891c6235`.
+The literal-backslash/zero-separated combined digest is
+`f08135f1dcd4744e984a122270436e7bf0bcc6bfc80cfe52180a1f0953633b42`.
+These accept the reviewed offline lifecycle, not authenticated source bytes.
+
+Fresh safe-wrapper, credential-redacted read-only API session `52440`
+terminates zero at 12:36 UTC: complete account pagination has **zero
+instances**, including zero unrelated instances. Session `48383` terminates
+zero at 12:39 UTC: **zero owned volumes** of all types. No resource is
+allocated or deleted in this review. An earlier restricted-network query
+fails without a recorded category; do not infer an authentication problem.
+
+Root also verifies the clean `52e4ddbebfeb32cb5f7aa241580b2493b20ecdb0`
+checkout and actual successful ancestry of FireRed correction
+`741ba4a213a07b927dd052f64dce6de52945bd31`. The correction is already in
+the recorded green V24 workspace/Clippy head; repeating that Cargo run is
+not the next task. PR #152's old public CI does not cover local `b0add994`.
+
+The accepted V7 still rejects `--run` with status 78. Next, the controller
+owner may prepare a separate narrow activation candidate; root must review
+its delta and model-free entry-point evidence before any paid lease. Its
+scope is authentic recovery and strict validation of the 128 primary text
+files only, with existing no-model/no-package-install/no-upload restrictions.
+The earlier 10/128 actual recovery is not upgraded by synthetic results.
+Original Qwen legal closure and BigVGAN raw-metadata/test-root issues are
+separate outstanding facts, not transient errors eligible for unchanged
+retries. All 194 public rows, owner/legal decisions, independent real-weight
+VAST CPU/reference, final Scaleway Apple CPU/Metal/no-fallback, exact-head
+CI/security and separately authorized artifact publication remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
