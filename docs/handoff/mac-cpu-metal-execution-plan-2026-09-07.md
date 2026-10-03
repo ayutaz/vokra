@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 terminal code pass and incomplete source recovery (07:40 UTC):**
+> exact `52e4ddbe` passes workspace, default/all-feature Clippy and the named
+> PCM/KV/source tests, but V24's serial transfer exceeds the shared recovery
+> deadline. Its lifecycle is failed, not a complete source packet. Worker
+> `53978818` and storage are independently confirmed destroyed. Prepare a
+> source-only bulk-recovery leg without repeating the green Cargo scope;
+> finish source/legal and real-weight CPU gates before final Scaleway work.
+> Preserve all 194 rows; see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-pass-and-incomplete-source-recovery-0740-utc).
+
 > **2026-10-03 corrected replay and native PCM boundary (07:01 UTC):**
 > root independently passes V24's 53 cases, then starts distinct exact-head
 > replay `52e4ddbe` on owned VAST `53978818` / live session `94842`. Keep the

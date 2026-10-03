@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 terminal code pass and incomplete source recovery (07:40 UTC):**
+> exact `52e4ddbe` passes workspace tests (8,223 passed, zero failed, 108
+> ignored across 307 result-bearing suites), both Clippy legs and the named
+> PCM/KV/source tests. V24 nevertheless terminates one when its 300-second
+> serial recovery expires; only ten of 128 primary-source files are retained.
+> Owned VAST `53978818` and storage are independently confirmed destroyed.
+> Reacquire only the missing source packet with reviewed bulk recovery; do
+> not promote acquisition logs to source/legal readiness or replay already
+> green Cargo merely to recover bytes. All 194 rows and final Apple gates
+> remain in scope; see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-pass-and-incomplete-source-recovery-0740-utc).
+
 > **2026-10-03 corrected replay and native PCM boundary (07:01 UTC):**
 > V24 passes root's 53 independent offline cases at fixed correction
 > `52e4ddbe`. After two pre-create offer misses, session `94842` creates owned

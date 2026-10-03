@@ -8030,6 +8030,71 @@ rows and the metadata-only 136 full / 58 unresolved snapshot. No model weights,
 configs, tokenizers or presets are acquired or executed in this code/source
 wave, no HF credential is forwarded, and no public artifact changes.
 
+## 2026-10-03 terminal code pass and incomplete source recovery (07:40 UTC)
+
+This supersedes the live V24 observation, not its frozen execution scope.
+Controller session `94842` terminates one with `recovery-file`; exact clean
+implementation HEAD remains `52e4ddbebfeb32cb5f7aa241580b2493b20ecdb0`.
+The remote leaf and complete-output preflight both exit zero. Recovered
+workspace tests report 307 result-bearing suites, 8,223 passed, zero failed
+and 108 explicit ignores; default and all-feature Clippy both exit zero.
+The 702,851-byte workspace log SHA-256 is
+`1a8099c159302fe84f9873d1b58e72a8851253d01abc47b749655c656a7cb58a`.
+These are exact-head code results, not independent real-weight or Apple parity.
+
+Root independently runs the unchanged V24 leaf-log validator over recovered
+evidence and obtains a terminal pass: PCM Rust has 24 passed with zero ignores;
+Python PCM, tap and full-source tests pass 19, 20 and 31 respectively; the
+three named native-KV tests pass without ignores. Modern/original XCodec2
+source tests each pass 26, and SpeechT5 legal-context tests pass 16. All
+corresponding collection/test exit codes are zero. Acquisition logs do not,
+alone, prove primary-byte recovery or legal approval.
+
+The source manifest lists 128 files totaling 1,233,698 bytes, with SHA-256
+`1f6c595e3c0d142f284883121eedb2c642a8a899ba74f2aa1019be93a09cea91`;
+the full-source receipt lists 111 held roles. The 300-second shared recovery
+budget expires during repeated SSH-plus-SCP transfers. Only ten source files
+remain in the original `remote-flat`; no full flat/source/profile-validator
+pass is claimed. A separate bounded bulk-copy attempt transfers no source
+bytes: its direct endpoint lacks an authenticated matching host-key entry,
+and host verification is not disabled. Preserve these failures. A source-only
+bulk leaf is assigned to reacquire the missing fixed-revision packet without
+rerunning green Cargo. No replacement worker is provisioned at this checkpoint.
+
+The controller verifies ownership before destruction and passes individual-null
+and full-pagination checks. Root's independent API session `80431` is also
+terminal zero: `53978818` has `instances=null`, the account has explicit
+`next_token=null`, the owned ID/label is absent and zero Vokra-labelled
+instances remain. One unrelated exited instance is untouched. No Vokra worker
+or storage is retained from this wave.
+
+A narrow local-inspection guard correction is fully reviewed, independently
+tested, committed and integrated as
+`282227af2de733d55eb81a02c27eae603b9737c4`; all five normal compile-free
+commit gates pass. It recognizes literal, canonical `git -C` inspection;
+new diff/show admission requires `--no-ext-diff --no-textconv`. Actual model
+execution/download, heavy Cargo, protected paths and immutable-controller
+admission remain guarded. Explicit external diff/textconv is refused;
+ordinary Git management is not blanket-blocked. No approval/sandbox setting
+or hook trust is disabled. Source review then uses the stronger read-only
+form, not an execution override.
+
+The initial PR #152 correction passes root's 24 small stdlib tests, collector/
+audit self-tests and documents-only guard. Full diff review then finds that
+RECORD presence does not authenticate entry hashes or import resolution, a
+callable loader still bypasses pre-import checks, and the aggregate unpacked
+cap can prevent legitimate full Torch inspection. Further bounded corrections
+are assigned; neither this candidate nor the green upstream PR is accepted
+for merge. The paired Qwen/BigVGAN controller is also returned for trusted-leaf
+reuse and fail-closed combined-transfer checks; no production/model result is
+inferred from its fixture tests.
+
+All 194 rows and the metadata-only 136 full / 58 unresolved snapshot remain.
+Source/legal closure, independent real-weight CPU parity, final Apple CPU/
+Metal/no-fallback, exact-head CI/security and separately authorized public
+reconciliation are required. No model weights/configs/tokenizers/presets,
+HF credential transfer, upload or Scaleway execution occurs in this checkpoint.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
