@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 source-only audit readback (02:46 UTC):** corrected PyYAML V24
+> completes at fixed `e8b93b4b`; root verifies both locked artifact identities
+> and their primary license bytes. Native LibYAML closure and owner review
+> remain open; this is not permission for dependency or model execution.
+> Worker `53954812` and storage are destroyed and independently absent, with
+> no Vokra row in complete account readback. New PCM code/reference and final
+> Apple gates remain pending. Preserve all 194 rows; see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-source-only-audit-readback-0246-utc).
+
 > **2026-10-03 terminal code-only readback (02:30 UTC):** frozen `a0ef540a`
 > replay terminates with exit zero: 307 workspace suites, 8,287 passed,
 > zero failed and 108 ignored; focused Kyutai 13, OWSM 40 and XCodec2 76 pass

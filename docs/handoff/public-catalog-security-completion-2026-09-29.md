@@ -7247,6 +7247,60 @@ No real-weight result, owner/legal approval, Apple/no-fallback verdict or
 publication advances. All 194 public rows and the dated metadata-only
 136 full/58 unresolved classification remain in scope.
 
+## 2026-10-03 source-only audit readback (02:46 UTC)
+
+Root reviews the minimal V23-to-V24 wheel-basename correction. Controller
+SHA-256 is `cb564442c994663be4896331b2a49e8e596c8fe72a97d0ddd6ec3a530f81b857`;
+its legacy embedded V23 identifier does not change the immutable V24 bytes.
+The full offline suite passes collector tests, actual synthetic packet
+production/validation, exact/generic basename cases, bounded provider capture,
+owned cleanup, signal handling and pre-provider activation gates. An initial
+root run fails because `UV_NO_SYNC=1` emits a warning into the signal PID
+log; removing that root-supplied variable produces the complete green run.
+No real upstream package or model is executed locally.
+
+The distinct actual session `45321` terminates with exit zero at fixed
+producer `e8b93b4bf1588b67f371ce5195184af3a9c5771b`. All six stdlib tests pass.
+The recovered 225,307-byte source packet has SHA-256
+`fff2c6be49300f2278511d2d70f19bce13a3d6f5c819d31f862fab867a507a34`.
+Root independently checks the packet hash, both exact locked artifact
+sizes/digests and both 1,101-byte primary PyYAML license members against
+`8d3928f9dc4490fd635707cb88eb26bd764102a7282954307d3e5167a577e8a4`.
+The wheel uses its complete locked basename; the prior filename failure is
+resolved. Its observed native ELF is 2,679,264 bytes with digest
+`957a099a4521c1f7669306fb6f79ca63fa4b9a0b4c463f7cac833a65a5c5c0cb`.
+This does not establish that binary's full LibYAML source/build/license
+closure. The packet retains `NATIVE_REVIEW_REQUIRED`, `UNAPPROVED`,
+`NO_UPLOAD` and a factual owner-review blocker; no install, build, package
+import, ESPnet/reference execution, model/config/tokenizer access or upload
+is authorized or performed.
+
+Owned worker `53954812`, label
+`vokra-owsm-pyaml-source-audit-20261003T024128Z-72454`, and 200-GiB storage
+are destroyed. Root's separate individual API returns `instances: null`;
+complete account pagination has `next_token: null`, zero Vokra rows and two
+unrelated rows, left unchanged. This retired worker is not a restart target.
+
+Before the run, root removes only five clean, terminal synthetic work copies
+and seven byte-identical input-bundle pairs from an old offline fixture.
+All logs, outputs, destruction markers and both verified complete-history
+bundles remain. That fixture shrinks from about 2.6 GiB to 111 MiB and local
+free space rises from about 1.5 GiB to 3.8 GiB. These are reproducible fake
+copies, not user work, model payloads or live cloud storage.
+
+The next PCM oracle review confirms corrected sampling aliases, official
+Mimi `cardinality` and fixed suppression IDs, but rejects the draft's
+metadata-only dependency verification and missing positive full-capture
+orchestration test. Corrections remain assigned; no reference or numerical
+pass is inferred. A separate source-only collector for three fixed official
+Moshi API files passes four stdlib tests, but its local acquisition command
+is refused by the protection hook. It is not rerouted, renamed or executed
+through a bypass; raw/API receipts remain uncollected pending the next
+reviewed remote code-only job. New integrated `1cbc4abc` still requires its
+own verification. All 194 public rows and the dated metadata-only 136 full /
+58 unresolved classification remain; real-weight CPU and final Apple
+CPU/Metal/no-fallback, legal/owner and publication gates stay separate.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

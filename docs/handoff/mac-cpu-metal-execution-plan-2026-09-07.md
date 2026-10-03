@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 source-only audit readback (02:46 UTC):** corrected V24's
+> immutable PyYAML source-only job terminates with exit zero and verified
+> evidence recovery/destruction. Do not promote its explicit `UNAPPROVED`,
+> `NATIVE_REVIEW_REQUIRED` and `NO_UPLOAD` results to reference execution.
+> Review the new PCM controller/reference before a distinct exact-head VAST
+> run; additional Mimi raw/API receipt collection belongs on that remote
+> worker after the local protection hook refused it. Scaleway stays last;
+> see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-source-only-audit-readback-0246-utc).
+
 > **2026-10-03 terminal code-only readback (02:30 UTC):** session `20301`
 > terminates with exit zero and all 66 recovered checksums match. Its worker
 > and storage are destroyed and independently absent. Do not restart this
