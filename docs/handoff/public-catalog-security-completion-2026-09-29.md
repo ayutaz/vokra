@@ -9552,6 +9552,58 @@ would not close this gap. Composite source/dependency/owner gates remain
 separate. The 194-row denominator and 136 metadata-full / 58 unresolved
 split are unchanged; Scaleway remains the last hardware stage.
 
+### Fresh CI and composite evidence boundary
+
+Fresh `b0add994` CI first fails only `documentation-links`, job
+`111217051440` in run `37127954168`. Its actual log reports two timeouts
+for the same SB942 official external page, zero link errors; this is not an
+XCodec2 test failure. A single targeted job rerun passes at job
+`111217614895`, without a code edit, exclusion or reduced gate. Subsequent
+exact-head readback is 57 successes / three skips / 17 pending / zero
+failures, not terminal all-green. The normal check watcher remains live;
+the PR stays draft independently of this transient external failure.
+
+Kyutai's clean `52e4ddbe` readiness handoff SHA-256 is
+`e144128d4ea453127837421c300056362c0d2dbe1c9b5d0e21d5c814af945610`.
+The dedicated `KYUTAI_STT_PYTORCH_PCM_ORACLE_CAPTURE` approval must bind the
+exact evidence and full dependency receipt. Historical model/license or
+decoder-only approvals are not this composite approval. Runtime checkouts,
+the real model/Mimi/tokenizer/config/audio packet and complete package/native
+license facts remain absent; do not rent a worker merely to rediscover those
+known omissions.
+
+The existing stdlib source audit's three synthetic self-tests pass, but its
+actual local invocation is refused before execution by the local-memory
+guard. It is not rerun using an alternate path or flags. Diagnostic status
+SHA-256 is
+`7bd53bdc368eca35f5cf0e99f2e15e75aa35b950a9d543e383ef18227f42cce8`.
+The accepted source packet lacks the retained GitHub Contents API JSON
+envelope for its authenticated DSM caller. The candidate receipt declares
+API body digest `b8f00e48832c4f41747c56cef46040f884afa81e632ba21d147ddd4bb9f7d2b5`,
+but a digest without those original API bytes cannot pass the separate
+raw/API/receipt audit. Retrieve only that bounded primary-source envelope
+into a separate output, preserve original packets and compare all source
+identities; do not synthesize an envelope or rewrite the declared digest.
+No actual source-audit PASS, runtime approval or model/Apple promotion is
+recorded from this diagnosis. The format-only model-revision check is also
+not called a defect without reviewing the other artifact/approval bindings.
+
+The XCodec2 dependency investigation is pinned to `b0add994`, project
+SHA-256 `289c96a0775a7e013dccc579810a4b18fcf573d79536fdd84e05db3ea4733bcc`
+and lock SHA-256 `d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4`.
+Both current Torch 2.13 Darwin and 2.13+cpu non-Darwin branches retain the
+setuptools edge. An earlier investigation accidentally used the root tree's
+old Torch 2.5 lock; root rejects that scope and requires the corrected
+handoff, SHA-256
+`49ff4393b251a8b95c3fa22eaa3415a291f97f8c102fee47ba81db95147dd3ba`.
+The embedded LGPL fact persists, but deleting a lock row as "unused" is not
+a fix. [Official upstream history](https://setuptools.pypa.io/en/latest/history.html)
+documents a downstream de-vendoring mechanism; inspect its exact-version
+contract and required dependency closure before proposing a derived package.
+The [upstream vendored-license issue](https://github.com/pypa/setuptools/issues/5049)
+is supporting context, not a license exception, implementation acceptance
+or execution permission. No derived setuptools candidate is accepted yet.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
