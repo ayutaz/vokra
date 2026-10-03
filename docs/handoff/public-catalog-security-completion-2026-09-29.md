@@ -7146,6 +7146,77 @@ objective and the dated 136 code/artifact-full / 58 unresolved classification;
 no row gains real-weight CPU, Apple/no-fallback or publication completion
 from these source and offline tests.
 
+## 2026-10-03 integrated PyTorch PCM and source-audit readback (02:26 UTC)
+
+The management baseline is clean `433030531342487ae3dccfa01f64d6ae396db692`.
+Root reviews and normally commits the private PyTorch PCM candidate at
+`729c85a9d783ccb89ac4a6bf856d8e1cd9be17fc`, then accepts the identical four-file
+change on the clean streaming-guard baseline `a0ef540a`. The resulting clean
+combined HEAD is `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32`. Both normal commits
+pass all five compile-free hooks; the integrated change has 190 fixture pins
+and 306 shell files checked. The guard source digest remains
+`793fee60f92f522e5f5140863532b8da7a49b5f4db47d55b2ac5138e92861aec`.
+
+The actual private session preserves the historical MLX route and adds the
+authenticated PyTorch caller's frame-ceiling policy, 13 prefix/32 suffix
+frames, one LM call per row, visible first sampled result, and continued
+processing after EOS. It consumes prepared mono 24 kHz PCM; file decoding,
+resampling, VAD, independent reference and the public loader are not promoted.
+The six new Rust regressions bring this PCM module to 24 defined tests. The
+three new stdlib source-audit tests and retained raw/API audit also remain
+unexecuted at the integrated HEAD; no local heavy Cargo or model run occurred.
+
+Root's immutable code-only controller V16 passes its complete default offline
+suite. Its first actual attempt terminates on local ENOSPC before remote
+verification. Owned worker `53950549` is manually destroyed after exact label
+authentication, then independently absent in individual and complete API
+readbacks. Cleanup removes only redundant fake work/input copies from an old
+terminated self-test, retaining its logs, output and destruction markers.
+The old model HEAD remains recoverable in a separately verified retained
+bundle. Local free space rises from about 370 MiB to 5.4 GiB; no active clone,
+owner manifest, model artifact or unrelated account resource is removed.
+
+The distinct replacement session `20301` remains live at this dated readback,
+frozen at `a0ef540a2cd77838f6521898e08f72fd8dc353aa` for model/OWSM and
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153` for XCodec2. Its owned worker is
+`53951140`, label `vokra-family-model-free-v15-20261003-20261003T020743Z-77962`;
+the legacy label is distinct from the V16 controller version. The authenticated
+resource record binds 16 build jobs and effective RAM 126,303,232 KiB.
+Several zero-exit test, Clippy, source and dependency logs are already
+recovered, but full checksum reconciliation, terminal verdict and destruction
+remain pending. This job does not cover the newer integrated PCM HEAD.
+
+Root independently passes source-only PyYAML V22's default offline suite.
+Its actual run terminates before package acquisition because UV rejects
+`UV_PYTHON_DOWNLOADS=allow`; worker `53951238` is destroyed and independently
+absent. The minimal V23 correction uses `auto` only for authenticated runtime
+bootstrap, then returns to offline/no-download invocation. Root's full V23
+offline suite passes actual collector, production packet, provider-capture,
+cleanup and activation-gate cases. This does not approve package execution.
+
+The new V23 actual session `95373` terminates with exit 26. Authentic UV/Python
+bootstrap and all six stdlib collector tests pass; the producer then reports
+`Linux wheel filename is not the exact lock artifact name`. The controller
+used a generic local wheel basename, which the unchanged strict producer
+correctly refuses. No accepted source packet, native-license decision or
+dependency execution is inferred. Worker `53952644` and storage are destroyed;
+root's fresh individual readback is null and complete account pagination is
+explicitly null. The remaining Vokra row is the active code worker above;
+two unrelated account rows are untouched. A correction must retain the same
+one-sdist/one-wheel URLs, hashes and source-only scope. Previously rejected
+five-archive proposals are not retried.
+
+Root also reviews the independent PCM capture draft against retained official
+source. Its assumed `LMGen.state` field and unconditional emitted token do not
+match `_streaming_state` and delayed `None` output in the fixed implementation.
+The draft's schema-only tests are not proof of real caller wiring; corrections
+also require source/dependency/import identity, effective schedule and bounded
+capture validation. It remains unaccepted and uncommitted. No upstream import,
+real-weight capture, HF credential transfer/upload, push, PR mutation or
+Scaleway allocation occurs in this checkpoint. Preserve all 194 public rows,
+the dated metadata-only 136 full/58 unresolved classification, independent
+real-weight CPU evidence and final Apple CPU/Metal/no-fallback requirements.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

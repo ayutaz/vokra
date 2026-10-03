@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 integrated PyTorch PCM and source-audit readback (02:26 UTC):**
+> root normally commits reviewed combined candidate `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32`,
+> preserving the streaming guards and historical MLX policy while adding the
+> private source-bound PyTorch session. Its 24 PCM tests and three source-audit
+> tests still require a distinct exact-head remote run. Frozen `a0ef540a`
+> verification remains live on owned worker `53951140`, with evidence recovery
+> and destruction pending. Source-only PyYAML V23 terminates at the strict
+> wheel-filename gate after its six tests pass; worker `53952644` is destroyed
+> and independently absent. No license, real-weight or Apple verdict advances.
+> Preserve all 194 rows and see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-integrated-pytorch-pcm-and-source-audit-readback-0226-utc).
+
 > **2026-10-03 streaming guard and PCM policy review (01:41 UTC):** root
 > verifies clean separate guard candidate `deba8c6a`, with five newly defined
 > tests still awaiting exact-head remote execution. The current combined

@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 integrated PyTorch PCM and source-audit readback (02:26 UTC):**
+> require a new immutable replay for clean combined `1cbc4abc`; do not retarget
+> the live `a0ef540a` code-only job. Include all 24 PCM tests, the retained
+> caller receipt and its three negative source-audit tests. Correct the separate
+> PyYAML controller's exact wheel basename before any new source-only audit;
+> the failed V23 worker is destroyed. The independent PCM capture candidate
+> fails root source review and must be corrected before use. Real-weight CPU
+> and final Scaleway Apple/no-fallback gates remain open; see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-integrated-pytorch-pcm-and-source-audit-readback-0226-utc).
+
 > **2026-10-03 streaming guard and PCM policy review (01:41 UTC):** integrate
 > reviewed separate guard `deba8c6a` into a new clean combined HEAD before a
 > distinct model-free replay; no live job may be retargeted. Separately bind
