@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 committed import gate (08:04 UTC):** isolated correction
+> `b0add994` passes 32 independent stdlib tests and normal commit gates;
+> current primary/native/owner execution remains blocked. Require an actual
+> source-only collector/validator path and one packet transfer before the
+> next allocation. Preserve the green code replay without repeating Cargo;
+> final Scaleway and all 194-row requirements remain open. See the
+> [dated acceptance](public-catalog-security-completion-2026-09-29.md#2026-10-03-committed-import-gate-and-source-only-production-boundary-0804-utc).
+
 > **2026-10-03 import-gate and bulk-transfer review (07:55 UTC):** preserve
 > the actual green `52e4ddbe` code result while preparing source-only replay.
 > Require real collector/receipt validators and one allowlisted bulk packet;

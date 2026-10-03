@@ -8150,6 +8150,36 @@ forwarded and no artifact is downloaded, executed or published in this review.
 All 194 rows, real-weight CPU/reference, final Apple CPU/Metal/no-fallback,
 exact-head CI/security and separately authorized publication remain in scope.
 
+## 2026-10-03 committed import gate and source-only production boundary (08:04 UTC)
+
+Root independently reviews the complete eight-file PR #152 correction and
+passes 32 tiny stdlib tests without skips, both audit/collector self-tests and
+the documents-only dependency guard. Before/after helper hashes agree. Normal
+five-stage commit hooks then pass, including format, forbidden-symbol,
+first-party-lock, 190 fixture-pin and 306-file shell-lint checks. The isolated
+candidate is clean at `b0add994b4d0350c338e60cb29b8165d8145fe32`, whose parent
+is PR #152's `dd6f0154acb0e6d7c2c47c25287ea6deaac1410a`. It is not pushed;
+the earlier PR CI does not cover this correction.
+
+The shared execution gate uses the existing complete audit contract before
+direct/callable third-party imports. Current primary/native/owner blockers
+remain effective. RECORD/origin integrity is not publisher authentication,
+legal approval or numerical parity, and `NO_UPLOAD` alone is not an execution
+ban for a future separately reviewed private scope.
+
+The source-only draft is still disabled: its reported synthetic 128-file
+packet does not execute the four production collectors or the original
+full/profile receipt validators. Root assigns that missing production path,
+corrects the candidate-checkout identity, and preserves the real distinction
+between 111 DSM/Moshi held files and the 17 additional profile/bundle files.
+Do not rewrite the full receipt to pretend it lists all 128 files. Require
+production rejection of synthetic receipts and file caps before reads.
+The paired controller also needs log-only caps: process file-size limits
+would incorrectly constrain legitimate package/data writes. No new provider
+allocation, model acquisition, HF upload or Apple execution occurs here.
+All 194 rows and the remaining real-weight, legal and final Apple gates stay
+in scope; an estimate is not a completion result.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

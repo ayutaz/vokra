@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 committed import gate (08:04 UTC):** the isolated PR #152
+> correction is clean at `b0add994`, with 32 independent stdlib tests and
+> normal commit gates passed, but is not pushed or legally/model approved.
+> Source-only replay still requires actual collectors and the original
+> 111-file full receipt plus profile validators, not a synthetic 128-row
+> substitute. No new worker is allocated; all 194 rows remain in scope.
+> See the [dated acceptance](public-catalog-security-completion-2026-09-29.md#2026-10-03-committed-import-gate-and-source-only-production-boundary-0804-utc).
+
 > **2026-10-03 import-gate and bulk-transfer review (07:55 UTC):** root
 > independently passes 29 tiny stdlib tests for the uncommitted PR #152
 > correction, but confirms that its installed RECORD/origin checks do not
