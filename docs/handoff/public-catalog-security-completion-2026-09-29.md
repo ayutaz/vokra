@@ -7511,6 +7511,62 @@ and the metadata-only 136 full / 58 unresolved classification is not a hardware
 completion count. No owner sign-off, real-weight/Apple verdict or publication
 authorization is invented.
 
+## 2026-10-03 terminal V21 code/source readback (04:02 UTC)
+
+Frozen V21 controller session `42297` terminates with exit zero at model/OWSM
+HEAD `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32` and XCodec2 HEAD
+`a5e4c810f853c1d0c25d1df78635f115d7c7d153`. Root independently verifies all
+80 recovered file checksums (895,482 bytes), all 39 exit files equal zero,
+exact HEAD markers and `collection-status=complete`. Collection-manifest
+SHA-256 is `df20206083c87fed0cdf1957c8e5674a0ab0118ea471f3c5157bc994f2a308da`.
+Workspace results are 307 suites, 8,293 passed, zero failed and 108 ignored;
+ignored real-artifact/device tests are not completion evidence. OWSM focused
+tests pass 40 without ignores, the 13 bridge/guard and 24 PCM cases pass by
+name, and XCodec2 passes 76 tests. Clippy and security contracts pass; deny
+retains its unmatched `libfuzzer-sys` exception warning. The resource summary
+records 32 allocated cores and 32 build jobs. No model/reference package or
+HF credential workload runs.
+
+At fixed Moshi revision `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`, root
+independently binds the three acquired raw files to their API base64 contents,
+Git blob IDs, fixed paths/URLs, sizes and manifest hashes:
+
+- `compression.py`: 17,429 bytes, SHA-256
+  `edc6fbf34e4d84b35f2c2f4d6f1f263c6ba86329a7c686b091f304a6b3cbfc8f`.
+- `streaming.py`: 8,433 bytes, SHA-256
+  `bafaaafd12291727a6a613e9ac68623dc924fa6cdf57cdc9874f66fb30464d38`.
+- `utils/compile.py`: 11,047 bytes, SHA-256
+  `08cfd2422318bf9425c57fcbdbd98326de64fe2b8f093c6c9b75eb3997814ae8`.
+
+These 36,909 bytes are primary source evidence, not upstream execution or
+numerical parity. `streaming.py` lines 139–156 show optional-mask normalization
+and recursive child-state reset. A read-only diagnosis is assigned to check
+whether the direct main-module reset wrapper observes parent-initiated resets;
+synthetic direct-reset tests alone do not prove that lifecycle.
+
+Controller cleanup reports `cleanup_rc=0 instance=53959731`. Root separately
+performs fresh individual and complete account API readbacks in terminal
+session `17294`, exit zero: individual `instances=null`, explicit terminal
+`next_token=null`, zero Vokra instances and one unrelated instance. Worker and
+storage are destroyed; the unrelated resource is not modified. Fresh individual
+and all-page response SHA-256 values are respectively
+`817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057`
+and `3d60fabd8a1f9b967d8b5cd1a9094eb817fd90c4ce8f35a393020f828d8a28d7`.
+
+New preparation commit `fd7159f5597dd82f7a563a4adac9ea263c1b09b5`, parent
+`11d97f14964d21482741cd0a7a5dee9d408f2b77`, normally commits only the bounded
+full-Python source collector, its tests and README. Root reviews the collector
+and portable retained-source tests and independently passes 31 tests without
+skips. Its production-branch positive uses the five already authenticated
+source-role bytes inside synthetic API envelopes; it is not full upstream
+tree acquisition. Collector SHA-256 is
+`258a1c1ba35108fbf0452a775a2944fe9be967bcb9b5cef46fa96eb072155379`.
+No new provider is allocated. Its native KV Rust tests, full source checkout,
+dependency/native-owner and composite approval, independent real-weight CPU,
+final Apple/no-fallback and publication gates remain open. Keep all 194 public
+rows; neither this preparation nor V21's older exact-head code pass promotes
+the metadata-only 136 full / 58 unresolved split to hardware completion.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

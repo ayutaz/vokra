@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 terminal V21 code/source readback (04:02 UTC):** V21
+> terminates with authenticated small evidence and owned worker/storage
+> destruction. Do not restart it or transfer its code-only result to new
+> `fd7159f5`. Review the next bounded source/KV controller before provision;
+> use the newly authenticated streaming lifecycle source to assess parent
+> reset visibility. Full source/dependency/owner closure and real-weight
+> CPU gates remain ahead of final Scaleway. See the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-v21-code-source-readback-0402-utc).
+
 > **2026-10-03 official KV preparation review (03:52 UTC):** reviewed
 > snapshot adapter `2c0f855e` and empty-closure correction `9829a0f0` are
 > integrated at `11d97f14`, with nine tap and 19 PCM offline tests passing.
