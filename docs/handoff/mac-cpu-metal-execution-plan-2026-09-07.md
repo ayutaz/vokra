@@ -2,8 +2,9 @@
 
 > **2026-10-03 PR #152 actual Linux acceptance:** the fixed production-entry
 > model-free leaf passes at `b0add994`, and owned VAST resources are destroyed
-> with individual-null/closed-inventory confirmation. Require fresh exact-head
-> CI; keep the PR draft while package/license execution gates remain blocked.
+> with individual-null/closed-inventory confirmation. Fresh exact-head CI
+> completes 76 successful / three skipped / zero failed or pending checks;
+> keep the PR draft while package/license execution gates remain blocked.
 > Kyutai's native PCM/KV seam already exists, but independent real-weight
 > composite capture is still required. See the
 > [verdict and next-step boundary](public-catalog-security-completion-2026-09-29.md#2026-10-03-pr-152-actual-linux-acceptance).

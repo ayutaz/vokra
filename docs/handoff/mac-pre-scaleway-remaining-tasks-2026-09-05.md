@@ -3,8 +3,9 @@
 > **2026-10-03 PR #152 actual Linux acceptance:** exact `b0add994` passes
 > 32 tests with zero skips and three static gates on VAST; recovered process
 > statuses and all ten log hashes pass. The worker and storage are destroyed.
-> The correction is pushed; fresh CI is separate from the old head's green
-> checks. No model or Apple completion is inferred. See the
+> The correction is pushed; fresh exact-head CI completes with 76 successes,
+> three skips and zero failures/pending. No model or Apple completion is
+> inferred. See the
 > [actual verdict and failed-attempt disposition](public-catalog-security-completion-2026-09-29.md#2026-10-03-pr-152-actual-linux-acceptance).
 
 > **2026-10-03 recovered-source correction acceptance (13:31 UTC):** root

@@ -9646,6 +9646,17 @@ more-itertools and typer-slim edges are not fixed in the current XCodec2
 closure. No complete derived wheel, API compatibility proof, license
 approval, package execution or lock change is accepted.
 
+### PR #152 terminal exact-head CI
+
+The preceding pending snapshots are superseded for CI only. Actual fresh
+GitHub readback for `b0add994b4d0350c338e60cb29b8165d8145fe32` is **76
+successful / three intentionally skipped / zero failed / zero pending**.
+Unity packaging completes; the PR body is updated to these exact-head results.
+The PR remains draft with unresolved package/license execution gates. Neither
+this terminal CI nor the source-only diagnostics approve real-weight parity,
+Apple/no-fallback work, source correction review or publication. The blocked
+read-only source-diff review is not retried or accepted by proxy.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public
