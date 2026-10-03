@@ -7015,6 +7015,75 @@ hardware-complete models. Source/license decisions, strict native routes,
 independent real-weight CPU parity, final Apple CPU/Metal/no-fallback and
 separately authorized public-artifact reconciliation remain required.
 
+## 2026-10-03 PCM integration, baseline correction and caller source (01:29 UTC)
+
+The management baseline is clean `51bb0606642ca24562ce58ab36c555712db4475e`.
+Root's fresh read-only GitHub main response remains
+`97447185361a37af64c1b30fe87e8e2618d96e20`. The earlier proposed new decoder
+was based on an older management checkout. Inspection of the combined
+main-derived candidate instead finds the already merged `streaming_lm.rs`
+(Git blob `e7f0c8dd5911bac7c48bf6c0083ccc098ba680eb`, from PR #187) and
+crate-private `pcm_session.rs` (blob
+`78f11b8e064d0d97154465a63a8a4508b8943da9`). The former already performs
+per-layer KV, absolute-position RoPE, attention, FFN and logits. The isolated
+duplicate draft is uncommitted and not adopted. Focused corrective work now
+targets actual gaps in that existing implementation: argument failures
+poisoning before mutation, a position-overflow check after layer mutation,
+and missing allocation-capacity preflight. This corrects the earlier queue,
+not the remaining real-weight/Apple requirements.
+
+Root reviews the PCM bridge integrated onto OWSM correction `741ba4a2`,
+preserving those existing components and Mimi backend/ELU changes. Normal
+commit hooks pass all five compile-free gates, fixing the two-file candidate
+at clean `3c15ea1d8adc20e8b1643698ae61f27b45bc0836`. File SHA-256 values are
+`8deacd7f706b22981409747fed8009aa36d5471f412cccc016534bd6e4bebd90`
+for `crates/vokra-models/src/kyutai_stt/mod.rs` and
+`70a5fe7fa5653b8c54195ab2b68c36aa4336c7dfb84f742bd3b3df53843bd017`
+for `crates/vokra-models/src/mimi/encoder.rs`. The bridge requires explicit
+text tokens and complete finite PCM frames; it retains Mimi state, not
+decoder history. Both learned backend capability sets are checked before
+Mimi state allocation, and invalid token/shape/capacity inputs are checked
+before encoding. The encoder's capacity guard derives from its actual bound
+topology, including seven batch hidden-width scratch vectors and two FFN
+scratch vectors. Existing public load/transcribe gates stay fail-closed.
+The eight newly defined bridge/encoder tests have not run locally or remotely;
+synthetic wiring is self-consistency, not an independent reference. The next
+immutable controller and exact-head VAST replay remain pending.
+
+Root separately authenticates the official
+[DSM PyTorch STT caller](https://github.com/kyutai-labs/delayed-streams-modeling/blob/4c4f65e147df056adf3346290d64c7b9649b18c9/scripts/stt_from_file_pytorch.py)
+at revision `4c4f65e147df056adf3346290d64c7b9649b18c9`: 8,452 bytes,
+SHA-256 `2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955`,
+Git blob `cf3fb05b0e0c1f265a667276d2886ce2664d79ff`; decoded GitHub contents
+response SHA-256 is
+`b8f00e48832c4f41747c56cef46040f884afa81e632ba21d147ddd4bb9f7d2b5`.
+The API-decoded bytes match the blob/size and pass AST parsing only. The caller
+uses greedy generation, rounds an incomplete audio frame up with zeros,
+prepends/appends the configured silence/delay frame counts and processes
+the entire resulting chunk iterator. It filters text IDs zero and three for
+piece display. EOS is considered separately in timestamp post-processing;
+the generation loop does not stop early on EOS. This source evidence is not
+reference execution, an effective model-config grant or license approval.
+No upstream imports, model, config or tokenizer payloads are acquired.
+
+Source-only PyYAML controller V15/V16 still fails root acceptance. The worker
+reports a successful V16 offline suite after adding input snapshots, but root
+finds active offer parsing, provider-output capture and hashing still not
+bounded, and duplicate-key validation separated from a later parse. The
+earlier initial INT-cleanup failure also needs retained diagnostic evidence,
+not dismissal after a successful rerun. A new immutable correction is
+assigned; `--run` remains disabled and no actual archive or dependency
+execution is approved.
+
+A fresh complete paginated VAST API readback explicitly has `next_token:
+null`, zero Vokra instances and one unrelated account row, which is untouched.
+No paid worker, storage, model execution, HF transfer/publication, push, PR
+mutation or Scaleway allocation is started in this checkpoint. Preserve all
+194 public rows: source/license, strict native/CLI paths, independent
+real-weight CPU parity, final Apple CPU/Metal/no-fallback, security/CI and
+separately authorized public-artifact reconciliation remain unproved where
+their exact evidence is missing.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

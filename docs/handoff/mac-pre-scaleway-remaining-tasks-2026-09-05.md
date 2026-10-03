@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 PCM integration and baseline correction (01:29 UTC):** root
+> reviews and normally commits the combined FireRed/OWSM/Kyutai candidate at
+> clean `3c15ea1d`, preserving the already merged incremental LM and private
+> PCM session. A duplicate decoder draft based on the older management
+> checkout is not adopted. Focused fixes now target the existing LM's
+> pre-mutation validation and allocation guards. The combined candidate has
+> static evidence only; its exact-head remote replay is pending. Fixed DSM
+> caller source confirms the full audio-plus-padding loop, not an EOS early
+> stop. A fresh complete VAST readback has zero Vokra instances. Preserve all
+> 194 rows and see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcm-integration-baseline-correction-and-caller-source-0129-utc).
+
 > **2026-10-03 terminal combined replay (01:12 UTC):** frozen code-only
 > V13 is terminal with exit one, not an overall pass. Root verifies all 63
 > recovered checksums: workspace 8,274 passed / zero failed / 108 explicit

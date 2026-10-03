@@ -1,5 +1,17 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 PCM integration and baseline correction (01:29 UTC):** freeze
+> clean combined candidate `3c15ea1d8adc20e8b1643698ae61f27b45bc0836` for
+> review, not as a remote or full-ASR pass. Use the existing main-derived
+> incremental LM/private PCM session; do not integrate the duplicate decoder
+> from the older management baseline. Review the separate state-validation
+> correction before generating a distinct exact-head code-only replay.
+> Fixed upstream caller evidence establishes full audio/padding processing;
+> independent real-weight and Apple/no-fallback evidence remain required.
+> Fresh complete VAST readback has no Vokra allocation. Source-only PyYAML
+> acquisition is still disabled; Scaleway remains last. See the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcm-integration-baseline-correction-and-caller-source-0129-utc).
+
 > **2026-10-03 terminal combined replay (01:12 UTC):** session `91310`
 > is terminal with exit one; do not restart or retarget it. Root verifies all
 > 63 recovered checksums and passing workspace/OWSM/XCodec2 test legs, but
