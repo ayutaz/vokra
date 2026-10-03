@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 full-matrix first-failure review (11:52 UTC):** the actual
+> matrix stops in the first fixture's HEAD reader before provider logic.
+> Preserve `head changed`, not a full pass. Whole-stat comparison includes
+> access time; a later read does not reproduce the original change. Require
+> a regression that distinguishes the old defect, rather than changing time
+> before the reader samples its baseline. Cloud activation remains disabled.
+> See the [first-failure and test-review record](public-catalog-security-completion-2026-09-29.md#2026-10-03-full-matrix-first-failure-review-1152-utc).
+
 > **2026-10-03 independent cleanup-regression acceptance (11:47 UTC):**
 > root passes frozen V6 `8d202d86`'s focused tests, including transfer
 > supervision, parent INT/TERM, descendant reaping, strict snapshots and

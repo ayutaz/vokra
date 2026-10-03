@@ -9033,6 +9033,49 @@ already-green exact-head workspace run. Counts remain 136 code/artifact-full
 and 58 unresolved across all 194 public rows; Apple CPU/Metal/no-fallback,
 legal and publication decisions retain their separate evidence boundaries.
 
+## 2026-10-03 full-matrix first-failure review (11:52 UTC)
+
+The authorized actual harness `--self-test` starts at 11:47 UTC with frozen
+producer `8d202d86` and harness `d6bc4d5e`. It terminates one immediately,
+without a continuing session handle. The first case, `foreign`, fails before
+provider/lifecycle logic in `read_fixed_head`; original stderr is exactly
+`head changed`, and its lifecycle trace is empty. Evidence remains at
+`/private/tmp/vokra-primary-source-bulk-faults.RiJs9t/foreign` (the complete
+retained test tree is 204 KiB). No full-matrix acceptance receipt is claimed.
+
+Root confirms the reader compares whole `stat_result` objects, including
+access time. This can mistake a read-induced access-time change for content
+mutation. However, the failed run did not retain individual before/after
+fields. Root's later read of the same 41-byte file observes equal stats and
+no changed field; it cannot retroactively prove the original differing
+field. Treat access time as a concrete comparator defect and cause candidate,
+not as a captured original kernel trace.
+
+Return a narrow secure-reader correction: require absolute paths, reject
+symlink ancestors and nonregular input, use no-follow/nonblocking descriptor
+reads, cap at 256 bytes and bind before/opened/after descriptor and path
+identity. Exclude access time only; preserve device/inode/mode/UID/GID/size,
+mtime/ctime and ASCII/40-hex checks. Original frozen `8d202d86` remains
+immutable. Candidate `15e128cc` passes the owner's focused run (session
+`24584`, terminal zero), but root finds its proposed access-time regression
+mutates the file **before** the reader samples its baseline. The old broken
+comparator could also pass that test. Return the test for a distinguishing
+before/after access-time perturbation and genuine mid-read content/identity
+rejection cases. Do not substitute PASS labels or the author's report for
+independently accepted causal coverage.
+
+Separately, the harness adds bounded per-case progress (`mode`, intended
+phase and actual exit status) and identifies the precise positive mode on
+failure. Its SHA-256 is
+`6dd32886dbb5721f4983bb816b854cb1ac1b978fc910f7166df3277e9d021b61`;
+root independently reviews that diff and passes the standalone tool contract.
+The pin is deliberately still `8d202d86`, so a changed producer fails closed.
+No full retry occurs after this first failure. A new frozen producer, causal
+focused regression, matching rendered-body hashes and root review are
+required before changing the pin and attempting the full matrix again.
+No cloud allocation, model execution, publication or model-row promotion
+occurs; all 194 rows and final Scaleway gates remain in scope.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 full-matrix first-failure review (11:52 UTC):** stop at the
+> observed pre-provider HEAD-read failure. Harden the capped no-follow stable
+> reader without ignoring content/identity changes, and require a causal
+> regression: pre-call time mutation alone would also pass the old code.
+> Retain original evidence and freeze/review a new candidate before changing
+> the harness pin or retrying. See the
+> [first-failure and test-review record](public-catalog-security-completion-2026-09-29.md#2026-10-03-full-matrix-first-failure-review-1152-utc).
+
 > **2026-10-03 independent cleanup-regression acceptance (11:47 UTC):**
 > exact frozen V6 `8d202d86` passes root's focused actual replay after direct
 > child reaping and parent-signal corrections. The rendered SSH bodies are
