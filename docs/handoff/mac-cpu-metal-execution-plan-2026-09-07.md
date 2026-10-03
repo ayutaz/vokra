@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-04 JST source-only gate closed:** the corrected leaf actually
+> authenticates the fixed raw/API/receipt on VAST after five passing tests.
+> Root verifies four bounded recovered hashes and leaf/self-test/audit exits
+> zero, then independently confirms worker/data destruction. Reuse these
+> exact authenticated inputs instead of repeating retrieval or auditing.
+> Dependency/owner decisions and independent real-weight composite CPU parity
+> remain prerequisites before the final Apple run. This is not model
+> execution or Apple/no-fallback evidence; see the [actual source acceptance](public-catalog-security-completion-2026-09-29.md#corrected-leaf-actual-source-authentication-and-cleanup-acceptance).
+
 > **2026-10-04 JST source-only authorization supersession:** the owner
 > authorizes the six fixed inputs, encrypted SSH and disposable-worker
 > destruction, with the storage-inclusive $0.20/hour ceiling. The actual

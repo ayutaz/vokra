@@ -9877,6 +9877,121 @@ unrelated IDs remain untouched. The preserved second receipt is
 No source-audit result, model/package execution, parity, Apple verdict or
 artifact update follows from this transport-only progress.
 
+### Bootstrap correction passes; leaf path validation stops before auditing
+
+Root catches a second prospective bootstrap defect before allocation: the
+official uv version string may include parenthesized build metadata, so exact
+whole-line equality to `uv 0.12.5` would reject a valid pinned executable.
+The corrected semantic-version check rejects a different version and nonzero
+exit; root independently passes all fourteen tests, including real Bash,
+file-protocol-only curl and fake-uv process tests. The accepted local-only
+controller SHA-256 is
+`343bfc5c4df0f85a20b304f49819db26c2a7ea35e2398f59e54518d66d63edfc`.
+The frozen six transfer inputs remain unchanged.
+
+The third actual run uses worker `54045865`, label
+`vokra-kyutai-source-audit-20261004-31c190a9a0`, at the same quoted
+$0.14074074074074072/hour including 200 GB disk. Direct SSH succeeds after
+sixteen refused classifications. Encrypted input transfer, pinned uv archive
+download/SHA check, executable version and Python setup succeed, with fixed
+receipt stages `curl:ok`, `sha256:ok`, `uv:ok`, `python:ok`.
+
+The actual leaf stops exit two at `input member is absolute`; both its
+self-test and audit exits remain `-1` (unexecuted). The recovered 321-byte
+leaf-result JSON has SHA-256
+`e56a3773c8784ddf6c56c0223396885ab117280044fa876b856ce1334862ed98`.
+Root independently reproduces the real Bash failure: the leaf's
+`[ "$relative" != /* ]` expands the unquoted glob to root directory entries,
+returning exit two with `too many arguments` even for a relative path.
+This identifies a leaf path-check defect, not bad source bytes or parity.
+Do not disable globbing to silently change the fixed leaf's execution.
+Prepare a separately reviewed fail-closed `case` correction and normal-entry
+positive/negative synthetic tests; preserve the original approved files.
+
+The finally cleanup succeeds. Root separately confirms individual explicit
+null and a closed inventory with no owned source-audit worker; unrelated
+workers remain untouched. Third-attempt evidence is retained at
+`/private/tmp/vokra-kyutai-approved-activation-evidence-v3-20261004/`.
+Neither actual source authentication nor model/package execution occurs.
+No repeated unchanged rental is justified, and no row or Apple/publication
+gate is promoted by successful transport/bootstrap alone.
+
+### Corrected leaf actual source authentication and cleanup acceptance
+
+Root reviews the separate corrected leaf: the sole production-code change
+replaces the glob-expanding test with a fail-closed `case` absolute-path
+check. Root independently verifies that the original four auditor/receipt/
+raw/API inputs, source identity and execution restrictions remain identical.
+The original leaf/manifest hashes remain intact. Corrected leaf size/SHA-256
+are 6,888 bytes /
+`34313076be3023f572a50179cdf66bb8bf4e9fd785f08c219ac2120f32136b20`;
+the corresponding 2,388-byte manifest SHA-256 is
+`9280bd3685445cbd199173ee1fade93feeefa63d9544d0057a5dc49ad450b428`.
+
+Root independently passes five normal-entry synthetic leaf tests: the
+relative-path positive case, absolute-path refusal, symlink-ancestor refusal,
+hash mismatch and bounded correction check. These use tiny synthetic bytes,
+native shell helpers and a fake uv executable, never the actual upstream
+auditor/model on the maintainer Mac. Their acceptance is regression evidence,
+not source authentication. The local-only controller copy changes only the
+two corrected receiver-input paths/names/sizes/hashes and invocation path.
+Its SHA-256 is
+`0896929c66b8b62735c069f9438b10b505d71df9af12b623f30418d04e5b4d89`;
+root independently passes its fourteen tests. The transfer remains six
+files with no additional source/model/credential payload.
+
+The actual fourth run creates worker `54047047`, label
+`vokra-kyutai-source-audit-20261004-ae6f5f1916`, at a storage-inclusive
+$0.07481481481481482/hour with 200 GB disk, below the unchanged approved
+ceiling. Direct SSH succeeds after twenty-eight refused classifications;
+encrypted transfer, all pinned bootstrap stages and receiver hash checks
+pass. Controller, leaf, five source-auditor tests and actual raw/API/receipt
+audit all terminate **zero**. The audit returns
+`AUTHENTICATED_SOURCE_ONLY_RECEIPT` for the fixed 8,452-byte DSM caller,
+revision `4c4f65e147df056adf3346290d64c7b9649b18c9` and Git blob
+`cf3fb05b0e0c1f265a667276d2886ce2664d79ff`; raw/API SHA-256 values exactly
+match the retained manifest. Source producer commit remains `48731912`.
+
+Root independently checks the exact four recovered files, bounded sizes,
+all receipt hashes, source identities and execution flags:
+
+| Evidence file | Bytes | SHA-256 |
+|---|---:|---|
+| `leaf-result.json` | 661 | `cf7164b90e73f10c85ad7e89003b2ede85a8b333cef4f9664ec30c695169aa24` |
+| `source-audit.json` | 485 | `39c377fff5b661e0b53e2ad1dfffa6e72038e187483f076e97330b6d0659158c` |
+| `source-audit-self-test.log` | 173 | `0db071464a22e2ad8da4e688f7aea65531d23e74587e351cd3f6dfba990321bd` |
+| `source-audit.stderr.log` | 70 | `4e7813e38489e3abdb270b549e509ebdbab312173ec281df785c1aa6b68d9684` |
+
+The stderr contains only uv's no-sync/no-project warning, not an audit error.
+Recovered evidence is retained at
+`/private/tmp/vokra-kyutai-approved-activation-evidence-v4-20261004/`.
+The controller records successful finally cleanup; root separately verifies
+individual explicit null and a closed inventory with none of owned IDs
+`54044547`, `54045481`, `54045865`, `54047047` or their labels remaining.
+The account's three unrelated workers (`54015246`, `54019631`, `54046280`)
+are outside this task and untouched; the third appears during this turn and
+must not be attributed to the source-only controller.
+
+This closes actual fixed source authentication and the observed
+transport/bootstrap/leaf defects. Keep the earlier failed attempts as
+failure evidence, not retrospective PASS. `execution: NOT_RUN` still means
+no upstream model/reference execution: there is no model/weight/config/
+tokenizer load, package import, Cargo, numerical parity, Apple/no-fallback
+verdict or upload. Dependency/owner approval and independent real-weight
+composite capture remain necessary; all 194 row requirements and the
+metadata-only 136 full / 58 unresolved classification remain unchanged.
+
+The two exact source-only auditor/receipt files are subsequently integrated
+into the primary worktree at `a017e16f3eeb33c785aee93d19f8d197e6c0db79`.
+They are additions on this management branch (357 lines), not a merge of the
+producer's broader runtime branch. Their byte counts/SHA-256 values match
+the actual VAST inputs exactly. Luna runs five synthetic auditor tests and
+the normal five pre-commit gates; root reviews the complete two-file commit
+and independently verifies those byte hashes. No protected manifest or
+management-document change is staged into that implementation commit, and
+no push occurs. Remote source evidence remains bound to producer `48731912`
+and the fixed input hashes, not a claimed workspace replay of the new HEAD.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

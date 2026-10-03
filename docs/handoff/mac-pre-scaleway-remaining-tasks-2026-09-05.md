@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-04 JST actual source-authentication acceptance:** the corrected
+> fail-closed leaf passes five tests and the real fixed raw/API/receipt audit
+> on VAST, with all process exits zero. Root verifies all four recovered
+> hashes and exact source identity. Worker `54047047` and its data are
+> independently confirmed destroyed; none of this turn's four owned workers
+> remains. This closes the source-only authentication gate, not model,
+> dependency/license, real-weight CPU, Apple or publication gates. All 194
+> rows and the metadata-only 136 full / 58 unresolved split remain unchanged.
+> See the [accepted source-only verdict](public-catalog-security-completion-2026-09-29.md#corrected-leaf-actual-source-authentication-and-cleanup-acceptance).
+
 > **2026-10-04 JST source-transfer authorization and transport failure:** the
 > owner approves the six fixed source-only inputs and a disposable VAST
 > worker capped at $0.20/hour including storage. The first run stops at SSH
