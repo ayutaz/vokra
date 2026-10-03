@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 reviewed source-batch checkpoint (05:40 UTC):** freeze clean
+> integrated `0f26b6ea` for a distinct model-free VAST wave. Root accepts
+> V22's 46 offline actual-path lifecycle cases; V22 itself stays disabled
+> and is not a cloud result. Require a reviewed new controller that binds
+> this HEAD, the two XCodec2 source profiles, five SpeechT5 raw legal-context
+> files, exact-head code verification, bounded recovery and owned-resource
+> destruction. Source receipts are not operator approvals. Scaleway remains
+> last; see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-reviewed-source-batch-and-lifecycle-checkpoint-0540-utc).
+
 > **2026-10-03 bounded reference preparation (05:22 UTC):** the accepted
 > `dd7db2cf` collector prepares a fixed, VAST-only source identity slice,
 > not a numerical oracle or dependency closure. Keep the original-conversion

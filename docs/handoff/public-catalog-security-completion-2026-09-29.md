@@ -7825,6 +7825,58 @@ publication or Scaleway action. All 194 public rows and their final hardware
 gates remain in scope; the 136 code/artifact-full versus 58 unresolved
 classification is not a count of hardware-complete models.
 
+## 2026-10-03 reviewed source-batch and lifecycle checkpoint (05:40 UTC)
+
+Root accepts a second immutable XCodec2 source profile after full diff review
+and 26 independent offline UV/Python 3.12 tests with `-S` (0.039 seconds).
+Clean commit `6fb2720f4491db42bf75c00eee008bfadaf00b08` keeps modern-code
+`6af945f436d85f2b0c5dff9b14feccd27b1d470b` (six files) distinct from
+original-conversion `9b6af5d77de78f0a57a098b2809009ad6ec0cfe3` (license and
+converter). Neither source profile has been acquired or executed in this
+checkpoint; the old GGUF/new checkpoint mapping, safe dependency route,
+critical Torch advisory and independent real-weight parity remain open.
+
+Root also completes review of the new three-file SpeechT5 primary legal
+collector and independently passes its explicit offline `--self-test` path:
+16 tests, zero failures in 0.008 seconds. The earlier twelve-case draft
+result is not substituted for this corrected revision. The collector permits
+only five fixed raw license/context files, no archives, packages or models,
+with exact Git blobs, bounded HTTP reads and Linux/VAST opt-in. General GCC
+license/exception context is explicitly not a proof that the retained Torch
+`libgomp.so.1` was built from that GCC revision; the PyPI packaging license
+and upstream patchelf license are separate identities. No owner/operator
+sign-off or publication permission is inferred. Normal commit
+`0f26b6ea256d198d7d479da44aedf09353b1c908` contains only these three files;
+all five ordinary pre-commit checks pass, including 190 byte-hashed fixture
+pins and 306 shell files. Forbidden-symbol, zero-dependency and diff checks
+pass. The correctly named runbook path gate passes with 1,144 citations in
+131 runbooks and 486 distinct paths; the initial attempted
+`scripts/check-runbook-commands.sh` does not exist and is not counted as a
+successful check. The integrated worktree is clean at this exact HEAD.
+
+Root independently runs frozen V22 controller SHA-256
+`d853bc054d05f83556b89fdcca770a4a2d23de61c6290eba7da45315472745c5`:
+session `65117` ends with exit zero and 46/46 offline shared-path cases.
+The harness covers direct-endpoint preference and malicious proxy rejection,
+pre-transfer size enforcement, diagnostics-only failed-preflight recovery,
+partial-create ownership recovery, positive recovery, faulty leaf results,
+complete cleanup readbacks, paginated residual rejection and actual TERM
+cleanup (exit 143). Fixed offline mocks prevent provider/model execution.
+This accepts the bounded harness, not a live cloud run; public V22 `--run`
+remains disabled. A new controller is delegated to bind the reviewed clean
+HEAD and batch these source receipts with exact-head remote code tests.
+
+The complete VAST account readback at 05:30 UTC has `next_token=null`, zero
+Vokra instances and one unrelated running instance. The unrelated resource
+is untouched; account-wide resource/cost zero is not claimed. An offers-only
+query at 05:40 UTC returns eligible CPU/RAM candidates under the USD 0.20/hour
+ceiling; no instance is created. Current recovery headroom is about 2.56 GiB,
+above the controller's 2-GiB floor; no cleanup is performed. No local models,
+real source acquisition, upstream numerical execution, upload, code push,
+PR mutation or Scaleway action occurs. All 194 rows and their final hardware
+gates remain in scope; 136 code/artifact-full and 58 unresolved are still
+route classifications, not hardware-complete counts.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

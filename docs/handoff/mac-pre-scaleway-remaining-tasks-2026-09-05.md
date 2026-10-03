@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 reviewed source-batch checkpoint (05:40 UTC):** clean
+> integrated `0f26b6ea` contains separately pinned XCodec2 source profiles
+> and the bounded five-file SpeechT5 primary legal-context collector. Root
+> passes 26 and 16 offline tests respectively, plus V22's actual shared-path
+> 46-case lifecycle harness. These are source/orchestration preparation,
+> not real acquisition, legal approval, numerical parity or Apple results.
+> Bind and review the new batch controller before allocation; retain all
+> 194 rows and see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-reviewed-source-batch-and-lifecycle-checkpoint-0540-utc).
+
 > **2026-10-03 bounded reference preparation (05:22 UTC):** root accepts
 > the fixed six-file XCodec2 source collector at clean integrated `dd7db2cf`,
 > independently passing 22 offline tests and the normal commit gates. No
