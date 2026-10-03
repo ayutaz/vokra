@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-03 independently verified failure countermeasures (10:17 UTC):**
+> frozen paired controller A19 passes root's full offline regression, including
+> eight normal-shell failure modes, original log/exit retention and compound
+> first-failure preservation. This accepts bounded orchestration preparation,
+> not a production model/source/Apple verdict. No new worker is allocated;
+> source-only V5 remains disabled. See the
+> [verification record](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-failure-countermeasure-verification-1017-utc).
+
 > **2026-10-03 concrete BigVGAN call-contract diagnosis (10:03 UTC):**
 > independent source review finds that A15 pre-creates the leaf's evidence
 > directory and nests its output there, violating two explicit leaf guards.

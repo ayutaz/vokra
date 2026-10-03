@@ -8505,6 +8505,52 @@ and the actual V24 log tree has no `self` subtree. Offline regression can now
 resume, but new VAST allocation remains held pending review and test evidence.
 No public model row, legal approval, numerical result or Apple gate advances.
 
+## 2026-10-03 independent failure-countermeasure verification (10:17 UTC)
+
+Root reviews the complete A17-to-A18 delta and independently runs frozen A18,
+SHA-256 `ded39f8c6115dbba5a34e92929471b6f642fae0dea99b0844863ff14898d075f`.
+Session `5668` is terminal zero with the shared-path fixture-only PASS;
+post-run hash is unchanged. A further narrow review identifies delayed Big
+test failure recording: record its result before starting the next leaf so a
+second failure cannot hide the first. Luna prepares a separate frozen A19;
+A18 is not overwritten.
+
+Final controller
+`/private/tmp/vokra-qwen-bigvgan-model-free-vast-controller-a19-20261003.sh`
+has SHA-256
+`6920f84221eb61f09f9386f0e98c0a9a0002b11100fc2613190d1651a37ace63`.
+Root reviews the full narrow delta, passes syntax/hash checks, then runs its
+full offline self-test serially after A18. Session `56631` is terminal zero,
+with `self-test PASS (shared run_live/remote_job/manifest/cleanup;
+fixture-only)`, and its post-run hash is unchanged. Preserve root evidence in
+`/private/tmp/vokra-qwen-bigvgan-model-free-a19.KNFmPs`.
+
+The normal `set -e` outer path now exercises bootstrap, audit, API,
+missing-output-after-zero, collector error, leaf exit 2, Big-test error and
+combined Big-test/leaf error. Assertions cover original exit/reason, log
+contents, diagnostic recovery and cleanup/readback. Root directly reads the
+combined case: tests exit 23, `first_failure=big_tests:23` appears once, leaf
+exit 2 is also recorded, `big_reason=big_tests_exit` survives, and both actual
+fixture log messages remain. The outer leaf accepts only zero. Other existing
+regressions cover SSH 255-to-zero readiness, total readiness failure without
+later transfer, malformed/oversized/linked packets, aggregate bounded log
+excerpts, partial-create ownership and process-group cleanup. Each diagnostic
+member gets a fixed 256-KiB budget, with original size and truncation markers;
+the total is capped at 4 MiB and its archive at 8 MiB.
+
+Acceptance is bounded to these reviewed orchestration corrections and offline
+fixtures. No new provider allocation, network source acquisition, model,
+workspace Cargo, HF upload or Apple execution occurs in this root-cause turn.
+The separately audited source-only V5 still lacks its actual outer lifecycle
+fault matrix and remains disabled; do not promote its validator-only tests.
+Keep the accepted exact-head code evidence and the full 194-row goal rather
+than rerun green Cargo or claim catalog completion from controller tests.
+Available local space is 3,771,636 KiB at the last readback, above the unchanged
+2 GiB floor; no further data cleanup is performed. Fresh owned-worker absence
+and zero Vokra instances are recorded above, with the unrelated instance
+untouched. The next paired VAST wave must bind these exact tested bytes and
+retain failure diagnostics; it has not run at this snapshot.
+
 ## Final audit
 
 Completion requires a current per-row disposition for all 194 public

@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-03 independently verified failure countermeasures (10:17 UTC):**
+> root accepts A19's reviewed paired-controller corrections and full offline
+> failure regression, not real VAST verification. Use only the frozen tested
+> bytes for a future paired wave; keep the separately unaccepted source-only
+> controller disabled. No new allocation or model-row promotion occurs; all
+> 194 rows and final Scaleway gates remain. See the
+> [dated verification](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-failure-countermeasure-verification-1017-utc).
+
 > **2026-10-03 concrete BigVGAN call-contract diagnosis (10:03 UTC):**
 > the original outer call violates the pinned leaf's fresh/non-overlapping
 > output contract. Correct both real paths and the fixture's preconditions,
