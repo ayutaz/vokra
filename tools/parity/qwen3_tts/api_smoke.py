@@ -51,7 +51,7 @@ MODEL_CONFIG_SHA256 = "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef
 DECODER_REPOSITORY = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
+LOCK_SHA256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
 TRANSFORMERS_VERSION = "5.10.4"
 SECURITY_ADVISORY_ID = "GHSA-4j2p-28q2-5m79"
 CPU_LOAD_MODE = "DEFAULT_CPU_NO_DEVICE_MAP"
@@ -111,7 +111,8 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 # Must match the fixed owner identity enforced by license_gate.py.
 OWNER_SIGNER = "yousan"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-EXPECTED_TORCH_FAMILY = "2.7.1"
+EXPECTED_TORCH_FAMILY = "2.13.0"
+EXPECTED_TORCHAUDIO_FAMILY = "2.11.0"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
 CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 
@@ -429,8 +430,9 @@ def validate_cpu_torch_rows(packages: list[Any]) -> None:
     for row in rows:
         if row.get("source") != {"registry": PYTORCH_CPU_INDEX}:
             raise SmokeError(f"{row['name']} is not resolved from the explicit CPU index")
-        if row["version"].split("+", 1)[0] != EXPECTED_TORCH_FAMILY:
-            raise SmokeError("torch/torchaudio version family is not 2.7.1")
+        expected_family = EXPECTED_TORCH_FAMILY if row["name"] == "torch" else EXPECTED_TORCHAUDIO_FAMILY
+        if row["version"].split("+", 1)[0] != expected_family:
+            raise SmokeError(f"{row['name']} version family is not {expected_family}")
 
 
 def artifact(path: Path, label: str) -> dict[str, Any]:
@@ -491,9 +493,10 @@ def expected_package_versions(lock: dict[str, Any]) -> dict[str, str]:
         if not versions:
             raise SmokeError(f"uv.lock has no unique version for {name}")
         if name in {"torch", "torchaudio"}:
-            if versions != {"2.7.1", "2.7.1+cpu"}:
+            expected_family = EXPECTED_TORCH_FAMILY if name == "torch" else EXPECTED_TORCHAUDIO_FAMILY
+            if versions != {expected_family, f"{expected_family}+cpu"}:
                 raise SmokeError(f"uv.lock has an unsafe {name} version family: {sorted(versions)}")
-            result[name] = "2.7.1+cpu"
+            result[name] = f"{expected_family}+cpu"
         else:
             if len(versions) != 1:
                 raise SmokeError(f"uv.lock has no unique version for {name}")
@@ -886,20 +889,20 @@ def self_test() -> None:
     validate_patch_record(canonical_patch)
     self_test_filesystem()
     safe_rows = [
-        {"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
-        {"name": "torch", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
-        {"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}},
-        {"name": "torchaudio", "version": "2.7.1+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torch", "version": "2.13.0", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torch", "version": "2.13.0+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.11.0", "source": {"registry": PYTORCH_CPU_INDEX}},
+        {"name": "torchaudio", "version": "2.11.0+cpu", "source": {"registry": PYTORCH_CPU_INDEX}},
     ]
     validate_cpu_torch_rows(safe_rows)
     assert expected_package_versions({"locked_versions": {
         "einops": {"0.8.2"}, "librosa": {"1.0.0"},
-        "numpy": {"2.5.2"}, "soundfile": {"0.14.0"}, "torch": {"2.7.1", "2.7.1+cpu"},
-        "torchaudio": {"2.7.1", "2.7.1+cpu"}, "transformers": {"5.10.4"},
-    }})["torchaudio"] == "2.7.1+cpu"
+        "numpy": {"2.5.2"}, "soundfile": {"0.14.0"}, "torch": {"2.13.0", "2.13.0+cpu"},
+        "torchaudio": {"2.11.0", "2.11.0+cpu"}, "transformers": {"5.10.4"},
+    }})["torchaudio"] == "2.11.0+cpu"
     for unsafe_rows in (
         [{**row, "source": {"registry": "https://pypi.org/simple"}} for row in safe_rows],
-        [*safe_rows[:2], {**safe_rows[2], "version": "2.11.0"}, safe_rows[3]],
+        [*safe_rows[:2], {**safe_rows[2], "version": "2.7.1"}, safe_rows[3]],
         [*safe_rows, {"name": "nvidia-cuda-runtime", "version": "12", "source": {"registry": "https://pypi.org/simple"}}],
     ):
         try:
@@ -1048,7 +1051,7 @@ def self_test() -> None:
             LOCK_SHA256 = original_lock_sha
         forbidden_dependency_lock = root / "forbidden-dependency-uv.lock"
         forbidden_dependency_lock.write_text(
-            '[project]\nname = "test"\n\n[[package]]\nname = "torch"\nversion = "2.7.1"\ndependencies = [{ name = "setuptools" }]\n',
+            '[project]\nname = "test"\n\n[[package]]\nname = "torch"\nversion = "2.13.0"\ndependencies = [{ name = "setuptools" }]\n',
             encoding="utf-8",
         )
         LOCK_SHA256 = sha256_file(forbidden_dependency_lock)

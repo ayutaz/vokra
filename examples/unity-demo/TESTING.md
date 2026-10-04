@@ -65,5 +65,6 @@ real G2P** (not the M0-07-T08 mock) by noting the loaded paths from the log.
 - [ ] Linux record complete (headless VAD→ASR→TTS OK)
 - [ ] `Packages/manifest.json` has no Sentis / Inference Engine (SRS §5-(10))
 - [ ] callbacks are `[MonoPInvokeCallback]` + static + GCHandle userdata (NFR-RL-02)
-- [ ] no iOS/Android code (v0.5 = FR-API-04)
+- [ ] no iOS/Android code (the official `com.vokra.unity` package owns those
+      platform paths; this remains the v0.1 demo boundary)
 - [ ] PR CI green (build/test/fmt/clippy/parity/license)

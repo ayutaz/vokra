@@ -35,12 +35,12 @@ package without executing that initializer.  It still imports the exact
 upstream `models/model.py` and `utils/config_and_args.py`; no model equation is
 reimplemented in the dumper.
 
-Regenerate on VAST because the checkpoint totals 6.25 GB:
+Run from the repository root on VAST because the checkpoint totals 6.25 GB.
+Reuse the committed lock; do not regenerate it as part of this recipe:
 
 ```text
-uv lock --directory tools/parity/whisper_medusa
-uv sync --frozen --directory tools/parity/whisper_medusa
-uv run --frozen --directory tools/parity/whisper_medusa python \
+uv sync --frozen --python 3.12 --project tools/parity/whisper_medusa
+uv run --frozen --python 3.12 --project tools/parity/whisper_medusa python \
   tools/parity/whisper_medusa/dump_reference.py \
   --model-dir /path/to/pinned-hf-snapshot \
   --source-parent /path/to/pinned-upstream-repository \
@@ -48,7 +48,7 @@ uv run --frozen --directory tools/parity/whisper_medusa python \
   --max-new-tokens 8 --device cpu
 ```
 
-Run the Rust consumer with
+Run the Rust consumer on VAST (the checkpoint is 6.25 GB) with
 `VOKRA_WHISPER_MEDUSA_GGUF=/path/to/model.gguf cargo test --release -p
 vokra-models --test parity_whisper_medusa_real -- --nocapture`.  The FP32
 logits gate is `max_abs <= 5e-4`; the measured VAST result above is within the

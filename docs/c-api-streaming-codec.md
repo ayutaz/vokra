@@ -41,9 +41,8 @@ hot-path guarantee.
 
 The C layer is codec-family neutral: a model opts in through Vokra's streaming
 codec engine trait only when it has a complete, real **causal frame** decoder.
-Standalone Mimi is currently connected. DAC and SNAC now have complete offline
-token-to-PCM decoders, but their released convolutional graphs are non-causal
-whole-sequence models; presenting either one-frame push as causal streaming
-would fabricate context/state semantics. They therefore remain explicit
-unsupported families on this streaming handle and are exposed through offline
-model APIs instead.
+The current header and runtime wire standalone Mimi and NVIDIA NanoCodec. SNAC
+remains an explicit unsupported result until its terminal PCM decoder exists.
+DAC and other offline token-to-PCM paths must not be described as causal
+streaming merely because an offline decoder is available; this handle exposes
+only the families named by the current `vokra_codec_decoder_open` contract.

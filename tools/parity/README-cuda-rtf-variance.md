@@ -84,7 +84,8 @@ the *only* CUDA linkage in the whole tree.
 ### 1. Build `vokra-cli` on the CUDA host
 
 ```bash
-cargo build --release -p vokra-cli
+# VAST/Linux only: the CLI build and real GGUF benchmark are not maintainer-Mac work.
+CARGO_BUILD_JOBS=1 cargo build --release -p vokra-cli
 # ~5 minutes cold on a vast.ai spot
 ```
 
@@ -196,7 +197,7 @@ scripts/publish/vast-ai/vastai-safe.sh create instance <offer-id> \
 git clone https://github.com/ayutaz/vokra.git ~/vokra
 cd ~/vokra
 bash scripts/publish/vast-ai/provision.sh
-cargo build --release -p vokra-cli
+CARGO_BUILD_JOBS=1 cargo build --release -p vokra-cli
 
 # 3. Keep the >=2 GB GGUF on VAST and run both modes through uv.
 uv run --no-project --python 3.12 bash tools/parity/cuda_rtf_variance.sh \

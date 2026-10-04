@@ -102,6 +102,10 @@ what `cargo test` exercises.
 
 ## Owner walkthrough — thumbv8m cross-build sanity
 
+This owner-triggered cross-build is a CI/VAST or other disposable Linux step;
+do not turn it into a workspace-wide Cargo run on the memory-constrained
+maintainer Mac.
+
 Run once per checkout to confirm the Cortex-M55 (Tier-3) target
 compiles cleanly:
 

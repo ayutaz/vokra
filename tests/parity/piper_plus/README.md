@@ -30,7 +30,7 @@ native implementation at the FP32 parity bound (NFR-QL-01 `atol = 0.01`).
 ## Regenerating
 
 ```sh
-uv run --project tools/parity --frozen --with onnxruntime==1.23.2 \
+uv run --project tools/parity --frozen --python 3.12 --with onnxruntime==1.23.2 \
   python tests/parity/piper_plus/gen_reference.py \
   <css10-ja-6lang-fp16.onnx> <config.json> tests/parity/piper_plus \
   ayousanz/piper-plus-css10-ja-6lang \

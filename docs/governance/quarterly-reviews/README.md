@@ -1,9 +1,10 @@
 # Quarterly review records
 
-> **Current state (2026-09-09):** `release-cadence.yml` and
-> `tools/release/test_cadence.py` are landed, but there are **0 git tags, 0
-> GitHub releases, and 0 review records**. Release cadence is therefore not
-> established; do not infer a Go verdict from the landed mechanism alone.
+> **Current state (2026-10-04):** `release-cadence.yml` and
+> `tools/release/test_cadence.py` are landed. The all-pages API reports **one
+> tag and one GitHub release** (`v0.3.0`, 2026-09-20), with zero tracked review
+> records. A single release does not establish cadence; do not infer a Go
+> verdict from the landed mechanism alone.
 
 Storage conventions for the quarterly Go/No-go review (`NFR-MT-05`). One
 review produces two artefacts: a **metrics snapshot** (machine-generated) and
@@ -69,8 +70,8 @@ No review records have been filed yet. The first one is due per the Kill
 switch evaluation calendar in the runbook.
 
 **Open item affecting the calendar**: the runbook derives the Kill switch C/D
-start date from the `v0.5.0` release tag, but no git tag and no GitHub release
-currently exist, and the planning documents give two different calendar
+start date from the `v0.5.0` release tag, which is absent. The existing
+`v0.3.0` source release is not an automatic substitute, and the planning documents give two different calendar
 windows for the D verdict. Resolving that — pick a start date, or tag
 retroactively — is a maintainer decision and is tracked as X-05-T23. Until it
 is settled, record the date you used and why, in the review record itself.
