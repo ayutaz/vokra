@@ -1564,9 +1564,9 @@ pub(crate) fn apply_delay_pattern(cfg: &DiaConfig, codes: &[Vec<u32>]) -> Result
     let extra = *cfg.delay_pattern.iter().max().unwrap_or(&0);
     let mut delayed = vec![vec![cfg.audio_pad_value; cfg.channels]; codes.len() + extra];
     for (time, frame) in delayed.iter_mut().enumerate() {
-        for channel in 0..cfg.channels {
+        for (channel, slot) in frame.iter_mut().enumerate().take(cfg.channels) {
             let source = time as isize - cfg.delay_pattern[channel] as isize;
-            frame[channel] = if source < 0 {
+            *slot = if source < 0 {
                 cfg.audio_bos_value
             } else if (source as usize) < codes.len() {
                 codes[source as usize][channel]
@@ -1626,9 +1626,9 @@ pub(crate) fn prepare_audio_prompt(
     }
     let mut delayed = vec![vec![DIA_UNKNOWN; cfg.channels]; source_len];
     for (time, frame) in delayed.iter_mut().enumerate() {
-        for channel in 0..cfg.channels {
+        for (channel, slot) in frame.iter_mut().enumerate().take(cfg.channels) {
             let source_time = time as isize - cfg.delay_pattern[channel] as isize;
-            frame[channel] = if source_time < 0 {
+            *slot = if source_time < 0 {
                 cfg.audio_bos_value as i32
             } else if (source_time as usize) < source.len() {
                 source[source_time as usize][channel]
@@ -1677,10 +1677,10 @@ pub(crate) fn revert_generated_audio(
     let generated = &delayed[prefill_steps..end];
     let mut output = vec![vec![0; cfg.channels]; generated_length];
     for (time, frame) in output.iter_mut().enumerate() {
-        for channel in 0..cfg.channels {
+        for (channel, slot) in frame.iter_mut().enumerate().take(cfg.channels) {
             let source = time + cfg.delay_pattern[channel];
             let token = generated[source][channel];
-            frame[channel] = if token < 0 || token as u32 >= cfg.audio_eos_value {
+            *slot = if token < 0 || token as u32 >= cfg.audio_eos_value {
                 0
             } else {
                 token as u32
@@ -1703,10 +1703,10 @@ pub(crate) fn revert_delay_pattern(cfg: &DiaConfig, delayed: &[Vec<u32>]) -> Res
     let length = delayed.len().saturating_sub(extra);
     let mut result = vec![vec![cfg.audio_pad_value; cfg.channels]; length];
     for (time, frame) in result.iter_mut().enumerate() {
-        for channel in 0..cfg.channels {
+        for (channel, slot) in frame.iter_mut().enumerate().take(cfg.channels) {
             let source = time + cfg.delay_pattern[channel];
             if source < delayed.len() {
-                frame[channel] = delayed[source][channel];
+                *slot = delayed[source][channel];
             }
         }
     }

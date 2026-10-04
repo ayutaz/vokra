@@ -15,7 +15,10 @@ SMALL_PUBLIC_BYTES=1674074848
 SMALL_PUBLIC_SHA256="43b781a0dcd66f1e7451005e461ec20e2141bc9c4f529feb4a9a8c0e352ea137"
 FULL_PUBLIC_BYTES=4466390272
 FULL_PUBLIC_SHA256="fd628312ce7d8e1cbc41718741614116d5c7f08d0763f81622edbac320b208ec"
-TRANSFORMERS_SOURCE_REVISION="c1c34249fa27deefbd4a377dfbf883a39baf5c6d"
+TRANSFORMERS_VERSION="5.10.4"
+TRANSFORMERS_SOURCE_REVISION="89eb876fdd9eca53400fe06e6c1e267dedf2d554"
+TRANSFORMERS_SDIST_SHA256="de37741509e64ccb88f7f5708beaf5b1914df447f5fe659f9c0fd95950413168"
+TRANSFORMERS_WHEEL_SHA256="8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
 GENERATION_CONFIG_SHA256="ab2969fcd40e085bc924ad99ad419c27f62f5acb61afac5de7490ab0c796b5b9"
 SMALL_UPSTREAM_REVISION="1dbd7a128513b8ae4a4e2130fed57b7ac9da5bcd"
 FULL_UPSTREAM_REVISION="70a8a7d34168586dc5d028fa9666aceade177992"
@@ -114,7 +117,7 @@ license_preflight() {
     --manifest "$LICENSE_MANIFEST" --approval "$approval" \
     --small-public-repo vokra/bark-small --small-upstream-repo suno/bark-small \
     --full-public-repo vokra/bark --full-upstream-repo suno/bark \
-    --transformers-version 5.5.0 --small-public-bytes "$SMALL_PUBLIC_BYTES" \
+    --transformers-version "$TRANSFORMERS_VERSION" --small-public-bytes "$SMALL_PUBLIC_BYTES" \
     --small-checkpoint-bytes 1676663913 --small-config-bytes 8803 \
     --full-public-bytes "$FULL_PUBLIC_BYTES" --full-checkpoint-bytes 4486643861 \
     --full-config-bytes 8806 --generation-config-bytes 4908 \
@@ -127,8 +130,8 @@ license_preflight() {
     --small-checkpoint-sha256 "$SMALL_CHECKPOINT_SHA256" --full-checkpoint-sha256 "$FULL_CHECKPOINT_SHA256" \
     --small-config-sha256 "$SMALL_CONFIG_SHA256" --full-config-sha256 "$FULL_CONFIG_SHA256" \
     --generation-config-sha256 "$GENERATION_CONFIG_SHA256" \
-    --transformers-sdist-sha256 c8db656cf51c600cd8c75f06b20ef85c72e8b8ff9abc880c5d3e8bc70e0ddcbd \
-    --transformers-wheel-sha256 821a9ff0961abbb29eb1eb686d78df1c85929fdf213a3fe49dc6bd94f9efa944
+    --transformers-sdist-sha256 "$TRANSFORMERS_SDIST_SHA256" \
+    --transformers-wheel-sha256 "$TRANSFORMERS_WHEEL_SHA256"
 }
 
 require_reference() {
@@ -145,14 +148,14 @@ require_reference() {
   esac
   [[ "$(sha256_file "$directory/manifest.json")" == "$expected_manifest_sha" ]] \
     || die "$label manifest SHA-256 does not match VAST-authenticated evidence"
-  grep -Fq '"format": "vokra-bark-transformers-5.5-reference-v1"' \
+  grep -Fq "\"format\": \"vokra-bark-transformers-${TRANSFORMERS_VERSION}-reference-v1\"" \
     "$directory/manifest.json" \
     || die "$label manifest is not the pinned official Bark reference format"
   grep -Fq '"upstream_revision": "'"$revision"'"' \
     "$directory/manifest.json" \
     || die "$label manifest lost upstream revision $revision"
-  grep -Fq '"transformers_version": "5.5.0"' "$directory/manifest.json" \
-    || die "$label manifest lost the locked Transformers 5.5.0 oracle"
+  grep -Fq "\"transformers_version\": \"${TRANSFORMERS_VERSION}\"" "$directory/manifest.json" \
+    || die "$label manifest lost the locked Transformers ${TRANSFORMERS_VERSION} oracle"
   grep -Fq '"transformers_source_revision": "'"$TRANSFORMERS_SOURCE_REVISION"'"' "$directory/manifest.json" \
     || die "$label manifest lost the pinned Transformers source revision"
   grep -Fq '"checkpoint_sha256": "'"$checkpoint_sha"'"' "$directory/manifest.json" \
@@ -271,6 +274,11 @@ run_self_test() (
   for required in \
     'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' \
+    'TRANSFORMERS_VERSION="5.10.4"' \
+    'TRANSFORMERS_SOURCE_REVISION="89eb876fdd9eca53400fe06e6c1e267dedf2d554"' \
+    'TRANSFORMERS_SDIST_SHA256="de37741509e64ccb88f7f5708beaf5b1914df447f5fe659f9c0fd95950413168"' \
+    'TRANSFORMERS_WHEEL_SHA256="8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"' \
+    'vokra-bark-transformers-5.10.4-reference-v1' \
     'xcrun -f metal' 'parity_bark_real.rs' \
     'real_bark_small_matches_official_transformers' \
     'real_bark_full_matches_official_transformers' \

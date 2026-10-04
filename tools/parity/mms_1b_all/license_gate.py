@@ -32,6 +32,15 @@ REPOSITORY = "facebook/mms-1b-all"
 REVISION = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
 MODEL = "mms-1b-all"
 LICENSE = "cc-by-nc-4.0"
+TORCH_PIN = "2.13.0"
+TORCH_RUNTIME = f"{TORCH_PIN}+cpu"
+TORCH_SECURITY_ADVISORIES = (
+    "GHSA-887c-mr87-cxwp",
+    "GHSA-vgrw-7cvw-pwgx",
+    "GHSA-qfhq-4f3w-5fph",
+    "GHSA-rrmf-rvhw-rf47",
+)
+RERUN_AFTER_TORCH_UPDATE = "BLOCKED_REQUIRES_RERUN_AFTER_TORCH_UPDATE"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 LANGUAGE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
 PLACEHOLDERS = {
@@ -386,7 +395,7 @@ def validate_api_evidence(path: Path, project_digest: str, lock_digest: str, exp
     if not isinstance(upstream, dict) or set(upstream) != {"repository", "revision"} or upstream.get("repository") != REPOSITORY or upstream.get("revision") != REVISION:
         raise ValueError("model-free API upstream identity drifted")
     runtime = value.get("runtime")
-    if not isinstance(runtime, dict) or set(runtime) != {"platform", "python", "transformers", "torch", "weights_acquired", "model_class_imported", "model_instantiated", "model_weights_loaded", "model_executed"} or not str(runtime.get("platform", "")).startswith("Linux-") or runtime.get("transformers") != "5.16.1" or runtime.get("torch") != "2.7.1+cpu" or runtime.get("weights_acquired") is not False or runtime.get("model_class_imported") is not True or runtime.get("model_instantiated") is not False or runtime.get("model_weights_loaded") is not False or runtime.get("model_executed") is not False:
+    if not isinstance(runtime, dict) or set(runtime) != {"platform", "python", "transformers", "torch", "weights_acquired", "model_class_imported", "model_instantiated", "model_weights_loaded", "model_executed"} or not str(runtime.get("platform", "")).startswith("Linux-") or runtime.get("transformers") != "5.16.1" or runtime.get("torch") != TORCH_RUNTIME or runtime.get("weights_acquired") is not False or runtime.get("model_class_imported") is not True or runtime.get("model_instantiated") is not False or runtime.get("model_weights_loaded") is not False or runtime.get("model_executed") is not False:
         raise ValueError("model-free API runtime is not CPU-only/model-free")
     api = value.get("api")
     if not isinstance(api, dict) or set(api) != {"auto_processor_from_pretrained_signature", "auto_processor_source", "wav2vec2_for_ctc_from_pretrained_signature", "wav2vec2_for_ctc_load_adapter_signature", "wav2vec2_for_ctc_load_adapter_source", "target_lang_adapter_surface"} or api.get("auto_processor_from_pretrained_signature") != "(pretrained_model_name_or_path, **kwargs)" or "**kwargs" not in str(api.get("wav2vec2_for_ctc_from_pretrained_signature")) or api.get("wav2vec2_for_ctc_load_adapter_signature") != "(self, target_lang: str, force_load=True, **kwargs)" or api.get("target_lang_adapter_surface") != "Wav2Vec2ForCTC.load_adapter(target_lang=language)":
@@ -410,6 +419,35 @@ def validate_pending_source_head(dependency: dict[str, Any], api: dict[str, Any]
             raise ValueError(f"pending {label} evidence source HEAD binding is not exact")
 
 
+def validate_pending_rerun_manifest(manifest: dict[str, Any], project_digest: str, lock_digest: str) -> None:
+    """Validate the deliberately blocked state after a resolver change.
+
+    Existing audit/API reports bind the old project and lock bytes.  They must
+    not be relabelled as evidence for a new Torch closure; the manifest instead
+    clears their digests and requires both generators to run again remotely.
+    """
+    source_head = manifest.get("evidence_source_head")
+    if (
+        set(manifest) != PENDING_MANIFEST_KEYS
+        or manifest.get("schema") != "vokra-mms-1b-all-license-gate-pending-v1"
+        or manifest.get("status") != "BLOCKED_PENDING_OWNER_REVIEW"
+        or manifest.get("publication") != "NO_UPLOAD"
+        or manifest.get("project_sha256") != project_digest
+        or manifest.get("lock_sha256") != lock_digest
+        or manifest.get("dependency_audit_sha256") is not None
+        or manifest.get("dependency_audit_status") != RERUN_AFTER_TORCH_UPDATE
+        or manifest.get("api_model_free_evidence_sha256") is not None
+        or manifest.get("api_model_free_evidence_status") != RERUN_AFTER_TORCH_UPDATE
+        or manifest.get("model_evidence_status") != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST"
+        or manifest.get("owner_review") != "PENDING_OWNER_APPROVAL"
+        or not isinstance(source_head, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_head)
+        or not isinstance(manifest.get("blockers"), list)
+        or not manifest["blockers"]
+    ):
+        raise ValueError("pending rerun closure manifest is not exact")
+
+
 def project_schema(project: dict[str, Any]) -> None:
     if set(project) != {"project", "tool"} or not isinstance(project["project"], dict) or not isinstance(project["tool"], dict):
         raise ValueError("dedicated pyproject schema is not exact")
@@ -431,6 +469,15 @@ def project_schema(project: dict[str, Any]) -> None:
         raise ValueError("dedicated project source mapping is not exact")
     if re.search(r"cuda|nvidia|triton", json.dumps(project, sort_keys=True), re.I):
         raise ValueError("CUDA/NVIDIA/Triton dependency is forbidden")
+    torch_dependencies = [item for item in metadata["dependencies"] if item.startswith("torch==")]
+    if torch_dependencies != [f"torch=={TORCH_PIN}"]:
+        raise ValueError(f"Torch dependency must remain pinned to {TORCH_PIN}")
+
+
+def validate_torch_lock(rows: list[dict[str, Any]]) -> None:
+    torch_rows = [row for row in rows if row.get("name") == "torch"]
+    if len(torch_rows) != 1 or torch_rows[0].get("version") != TORCH_RUNTIME or torch_rows[0].get("source") != {"registry": "https://download.pytorch.org/whl/cpu"}:
+        raise ValueError(f"uv.lock Torch row must be {TORCH_RUNTIME} from the official CPU index")
 
 
 def validate_tensor_manifest(value: Any, label: str) -> None:
@@ -590,6 +637,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
     try:
         project_schema(project)
         rows = lock_rows(lock)
+        validate_torch_lock(rows)
     except (KeyError, TypeError, ValueError) as error:
         blocked(str(error))
     lock_digest, project_digest = sha(lock_bytes), sha(project_bytes)
@@ -598,6 +646,12 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
     except ValueError as error:
         blocked(str(error))
     if isinstance(manifest, dict) and set(manifest) == PENDING_MANIFEST_KEYS:
+        if manifest.get("dependency_audit_status") == RERUN_AFTER_TORCH_UPDATE or manifest.get("api_model_free_evidence_status") == RERUN_AFTER_TORCH_UPDATE:
+            try:
+                validate_pending_rerun_manifest(manifest, project_digest, lock_digest)
+            except (TypeError, ValueError) as error:
+                blocked(f"pending Torch rerun closure is invalid: {error}")
+            blocked("Torch dependency lock changed; VAST dependency/API audit must be rerun before owner review or parity")
         try:
             source_head = manifest.get("evidence_source_head")
             if not isinstance(source_head, str) or not re.fullmatch(r"[0-9a-f]{40}", source_head) or manifest.get("schema") != "vokra-mms-1b-all-license-gate-pending-v1" or manifest.get("status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("publication") != "NO_UPLOAD" or manifest.get("project_sha256") != project_digest or manifest.get("lock_sha256") != lock_digest or manifest.get("dependency_audit_sha256") != sha_file(dependency_path) or manifest.get("dependency_audit_status") != "BLOCKED_PENDING_OWNER_REVIEW" or manifest.get("api_model_free_evidence_sha256") != sha_file(api_path) or manifest.get("api_model_free_evidence_status") != "MODEL_FREE_API_VALIDATED" or manifest.get("model_evidence_status") != "BLOCKED_PENDING_AUTHENTICATED_MANIFEST" or manifest.get("owner_review") != "PENDING_OWNER_APPROVAL" or not isinstance(manifest.get("blockers"), list) or not manifest["blockers"]:
@@ -703,6 +757,15 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval_path:
 
 def self_test() -> None:
     assert load_json.__name__ == "load_json"
+    assert TORCH_PIN == "2.13.0"
+    assert TORCH_RUNTIME == "2.13.0+cpu"
+    assert TORCH_SECURITY_ADVISORIES == (
+        "GHSA-887c-mr87-cxwp",
+        "GHSA-vgrw-7cvw-pwgx",
+        "GHSA-qfhq-4f3w-5fph",
+        "GHSA-rrmf-rvhw-rf47",
+    )
+    assert RERUN_AFTER_TORCH_UPDATE == "BLOCKED_REQUIRES_RERUN_AFTER_TORCH_UPDATE"
     assert validate_expected_head("a" * 40) == "a" * 40
     for malformed_head in ("", "a" * 39, "A" * 40, "not-a-head"):
         try:
@@ -772,6 +835,37 @@ def self_test() -> None:
     virtual = {"name": "demo", "version": "0.1.0", "source": {"virtual": "."}, "dependencies": [], "metadata": {"requires-dist": []}}
     lock_shape = {"version": 1, "revision": 3, "requires-python": "==3.12.*", "resolution-markers": [], "supported-markers": [], "package": [virtual]}
     lock_rows(lock_shape)
+    torch_row = {"name": "torch", "version": TORCH_RUNTIME, "source": {"registry": "https://download.pytorch.org/whl/cpu"}}
+    validate_torch_lock([torch_row])
+    try:
+        validate_torch_lock([{**torch_row, "version": "2.7.1+cpu"}])
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("self-test accepted an unpatched Torch lock row")
+    rerun_manifest = {
+        "schema": "vokra-mms-1b-all-license-gate-pending-v1",
+        "status": "BLOCKED_PENDING_OWNER_REVIEW",
+        "publication": "NO_UPLOAD",
+        "project_sha256": "a" * 64,
+        "lock_sha256": "b" * 64,
+        "evidence_source_head": "c" * 40,
+        "dependency_audit_sha256": None,
+        "dependency_audit_status": RERUN_AFTER_TORCH_UPDATE,
+        "api_model_free_evidence_sha256": None,
+        "api_model_free_evidence_status": RERUN_AFTER_TORCH_UPDATE,
+        "model_evidence_status": "BLOCKED_PENDING_AUTHENTICATED_MANIFEST",
+        "owner_review": "PENDING_OWNER_APPROVAL",
+        "blockers": ["rerun required"],
+    }
+    validate_pending_rerun_manifest(rerun_manifest, "a" * 64, "b" * 64)
+    rerun_manifest["api_model_free_evidence_sha256"] = "d" * 64
+    try:
+        validate_pending_rerun_manifest(rerun_manifest, "a" * 64, "b" * 64)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("self-test accepted stale API evidence in rerun state")
     for field, bad in (("version", True), ("resolution-markers", "not-a-list")):
         candidate = dict(lock_shape); candidate[field] = bad
         try:

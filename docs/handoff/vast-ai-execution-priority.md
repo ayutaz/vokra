@@ -1,5 +1,7 @@
 # vast.ai execution priority — large-model jobs (updated 2026-08-18)
 
+> **2026-10-04 reading boundary:** The ordering, instance/storage statements and cost comparisons below are the 2026-08-18 operational record, not a live resource inventory or permission to restart those IDs. Use the [current Mac ledger](mac-pre-scaleway-remaining-tasks-2026-09-05.md) and [execution plan](mac-cpu-metal-execution-plan-2026-09-07.md) for remaining scope. Reconfirm exact owned resources before any provider action; this documentation audit did not query or mutate provider instances.
+
 **Execution update**: VoxCPM2-2B's VAST download, two-file preparation,
 conversion, and structural real-weight verification are complete at `5bc62ae`.
 The real Rust structural parity leg also passes after the BOOL metadata test fix

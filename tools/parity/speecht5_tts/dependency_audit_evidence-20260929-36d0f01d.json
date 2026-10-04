@@ -1,0 +1,3326 @@
+{
+  "audit_scope": "fresh synchronized Linux x86_64 Python 3.12 environment; model-free dependency/license/native/bundled facts",
+  "build_only_facts": {
+    "build_only_absent": true,
+    "build_only_by_lock_boundary": [
+      "cython",
+      "meson",
+      "meson-python",
+      "ninja",
+      "patchelf",
+      "pyproject-metadata"
+    ],
+    "constraints": [
+      {
+        "name": "Cython",
+        "normalized_name": "cython",
+        "specifier": "Cython==3.0.12"
+      },
+      {
+        "name": "meson-python",
+        "normalized_name": "meson-python",
+        "specifier": "meson-python==0.15.0"
+      },
+      {
+        "name": "meson",
+        "normalized_name": "meson",
+        "specifier": "meson==1.12.0"
+      },
+      {
+        "name": "pyproject-metadata",
+        "normalized_name": "pyproject-metadata",
+        "specifier": "pyproject-metadata==0.12.1"
+      },
+      {
+        "name": "ninja",
+        "normalized_name": "ninja",
+        "specifier": "ninja==1.13.0"
+      },
+      {
+        "name": "patchelf",
+        "normalized_name": "patchelf",
+        "specifier": "patchelf==0.19.1.0"
+      },
+      {
+        "name": "packaging",
+        "normalized_name": "packaging",
+        "specifier": "packaging==26.3"
+      }
+    ],
+    "observed_build_only_installed": [],
+    "runtime_overlap": [
+      "packaging"
+    ]
+  },
+  "closure": {
+    "duplicate_identities": [],
+    "exact": true,
+    "expected": [
+      "anyio==4.14.2",
+      "certifi==2026.7.22",
+      "click==8.5.0",
+      "filelock==3.32.4",
+      "fsspec==2026.7.0",
+      "h11==0.16.0",
+      "hf-xet==1.6.0",
+      "httpcore==1.0.9",
+      "httpx==0.28.1",
+      "huggingface-hub==1.5.0",
+      "idna==3.19",
+      "jinja2==3.1.6",
+      "markupsafe==3.0.3",
+      "mpmath==1.3.0",
+      "networkx==3.6.1",
+      "numpy==1.26.4",
+      "packaging==26.3",
+      "pyyaml==6.0.3",
+      "regex==2026.7.19",
+      "safetensors==0.8.0",
+      "sentencepiece==0.2.2",
+      "sympy==1.14.0",
+      "tokenizers==0.22.2",
+      "torch==2.13.0+cpu",
+      "tqdm==4.70.0",
+      "transformers==5.10.4",
+      "typer==0.9.0",
+      "typing-extensions==4.16.0"
+    ],
+    "installed": [
+      "anyio==4.14.2",
+      "certifi==2026.7.22",
+      "click==8.5.0",
+      "filelock==3.32.4",
+      "fsspec==2026.7.0",
+      "h11==0.16.0",
+      "hf-xet==1.6.0",
+      "httpcore==1.0.9",
+      "httpx==0.28.1",
+      "huggingface-hub==1.5.0",
+      "idna==3.19",
+      "jinja2==3.1.6",
+      "markupsafe==3.0.3",
+      "mpmath==1.3.0",
+      "networkx==3.6.1",
+      "numpy==1.26.4",
+      "packaging==26.3",
+      "pyyaml==6.0.3",
+      "regex==2026.7.19",
+      "safetensors==0.8.0",
+      "sentencepiece==0.2.2",
+      "sympy==1.14.0",
+      "tokenizers==0.22.2",
+      "torch==2.13.0+cpu",
+      "tqdm==4.70.0",
+      "transformers==5.10.4",
+      "typer==0.9.0",
+      "typing-extensions==4.16.0"
+    ],
+    "missing": [],
+    "unexpected": []
+  },
+  "environment": {
+    "auditor_network_requests": 2,
+    "auditor_network_scope": "exact locked PyPI sdist license fallback only; no model/source requests",
+    "machine": "x86_64",
+    "platform": "linux",
+    "python": "3.12.14",
+    "readelf_required": true
+  },
+  "full_audit_sha256": "bcd5c811713a23f0373db17039d3c3844968c75936388ef55d445c7643443082",
+  "inputs": {
+    "pyproject_sha256": "a6f51a2e3300ba0b8750dca6050c6fc2d645e657c8a507dcfc334c291d9e0bff",
+    "uv_lock_sha256": "36d0f01df62e4d9f90f80d4c7d15bfa9df612b5a4f99ad4716c1c62458a6864b"
+  },
+  "license_facts": {
+    "classification": "raw publisher metadata/files only; locked sdist license bytes/hashes",
+    "locked_sdist_fallback_packages": [
+      "sentencepiece",
+      "tokenizers"
+    ],
+    "packages": 28,
+    "publisher_license_evidence_missing": [],
+    "publisher_license_files_missing": [
+      "sentencepiece",
+      "tokenizers"
+    ]
+  },
+  "manifest_operator_approval_record": {
+    "decision": "PENDING_REVIEW",
+    "signer": null,
+    "digest": null
+  },
+  "model_acquisition": {
+    "non_license_requests": [],
+    "requested_files": []
+  },
+  "native_facts": {
+    "bundled_library_count": 164,
+    "files": [
+      {
+        "bundled": true,
+        "bytes": 12210648,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "librt.so.1"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "hf_xet/hf_xet.abi3.so",
+        "sha256": "9f493e4d60ce7d973f77d6e638efc9fa59329967de8b17d2fb83baf3ed8d73b9"
+      },
+      {
+        "bundled": true,
+        "bytes": 44072,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libpthread.so.0"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "markupsafe/_speedups.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "f4a31de071c565959002db29bf36c6f8d35ae7929f64700adeeba46fa4f90daf"
+      },
+      {
+        "bundled": true,
+        "bytes": 155120,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_multiarray_tests.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "c3749a6127acb168c3ad73c39d2e22ea1a5e0e267ab215bdccc6530839ac9bce"
+      },
+      {
+        "bundled": true,
+        "bytes": 7326688,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_multiarray_umath.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "0b332dc6fe031f8ea8119b8b9dbfbf635857952c699726b4709760a035e71e04"
+      },
+      {
+        "bundled": true,
+        "bytes": 16472,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_operand_flag_tests.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "328fd16967145f659049704c6bb67ca54dae655fac41d4c63a6880cb5494876a"
+      },
+      {
+        "bundled": true,
+        "bytes": 59512,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_rational_tests.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "e2c2df6264b0aad0446c48d2472b02d3843e078090d9ff4b4b8cc93fe305cb39"
+      },
+      {
+        "bundled": true,
+        "bytes": 3719360,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_simd.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "3c90f0e80be621a51720e2697eccea375c87fb42e60766aa8b1f80c8ba142b67"
+      },
+      {
+        "bundled": true,
+        "bytes": 16824,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_struct_ufunc_tests.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "ffdf7d8c9c5a47e9134cc5e5f7d816e14aa70ab7c0706270ed4b2e40d74621e3"
+      },
+      {
+        "bundled": true,
+        "bytes": 46160,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/core/_umath_tests.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "9d8a4b22c5d325b74c542333162f52df625716d59fdcf4fc7ac8fd8fcd9f5b4c"
+      },
+      {
+        "bundled": true,
+        "bytes": 53128,
+        "native": {
+          "format": "non-elf",
+          "inspection": "not-applicable",
+          "needed": []
+        },
+        "path": "numpy/core/lib/libnpymath.a",
+        "sha256": "cc7fe17928a5b977480f1d363066777e19e96a1e94ba42d86169237265dd158d"
+      },
+      {
+        "bundled": true,
+        "bytes": 88560,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/fft/_pocketfft_internal.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "f1c80f14e3b5e48aa0b52fa7be29cdbe1fce81d159f21f957dd7b2d7f0fea413"
+      },
+      {
+        "bundled": true,
+        "bytes": 2185888,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/linalg/_umath_linalg.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "697fe174175ed71c6e6dd4bedf63601844f28cde1bf0d3eb55edab704cdf9964"
+      },
+      {
+        "bundled": true,
+        "bytes": 1991048,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/linalg/lapack_lite.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "cf712c1b6c8d2145775bd71b9d804310c791523719622626bfbf6c7ef428fe09"
+      },
+      {
+        "bundled": true,
+        "bytes": 352336,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_bounded_integers.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "c7f9b89104ac0a707f70eab43c163d633b31a864760ff7898b71b598a068c796"
+      },
+      {
+        "bundled": true,
+        "bytes": 258424,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_common.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "bd46ec4bc932ba191fbbe1a7b8806fadd66fe61c79a251b3cd42a8fabcd41dd3"
+      },
+      {
+        "bundled": true,
+        "bytes": 958760,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_generator.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "5a7447c5bd55f57176279dd6b9d5170c90a47208ba0780339d702ebc623c449b"
+      },
+      {
+        "bundled": true,
+        "bytes": 123208,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_mt19937.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "e6677a0f6c539ec648b90b1f5ce6f2aa774f9880991e5a8062fca2e53fbd8ac4"
+      },
+      {
+        "bundled": true,
+        "bytes": 128760,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_pcg64.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "f36c50c4710c94d731926dea7d7c848ba8d53384146a78ed89be02659bf4f7d9"
+      },
+      {
+        "bundled": true,
+        "bytes": 106304,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_philox.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "531976604a9a41863e7bee1fbc234402fb444d0c67a365e204d54e966e026e9a"
+      },
+      {
+        "bundled": true,
+        "bytes": 75816,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/_sfc64.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "f43ae2a25372c766c92d363c53e50e728ed58c01bd5268b910e5374cd60df5a3"
+      },
+      {
+        "bundled": true,
+        "bytes": 237736,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/bit_generator.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "888fe29ace3572817abad116d2b6e28b7a3bcebb50b7bb64506b37eceeed75c2"
+      },
+      {
+        "bundled": true,
+        "bytes": 71446,
+        "native": {
+          "format": "non-elf",
+          "inspection": "not-applicable",
+          "needed": []
+        },
+        "path": "numpy/random/lib/libnpyrandom.a",
+        "sha256": "f5199c9856d070222039eb1467caf92f621d34b1c62607560383bc4753a58abe"
+      },
+      {
+        "bundled": true,
+        "bytes": 756880,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libm.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "numpy/random/mtrand.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "5095b2b64109e1cfcf1eac04ab562d17ca428d9cc909bbc9b65e29df413734c8"
+      },
+      {
+        "bundled": true,
+        "bytes": 2679264,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libpthread.so.0"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "yaml/_yaml.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "957a099a4521c1f7669306fb6f79ca63fa4b9a0b4c463f7cac833a65a5c5c0cb"
+      },
+      {
+        "bundled": true,
+        "bytes": 2573104,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libpthread.so.0"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "regex/_regex.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "9da92c474d560183d67f7c19f9e0f0cc72c5709a44d346ef2c279f3d521d0a07"
+      },
+      {
+        "bundled": true,
+        "bytes": 1223000,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libpthread.so.0",
+            "librt.so.1"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "safetensors/_safetensors_rust.abi3.so",
+        "sha256": "e6f17a9e9846bc2bc4ad94cc5431746b59785de3d2681ef2666e8890ae192dfb"
+      },
+      {
+        "bundled": true,
+        "bytes": 1804664,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "sentencepiece/_sentencepiece.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "ae4f0f399b6624c37a92dc08cb5d5c00f248dd1001c922fd7df75cda53bd0c0a"
+      },
+      {
+        "bundled": true,
+        "bytes": 10074176,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "tokenizers/tokenizers.abi3.so",
+        "sha256": "c116fcf1e80d461ce0a35c332974f25949e8359416f50b3d53371810d2ce1ccc"
+      },
+      {
+        "bundled": true,
+        "bytes": 8737,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libtorch_python.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/_C.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "68123140eba0fc2d86966b9b2f265c690a0f32f225347f832f1828e22935196a"
+      },
+      {
+        "bundled": true,
+        "bytes": 623896,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libgomp.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/FileStoreTest",
+        "sha256": "9ddb452a0e01d2137382f4e3f403fa764bbb269bf95aa6f378ea9cb7c2df4bd0"
+      },
+      {
+        "bundled": true,
+        "bytes": 629792,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libgomp.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/HashStoreTest",
+        "sha256": "bd7eabbb6d9d7f231f6b454c48380351672417057f955387f4a2c8b9765320ff"
+      },
+      {
+        "bundled": true,
+        "bytes": 687304,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libgomp.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/TCPStoreTest",
+        "sha256": "39d1791fdde80d5ce61fe1a18f18c662d6ca7b7896905c30de46fef9bcd7fd9c"
+      },
+      {
+        "bundled": true,
+        "bytes": 5285920,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/protoc",
+        "sha256": "7ad8bdacca261495dc993b5d092f0d4198dcb0188883a2fc8ce72e9d2b39edef"
+      },
+      {
+        "bundled": true,
+        "bytes": 5285920,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/protoc-3.13.0.0",
+        "sha256": "7ad8bdacca261495dc993b5d092f0d4198dcb0188883a2fc8ce72e9d2b39edef"
+      },
+      {
+        "bundled": true,
+        "bytes": 1358024,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_aoti_abi_check",
+        "sha256": "2aafafcc1bcfba2306cdc6380c3614cc9536447a9a1503c209b91a04a08e8551"
+      },
+      {
+        "bundled": true,
+        "bytes": 14990992,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_api",
+        "sha256": "a2667facdbccffe21febfe0a1dec6be74923a6190d7514be279b2b4806543566"
+      },
+      {
+        "bundled": true,
+        "bytes": 657160,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_comms_id",
+        "sha256": "613f3f9da833fe3c088c8c61ef4922187f2478138458cbf306df83aa0b3bb662"
+      },
+      {
+        "bundled": true,
+        "bytes": 789776,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_cpp_rpc",
+        "sha256": "27c9b53c071f73ec97e76ca6880007abcb817b9e5fce3499743c8ff9d963fd1e"
+      },
+      {
+        "bundled": true,
+        "bytes": 646520,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_dist_autograd",
+        "sha256": "6e80e047e0ca30cf3a266f84ce5a4e530635749f95809011ed2591131ba392c6"
+      },
+      {
+        "bundled": true,
+        "bytes": 13510216,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libbackend_with_compiler.so",
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libjitbackend_test.so",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_jit",
+        "sha256": "c00a705db5c5cc18c8154d2bf784154dc751c5b5e4026e7b06308deb49e3a950"
+      },
+      {
+        "bundled": true,
+        "bytes": 4931488,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_lazy",
+        "sha256": "339ca18d88e75cddb98cf541a38ea9173ddecedf9234dec4f507eb6d88ef6987"
+      },
+      {
+        "bundled": true,
+        "bytes": 616792,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_privateuse1_profiler",
+        "sha256": "983377ff39f59760d0d2d5d5e58a9a0e231c1e17f2416426e9150877b6589514"
+      },
+      {
+        "bundled": true,
+        "bytes": 1022928,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_profiler_collection",
+        "sha256": "a085e6fe4837f6605e605122c95bcec021c34162f64dd5f86e4f400a72ab5a1a"
+      },
+      {
+        "bundled": true,
+        "bytes": 599728,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/test_shim",
+        "sha256": "cb4dfc0f65e55b618b03f6b6d2a9bbb111e548baeb95f0392c0901133a8bdf24"
+      },
+      {
+        "bundled": true,
+        "bytes": 44208,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "librt.so.1",
+            "libshm.so",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/bin/torch_shm_manager",
+        "sha256": "cb33cd30fec13253b900a7a3ff3fdffaedd54ba11107fa0d792757f3262780b9"
+      },
+      {
+        "bundled": true,
+        "bytes": 342816,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libaoti_custom_ops.so",
+        "sha256": "993799ce86871e9f9c3d0cb72ec814ff9a71e9a0728ce587db38b39b2be79d05"
+      },
+      {
+        "bundled": true,
+        "bytes": 260960,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libbackend_with_compiler.so",
+        "sha256": "49327b44b0ed3afe1e0b70ad0b8e244b64d33c5e267aad8851b26ce8e560d685"
+      },
+      {
+        "bundled": true,
+        "bytes": 1525128,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libc10.so",
+        "sha256": "52d951ec184bf4ead929cfa5a24daa14cc617bf9e2180b6e551434b6f11d0b3f"
+      },
+      {
+        "bundled": true,
+        "bytes": 253849,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libdl.so.2",
+            "libpthread.so.0"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libgomp.so.1",
+        "sha256": "78511033caddec6ccae8f4d62b94d56135f377c4cee33120e6d7df2ef499f69f"
+      },
+      {
+        "bundled": true,
+        "bytes": 209584,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libjitbackend_test.so",
+        "sha256": "5dd56808f326b02aa32eeb24765bf223cdf0082161b3296cc1a5ac81c579f0ad"
+      },
+      {
+        "bundled": true,
+        "bytes": 41336,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libgomp.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libstdc++.so.6",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libshm.so",
+        "sha256": "d3539f0adf29d40515d063bac49a09dbb8619d405059e7a6d61da40cc7f5dc45"
+      },
+      {
+        "bundled": true,
+        "bytes": 8032,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libtorch.so",
+        "sha256": "28b3d3926e0674eda7dcdf26c27dfd05cb455d681d11cb84fdbf7e0df72f3f7b"
+      },
+      {
+        "bundled": true,
+        "bytes": 434184800,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libc10.so",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libgomp.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libtorch_cpu.so",
+        "sha256": "ae0f4bc33ffe73f4eb85b2fd03b036c68cf5ab6139995f6a2345f5962c1bbb81"
+      },
+      {
+        "bundled": true,
+        "bytes": 8264,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libdl.so.2",
+            "libgomp.so.1",
+            "libm.so.6",
+            "libpthread.so.0"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libtorch_global_deps.so",
+        "sha256": "2e5d497259a62960d95f4a7719abaeb24745429b49ffdf58e67672140205eb99"
+      },
+      {
+        "bundled": true,
+        "bytes": 30616304,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libpthread.so.0",
+            "libshm.so",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libtorch_python.so",
+        "sha256": "247efcbc423fb65aa64640b96cd51672d4863413472ed2ddded6ad57a8647c67"
+      },
+      {
+        "bundled": true,
+        "bytes": 913952,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/lib/libtorchbind_test.so",
+        "sha256": "bde85c55df142ff307ed4f6cbbcdd6eec040e9f710cbca3ed61e19986f4a8c55"
+      },
+      {
+        "bundled": true,
+        "bytes": 670488,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/CppSignature_test",
+        "sha256": "f7397a3868d0059a593a47d2c57c8276b8e47e72d3bf302ba55af068680c68f9"
+      },
+      {
+        "bundled": true,
+        "bytes": 944264,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/Dict_test",
+        "sha256": "dc9ba948fc3429b59b5764db55d80b499943c30df4abe579a1c0e0c80fe22854"
+      },
+      {
+        "bundled": true,
+        "bytes": 759848,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/IListRef_test",
+        "sha256": "f2138e9d4c40d3f3db3d736af02ad77b38079efa8963e1ab7592ee8ea10a1d62"
+      },
+      {
+        "bundled": true,
+        "bytes": 863160,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/KernelFunction_test",
+        "sha256": "c6efcd5d163f3fb3851681cd67b5b3668c9c14e4d2e868f96b4bdbacf7400f91"
+      },
+      {
+        "bundled": true,
+        "bytes": 1463584,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/List_test",
+        "sha256": "9b2a4a905606beff2f053523606e747576098e70eba714049c114a8dfe97341c"
+      },
+      {
+        "bundled": true,
+        "bytes": 844336,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/MaybeOwned_test",
+        "sha256": "b1d8b4276f48bd58f8d101daf3a8a81c8b64f123e903e0ad2fd00feec854ea8e"
+      },
+      {
+        "bundled": true,
+        "bytes": 666712,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/StorageUtils_test",
+        "sha256": "a0b50812ea02a9135e44cce6f0031e2bb512efe3e17bd1cbb02c564c6d391dcf"
+      },
+      {
+        "bundled": true,
+        "bytes": 676432,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/accelerator_graph_test",
+        "sha256": "0739a97a6c361e4d2cd96fba88b5f089dc066242e4ad80c6434102c7081edb8e"
+      },
+      {
+        "bundled": true,
+        "bytes": 763584,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/apply_utils_test",
+        "sha256": "928f826b7934cd601459d941f0bc4cd285ed30a9812f4bf5412966a8df0770da"
+      },
+      {
+        "bundled": true,
+        "bytes": 747912,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/atest",
+        "sha256": "6712a8b56b994e2750b5033d52ed2546a7a26d9c4f292b14ee081428310a2936"
+      },
+      {
+        "bundled": true,
+        "bytes": 704656,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/backend_fallback_test",
+        "sha256": "22e19e6bdace0ac29d3d63682fb3ceaefd126799450d3046aec999209f22d78e"
+      },
+      {
+        "bundled": true,
+        "bytes": 794560,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/basic",
+        "sha256": "cc64974312f9123fed2f92e8e46df286a5b187bfe1cf4b3bd2af27ae527e044c"
+      },
+      {
+        "bundled": true,
+        "bytes": 695104,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/broadcast_test",
+        "sha256": "79e2fa30c959803c960527e4de3883b46d0eed64d2d35648cacfa578ad18e574"
+      },
+      {
+        "bundled": true,
+        "bytes": 640064,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_AllocatorConfig_test",
+        "sha256": "ad06f152bf5ba3074c07736bf4537f076a7322e9f3487ad4bd0e08159e26e3fa"
+      },
+      {
+        "bundled": true,
+        "bytes": 581032,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_ArrayRef_test",
+        "sha256": "e5b6537d2c46b1d8871191b209bac41d2748f4e6f6a20ec386675c06de48b233"
+      },
+      {
+        "bundled": true,
+        "bytes": 626480,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Bitset_test",
+        "sha256": "9d33e20a6cae16dd02ce04f864860852b04307aeda1de8b62e50466e0a660a33"
+      },
+      {
+        "bundled": true,
+        "bytes": 583784,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_CompileTimeFunctionPointer_test",
+        "sha256": "f16080b5c3025a647676cf2babef487749f4c8f6d32e32e86cb7bb0be1222b90"
+      },
+      {
+        "bundled": true,
+        "bytes": 570056,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_ConstexprCrc_test",
+        "sha256": "b3e62751306c884107274ebf05f5851e0ff5c39496caf518061a7b64987bfd14"
+      },
+      {
+        "bundled": true,
+        "bytes": 578064,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_DeadlockDetection_test",
+        "sha256": "ade08b208b27cd4080de7077bcd24840a49feb58084c88607e4d8d584255b21b"
+      },
+      {
+        "bundled": true,
+        "bytes": 637416,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_DeviceGuard_test",
+        "sha256": "7c92a4a0d7106414ed735423ef3ae55c80186d3796d95e7841007ff57992e5fd"
+      },
+      {
+        "bundled": true,
+        "bytes": 613728,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Device_test",
+        "sha256": "da402490f3e4126337d58bcfc13ea95902411922b6e26cc9025ce380e05bd2ec"
+      },
+      {
+        "bundled": true,
+        "bytes": 692192,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_DispatchKeySet_test",
+        "sha256": "08a266b321cc0a7973e73de4968fd11f1bcddf75760491464c7ea4f872ea3791"
+      },
+      {
+        "bundled": true,
+        "bytes": 673520,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Enumerate_test",
+        "sha256": "860662a57e6ecd6d589ab7297fad32ea1fa88fe6226562205fdcdd2dd0e94d03"
+      },
+      {
+        "bundled": true,
+        "bytes": 593184,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Half_test",
+        "sha256": "5d76ee1a551b150a01b45c43df2773226eb4bc80f018402860b5caeff555d949"
+      },
+      {
+        "bundled": true,
+        "bytes": 642312,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_InlineDeviceGuard_test",
+        "sha256": "1acf107728608add88f5a8c2158697e9d2099658987fdb2b04635f61bf15dc81"
+      },
+      {
+        "bundled": true,
+        "bytes": 663032,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_InlineStreamGuard_test",
+        "sha256": "381187a02ddbddae4fdf4c3f06bf61fc3c229618d1af36326c47c73b257247ef"
+      },
+      {
+        "bundled": true,
+        "bytes": 618928,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_IntrusiveList_test",
+        "sha256": "1d10c37260b990cc0ea3c156c25e156457b4f67314f4fff461533a99da22d128"
+      },
+      {
+        "bundled": true,
+        "bytes": 675744,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_LeftRight_test",
+        "sha256": "f2cc0e9f67f3a3d7c03d26bf3bea13cc7a1a1a18f7e989221ad780260ceb93d5"
+      },
+      {
+        "bundled": true,
+        "bytes": 622464,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_NetworkFlow_test",
+        "sha256": "6f154c04678b980e7ee3fa829bbafd8399d0197f18a32b9b424d6ceb299b9c26"
+      },
+      {
+        "bundled": true,
+        "bytes": 636112,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Scalar_test",
+        "sha256": "e9d483540343fcb0c5448bcfe8f672c512c3e5b221e8116cf73766279c613ec3"
+      },
+      {
+        "bundled": true,
+        "bytes": 577712,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Semaphore_test",
+        "sha256": "57568d87c43d5dbaed7fb8e32b70d36356f6ee76110fdadbcfafd409683c83fb"
+      },
+      {
+        "bundled": true,
+        "bytes": 669192,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_SizesAndStrides_test",
+        "sha256": "307448b446314e9b729c13804797e9f80a9722e8a5fe0ac8d46cdd3f9d38fd95"
+      },
+      {
+        "bundled": true,
+        "bytes": 570048,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_StreamGuard_test",
+        "sha256": "d6bef3c34883f21976396d03e84d37b7ea428692c58c3ed362c89c1f56e27d6a"
+      },
+      {
+        "bundled": true,
+        "bytes": 679488,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_SymInt_test",
+        "sha256": "38fdc3ab8b7df8dd44cc770ab5591841bcb5314bfcb7d99aa66ae8fc8e114265"
+      },
+      {
+        "bundled": true,
+        "bytes": 588808,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_Synchronized_test",
+        "sha256": "1c1006fe38c63a7a928b7f2b830f394bc87ded451072b2fd61e0a4a8b9021d37"
+      },
+      {
+        "bundled": true,
+        "bytes": 648936,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_ThreadLocalDebugInfo_test",
+        "sha256": "ba7ef4417e7f8da24ccfb85d11da260114043f211e9920208e103e99a6d043c8"
+      },
+      {
+        "bundled": true,
+        "bytes": 669744,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_ThreadLocal_test",
+        "sha256": "fadbb9147117ff4429bd12251e17a58ea8c8f16746f27359c9e86c83c45abe14"
+      },
+      {
+        "bundled": true,
+        "bytes": 615600,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_TypeIndex_test",
+        "sha256": "f2a460c4279592a1cfddefa69a9ebe96ef8d9bc5c7c62f11a8f74c8c715b2feb"
+      },
+      {
+        "bundled": true,
+        "bytes": 674608,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_WaitCounter_test",
+        "sha256": "d562c8b22ef1d3874bc71788e75f20a0541d1de251392a1e1d57e8bca01184ca"
+      },
+      {
+        "bundled": true,
+        "bytes": 610096,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_accumulate_test",
+        "sha256": "f88fba1abc5ea136b143a1b1c3ee646f233072fa88f9d335d95bc0dd0b6ef9b9"
+      },
+      {
+        "bundled": true,
+        "bytes": 664448,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_bfloat16_test",
+        "sha256": "b813830a7d4dfc10de1ca8a0090b14a41104ffb016707e8f39e0372fe9201b96"
+      },
+      {
+        "bundled": true,
+        "bytes": 591176,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_bit_cast_test",
+        "sha256": "db82ba99a46a3b43439c6d0831e6f299a45b68205b9154a2450adf26ac11aa8a"
+      },
+      {
+        "bundled": true,
+        "bytes": 673000,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_complex_math_test",
+        "sha256": "2ee28313d9bae02e23cbd45d0fe34b7a26b0d9ccf6ceefbc5e1381523e30d19d"
+      },
+      {
+        "bundled": true,
+        "bytes": 651288,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_complex_test",
+        "sha256": "45cc2a75339097d7128045a43d68deb00dd1cb09df9ecf0a47dee15a847089e7"
+      },
+      {
+        "bundled": true,
+        "bytes": 855832,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_cow_test",
+        "sha256": "dff7dc208695513455b3483ad5b3ec21b7e81c54e41cf4554fce87518266335b"
+      },
+      {
+        "bundled": true,
+        "bytes": 576264,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_error_test",
+        "sha256": "a04733b3e15489954cc8fac9445fdb10f196a8e61f867690e7c2416107dabb20"
+      },
+      {
+        "bundled": true,
+        "bytes": 618032,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_exception_test",
+        "sha256": "18f2194b798ebb1983cbb7106364c4689ded686d299119797f1f59b11420ef16"
+      },
+      {
+        "bundled": true,
+        "bytes": 589144,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_flags_test",
+        "sha256": "bd4330375f73b7c820308722ed91e0e5d1232f4318dc8ad9dad4468eee5499da"
+      },
+      {
+        "bundled": true,
+        "bytes": 585048,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_generic_math_test",
+        "sha256": "06624a95d067d528bdad80054588b95a017c0e2ee856d8db802769383cfb4b96"
+      },
+      {
+        "bundled": true,
+        "bytes": 561000,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_intrusive_ptr_benchmark",
+        "sha256": "79343ed782ec27a37aaaf15465e458c0db01a193ef1f2f4950b6f12b43218218"
+      },
+      {
+        "bundled": true,
+        "bytes": 2272256,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_intrusive_ptr_test",
+        "sha256": "7c978fce2e38e1755c140960fa878ce5e5cc7954fa751061b1ef98e491c4f7e9"
+      },
+      {
+        "bundled": true,
+        "bytes": 595504,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_irange_test",
+        "sha256": "1637abc8d51fa47461d3829b28cf413422163efa816e599f1c67073a1b7f571f"
+      },
+      {
+        "bundled": true,
+        "bytes": 637304,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_lazy_test",
+        "sha256": "969519539942833f52fca719a57e97f50048180751b51dd15488c08db6a9aedc"
+      },
+      {
+        "bundled": true,
+        "bytes": 680504,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_logging_test",
+        "sha256": "08b953b6ee49410887b3bdf1b98f58bfb08505fdb2b86c86b8bc097f85aca230"
+      },
+      {
+        "bundled": true,
+        "bytes": 586680,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_nofatal_test",
+        "sha256": "b6163f0f32b70e25c7a64dc007f2a6b093de9d49cefd1fd1604343a9909fbdea"
+      },
+      {
+        "bundled": true,
+        "bytes": 901696,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_optional_test",
+        "sha256": "6343d1b73fb6c36d34e3804cb181f9650a5942c43862148237225b0163d9e4c4"
+      },
+      {
+        "bundled": true,
+        "bytes": 743504,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_ordered_preserving_dict_test",
+        "sha256": "fb0fe013478276e95a614b9f75bb2fa1850ad82b7ce7090f5bac171dceef5e39"
+      },
+      {
+        "bundled": true,
+        "bytes": 633240,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_registry_test",
+        "sha256": "0fde50cefdace7f2b044e0399c8f59868ed6980c8cf9ac996b7ad90ea4e26e64"
+      },
+      {
+        "bundled": true,
+        "bytes": 2106912,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_small_vector_test",
+        "sha256": "3ebc1bdc560c7d4e33bbde56788520c002c965cfb8b80b181fdb8ddfe086e57e"
+      },
+      {
+        "bundled": true,
+        "bytes": 606096,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_ssize_test",
+        "sha256": "cc9835bde17cbd0a75a7a5c910e489e1db6e294d9cf8ef914027fb9baed7d835"
+      },
+      {
+        "bundled": true,
+        "bytes": 669928,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_string_util_test",
+        "sha256": "8cedf6b5bcfbbd6c2af6b51d9a13db1e20c3cbf464984286791898d64b0a1986"
+      },
+      {
+        "bundled": true,
+        "bytes": 570048,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_string_view_test",
+        "sha256": "f4836fc8e12b4b899545fc0de4938eefc5b8cb74576b8af662904bf9b6ec3db8"
+      },
+      {
+        "bundled": true,
+        "bytes": 590880,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_tempfile_test",
+        "sha256": "7113fab9c22f99e78e3b6c0e9ad0f54d69aa4e6c9463e332596907798e09b79b"
+      },
+      {
+        "bundled": true,
+        "bytes": 655624,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/c10_typeid_test",
+        "sha256": "0a6ddcece125038993da4c286cc976c0bdb690a3d9b129c8c9461936c2496aea"
+      },
+      {
+        "bundled": true,
+        "bytes": 654648,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/cpu_allocator_test",
+        "sha256": "01f5c08e34e6cacf9c4c33cbd799c9e73518ace15b484a78d4f4af4705f1ab1e"
+      },
+      {
+        "bundled": true,
+        "bytes": 750792,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/cpu_generator_test",
+        "sha256": "b1f98f9147b55327af885c597ca85b44fd0781114848d528e00bebcecbaca684"
+      },
+      {
+        "bundled": true,
+        "bytes": 680528,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/cpu_profiling_allocator_test",
+        "sha256": "3a0cf05659cb2035f74aced81ec9b9571b4892db3e36efc39af8f043cbc16569"
+      },
+      {
+        "bundled": true,
+        "bytes": 1242672,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/cpu_rng_test",
+        "sha256": "b810e3523e29c5c029b3edcc62cc3457c6ca66b9fac5adfeac2941ac010cbf1a"
+      },
+      {
+        "bundled": true,
+        "bytes": 663248,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/dlconvertor_test",
+        "sha256": "3ca829fdf105772668b4874f63cfcbb0b29ac0aaf135af700808c6a7874bec16"
+      },
+      {
+        "bundled": true,
+        "bytes": 734184,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/extension_backend_test",
+        "sha256": "e2dd7b12598f8d7befc858bbbeb9d092e5ca2e6493bec015d7d3e420130af442"
+      },
+      {
+        "bundled": true,
+        "bytes": 710472,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/half_test",
+        "sha256": "0331d5e5c4ad81030e6923a49a53333fbc455333d0c16b0dc1b786964a9b94cd"
+      },
+      {
+        "bundled": true,
+        "bytes": 851448,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/inline_container_test",
+        "sha256": "882946a5dd44d6e9ecc4e36b18b2951dc832d8cc1a400e5cae4f28f40f4ef28a"
+      },
+      {
+        "bundled": true,
+        "bytes": 1178296,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/ivalue_test",
+        "sha256": "d04add12c42f82b46f4ae21b5bbc5fe27297baea834a709246964a8a73d36c65"
+      },
+      {
+        "bundled": true,
+        "bytes": 1554112,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/kernel_function_legacy_test",
+        "sha256": "5c640ba41c552d33a5583f3d75662889ea0795cb5902bb059b4907c565243332"
+      },
+      {
+        "bundled": true,
+        "bytes": 1238896,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/kernel_function_test",
+        "sha256": "1afe38a3c562f7e20cdf7880bd7ae6b03e3813d132aef1056ec8a3791a6528b4"
+      },
+      {
+        "bundled": true,
+        "bytes": 1741944,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/kernel_lambda_legacy_test",
+        "sha256": "5e67b1b83720e95b4f79d6d8b2072ba898168434eb9b4ace99f7be28ebe1d96a"
+      },
+      {
+        "bundled": true,
+        "bytes": 1407608,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/kernel_lambda_test",
+        "sha256": "68d583530ef093899353067da20dca81ac9eba88ece648e5bde9dc79b8a2f3a7"
+      },
+      {
+        "bundled": true,
+        "bytes": 761864,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/kernel_stackbased_test",
+        "sha256": "6b4351318cebef5855af93273f7acc85f147f95657bd4bcf7805850d375bbd63"
+      },
+      {
+        "bundled": true,
+        "bytes": 645384,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/lazy_tensor_test",
+        "sha256": "aca0e9a8bcc048d25cb4078f286d277c7595780b38bfff631cf2f783a55ff3ee"
+      },
+      {
+        "bundled": true,
+        "bytes": 910672,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/legacy_vmap_test",
+        "sha256": "38fe943d526c3f0eab63d58079d8642101d324a527828e3697a3dc3da21be138"
+      },
+      {
+        "bundled": true,
+        "bytes": 1208072,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/make_boxed_from_unboxed_functor_test",
+        "sha256": "a5a7c54b230acca487fe1b388c353d4a407804e50fd827730fa1c4b4a3b101c7"
+      },
+      {
+        "bundled": true,
+        "bytes": 683520,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/math_kernel_test",
+        "sha256": "1ebfdabc794181fc0b60b17cabb6fe5a70d34decb251001a4251cf4d6c31b616"
+      },
+      {
+        "bundled": true,
+        "bytes": 683920,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/memory_format_test",
+        "sha256": "70cc6d508cccdee9ab29fb8cc1348b7ce9e66f012c624d8da74663c440f6d139"
+      },
+      {
+        "bundled": true,
+        "bytes": 677912,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/memory_overlapping_test",
+        "sha256": "93bce4726e1b497eaf03cdb0943619aaf578b5ab0a6f078163da10018cd297ba"
+      },
+      {
+        "bundled": true,
+        "bytes": 633296,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/mobile_memory_cleanup",
+        "sha256": "85ed2a8f1a1903ae2132a90796cff121c01e5c0d06b52e9e5d4b8f5a64367097"
+      },
+      {
+        "bundled": true,
+        "bytes": 711000,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/native_test",
+        "sha256": "3c20121fa5802eb55cde919b7e4cb20745ae5e74a94eb631accbb4172b2e7816"
+      },
+      {
+        "bundled": true,
+        "bytes": 633296,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/op_allowlist_test",
+        "sha256": "3bcd4bd7c8379e8adba4f65d5c24292441ebe0188a0a14cbc55fa88035b0de5d"
+      },
+      {
+        "bundled": true,
+        "bytes": 4869336,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/op_registration_test",
+        "sha256": "acc49f8b31973a7d431c17666785a95df4b90d6375397985d5bcbe49cb3f6dc2"
+      },
+      {
+        "bundled": true,
+        "bytes": 658760,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/operator_name_test",
+        "sha256": "5aad84f6f27307e1613bee83807c962f31590eec0c8fcee917cb57b17a764739"
+      },
+      {
+        "bundled": true,
+        "bytes": 657504,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/operators_test",
+        "sha256": "36362bb6f91a5a3970f788ebdaa049e330b12377d1b33291ce233d5a2a475f58"
+      },
+      {
+        "bundled": true,
+        "bytes": 676856,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/packedtensoraccessor_test",
+        "sha256": "62944906fb6e89122e7fbe33f9d30c85e500680bc1880ee614ef4e72dabcedd0"
+      },
+      {
+        "bundled": true,
+        "bytes": 857960,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/pow_test",
+        "sha256": "91d94c98e9af21759e20f535ab450d0e14078f25c1ffc2c46b4070a92089d24c"
+      },
+      {
+        "bundled": true,
+        "bytes": 725392,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/quantized_test",
+        "sha256": "a5ae02c46c6d8ce4b7546486f9e143be858d6bb7138b4bf0e721838eeae2b8b5"
+      },
+      {
+        "bundled": true,
+        "bytes": 644512,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/reduce_ops_test",
+        "sha256": "44d9da9213697f0cf477163e940ee5fde53555ca43c9193c523d38ce86e92201"
+      },
+      {
+        "bundled": true,
+        "bytes": 666944,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/reportMemoryUsage_test",
+        "sha256": "214e293caaae4ab0fb7d84a59ee249fa68a3e2af1d10c10cdda089ff2fa84469"
+      },
+      {
+        "bundled": true,
+        "bytes": 714464,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/scalar_tensor_test",
+        "sha256": "a333d833ba12c37603d21992176c62375304c6076096011cf4f464580d273d28"
+      },
+      {
+        "bundled": true,
+        "bytes": 723368,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/scalar_test",
+        "sha256": "2432fc82840e18d2c1b014f85ca83e74fcfac053bb3bd6290f22dde304c2ef23"
+      },
+      {
+        "bundled": true,
+        "bytes": 672480,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/stride_properties_test",
+        "sha256": "90583f16b59f921caef727d1eedd9532baaf08621719cc58acca8ab9d259e300"
+      },
+      {
+        "bundled": true,
+        "bytes": 1095024,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/tensor_iterator_test",
+        "sha256": "e3b615176bf9bb5fa4fbd4398994bfe07c740ed7671ff16f0e7732379af5307f"
+      },
+      {
+        "bundled": true,
+        "bytes": 705056,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/test_parallel",
+        "sha256": "ec825a89b9e08da8b8c7e69fef3e98283086da805032c283402c9be3bf95ab3d"
+      },
+      {
+        "bundled": true,
+        "bytes": 650624,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/thread_init_test",
+        "sha256": "ba22b083efa08a27823c338f65056eb48c56e0612c65ce111c11c1413a7282f9"
+      },
+      {
+        "bundled": true,
+        "bytes": 710280,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/type_ptr_test",
+        "sha256": "981daba88c0d6709a13ea0eade11d0f3ec21571404bd5ac299d3dd195bd353fe"
+      },
+      {
+        "bundled": true,
+        "bytes": 749368,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/type_test",
+        "sha256": "b7d5a0cf1b9c1bce61dd237d7c9934c07f72c53dc79459e0f9db80872ffe0042"
+      },
+      {
+        "bundled": true,
+        "bytes": 677840,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/undefined_tensor_test",
+        "sha256": "c0b35c6f60d5d50b71750b7364856c8c9469e3f0272490fe1ddf5e122f1e4b5f"
+      },
+      {
+        "bundled": true,
+        "bytes": 639232,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/verify_api_visibility",
+        "sha256": "ae858fd88dfda21c7a2ab86cb3805c1dde75e16b36bf08667b2dc2737a7780f2"
+      },
+      {
+        "bundled": true,
+        "bytes": 664520,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/weakref_test",
+        "sha256": "5a8b2163f7597f135ee42aaaa991223d61d5aa60c216f16f3b1586d480901121"
+      },
+      {
+        "bundled": true,
+        "bytes": 667584,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/wrapdim_test",
+        "sha256": "8adca076e15f8d8b13d2e7177ef6be579aad431765c9380c4af96469101af050"
+      },
+      {
+        "bundled": true,
+        "bytes": 661424,
+        "native": {
+          "format": "elf",
+          "inspection": "ok",
+          "needed": [
+            "libc.so.6",
+            "libc10.so",
+            "libgcc_s.so.1",
+            "libm.so.6",
+            "libpthread.so.0",
+            "libstdc++.so.6",
+            "libtorch.so",
+            "libtorch_cpu.so"
+          ],
+          "readelf_returncode": 0
+        },
+        "path": "torch/test/xla_tensor_test",
+        "sha256": "c7b8e3e9d9e292bbb059033d73eae3fe4d43c20a322325328416451231435fc8"
+      }
+    ]
+  },
+  "numpy_source_build": {
+    "no_binary_package": [
+      "numpy"
+    ],
+    "setup_args": [
+      "-Dblas=none",
+      "-Dlapack=none"
+    ]
+  },
+  "operator_approval": "PENDING_REVIEW",
+  "repository": {
+    "audit_script_sha256": "42321a259ef79d4191cd0584d9edecb0385b2ce8782f9a4bc2d76438d6eef794",
+    "clean": true,
+    "head": "a7eb478e1d6cd42e920767aade102f2e8738746c",
+    "root": "/root/vokra-speecht5-audit"
+  },
+  "schema": "vokra-speecht5-dependency-audit-compact-v1",
+  "status": "PASS"
+}

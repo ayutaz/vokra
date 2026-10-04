@@ -1,12 +1,17 @@
 # Vokra documentation
 
-**Current-state review:** 2026-09-21
+**Current-state review:** 2026-10-04 JST
 
-**Reviewed implementation baseline:** GitHub `main` at
-`0df21558c0a8f699a4b2b11c108f413ee21fc8c2` (2026-09-20);
-the residual source/API and dependency-license closures, VibeVoice/VoxCPM
-runtime-boundary hardening, and parity reconciliation are merged through this
-head; the pre-documentation code
+**Read-only external baseline:** GitHub `main` at
+`97447185361a37af64c1b30fe87e8e2618d96e20` (committed 2026-09-30;
+API read on 2026-10-04). The local documentation review started at
+`3a3fd82281ae3ef9e995cb212ec794531ed13493`; its authenticated Kyutai
+source-only correction is not claimed to be merged into `main`. PR #152
+remains an open draft at `b0add994b4d0350c338e60cb29b8165d8145fe32`, with
+76 successful and three skipped checks in this readback. Its remaining
+package/license and real-weight gates are not closed by green model-free CI.
+The 2026-09-21 reviewed baseline was
+`0df21558c0a8f699a4b2b11c108f413ee21fc8c2`; the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
 documentation/evidence checkpoint was
@@ -14,7 +19,7 @@ documentation/evidence checkpoint was
 
 The current checkout is workspace `0.3.0`; tag `v0.3.0` was published on
 2026-09-20 with 18 GitHub release assets, and its release workflow
-(`35490198908`) succeeded. PR #113 then merged at the reviewed `main` head
+(`35490198908`) succeeded. PR #113 then merged at the historical reviewed `main` head
 `0df21558c0a8f699a4b2b11c108f413ee21fc8c2`. At the 2026-09-09 audit start,
 PR #79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped,
 and 0 failed remote checks. The hashes above are dated historical records, not
@@ -29,14 +34,22 @@ publication approval on 2026-09-12 subsequently replaced the reviewed
 ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
 artifacts through the gated publisher; the exact revisions and hashes are in
 the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
-The latest live audit, evaluated with audit logic through `a4af7800`, reports
+The 2026-10-04 read-only metadata audit, evaluated with
+`tools/audit/hf_mac_coverage.py` at the local review baseline, reports
 194 public repositories, 193 repositories with GGUFs, and 198 GGUF files. CPU
 code status is 136 full, 43 partial, 14 without a runtime binder, and 1
 non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1
 non-artifact, leaving 58 unresolved public rows. VibeVoice Realtime-0.5B now
 has a strict structural `vibevoice_streaming` binder and CLI inspection route,
-so it is partial; synthesis, the complete weight manifest, independent
-reference, and CPU parity remain pending. The exact-revision BiCodec
+so it is partial; synthesis, independent native CPU parity, and Apple
+CPU/Metal verification remain pending. On 2026-09-30, a VAST-only replay
+authenticated and converted its complete 605-tensor checkpoint and ran a
+narrow independent Microsoft-source reference. For that fixed probe, FP32
+CUDA was both faster and within the unchanged output guard, so it was
+selected; BF16 exceeded the guard and stayed on CPU. This is not full
+streaming or Metal parity, and no public artifact was replaced. The
+[dated evidence](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback)
+records the hashes and limitations. The exact-revision BiCodec
 and SGMSE CLI routes now promote those two published, Apple-verified rows to
 full; that promotion does not extend either route beyond its authenticated
 artifact contract. UTMOS numeric parity remains unclaimed.
@@ -46,7 +59,10 @@ variants plus the shared 12 Hz decoder, passed independent real-weight CPU
 parity 4/4, and closed 38/38 recovered packet checksums. Apple CPU/reference,
 Metal/reference and Metal/CPU no-fallback verification remain pending, and no
 public artifact was replaced. This evidence therefore does not change the
-58-row denominator.
+58-row denominator. The same day's all-pages GitHub read reports 209 open
+Dependabot alerts (182 with a patched version, 27 without) and three open
+Scorecard findings. See the [security readback](handoff/security-remediation-2026-09-21.md)
+for the boundary between an API snapshot and actual remediation.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -74,6 +90,7 @@ environment they name.
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 | Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
+| Whole-document refresh coverage and limitations | [2026-10-04 documentation audit](handoff/documentation-refresh-2026-10-04.md) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

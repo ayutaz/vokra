@@ -1,7 +1,7 @@
 # 四半期 Go/No-go review 運用手順 runbook
 
 **文書 ID**: VOKRA-GOV-002
-**最終更新**: 2026-09-09（現行文書体系・release cadence実装・履歴参照を再照合）
+**最終更新**: 2026-10-04（tag/release APIとtracked review recordの現況を再照合）
 **位置付け**: 本runbookのKill switch表（撤退条件 A〜L）と
 system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review をリリース
 プロセスに組み込む）の**手動 review 運用手順**。判定そのものは依頼者（`ayutaz`）が
@@ -33,8 +33,9 @@ system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review を
 
 X-07の cadence 機構は **land済み**: `.github/workflows/release-cadence.yml`
 が実行され、`tools/release/test_cadence.py` が判定ロジックを検証する。
-ただし現時点の実測は **git tag 0 / GitHub release 0 / quarterly review record 0** であり、
-4週間の安定運用はまだ established ではない。実装の存在をreview verdictや
+2026-10-04 の all-pages API確認では **git tag 1 / GitHub release 1**（`v0.3.0`、
+2026-09-20）、tracked quarterly review record は0である。
+単一releaseでは4週間の安定運用はまだ established ではない。実装の存在をreview verdictや
 リリース実績と混同しない。
 
 Kill switch/DoDの「Claude Codeを除く」表記は、ownerが定めた**規範上の閾値**として
@@ -90,7 +91,9 @@ Kill switch/DoDの「Claude Codeを除く」表記は、ownerが定めた**規�
 
 **カレンダー登録は依頼者責任**（本 runbook は自動 CI に載せない = 2026-07-04
 依頼者決定の遵守）。v0.1 MVP / v0.5 の release tag を実際に発行した日を起点に
-登録する。**2026-09-09現在はgit tagもGitHub releaseも0件のため、起点日は未確定**。
+登録する。2026-09-09にはtag/releaseが0件だった。2026-10-04には`v0.3.0`が1件あるが、
+予定上の`v0.1.0` / `v0.5.0` milestone tagは発行されておらず、ownerが起点の対応を
+決めるまで暦日は未確定である。`v0.3.0`の発行日を自動で代入しない。
 旧文書にある `v0.1.0` / `v0.5.0` は予定上の名前であり、発行済みtagとして扱わない。
 
 ---

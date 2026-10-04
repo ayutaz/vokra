@@ -7,15 +7,22 @@ dependencies = [
     "huggingface-hub==1.27.0",
     "numpy==2.3.5",
     "safetensors==0.8.0",
-    "torch==2.7.1",
+    "torch==2.13.0",
     "transformers==5.10.4",
 ]
 
 [tool.uv]
 package = false
+# Avoid the Linux NumPy wheel's bundled libgfortran/libquadmath and BLAS
+# payloads. The resulting source-built native payload must be audited on VAST;
+# this setting does not grant package or owner approval.
+no-binary-package = ["numpy"]
 environments = [
     "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
+
+[tool.uv.config-settings-package.numpy]
+setup-args = ["-Dallow-noblas=true", "-Dblas=none", "-Dlapack=none"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

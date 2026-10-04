@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --project tools/parity --frozen --python 3.12 python
+#!/usr/bin/env -S uv run --project tools/parity/nsnet2_reference --frozen --python 3.12 python
 """Bridge Microsoft NSNet2's ONNX release to a safetensors checkpoint
 (Coverage-audit 2026-08-03 Wave A, ticket
 ``docs/tickets/coverage-audit-2026-08-03/wave-a/nsnet2.md``).
@@ -43,10 +43,10 @@ metadata. No hparam side-car is written.
 
 ::
 
-    # If `onnx` is not yet in the tools/parity venv, add it (Python 3.12):
-    uv add --project tools/parity onnx
+    # If `onnx` is not yet in the NSNet2 reference venv, add it (Python 3.12):
+    uv add --project tools/parity/nsnet2_reference onnx
 
-    uv run --project tools/parity python tools/parity/nsnet2_prepare_checkpoint.py \\
+    uv run --project tools/parity/nsnet2_reference python tools/parity/nsnet2_prepare_checkpoint.py \\
         --onnx ~/checkpoints/nsnet2/nsnet2-20ms-baseline.onnx \\
         --output ~/checkpoints/nsnet2/model.safetensors
 
@@ -321,7 +321,7 @@ def main() -> int:
     except ImportError as e:
         raise SystemExit(
             f"{LOG_PREFIX} the `onnx` package is required to parse the upstream ONNX. "
-            f"Install it with `uv add --project tools/parity onnx` (per memory "
+            f"Install it with `uv add --project tools/parity/nsnet2_reference onnx` (per memory "
             f"`feedback-python-uses-uv`). Original error: {e}"
         )
 

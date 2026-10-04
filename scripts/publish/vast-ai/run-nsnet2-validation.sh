@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
-PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
+PARITY_PROJECT="$VOKRA_ROOT/tools/parity/nsnet2_reference"
 PROJECT_FILE="$PARITY_PROJECT/pyproject.toml"
 LOCK_FILE="$PARITY_PROJECT/uv.lock"
 INPUT_FILE="nsnet2-20ms-baseline.onnx"
@@ -156,7 +156,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc git curl awk grep find tee wc tr rustfmt cargo-deny cargo-audit; do
+  for tool in uv cargo rustc git curl awk grep find tee wc tr ldd rustfmt cargo-deny cargo-audit; do
     command -v "$tool" >/dev/null 2>&1 || die "required VAST tool missing: $tool"
   done
   cargo clippy --version >/dev/null 2>&1 \
@@ -164,7 +164,7 @@ require_tooling() {
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] \
     || die "VOKRA_ROOT is not the repository checkout: $VOKRA_ROOT"
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] \
-    || die "tools/parity locked Python project is missing"
+    || die "tools/parity/nsnet2_reference locked Python project is missing"
   for path in \
     "$VOKRA_ROOT/tools/parity/nsnet2_prepare_checkpoint.py" \
     "$VOKRA_ROOT/tools/parity/nsnet2_dump_reference.py" \
@@ -173,6 +173,46 @@ require_tooling() {
   done
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
     || die "VAST checkout must be clean so evidence names an exact commit"
+}
+
+is_forbidden_native_basename() {
+  case "${1##*/}" in
+    libgfortran*|libquadmath*|libopenblas*|libscipy_openblas*|liblapack*|libblas*|libgomp*|libflexiblas*|libblis*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+audit_numpy_native_payload() {
+  local venv="$PARITY_PROJECT/.venv" site_packages forbidden_files native_files so_file ldd_output
+  [[ -d "$venv" && ! -L "$venv" ]] || die "uv sync did not create a regular NSNet2 reference .venv"
+  site_packages="$(find "$venv/lib" -type d -name site-packages -print -quit)"
+  [[ -n "$site_packages" && -d "$site_packages/numpy" && ! -L "$site_packages/numpy" ]] \
+    || die "NSNet2 reference .venv has no regular NumPy package"
+  [[ ! -e "$site_packages/numpy.libs" && ! -L "$site_packages/numpy.libs" ]] \
+    || die "NumPy bundled native payload directory is present; source build required"
+
+  forbidden_files="$(find "$site_packages" -type f -print | while IFS= read -r native_file; do
+    if is_forbidden_native_basename "$native_file"; then
+      printf '%s\n' "$native_file"
+    fi
+  done)"
+  [[ -z "$forbidden_files" ]] || die "forbidden native payload found in reference .venv: $forbidden_files"
+
+  native_files="$(find "$site_packages" -type f -name '*.so*' -print)"
+  [[ -n "$native_files" ]] || die "reference .venv contains no native extensions to audit"
+  while IFS= read -r so_file; do
+    [[ -n "$so_file" ]] || continue
+    ldd_output="$(ldd "$so_file" 2>&1)" \
+      || die "ldd failed for native extension: $so_file"
+    if printf '%s\n' "$ldd_output" | grep -Eiq 'libgfortran|libquadmath|openblas|liblapack|libblas|libgomp|libflexiblas|libblis'; then
+      die "forbidden BLAS/compiler runtime linked by $so_file: $ldd_output"
+    fi
+  done <<< "$native_files"
+  log "NumPy source native audit: PASS (no bundled forbidden payload or BLAS/compiler runtime links)"
 }
 
 download_upstream_onnx() {
@@ -238,6 +278,8 @@ run_self_test() {
     "$PARITY_TEST" "$GGUF_ENV" "$WAV_ENV" "$REFERENCE_WAV_ENV" \
     "tools/parity/nsnet2_prepare_checkpoint.py" \
     "tools/parity/nsnet2_dump_reference.py" \
+    "tools/parity/nsnet2_reference/pyproject.toml" \
+    "tools/parity/nsnet2_reference/uv.lock" \
     "uv run --project \"\$PARITY_PROJECT\" --frozen --python 3.12 python" \
     "target/release/vokra-cli convert" "  --model \"\$MODEL_KIND\"" \
     "  --license \"\$LICENSE_SPDX\"" "--expected-head" "expected_head" \
@@ -249,10 +291,31 @@ run_self_test() {
       fail=1
     fi
   done
+  for required in 'no-binary-package = ["numpy"]' 'config-settings-package.numpy' \
+    '-Dallow-noblas=true' '-Dblas=none' '-Dlapack=none'; do
+    if ! grep -Fq -- "$required" "$PROJECT_FILE"; then
+      log "self-test FAIL: NumPy source-build contract lost token: $required"
+      fail=1
+    fi
+  done
+  if ! grep -Fq -- 'libscipy_openblas*' "$script_path"; then
+    log 'self-test FAIL: bundled scipy OpenBLAS basename guard missing'
+    fail=1
+  fi
+  if is_forbidden_native_basename 'lapack_lite.cpython-312-x86_64-linux-gnu.so'; then
+    log 'self-test FAIL: lapack_lite source extension rejected'
+    fail=1
+  fi
+  if ! is_forbidden_native_basename 'libopenblas.so.0'; then
+    log 'self-test FAIL: libopenblas bundled library accepted'
+    fail=1
+  fi
 
   cases=$((cases + 1))
   for required in 'uname -s' 'uname -m' 'VOKRA_PUBLISH_ON_VAST' \
     'git status --porcelain --untracked-files=all' 'cargo fmt --all -- --check' \
+    'uv sync --project "\$PARITY_PROJECT" --frozen --python 3.12 --reinstall-package numpy' \
+    'audit_numpy_native_payload' 'numpy.libs' 'libgfortran' 'libquadmath' 'openblas' 'ldd' \
     'cargo test --locked --offline --workspace' \
     'cargo clippy --locked --offline --workspace --all-targets -- -D warnings' \
     'NSNet2 real CPU/reference PCM max_abs=' 'NSNet2_PARITY cpu_reference=PASS' \
@@ -412,6 +475,10 @@ main() {
 
   step "Record environment before numerical output"
   record_environment "$env_log"
+
+  step "Install locked NumPy source reference environment and audit native payload"
+  UV_NO_CACHE=1 uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 --reinstall-package numpy
+  audit_numpy_native_payload
 
   step "Download and authenticate official Microsoft NSNet2 ONNX"
   download_upstream_onnx "$onnx_path"

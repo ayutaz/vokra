@@ -68,12 +68,12 @@ VARIANTS = {
         },
     },
 }
-PROJECT_SHA256 = "af7486c52182a23cc64185e6ad95c42b8863673dc4e032fda79637a9ca0d427e"
-LOCK_SHA256 = "fd8c1f2342da9512d1fb1e97ed0e7640ffa4a83db279aeaba655ce6cf89c1085"
+PROJECT_SHA256 = "17431a2f3ddfb6a9853c47c51f2e99209fcf8c0497e0675c5eb4016cbed58aec"
+LOCK_SHA256 = "f64849e762adac41eebddf54debb64ef6f33a935b8a5931dc3ec9feb3390064c"
 REQUIRED_DEPENDENCIES = {
     "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
-    "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.9.1",
-    "torchaudio==2.9.1", "transformers==5.10.4",
+    "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.13.0",
+    "torchaudio==2.11.0", "transformers==5.10.4",
 }
 FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
 MODEL_FREE_FORMAT = "vokra-moss-audio-model-free-api-smoke-v1"

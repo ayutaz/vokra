@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dump a pinned independent official Transformers Bark reference.
 
-The oracle imports ``BarkModel`` from locked Transformers 5.5.0 and loads the
+The oracle imports ``BarkModel`` from locked Transformers 5.10.4 and loads the
 exact immutable Suno checkpoint supplied by the VAST worker. Vokra is never
 imported and no Vokra forward is mirrored here.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import platform
@@ -17,8 +18,8 @@ import tempfile
 from pathlib import Path
 
 
-TRANSFORMERS_VERSION = "5.5.0"
-TRANSFORMERS_SOURCE_REVISION = "c1c34249fa27deefbd4a377dfbf883a39baf5c6d"
+TRANSFORMERS_VERSION = "5.10.4"
+TRANSFORMERS_SOURCE_REVISION = "89eb876fdd9eca53400fe06e6c1e267dedf2d554"
 GENERATION_CONFIG_BYTES = 4_908
 GENERATION_CONFIG_SHA256 = (
     "ab2969fcd40e085bc924ad99ad419c27f62f5acb61afac5de7490ab0c796b5b9"
@@ -140,8 +141,8 @@ def verify_model_directory(model_dir: Path, identity: dict[str, object]) -> None
 def verify_reference_manifest(output: Path, manifest: dict[str, object]) -> None:
     variant = manifest.get("variant")
     identity = VARIANTS.get(str(variant))
-    if manifest.get("format") != "vokra-bark-transformers-5.5-reference-v1":
-        raise RuntimeError("reference format is not the pinned Transformers 5.5 oracle")
+    if manifest.get("format") != "vokra-bark-transformers-5.10.4-reference-v1":
+        raise RuntimeError("reference format is not the pinned Transformers 5.10.4 oracle")
     if identity is None or manifest.get("upstream_revision") != identity["upstream_revision"]:
         raise RuntimeError("reference upstream revision is not pinned")
     if manifest.get("transformers_version") != TRANSFORMERS_VERSION:
@@ -170,7 +171,7 @@ def self_test() -> None:
         for name in ("text_token_ids.u32le", "semantic_tokens.u32le", "codes.u32le", "decoded_pcm.f32"):
             (output / name).write_bytes(name.encode("ascii"))
         manifest = {
-            "format": "vokra-bark-transformers-5.5-reference-v1",
+            "format": "vokra-bark-transformers-5.10.4-reference-v1",
             "variant": "small",
             "upstream_revision": VARIANTS["small"]["upstream_revision"],
             "transformers_version": TRANSFORMERS_VERSION,
@@ -195,6 +196,37 @@ def self_test() -> None:
         else:
             raise SystemExit("reference self-test accepted a revision tamper")
     print("dump_reference.py self-test: PASS")
+
+
+def api_smoke() -> None:
+    """Check the locked official Bark API without loading a checkpoint."""
+    import_reference_modules()
+
+    if transformers.__version__ != TRANSFORMERS_VERSION:
+        raise RuntimeError(
+            f"transformers {transformers.__version__} != pinned {TRANSFORMERS_VERSION}"
+        )
+    required_types = (
+        BarkModel,
+        BarkSemanticGenerationConfig,
+        BarkCoarseGenerationConfig,
+        BarkFineGenerationConfig,
+    )
+    if any(not inspect.isclass(value) for value in required_types):
+        raise RuntimeError("the locked Transformers Bark classes are not importable types")
+    model_generate = inspect.signature(BarkModel.generate)
+    for name in ("input_ids", "history_prompt", "return_output_lengths"):
+        if name not in model_generate.parameters:
+            raise RuntimeError(f"BarkModel.generate lost required parameter: {name}")
+    if "fine_output" not in inspect.signature(BarkModel.codec_decode).parameters:
+        raise RuntimeError("BarkModel.codec_decode lost its fine_output parameter")
+    for config_type in required_types[1:]:
+        config_type()
+    print(
+        "dump_reference.py API smoke: PASS "
+        f"transformers={transformers.__version__} "
+        f"source_revision={TRANSFORMERS_SOURCE_REVISION} model_download=none"
+    )
 
 
 def write_u32(path: Path, values: torch.Tensor | list[int]) -> None:
@@ -235,6 +267,7 @@ def execution_environment() -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--api-smoke", action="store_true")
     parser.add_argument("--variant", choices=sorted(VARIANTS))
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--output", type=Path)
@@ -242,6 +275,9 @@ def main() -> int:
 
     if args.self_test:
         self_test()
+        return 0
+    if args.api_smoke:
+        api_smoke()
         return 0
     if args.variant is None or args.model_dir is None or args.output is None:
         parser.error("--variant, --model-dir, and --output are required")
@@ -332,7 +368,7 @@ def main() -> int:
     write_f32(files["decoded_pcm.f32"], pcm)
 
     manifest = {
-        "format": "vokra-bark-transformers-5.5-reference-v1",
+        "format": "vokra-bark-transformers-5.10.4-reference-v1",
         "oracle": "official Transformers BarkModel semantic/coarse/fine generate plus codec_decode",
         "variant": args.variant,
         "upstream_hf": identity["upstream_hf"],

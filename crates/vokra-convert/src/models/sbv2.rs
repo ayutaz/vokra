@@ -418,18 +418,11 @@ fn add_u32_array(b: &mut GgufBuilder, key: &str, values: &[u32]) {
 fn infer_d_speaker(st: &SafetensorsFile) -> Option<u32> {
     // Primary: enc_p.encoder.spk_emb_linear.weight has shape
     // [d_model, d_speaker] — Vokra loader's own dimensionality contract.
-    for cand in [
-        "enc_p.encoder.spk_emb_linear.weight",
-        // Fallback: some fine-tunes host spk_emb_linear elsewhere. Add
-        // aliases here as they surface; every candidate MUST have a
-        // shape whose LAST dim is d_speaker to be a valid match.
-    ] {
-        if let Some(info) = st.tensor_info(cand)
-            && let Some(&last) = info.shape.last()
-            && let Ok(u) = u32::try_from(last)
-        {
-            return Some(u);
-        }
+    if let Some(info) = st.tensor_info("enc_p.encoder.spk_emb_linear.weight")
+        && let Some(&last) = info.shape.last()
+        && let Ok(u) = u32::try_from(last)
+    {
+        return Some(u);
     }
     // Fallback: emb_g.weight shape [n_speakers, d_speaker].
     if let Some(info) = st.tensor_info("emb_g.weight")

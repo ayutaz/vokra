@@ -2,6 +2,12 @@
 
 Updated with owner-independent evidence on 2026-09-09.
 
+> **2026-10-04 reading boundary:** 63 below is the frozen, hash-bound owner
+> decision-ledger denominator, not today's unresolved public inventory. The
+> fresh metadata-only audit has 58 unresolved rows (CPU/Metal code-artifact
+> full 136); later named Apple/publish scopes do not rewrite an immutable
+> approval packet or authorize a new run/upload. See the [current index](../README.md).
+
 > **2026-09-11 disposition update:** the executable decisions used by the
 > bounded post-PR #79 batch are recorded in the
 > [2026-09-09 owner decision record](mac-cpu-metal-owner-decision-record-2026-09-09.md),
@@ -89,6 +95,20 @@ immutable. None of these rows is owner-approved by this document.
 | NSNet2 / RMVPE / corrected SpeechBrain and WeSpeaker artifacts | Exact replacement-versus-withdrawal decision and missing provenance/license sign-off. RMVPE's absent exact-source license may not be inferred as permissive. |
 | SeamlessM4T-v2-Large | Decide between a real gated research-only artifact and withdrawal of the empty public repository. |
 | `dynet38`, `qwen-omni-utils`, `soynlp`, Triton/NVIDIA payload issues | Resolve the exact release/source mismatch, GPL/LGPL conflict or bundled native-payload review before the affected family can receive a scope hash. |
+
+> **2026-09-29 XY-Tokenizer candidate supersession:** the historical 57-row
+> XY entry above remains the 2026-09-07 scope, not a current sign-off. An
+> unmerged clean-head candidate at `e7806fe3f37d497362956b89841f4db26172c043`
+> reduced the active Python closure to 38 rows. The exact-head model-free VAST
+> collector accepted 35 and blocked SciPy 1.18.1, setuptools 84.0.0 and
+> tokenizers 0.23.1 (collection-report SHA-256
+> `d78e22695d668a4c2e57317f8dfb975544041136c0973f54f7bbf9328aa82b7c`).
+> A separate exact-artifact probe found GPL-with-GCC-exception/LGPL native
+> license terms in the SciPy wheel, LGPL vendored terms in setuptools, and no
+> unambiguous distribution-owned primary license bytes in tokenizers. The
+> current policy does not permit silently classifying any of these as clean.
+> The candidate remains `BLOCKED` / `NO_UPLOAD`; no owner decision, real-weight
+> run or publication is inferred. The disposable VAST workers were destroyed.
 
 ### HT-Demucs Multi primary-source boundary (2026-09-08)
 
