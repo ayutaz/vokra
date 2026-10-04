@@ -5,6 +5,17 @@
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
 
+**2026-10-04 文書レビューの境界:** 本文の2026-08-30法令確認日は履歴として保持する。
+一次資料への再アクセスを試みたが、EUR-Lexのbot確認とCalifornia条文ページの取得失敗により、
+EU/Californiaの施行・経過措置を今回の日付で再認証できていない。
+これらを「2026-10-04に現行法を確認済み」と扱わず、配布・導入時に公式の現行条文と
+適用主体を再確認する。取得できた[Appleガイドライン](https://developer.apple.com/app-store/review/guidelines/)
+の5.5は引き続きMDMであり、[Google Play AI policy](https://support.google.com/googleplay/android-developer/answer/13985936)
+も生成AIアプリの報告機構等を扱うが、SDK実装だけで規約適合を保証しない。
+[S.1367の公式status](https://www.congress.gov/bill/119th-congress/senate-bill/1367)
+は取得ページではIntroducedだが、キャッシュされた観測を新しい成立状況の保証としない。
+法務文書の全面的な現行法再確認は未完了であり、owner/legal sign-offを追加・変更していない。
+
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
 implementation remains fail-closed for unsupported model/license paths;

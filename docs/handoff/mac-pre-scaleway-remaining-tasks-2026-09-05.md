@@ -810,7 +810,15 @@
 > Hugging Face upload remains unapproved. This note supersedes earlier live
 > status prose in this dated ledger; historical evidence below is retained.
 
-## Scope and current truth
+## Scope and historical audit snapshot (2026-09-09)
+
+**2026-10-04 reconciliation:** the table and five-class 63-row split below
+retain the 2026-09-09 snapshot. Today's metadata-only audit reports CPU
+`136 full / 43 partial / 14 no-runtime-binder / 1 not-artifact` and Metal
+`136 full / 57 blocked-by-cpu / 1 not-artifact`: 58 unresolved public rows.
+Neither classification proves whole-catalog Apple parity. Keep the frozen
+63-row decision/evidence ledger intact; use the latest dated notes above and
+the [current index](../README.md) for new work.
 
 This is the execution ledger for finishing the public Mac CPU / Apple Metal
 campaign while keeping Scaleway as the final **compute and hardware-validation

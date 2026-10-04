@@ -812,7 +812,13 @@ historical evidence.  This document is the execution order and completion
 matrix.  When the live audit changes, update both documents in the same
 management commit.
 
-## Current live coverage snapshot (2026-09-09)
+## Historical live coverage snapshot (2026-09-09; superseded 2026-10-04)
+
+The following 131/63 snapshot is retained as dated evidence. The fresh
+metadata-only audit is CPU `136 full / 43 partial / 14 no-runtime-binder /
+1 not-artifact`, Metal `136 full / 57 blocked-by-cpu / 1 not-artifact`, with
+58 unresolved rows. The original 63-row signed decision ledger is a separate
+fixed scope, not a live denominator. See the [current remaining-task ledger](mac-pre-scaleway-remaining-tasks-2026-09-05.md).
 
 The read-only Hugging Face inventory is 194 public repositories, 193
 GGUF-bearing repositories and 198 GGUF files. CPU classification is

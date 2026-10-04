@@ -7,6 +7,17 @@ an upload authorization.
 
 ## Audited starting point
 
+**2026-10-04 documentation readback:** the starting values below remain
+dated evidence. Current external `main` is `97447185361a37af64c1b30fe87e8e2618d96e20`;
+the local review started separately at `3a3fd822`. The all-pages alert API
+now has 209 open Dependabot alerts (182 patched-version / 27 unpatched) and
+three open Scorecard findings. Public metadata still has 194 repositories,
+136 CPU/Metal code-artifact full and 58 unresolved rows, not whole-catalog
+Apple PASS. See the [current index](../README.md) and
+[security readback](security-remediation-2026-09-21.md). No provider inventory
+or model execution was performed for this documentation refresh; old resource
+IDs and run failures below are their dated evidence, not live transfer sources.
+
 - Clean GitHub `main`: `79745a4d7c8330f8b760e405cf7b9276c4a7fb49`;
   no open PR at this snapshot.
 - Read-only `uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format summary`:
