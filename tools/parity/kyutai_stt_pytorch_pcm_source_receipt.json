@@ -1,0 +1,14 @@
+{
+  "status": "AUTHENTICATED_SOURCE_ONLY_RECEIPT",
+  "repository": "kyutai-labs/delayed-streams-modeling",
+  "revision": "4c4f65e147df056adf3346290d64c7b9649b18c9",
+  "path": "scripts/stt_from_file_pytorch.py",
+  "raw_url": "https://raw.githubusercontent.com/kyutai-labs/delayed-streams-modeling/4c4f65e147df056adf3346290d64c7b9649b18c9/scripts/stt_from_file_pytorch.py",
+  "api_url": "https://api.github.com/repos/kyutai-labs/delayed-streams-modeling/contents/scripts/stt_from_file_pytorch.py?ref=4c4f65e147df056adf3346290d64c7b9649b18c9",
+  "bytes": 8452,
+  "git_blob_sha1": "cf3fb05b0e0c1f265a667276d2886ce2664d79ff",
+  "raw_sha256": "2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955",
+  "api_body_sha256": "c07733a52c67cbb78536de4ba6e8cbdbdd6a5a4ec7d169e8ee03ab356ee9062e",
+  "execution": "NOT_RUN",
+  "scope": "Caller schedule and PCM preparation source identity only; no model, config, tokenizer, weight, license, parity, or publication claim."
+}

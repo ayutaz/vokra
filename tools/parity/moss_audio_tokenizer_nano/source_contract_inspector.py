@@ -19,6 +19,7 @@ caller cannot accidentally continue into conversion or publication.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import inspect
 import json
@@ -32,6 +33,7 @@ from typing import Any
 
 REPOSITORY = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
+TORCH_VERSION = "2.13.0+cpu"
 TRANSFORMERS_VERSION = "5.10.4"
 PAYLOAD_FILES = (
     ".gitattributes",
@@ -559,6 +561,10 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
         from transformers import AutoConfig, AutoModel
     except Exception as error:  # noqa: BLE001
         raise InspectionError(f"reference imports unavailable: {error}") from error
+    if str(torch.__version__) != TORCH_VERSION:
+        raise InspectionError(
+            f"Torch {torch.__version__!s} != pinned {TORCH_VERSION}"
+        )
     if str(transformers.__version__) != TRANSFORMERS_VERSION:
         raise InspectionError(
             f"Transformers {transformers.__version__!s} != pinned {TRANSFORMERS_VERSION}"
@@ -619,6 +625,7 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
         raise InspectionError(f"official decoded audio shape drifted: {audio_shape!r}")
     return {
         "status": "AUTHENTICATED_META_SHAPE_PROBE",
+        "torch_version": str(torch.__version__),
         "transformers_version": str(transformers.__version__),
         "config_class": f"{type(config).__module__}.{type(config).__name__}",
         "model_class": f"{type(model).__module__}.{type(model).__name__}",
@@ -642,6 +649,184 @@ def api_and_shape_probe(snapshot: Path) -> dict[str, Any]:
     }
 
 
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _authenticated_file_rows(files: object) -> bool:
+    if not isinstance(files, list) or len(files) != len(PAYLOAD_FILES):
+        return False
+    rows: dict[str, dict[str, Any]] = {}
+    for row in files:
+        if not isinstance(row, dict):
+            return False
+        path = row.get("path")
+        if not isinstance(path, str) or path in rows or path not in PAYLOAD_FILES:
+            return False
+        rows[path] = row
+    if set(rows) != set(PAYLOAD_FILES):
+        return False
+
+    for path in MATERIALIZED_FILES:
+        row = rows[path]
+        if (
+            row.get("status") != "AUTHENTICATED"
+            or row.get("materialized") is not True
+            or row.get("content_not_downloaded") is not False
+            or not _positive_int(row.get("bytes"))
+            or not isinstance(row.get("sha256"), str)
+            or not HEX64.fullmatch(row["sha256"])
+            or row.get("server_size") != row.get("bytes")
+        ):
+            return False
+        canonical = row.get("canonical_git_blob_sha1")
+        git_blob = row.get("git_blob_sha1")
+        if row.get("lfs_payload_sha256") is None:
+            if (
+                not isinstance(canonical, str)
+                or not HEX40.fullmatch(canonical)
+                or git_blob != canonical
+            ):
+                return False
+        elif (
+            not isinstance(row.get("lfs_payload_sha256"), str)
+            or not HEX64.fullmatch(row["lfs_payload_sha256"])
+        ):
+            return False
+
+    weight = rows[WEIGHT_FILE]
+    return (
+        weight.get("status") == "AUTHENTICATED_SERVER_IDENTITY_ONLY"
+        and weight.get("materialized") is False
+        and weight.get("content_not_downloaded") is True
+        and _positive_int(weight.get("server_bytes"))
+        and isinstance(weight.get("lfs_pointer_git_blob_sha1"), str)
+        and HEX40.fullmatch(weight["lfs_pointer_git_blob_sha1"]) is not None
+        and isinstance(weight.get("lfs_payload_sha256"), str)
+        and HEX64.fullmatch(weight["lfs_payload_sha256"]) is not None
+        and "bytes" not in weight
+        and "sha256" not in weight
+    )
+
+
+def _authenticated_route(route: object, files: object) -> bool:
+    if not isinstance(route, dict) or not _authenticated_file_rows(files):
+        return False
+    config_class = route.get("config_class")
+    model_class = route.get("model_class")
+    if (
+        route.get("status") != "AUTHENTICATED_META_SHAPE_PROBE"
+        or route.get("torch_version") != TORCH_VERSION
+        or route.get("transformers_version") != TRANSFORMERS_VERSION
+        or not isinstance(config_class, str)
+        or not config_class.endswith(".MossAudioTokenizerConfig")
+        or not isinstance(model_class, str)
+        or not model_class.endswith(".MossAudioTokenizerModel")
+        or route.get("api_path")
+        != {
+            "config": "transformers.AutoConfig.from_pretrained",
+            "model": "transformers.AutoModel.from_config",
+            "trust_remote_code": True,
+            "local_files_only": True,
+        }
+        or route.get("api_methods")
+        != ["encode", "decode", "forward", "create_decode_session"]
+        or route.get("model_type") != EXPECTED_MODEL_TYPE
+        or route.get("architectures") != EXPECTED_ARCHITECTURES
+        or route.get("auto_map") != EXPECTED_AUTO_MAP
+        or route.get("frames") != 2
+        or route.get("quantizers") != EXPECTED_QUANTIZER["num_quantizers"]
+        or route.get("taps") != EXPECTED_TAPS
+        or route.get("audio_shape") != EXPECTED_AUDIO_SHAPE
+        or route.get("weights_loaded") is not False
+        or route.get("weights_executed") is not False
+    ):
+        return False
+    source_files = route.get("source_files")
+    if not isinstance(source_files, dict) or set(source_files) != {"configuration", "modeling"}:
+        return False
+    rows = {row["path"]: row for row in files if isinstance(row, dict)}
+    for key, filename in (
+        ("configuration", "configuration_moss_audio_tokenizer.py"),
+        ("modeling", "modeling_moss_audio_tokenizer.py"),
+    ):
+        source = source_files.get(key)
+        row = rows.get(filename)
+        if (
+            not isinstance(source, dict)
+            or not isinstance(row, dict)
+            or source.get("status") != "AUTHENTICATED"
+            or source.get("filename") != filename
+            or not isinstance(source.get("path"), str)
+            or not source["path"].startswith("transformers_modules/")
+            or source.get("sha256") != row.get("sha256")
+            or source.get("bytes") != row.get("bytes")
+        ):
+            return False
+    return True
+
+
+def _authenticated_config(config: object) -> bool:
+    return config == {
+        "sampling_rate": EXPECTED_CONFIG["sampling_rate"],
+        "downsample_rate": EXPECTED_CONFIG["downsample_rate"],
+        "number_channels": EXPECTED_CONFIG["number_channels"],
+        "quantizer_kwargs": EXPECTED_QUANTIZER,
+        "model_type": EXPECTED_MODEL_TYPE,
+        "architectures": EXPECTED_ARCHITECTURES,
+        "auto_map": EXPECTED_AUTO_MAP,
+        "decoder_layout": EXPECTED_DECODER_LAYOUT,
+        "status": "AUTHENTICATED",
+    }
+
+
+def _authenticated_index(index: object) -> bool:
+    return (
+        isinstance(index, dict)
+        and index.get("status") == "AUTHENTICATED"
+        and _positive_int(index.get("weight_map_entries"))
+    )
+
+
+def authenticated_evidence_complete(
+    *,
+    repository: object,
+    revision: object,
+    resolved_revision: object,
+    model_info: object,
+    files: object,
+    config: object,
+    index: object,
+    route: object,
+    vokra_checkout: object,
+    error: object,
+) -> bool:
+    """Require every source-only authentication invariant before completion."""
+
+    if error is not None:
+        return False
+    if (
+        repository != REPOSITORY
+        or revision != REVISION
+        or resolved_revision != REVISION
+        or model_info != EXPECTED_MODEL_INFO
+        or not _authenticated_file_rows(files)
+        or not _authenticated_config(config)
+        or not _authenticated_index(index)
+        or not _authenticated_route(route, files)
+    ):
+        return False
+    if not isinstance(vokra_checkout, dict):
+        return False
+    expected_head = vokra_checkout.get("expected_head")
+    return (
+        isinstance(expected_head, str)
+        and HEX40.fullmatch(expected_head) is not None
+        and vokra_checkout.get("head") == expected_head
+        and vokra_checkout.get("clean") is True
+    )
+
+
 
 def blocked_manifest(
     *,
@@ -656,7 +841,18 @@ def blocked_manifest(
     vokra_checkout: dict[str, Any] | None,
     error: str | None,
 ) -> dict[str, Any]:
-    complete = False
+    complete = authenticated_evidence_complete(
+        repository=repository,
+        revision=revision,
+        resolved_revision=resolved_revision,
+        model_info=model_info,
+        files=files,
+        config=config,
+        index=index,
+        route=route,
+        vokra_checkout=vokra_checkout,
+        error=error,
+    )
     return {
         "schema": "vokra-moss-audio-tokenizer-nano-source-contract-v1",
         "status": "BLOCKED",
@@ -712,6 +908,18 @@ def blocked_manifest(
     }
 
 
+def unverified_route() -> dict[str, Any]:
+    """Return the pre-probe route without claiming an observed Torch version."""
+
+    return {
+        "status": "BLOCKED_UNVERIFIED_API_SMOKE",
+        "torch_version": None,
+        "transformers_version": TRANSFORMERS_VERSION,
+        "weights_loaded": False,
+        "weights_executed": False,
+    }
+
+
 def self_test() -> None:
     assert safe_relative_path("config.json") == "config.json"
     assert "LICENSE" not in MATERIALIZED_FILES
@@ -721,6 +929,10 @@ def self_test() -> None:
     assert EXPECTED_AUTO_MAP["AutoModel"].endswith("MossAudioTokenizerModel")
     assert len(EXPECTED_DECODER_LAYOUT) == 9
     assert EXPECTED_TAPS[-1] == {"name": "decoder_8", "shape": "1x1x15360"}
+    pre_probe = unverified_route()
+    assert pre_probe["status"] == "BLOCKED_UNVERIFIED_API_SMOKE"
+    assert pre_probe["torch_version"] is None
+    assert pre_probe["torch_version"] != TORCH_VERSION
     try:
         validate_model_info({**EXPECTED_MODEL_INFO, "gated": True})
     except InspectionError:
@@ -756,6 +968,124 @@ def self_test() -> None:
     }
     assert sample_manifest["cpu_status"] == "BLOCKED_UNRESOLVED_PYTHON_CLOSURE_API_RUNTIME_PARITY"
     assert sample_manifest["unresolved_gates"]["overall_execution_approval"] == "NOT_APPROVED"
+
+    authenticated_files: list[dict[str, Any]] = [
+        {
+            "path": path,
+            "bytes": 1,
+            "sha256": "0" * 64,
+            "materialized": True,
+            "content_not_downloaded": False,
+            "status": "AUTHENTICATED",
+            "git_blob_sha1": "1" * 40,
+            "canonical_git_blob_sha1": "1" * 40,
+            "lfs_pointer_git_blob_sha1": None,
+            "lfs_payload_sha256": None,
+            "server_size": 1,
+        }
+        for path in MATERIALIZED_FILES
+    ]
+    authenticated_files.append(
+        {
+            "path": WEIGHT_FILE,
+            "role": "weights",
+            "server_bytes": 1,
+            "lfs_pointer_git_blob_sha1": "2" * 40,
+            "lfs_payload_sha256": "3" * 64,
+            "materialized": False,
+            "content_not_downloaded": True,
+            "status": "AUTHENTICATED_SERVER_IDENTITY_ONLY",
+        }
+    )
+    authenticated_config = {
+        "sampling_rate": EXPECTED_CONFIG["sampling_rate"],
+        "downsample_rate": EXPECTED_CONFIG["downsample_rate"],
+        "number_channels": EXPECTED_CONFIG["number_channels"],
+        "quantizer_kwargs": copy.deepcopy(EXPECTED_QUANTIZER),
+        "model_type": EXPECTED_MODEL_TYPE,
+        "architectures": copy.deepcopy(EXPECTED_ARCHITECTURES),
+        "auto_map": copy.deepcopy(EXPECTED_AUTO_MAP),
+        "decoder_layout": copy.deepcopy(EXPECTED_DECODER_LAYOUT),
+        "status": "AUTHENTICATED",
+    }
+    authenticated_route = {
+        "status": "AUTHENTICATED_META_SHAPE_PROBE",
+        "torch_version": TORCH_VERSION,
+        "transformers_version": TRANSFORMERS_VERSION,
+        "config_class": "transformers_modules.example.MossAudioTokenizerConfig",
+        "model_class": "transformers_modules.example.MossAudioTokenizerModel",
+        "api_path": {
+            "config": "transformers.AutoConfig.from_pretrained",
+            "model": "transformers.AutoModel.from_config",
+            "trust_remote_code": True,
+            "local_files_only": True,
+        },
+        "api_methods": ["encode", "decode", "forward", "create_decode_session"],
+        "model_type": EXPECTED_MODEL_TYPE,
+        "architectures": copy.deepcopy(EXPECTED_ARCHITECTURES),
+        "auto_map": copy.deepcopy(EXPECTED_AUTO_MAP),
+        "source_files": {
+            "configuration": {
+                "path": "transformers_modules/example/configuration_moss_audio_tokenizer.py",
+                "filename": "configuration_moss_audio_tokenizer.py",
+                "sha256": "0" * 64,
+                "bytes": 1,
+                "status": "AUTHENTICATED",
+            },
+            "modeling": {
+                "path": "transformers_modules/example/modeling_moss_audio_tokenizer.py",
+                "filename": "modeling_moss_audio_tokenizer.py",
+                "sha256": "0" * 64,
+                "bytes": 1,
+                "status": "AUTHENTICATED",
+            },
+        },
+        "frames": 2,
+        "quantizers": 16,
+        "taps": copy.deepcopy(EXPECTED_TAPS),
+        "audio_shape": EXPECTED_AUDIO_SHAPE,
+        "weights_loaded": False,
+        "weights_executed": False,
+    }
+    authenticated_checkout = {
+        "expected_head": "a" * 40,
+        "head": "a" * 40,
+        "clean": True,
+    }
+    complete_args = {
+        "repository": REPOSITORY,
+        "revision": REVISION,
+        "resolved_revision": REVISION,
+        "model_info": copy.deepcopy(EXPECTED_MODEL_INFO),
+        "files": authenticated_files,
+        "config": authenticated_config,
+        "index": {"weight_map_entries": 1, "status": "AUTHENTICATED"},
+        "route": authenticated_route,
+        "vokra_checkout": authenticated_checkout,
+        "error": None,
+    }
+    assert authenticated_evidence_complete(**complete_args)
+    complete_manifest = blocked_manifest(**complete_args)
+    assert complete_manifest["status"] == "BLOCKED"
+    assert complete_manifest["inspection_status"] == "AUTHENTICATED_EVIDENCE_COMPLETE"
+    assert complete_manifest["collection_status"] == "AUTHENTICATED"
+    assert complete_manifest["publication"] == "NO_UPLOAD"
+    for mutation in (
+        {"error": "tampered"},
+        {"model_info": {**EXPECTED_MODEL_INFO, "sha": "b" * 40}},
+        {"config": None},
+        {"vokra_checkout": {**authenticated_checkout, "clean": False}},
+        {"route": {**authenticated_route, "status": "BLOCKED_UNVERIFIED_API_SMOKE"}},
+        {"route": {**authenticated_route, "taps": []}},
+    ):
+        tampered = dict(complete_args)
+        tampered.update(mutation)
+        assert not authenticated_evidence_complete(**tampered)
+    materialized_weight = copy.deepcopy(authenticated_files)
+    materialized_weight[-1]["materialized"] = True
+    tampered = dict(complete_args)
+    tampered["files"] = materialized_weight
+    assert not authenticated_evidence_complete(**tampered)
     for bad_head in ("", "0" * 39, "G" * 40):
         try:
             validate_vokra_checkout(Path.cwd(), bad_head)
@@ -897,6 +1227,8 @@ def self_test() -> None:
     assert 'torch_module.device("meta")' in source
     assert ("init_" + "empty_weights") not in source
     assert ("accel" + "erate") not in source.lower()
+    assert 'TORCH_VERSION = "2.13.0+cpu"' in source
+    assert '"torch_version": str(torch.__version__)' in source
     assert '"weights_loaded": False' in source
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "evidence"
@@ -1015,12 +1347,7 @@ def main() -> int:
     except InspectionError as caught:
         print(f"moss Nano source-contract inspector: BLOCKED: {caught}", file=sys.stderr)
         return 2
-    route: dict[str, Any] = {
-        "status": "BLOCKED_UNVERIFIED_API_SMOKE",
-        "transformers_version": TRANSFORMERS_VERSION,
-        "weights_loaded": False,
-        "weights_executed": False,
-    }
+    route = unverified_route()
     resolved_revision: str | None = None
     model_info: dict[str, Any] | None = None
     files: list[dict[str, Any]] | None = None

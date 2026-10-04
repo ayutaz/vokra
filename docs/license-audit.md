@@ -1,5 +1,17 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-04 reading/supersession boundary:** retain the dated license
+> rows, hashes and owner decisions below; this documentation refresh does not
+> grant a new license, execution scope or upload permission. The bounded
+> 2026-09-11 Apple batch and separately approved four-artifact publication
+> supersede the pre-Scaleway state only for their exact scopes. Later narrow
+> VibeVoice and Kyutai source authentication do not close full model parity
+> or dependency/legal gates. Read [the current documentation index](README.md),
+> [owner scope packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
+> and [execution record](handoff/public-catalog-security-completion-2026-09-29.md)
+> alongside the historical rows. Old retained/stopped VAST IDs below are not
+> a current inventory or a reusable transfer source.
+
 **Audit-start snapshot (2026-09-09, PR #79 / implementation head `9efcd16e`)**:
 This records the state reviewed before the documentation refresh; later
 documentation-only commits do not change the implementation head. The audit below is
@@ -1101,6 +1113,22 @@ with the independent safe wav2vec/model-construction gate and
 provenance/license gates still independently satisfied. Existing GGUF
 publication and parity records are retained as historical facts and are not
 evidence that a new unsafe legacy conversion is authorized.
+
+### 2026-09-30 VibeVoice Realtime implementation supersession
+
+The 2026-08-01 `microsoft/VibeVoice-Realtime-0.5B` table row above remains the
+dated MIT weight-license/owner decision. Its then-current statements that the
+converter refused all conversion and the runtime binder was deferred are now
+superseded **for implementation state only**: a VAST-only run authenticated
+the complete fixed checkpoint, preserved all 605 BF16 tensor payloads in a
+private GGUF, and passed the strict native binder. The official fixed-source
+reference selected CUDA only for an FP32 same-input probe that passed its
+device-comparison guard. The new reference environment's transitive
+dependency-license audit remains open; so do native synthesis, Rust numerical
+parity, Apple CPU/Metal, provenance/publication gates and model-card guidance.
+The historical MIT determination alone does not authorize an upload, and no
+public artifact was changed. See the
+[dated execution receipt](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback).
 
 ## 10. 定期監査
 

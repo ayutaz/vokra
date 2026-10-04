@@ -147,14 +147,17 @@ GigaAM v3、GigaAM Multilingual、OmniASR CTC 1B、ReazonSpeech NeMo v2、BiCode
 Voice Gender Classifier。
 旧 immutable packet input は VAST storage とともに全て破棄済みで、保持も直ちに実行可能な
 状態でもない。Scaleway へ転送する直前に、新しい disposable VAST worker 上で各 packet
-再生成する。現行 0.3.0 系列では GigaAM v3 と
-Multilingual は conservative な Metal code route が complete だが、Apple
-hardware の verdict はまだ未取得である。OmniASR も認証済み Scaleway 実機 run
-待ちであり、source-level route の complete を Apple device 結果とはみなさない。
-監査開始時点の live public coverage は CPU `full=131`、`partial=45`、
-`no-runtime-binder=17`、`not-artifact=1`、Metal `full=131`、
-`blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
-現時点の release tag は 0、GitHub Release も 0 である。
+再生成する。現行 0.3.0 系列では、2026-09-11 の Apple batch が named scope の
+GigaAM v3、GigaAM Multilingual、OmniASR、ReazonSpeech、BiCodec、Voice Gender
+について approval-bound CPU/Metal check を合格した。これらは exact head と契約に
+限った verdict であり、source-level route の complete を catalog 全体の Apple device
+結果へ一般化しない。
+2026-10-04 の fresh metadata-only public audit は CPU `full=136`、`partial=43`、
+`no-runtime-binder=14`、`not-artifact=1`、Metal `full=136`、
+`blocked-by-cpu=57`、`not-artifact=1`、source-level CPU-only は 0 で、未解決の public row は58件である。
+`v0.3.0` release tag と GitHub Release は公開済みである。2026-10-04 の修正済み VAST
+source-only audit は固定した Kyutai source input を認証し、worker cleanup を独立に確認した。
+model weight は実行しておらず、CPU parity、Apple hardware、公開 status は進展していない。
 
 本ガイドは*手順*を documentation する。device は回さない: 実機（Apple Neural
 Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak は owner
@@ -163,8 +166,7 @@ Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak �
 
 ## Keeping this page current
 
-**最終確認日: 2026-09-09 — 監査開始時点の PR #79 head
-`9efcd16eb63b857f48fc00d0b83d1113defd578b`、実装済みの 5 計算バックエンド、上記の汎用
+**最終確認日: 2026-10-04 — local checkout `3a3fd822`、実装済みの 5 計算バックエンド、上記の汎用
 convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
 delegate scaffold に対して確認。**
 

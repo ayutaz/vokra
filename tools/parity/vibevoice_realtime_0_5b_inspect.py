@@ -35,6 +35,56 @@ APPROVAL_SCHEMA = "vokra-vibevoice-realtime-0.5b-blocked-approval-v1"
 APPROVAL_SCOPE = "VIBEVOICE_REALTIME_0_5B_INSPECTION"
 MAX_HEADER_BYTES = 64 * 1024 * 1024
 TOKENIZER_SELECTED = {"LICENSE", "tokenizer_config.json", "tokenizer.json", "vocab.json", "merges.txt"}
+STREAMING_SOURCE_MARKERS = {
+    "vibevoice/processor/vibevoice_streaming_processor.py": (
+        "class VibeVoiceStreamingProcessor",
+        "def __call__(self) -> BatchEncoding:",
+        "Use process_input_with_cached_prompt for streaming inputs.",
+        "def process_input_with_cached_prompt(",
+        '"input_ids": input_ids',
+        '"tts_lm_input_ids": tts_lm_input_ids',
+        '"tts_text_ids": script_tokens',
+        '"speech_input_mask": speech_input_mask',
+        '"speech_tensors"',
+        '"speech_masks"',
+        "def prepare_speech_inputs(",
+    ),
+    "vibevoice/processor/vibevoice_tokenizer_processor.py": (
+        "class VibeVoiceTokenizerProcessor",
+        'model_input_names = ["input_features"]',
+        "def __call__(",
+        "if audio is None:",
+        '"audio": input_features',
+    ),
+    "vibevoice/modular/modular_vibevoice_text_tokenizer.py": (
+        "class VibeVoiceTextTokenizer(Qwen2Tokenizer)",
+        "class VibeVoiceTextTokenizerFast(Qwen2TokenizerFast)",
+        '"<|vision_start|>"',
+        '"<|vision_end|>"',
+        '"<|vision_pad|>"',
+        "def speech_start_id",
+        "def speech_end_id",
+    ),
+    "vibevoice/modular/modular_vibevoice_tokenizer.py": (
+        "class VibeVoiceTokenizerStreamingCache",
+        "class VibeVoiceAcousticTokenizerModel(PreTrainedModel)",
+    ),
+}
+TOKENIZER_ROLE_CONTRACT = {
+    "LICENSE": "license text retained for separate tokenizer review",
+    "tokenizer_config.json": "Qwen2 tokenizer configuration",
+    "tokenizer.json": "fast-tokenizer JSON graph with a BPE model",
+    "vocab.json": "Qwen BPE vocabulary mapping token strings to integer ids",
+    "merges.txt": "Qwen BPE merge table of non-duplicate two-token pairs",
+}
+PACKET_FILES = frozenset({
+    "snapshot-inventory.json",
+    "tensor-inventory.json",
+    "parsed-json.json",
+    "companion-inventory.json",
+    "source-inventory.json",
+    "streaming-contract.json",
+})
 MODEL_FILES = {
     ".gitattributes": (1_572, "e685d20cb7927ac8016dadb2514ec1221b1c2a8f", None),
     "README.md": (10_160, "8c2ea6fc74deb70c8d6164d06a12e584498b4379", None),
@@ -519,6 +569,91 @@ def validate_tokenizer_file_set(names: set[str]) -> None:
         raise RuntimeError("companion tokenizer snapshot unexpectedly contains model weights")
 
 
+def validate_tokenizer_files(root: Path, names: set[str]) -> dict[str, Any]:
+    """Validate the selected Qwen tokenizer roles without loading a tokenizer."""
+    validate_tokenizer_file_set(names)
+    records: dict[str, Any] = {}
+
+    def regular(name: str) -> Path:
+        path, info = filesystem_entry(root, name)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(f"tokenizer role is not a regular file: {name}")
+        return path
+
+    license_path = regular("LICENSE")
+    if not license_path.read_bytes():
+        raise RuntimeError("tokenizer LICENSE is empty")
+    records["LICENSE"] = {"role": TOKENIZER_ROLE_CONTRACT["LICENSE"], "bytes": license_path.stat().st_size, "sha256": sha256(license_path)}
+
+    config_path = regular("tokenizer_config.json")
+    config = load_json(config_path)
+    if not isinstance(config, dict) or config.get("tokenizer_class") not in {"Qwen2Tokenizer", "Qwen2TokenizerFast"}:
+        raise RuntimeError("tokenizer_config.json is not a Qwen2 tokenizer configuration")
+    if not isinstance(config.get("model_max_length"), int) or isinstance(config["model_max_length"], bool) or config["model_max_length"] <= 0:
+        raise RuntimeError("tokenizer_config.json model_max_length is invalid")
+    records["tokenizer_config.json"] = {"role": TOKENIZER_ROLE_CONTRACT["tokenizer_config.json"], "sha256": sha256(config_path), "tokenizer_class": config["tokenizer_class"], "model_max_length": config["model_max_length"]}
+
+    fast_path = regular("tokenizer.json")
+    fast = load_json(fast_path)
+    if not isinstance(fast, dict) or not isinstance(fast.get("model"), dict) or fast["model"].get("type") != "BPE":
+        raise RuntimeError("tokenizer.json does not contain a BPE model")
+    vocab = fast["model"].get("vocab")
+    merges = fast["model"].get("merges")
+    if not isinstance(vocab, dict) or not vocab or any(not isinstance(token, str) or not isinstance(index, int) or isinstance(index, bool) or index < 0 for token, index in vocab.items()):
+        raise RuntimeError("tokenizer.json BPE vocabulary is invalid")
+    if not isinstance(merges, list) or not merges or any(
+        not ((isinstance(pair, str) and len(pair.split()) == 2) or (isinstance(pair, list) and len(pair) == 2 and all(isinstance(token, str) for token in pair)))
+        for pair in merges
+    ):
+        raise RuntimeError("tokenizer.json BPE merges are invalid")
+    records["tokenizer.json"] = {"role": TOKENIZER_ROLE_CONTRACT["tokenizer.json"], "sha256": sha256(fast_path), "model_type": "BPE", "vocab_entries": len(vocab), "merge_entries": len(merges)}
+
+    vocab_path = regular("vocab.json")
+    vocab_json = load_json(vocab_path)
+    if not isinstance(vocab_json, dict) or not vocab_json or any(not isinstance(token, str) or not isinstance(index, int) or isinstance(index, bool) or index < 0 for token, index in vocab_json.items()):
+        raise RuntimeError("vocab.json is not a token-to-nonnegative-integer map")
+    records["vocab.json"] = {"role": TOKENIZER_ROLE_CONTRACT["vocab.json"], "sha256": sha256(vocab_path), "entries": len(vocab_json)}
+
+    merges_path = regular("merges.txt")
+    try:
+        lines = merges_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError(f"merges.txt is not valid UTF-8: {error}") from error
+    if lines and lines[0] == "#version: 0.2":
+        lines = lines[1:]
+    pairs = [line for line in lines if line]
+    if not pairs or any(len(line.split()) != 2 for line in pairs) or len(set(pairs)) != len(pairs):
+        raise RuntimeError("merges.txt contains an invalid or duplicate BPE pair")
+    records["merges.txt"] = {"role": TOKENIZER_ROLE_CONTRACT["merges.txt"], "sha256": sha256(merges_path), "entries": len(pairs)}
+    return {"status": "AUTHENTICATED_STRUCTURE_ONLY", "selected_files": sorted(TOKENIZER_SELECTED), "roles": records, "license_status": "SEPARATE_REVIEW_REQUIRED"}
+
+
+def validate_streaming_source_contract(source: Path) -> dict[str, Any]:
+    """Bind the fixed source blobs to the streaming/tokenizer API contract."""
+    files: dict[str, Any] = {}
+    for name, markers in STREAMING_SOURCE_MARKERS.items():
+        path, info = filesystem_entry(source, name)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(f"streaming contract role is not a regular file: {name}")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise RuntimeError(f"streaming contract source is not valid UTF-8: {name}") from error
+        missing = [marker for marker in markers if marker not in text]
+        if missing:
+            raise RuntimeError(f"streaming contract markers missing from {name}: {missing}")
+        files[name] = {"sha256": sha256(path), "markers": list(markers), "status": "AUTHENTICATED"}
+    return {"status": "AUTHENTICATED_STRUCTURE_ONLY", "source_revision": SOURCE_REVISION, "roles": files, "runtime_status": "NOT_RUN"}
+
+
+def packet_hashes(output: Path) -> dict[str, dict[str, Any]]:
+    """Hash every authenticated evidence packet, including the streaming contract."""
+    missing = sorted(name for name in PACKET_FILES if not (output / name).is_file() or (output / name).is_symlink())
+    if missing:
+        raise RuntimeError(f"authenticated evidence packet missing: {missing}")
+    return {name: {"bytes": (output / name).stat().st_size, "sha256": sha256(output / name)} for name in sorted(PACKET_FILES)}
+
+
 def source_inventory(
     source: Path,
     transformers: Path,
@@ -696,16 +831,17 @@ def _inspect_body(snapshot: Path, companion: Path, source: Path, transformers: P
     sources = source_inventory(source, transformers)
     if sources["source"]["status"] != "AUTHENTICATED" or sources["transformers"]["status"] != "AUTHENTICATED":
         raise RuntimeError("official source/Transformers checkout authentication is incomplete")
+    streaming_contract = validate_streaming_source_contract(source)
     tokenizer_identity, tokenizer_files = server_inventory(companion, companion_tree)
     companion_names = {row["path"] for row in tokenizer_files}
-    validate_tokenizer_file_set(companion_names)
+    tokenizer_contract = validate_tokenizer_files(companion, companion_names)
     companion_json = {row["path"]: {"sha256": sha256(companion / row["path"]), "json": load_json(companion / row["path"])} for row in tokenizer_files if row["path"].endswith(".json")}
-    evidence = {"snapshot-inventory.json": {"server_tree": model_identity, "files": model_files}, "tensor-inventory.json": {"header": tensor_evidence, "tensors": tensors}, "parsed-json.json": parsed, "companion-inventory.json": {"server_tree": tokenizer_identity, "files": tokenizer_files, "json": companion_json}, "source-inventory.json": sources}
+    evidence = {"snapshot-inventory.json": {"server_tree": model_identity, "files": model_files}, "tensor-inventory.json": {"header": tensor_evidence, "tensors": tensors}, "parsed-json.json": parsed, "companion-inventory.json": {"server_tree": tokenizer_identity, "files": tokenizer_files, "json": companion_json, "contract": tokenizer_contract}, "source-inventory.json": sources, "streaming-contract.json": streaming_contract}
     for name, value in evidence.items():
         with (output / name).open("x", encoding="utf-8") as stream:
             stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
-    packets = {path.name: {"bytes": path.stat().st_size, "sha256": sha256(path)} for path in output.glob("*-inventory.json")}
-    blocked(output, RuntimeError("streaming state, diffusion/CFG, acoustic decoder, tokenizer behavior, policy, and dataset provenance remain unauthenticated"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", allow_existing=True, model_license=model_license, policy=policy, config=config_evidence, preprocessor=preprocessor_evidence, tensors=tensor_evidence, companion_tokenizer={"repository": TOKENIZER_REPOSITORY, "revision": TOKENIZER_REVISION, "model_weights": "NOT_DOWNLOADED", "files": tokenizer_files}, official_source=sources, license_evidence=manifest_license_evidence(model_license, sources), dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
+    packets = packet_hashes(output)
+    blocked(output, RuntimeError("streaming state, diffusion/CFG, acoustic decoder, tokenizer policy, and dataset provenance remain unauthenticated"), inspection_status="AUTHENTICATED_EVIDENCE_COMPLETE", allow_existing=True, model_license=model_license, policy=policy, config=config_evidence, preprocessor=preprocessor_evidence, tensors=tensor_evidence, companion_tokenizer={"repository": TOKENIZER_REPOSITORY, "revision": TOKENIZER_REVISION, "model_weights": "NOT_DOWNLOADED", "files": tokenizer_files, "contract": tokenizer_contract}, official_source=sources, streaming_contract=streaming_contract, license_evidence=manifest_license_evidence(model_license, sources), dataset_provenance={"status": "BLOCKED_UNAUTHENTICATED"}, packets=packets)
     return 2
 
 
@@ -861,6 +997,38 @@ def self_test() -> None:
             raise AssertionError(f"obsolete config key accepted: {section}.{old_key}")
     with tempfile.TemporaryDirectory(prefix="vokra-vibevoice-realtime-") as directory:
         root = Path(directory); huge = root / "huge.safetensors"; huge.write_bytes((MAX_HEADER_BYTES + 1).to_bytes(8, "little"))
+        packet_fixture = root / "packet-fixture"
+        packet_fixture.mkdir()
+        for packet_name in PACKET_FILES:
+            (packet_fixture / packet_name).write_text(packet_name + "\n", encoding="utf-8")
+        packet_evidence = packet_hashes(packet_fixture)
+        assert set(packet_evidence) == PACKET_FILES and "streaming-contract.json" in packet_evidence
+        (packet_fixture / "streaming-contract.json").unlink()
+        try:
+            packet_hashes(packet_fixture)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("streaming contract packet was not required")
+        tokenizer_fixture = root / "tokenizer-fixture"
+        tokenizer_fixture.mkdir()
+        (tokenizer_fixture / "LICENSE").write_text("Qwen tokenizer license text\n", encoding="utf-8")
+        (tokenizer_fixture / "tokenizer_config.json").write_text(json.dumps({"tokenizer_class": "Qwen2TokenizerFast", "model_max_length": 8192}), encoding="utf-8")
+        (tokenizer_fixture / "tokenizer.json").write_text(json.dumps({"model": {"type": "BPE", "vocab": {"a": 0}, "merges": ["a b"]}}), encoding="utf-8")
+        (tokenizer_fixture / "vocab.json").write_text(json.dumps({"a": 0}), encoding="utf-8")
+        (tokenizer_fixture / "merges.txt").write_text("#version: 0.2\na b\n", encoding="utf-8")
+        tokenizer_contract = validate_tokenizer_files(tokenizer_fixture, TOKENIZER_SELECTED)
+        assert tokenizer_contract["status"] == "AUTHENTICATED_STRUCTURE_ONLY"
+        (tokenizer_fixture / "merges.txt").write_text("#version: 0.2\na b\na b\n", encoding="utf-8")
+        try:
+            validate_tokenizer_files(tokenizer_fixture, TOKENIZER_SELECTED)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("duplicate tokenizer merge accepted")
+        (tokenizer_fixture / "merges.txt").write_text("#version: 0.2\na b\n", encoding="utf-8")
+        (tokenizer_fixture / "merges.txt").write_text("a b\n", encoding="utf-8")
+        assert validate_tokenizer_files(tokenizer_fixture, TOKENIZER_SELECTED)["status"] == "AUTHENTICATED_STRUCTURE_ONLY"
         try:
             inspect_safetensors(huge)
         except RuntimeError:
@@ -943,7 +1111,8 @@ def self_test() -> None:
             subprocess.run(["git", "-C", str(path), "config", "user.name", "VibeVoice self-test"], check=True)
             for role in role_paths:
                 role_path = path / role; role_path.parent.mkdir(parents=True, exist_ok=True)
-                role_path.write_text(license_text if role == "LICENSE" else f"fixture role {role}\n", encoding="utf-8")
+                fixture_text = license_text if role == "LICENSE" else "\n".join(STREAMING_SOURCE_MARKERS.get(role, (f"fixture role {role}",))) + "\n"
+                role_path.write_text(fixture_text, encoding="utf-8")
             (path / "safe-link").symlink_to("LICENSE")
             subprocess.run(["git", "-C", str(path), "add", *role_paths, "safe-link"], check=True)
             subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "authenticated fixture"], check=True)
@@ -959,6 +1128,7 @@ def self_test() -> None:
         positive_transformers_revision, positive_transformers_roles = authenticated_fixture(positive_transformers, TRANSFORMERS_REPOSITORY, tuple(TRANSFORMERS_ROLE_BLOBS), apache_text, TRANSFORMERS_TAG)
         positive_inventory = source_inventory(positive_source, positive_transformers, source_revision=positive_source_revision, source_roles=positive_source_roles, transformers_revision=positive_transformers_revision, transformers_roles=positive_transformers_roles)
         assert positive_inventory["source"]["status"] == "AUTHENTICATED" and positive_inventory["transformers"]["status"] == "AUTHENTICATED"
+        assert validate_streaming_source_contract(positive_source)["status"] == "AUTHENTICATED_STRUCTURE_ONLY"
         safe_links = [row for row in positive_inventory["source"]["tracked_files"] if row["path"] == "safe-link"]
         assert len(safe_links) == 1 and safe_links[0]["mode"] == "120000" and safe_links[0]["symlink_target_hex"] == b"LICENSE".hex()
         text_tokenizer = "vibevoice/modular/modular_vibevoice_text_tokenizer.py"
@@ -980,6 +1150,12 @@ def self_test() -> None:
         assert missing_inventory["source"]["status"] == "BLOCKED"
         assert any(f"missing/untracked role: {text_tokenizer}" in item for item in missing_inventory["source"]["blockers"])
         (positive_source / text_tokenizer).write_text("tampered role\n", encoding="utf-8")
+        try:
+            validate_streaming_source_contract(positive_source)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("tampered streaming source marker accepted")
         tampered_inventory = source_inventory(
             positive_source,
             positive_transformers,
@@ -990,7 +1166,7 @@ def self_test() -> None:
         )
         assert tampered_inventory["source"]["status"] == "BLOCKED"
         assert any(f"tracked object mismatch: {text_tokenizer}" in item for item in tampered_inventory["source"]["blockers"])
-        (positive_source / text_tokenizer).write_text(f"fixture role {text_tokenizer}\n", encoding="utf-8")
+        (positive_source / text_tokenizer).write_text("\n".join(STREAMING_SOURCE_MARKERS[text_tokenizer]) + "\n", encoding="utf-8")
         (positive_source / "escape-link").symlink_to("../outside")
         subprocess.run(["git", "-C", str(positive_source), "add", "escape-link"], check=True)
         subprocess.run(["git", "-C", str(positive_source), "commit", "-q", "-m", "unsafe symlink fixture"], check=True)

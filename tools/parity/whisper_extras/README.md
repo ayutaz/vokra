@@ -26,8 +26,8 @@ the legacy family route and must not be used for this v2.2 packet.
 For the reference dumper itself, use:
 
 ```bash
-uv sync --frozen --project tools/parity/whisper_extras
-uv run --frozen --project tools/parity/whisper_extras python \
+uv sync --frozen --python 3.12 --project tools/parity/whisper_extras
+uv run --frozen --python 3.12 --project tools/parity/whisper_extras python \
   tools/parity/whisper_extras/dump_reference.py \
   --model distil_whisper --checkpoint-dir /vast/hf-snapshot \
   --audio tests/fixtures/audio/jfk-30s.wav --output-dir /vast/reference
@@ -47,6 +47,26 @@ names v2.0 (or lacks the dedicated upstream metadata keys) is rejected
 fail-closed by the Rust harness. Select `kotoba-whisper-v2.2` explicitly in
 the converter so the artifact carries the authenticated release identity. Do
 not run the model generator on the maintainer Mac or upload its output.
+
+Before a VAST run, the dependency/API contract can be checked without opening
+any checkpoint:
+
+```bash
+uv run --frozen --python 3.12 --project tools/parity/whisper_extras python \
+  tools/parity/whisper_extras/dump_reference.py --api-self-test
+```
+
+This imports only the pinned NumPy, PyTorch, and Transformers packages and
+checks the official `WhisperProcessor` / `WhisperForConditionalGeneration`
+modules and call signatures. It does not call `from_pretrained`, construct a
+model, read weights, or establish numerical parity. The locked PyTorch 2.13.0
+macOS wheel is arm64-only and targets macOS 14; the authoritative real-weight
+route remains the Linux x86_64 VAST worker.
+
+The VAST runner executes this check immediately after `uv sync --frozen` and
+before the Cargo build or any snapshot download. Its output is captured as
+`evidence/api-self-test.log` and the SHA-256 is recorded in
+`evidence/input-sha256.txt`.
 
 ## Apple Silicon handoff
 

@@ -68,16 +68,16 @@ uv run --no-project --offline --python 3.12 \
   --license-manifest /vast/input/license_gate_manifest.json
 
 # Only after the gate passes:
-uv sync --frozen --project tools/parity/cosyvoice2_hift_reference
+uv sync --frozen --python 3.12 --project tools/parity/cosyvoice2_hift_reference
 
-VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --offline --project tools/parity/cosyvoice2_hift_reference \
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --offline --python 3.12 --project tools/parity/cosyvoice2_hift_reference \
   python tools/parity/cosyvoice2_hift_prepare_checkpoint.py \
   --checkpoint /vast/input/hift.pt \
   --manifest /vast/input/tensor_manifest.json \
   --license-manifest /vast/input/license_gate_manifest.json \
   --output /vast/output/hift.safetensors
 
-VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --offline --project tools/parity/cosyvoice2_hift_reference \
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --offline --python 3.12 --project tools/parity/cosyvoice2_hift_reference \
   python tools/parity/cosyvoice2_hift_dump_reference.py \
   --source /vast/input/CosyVoice \
   --checkpoint /vast/input/hift.pt \
@@ -119,8 +119,8 @@ closure and therefore run only after owner authorization on a Linux x86_64 VAST
 worker:
 
 ```sh
-VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --project tools/parity/cosyvoice2_hift_reference \
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --python 3.12 --project tools/parity/cosyvoice2_hift_reference \
   python tools/parity/cosyvoice2_hift_prepare_checkpoint.py --self-test
-VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --project tools/parity/cosyvoice2_hift_reference \
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --python 3.12 --project tools/parity/cosyvoice2_hift_reference \
   python tools/parity/cosyvoice2_hift_dump_reference.py --self-test
 ```

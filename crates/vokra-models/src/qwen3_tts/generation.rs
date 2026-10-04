@@ -1971,9 +1971,9 @@ mod tests {
                 .is_some_and(|rows| rows <= 17)
         );
         assert!(
-            !10usize
+            10usize
                 .checked_add(complete_frame_limit(8))
-                .is_some_and(|rows| rows <= 16)
+                .is_none_or(|rows| rows > 16)
         );
     }
 

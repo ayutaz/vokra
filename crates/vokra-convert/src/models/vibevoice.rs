@@ -1,9 +1,9 @@
-//! **VibeVoice-1.5B**: safetensors checkpoint → GGUF conversion
+//! **VibeVoice**: safetensors checkpoint → GGUF conversion
 //! (SoTA plan Phase 4, 2026-07-24).
 //!
-//! Input: the upstream `microsoft/VibeVoice-1.5B` release —
-//! `model.safetensors` (BF16). The public converter currently emits no
-//! artifact: this family remains `INSPECTION_ONLY` until the official
+//! Input for the base variant: the upstream `microsoft/VibeVoice-1.5B` release —
+//! `model.safetensors` (BF16). The base public converter currently emits no
+//! artifact: that variant remains `INSPECTION_ONLY` until the official
 //! tokenizer companion, prefill contract, and scheduler-backed native graph
 //! have been authenticated. The existing strict public GGUF binder is kept
 //! for the already-proven partial artifact.
@@ -61,13 +61,15 @@
 //! is not executed by conversion, and native tokenizer/scheduler/runtime
 //! implementation remains a separately gated follow-up.
 
-#[cfg(test)]
 use vokra_core::LicenseClass;
-#[cfg(test)]
-use vokra_core::gguf::{GgmlType, chunks};
-use vokra_core::gguf::{GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
+use crate::safetensors::SafetensorsFile;
+
+use super::canary_1b_flash::{hex, sha256};
 
 /// `vokra.model.arch` for VibeVoice-1.5B GGUFs — kept in sync with the
 /// runtime constant `vokra-models::vibevoice::EXPECTED_ARCH`.
@@ -546,6 +548,27 @@ const RT_DIFFUSION_HEAD_HIDDEN_SIZE: u32 = 896;
 // Streaming-only top-level axis.
 const RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS: u32 = 20;
 
+/// Immutable identity of the authenticated Realtime checkpoint.  The
+/// converter intentionally accepts no other safetensors file: the official
+/// source is the only descriptor/weight contract that has been reviewed.
+pub(crate) const RT_MODEL_REVISION: &str = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4";
+pub(crate) const RT_SOURCE_REVISION: &str = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600";
+const RT_CHECKPOINT_BYTES: usize = 2_035_332_888;
+const RT_CHECKPOINT_SHA256: &str =
+    "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514";
+const RT_TENSOR_COUNT: usize = 605;
+/// SHA-256 of the canonical descriptor stream (sorted tensor name, NUL,
+/// little-endian rank, little-endian dimensions).  This stream was derived
+/// from the authenticated checkpoint header; it is not a substitute for the
+/// full checkpoint digest above.
+const RT_TENSOR_MANIFEST_SHA256: &str =
+    "6261f046af74d89ed6e203fb9fb21692fd91567c11e41b4e5fd81b39c0b0cb28";
+const KEY_SOURCE_REVISION: &str = "vokra.vibevoice.source_revision";
+const KEY_MODEL_REVISION: &str = "vokra.vibevoice.model_revision";
+const KEY_CHECKPOINT_BYTES: &str = "vokra.vibevoice.checkpoint_bytes";
+const KEY_CHECKPOINT_SHA256: &str = "vokra.vibevoice.checkpoint_sha256";
+const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.vibevoice.tensor_manifest_sha256";
+
 // Compile-time algebra pins for the Realtime-0.5B constants -- mirror
 // of the 1.5B pins in `transcribed_constants_match_primary_source`
 // below, promoted to const-eval so a shape drift fails at build time.
@@ -570,19 +593,136 @@ const _: () = {
     assert!(RT_DECODER_N_LAYER != DECODER_N_LAYER);
 };
 
-/// Refuse conversion of the unauthenticated Realtime-0.5B composite.
+/// Converts the one authenticated Realtime-0.5B checkpoint to GGUF.
 ///
-/// The old pass-through path emitted a runtime-looking GGUF from arbitrary
-/// safetensors and accepted caller-supplied license labels.  The VAST
-/// inspection wave must authenticate the complete snapshot, source, and
-/// companion tokenizer before a converter can emit any artifact.
+/// This is deliberately a byte-pinned conversion boundary.  The full input
+/// digest authenticates the source bytes; the independently recorded
+/// descriptor digest then authenticates all tensor names and shapes before
+/// any tensor is copied into the output.  A different revision, partial
+/// checkpoint, synthetic fixture, or non-BF16 input remains fail-closed.
 pub(crate) fn convert_realtime_05b(
     bytes: Vec<u8>,
 ) -> Result<(GgufBuilder, VibeVoiceReport), ConvertError> {
-    let _ = bytes;
-    Err(ConvertError::Usage(
-        "VibeVoice-Realtime-0.5B conversion is INSPECTION_ONLY: complete authenticated HF snapshot, official source, companion tokenizer, and runtime binding are not approved; no GGUF may be emitted (HF microsoft/VibeVoice-Realtime-0.5B@6bce5f06044837fe6d2c5d7a71a84f0416bd57e4)".into(),
-    ))
+    if bytes.len() != RT_CHECKPOINT_BYTES {
+        return Err(ConvertError::Usage(format!(
+            "vibevoice-realtime: authenticated checkpoint length mismatch: got {} bytes, expected {}",
+            bytes.len(),
+            RT_CHECKPOINT_BYTES
+        )));
+    }
+    let actual_checkpoint_sha256 = hex(&sha256(&bytes));
+    if actual_checkpoint_sha256 != RT_CHECKPOINT_SHA256 {
+        return Err(ConvertError::Usage(format!(
+            "vibevoice-realtime: refusing unauthenticated checkpoint SHA-256 {actual_checkpoint_sha256}; expected {RT_CHECKPOINT_SHA256} for microsoft/VibeVoice-Realtime-0.5B@{RT_MODEL_REVISION}"
+        )));
+    }
+
+    let st =
+        SafetensorsFile::parse(bytes).map_err(|error| ConvertError::Parse(error.to_string()))?;
+    validate_realtime_checkpoint(&st)?;
+
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH_STREAMING);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME_REALTIME_05B);
+    builder.add_string(KEY_SOURCE_REVISION, RT_SOURCE_REVISION);
+    builder.add_string(KEY_MODEL_REVISION, RT_MODEL_REVISION);
+    builder.add_u32(KEY_CHECKPOINT_BYTES, RT_CHECKPOINT_BYTES as u32);
+    builder.add_string(KEY_CHECKPOINT_SHA256, RT_CHECKPOINT_SHA256);
+    builder.add_string(KEY_TENSOR_MANIFEST_SHA256, RT_TENSOR_MANIFEST_SHA256);
+    write_hparams_realtime_05b(&mut builder);
+    // The authenticated HF distribution is MIT.  This stamp is intentionally
+    // lower-case and uses the exact source slug because the strict runtime
+    // binder treats both fields as an identity check, not as free-form text.
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::Permissive,
+        "mit",
+        Some(NAME_REALTIME_05B),
+        Some(VibeVoiceVariant::Realtime05B.upstream_hf()),
+    );
+
+    let mut report = VibeVoiceReport {
+        written: 0,
+        skipped_non_float: 0,
+        bf16_passthrough: 0,
+        notes: vec![format!(
+            "authenticated {} tensors from microsoft/VibeVoice-Realtime-0.5B@{}; \
+             conversion does not claim tokenizer, forward, numerical parity, or \
+             public publication readiness",
+            RT_TENSOR_COUNT, RT_MODEL_REVISION
+        )],
+    };
+    for tensor in st.tensors() {
+        if tensor.dtype != GgmlType::BF16 {
+            // validate_realtime_checkpoint currently makes this unreachable;
+            // keep the arm explicit so a future reader expansion cannot
+            // silently widen or discard a new dtype.
+            report.skipped_non_float += 1;
+            continue;
+        }
+        builder
+            .add_tensor(
+                &tensor.name,
+                GgmlType::BF16,
+                tensor.shape.clone(),
+                st.tensor_bytes(tensor).to_vec(),
+            )
+            .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+        report.written += 1;
+        report.bf16_passthrough += 1;
+    }
+    Ok((builder, report))
+}
+
+fn validate_realtime_checkpoint(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    if st.tensors().len() != RT_TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "vibevoice-realtime: tensor count {}, expected {RT_TENSOR_COUNT}",
+            st.tensors().len()
+        )));
+    }
+    let actual_manifest_sha256 = realtime_manifest_sha256(st);
+    if actual_manifest_sha256 != RT_TENSOR_MANIFEST_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "vibevoice-realtime: tensor manifest SHA-256 {actual_manifest_sha256} does not match authenticated manifest {RT_TENSOR_MANIFEST_SHA256}"
+        )));
+    }
+    for tensor in st.tensors() {
+        if tensor.dtype != GgmlType::BF16 {
+            return Err(ConvertError::Parse(format!(
+                "vibevoice-realtime: tensor `{}` has dtype {:?}; authenticated manifest is all BF16",
+                tensor.name, tensor.dtype
+            )));
+        }
+        let expected_bytes = tensor.element_count().checked_mul(2).ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "vibevoice-realtime: tensor `{}` element count overflows",
+                tensor.name
+            ))
+        })?;
+        if st.tensor_bytes(tensor).len() as u64 != expected_bytes {
+            return Err(ConvertError::Parse(format!(
+                "vibevoice-realtime: tensor `{}` payload length does not match its shape",
+                tensor.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn realtime_manifest_sha256(st: &SafetensorsFile) -> String {
+    let mut tensors = st.tensors().iter().collect::<Vec<_>>();
+    tensors.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut canonical = Vec::new();
+    for tensor in tensors {
+        canonical.extend_from_slice(tensor.name.as_bytes());
+        canonical.push(0);
+        canonical.extend_from_slice(&(tensor.shape.len() as u64).to_le_bytes());
+        for dimension in &tensor.shape {
+            canonical.extend_from_slice(&dimension.to_le_bytes());
+        }
+    }
+    hex(&sha256(&canonical))
 }
 
 /// Writes the `vokra.vibevoice.*` chunk group for the Realtime-0.5B
@@ -717,7 +857,7 @@ fn write_hparams_realtime_05b(b: &mut GgufBuilder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+    use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 
     fn minimal_safetensors_one_f32() -> Vec<u8> {
         // Single f32 tensor so the pass-through arm fires once and the
@@ -1422,28 +1562,118 @@ mod tests {
     }
 
     #[test]
-    fn realtime_bf16_input_refuses_without_artifact() {
+    fn realtime_bf16_input_refuses_without_authenticated_checkpoint() {
         let error = convert_realtime_05b(minimal_safetensors_one_bf16())
-            .expect_err("Realtime BF16 input must remain inspection-only");
-        assert!(error.to_string().contains("INSPECTION_ONLY"));
+            .expect_err("synthetic BF16 input must not pass the exact checkpoint gate");
+        assert!(error.to_string().contains("length mismatch"));
     }
 
     #[test]
-    fn realtime_zero_tensor_input_refuses_without_artifact() {
+    fn realtime_zero_tensor_input_refuses_without_authenticated_checkpoint() {
         let error = convert_realtime_05b(minimal_safetensors_no_tensors())
-            .expect_err("Realtime zero-tensor input must remain inspection-only");
-        assert!(error.to_string().contains("INSPECTION_ONLY"));
+            .expect_err("synthetic empty input must not pass the exact checkpoint gate");
+        assert!(error.to_string().contains("length mismatch"));
     }
 
     #[test]
-    fn realtime_public_conversion_is_fail_closed() {
+    fn realtime_public_conversion_rejects_wrong_checkpoint_identity() {
         let error = convert_realtime_05b(minimal_safetensors_one_f32())
-            .expect_err("Realtime conversion must remain inspection-only");
-        assert!(error.to_string().contains("INSPECTION_ONLY"));
-        assert!(
-            error
-                .to_string()
-                .contains("6bce5f06044837fe6d2c5d7a71a84f0416bd57e4")
+            .expect_err("wrong dtype/checkpoint input must remain fail-closed");
+        assert!(error.to_string().contains("length mismatch"));
+        assert!(!error.to_string().contains("INSPECTION_ONLY"));
+    }
+
+    /// Compare a VAST-produced Realtime GGUF against the authenticated
+    /// safetensors source byte-for-byte at every tensor boundary.  This is
+    /// intentionally ignored: opening these two multi-gigabyte files is
+    /// forbidden on the maintainer Mac and must be an explicit VAST action.
+    #[test]
+    #[ignore = "VAST-only real-weight conversion integrity; run explicitly with --ignored"]
+    fn vast_realtime_conversion_preserves_all_tensor_payloads_and_identity() {
+        let input = std::env::var_os("VOKRA_VIBEVOICE_REALTIME_SAFETENSORS")
+            .expect("VAST integrity test requires VOKRA_VIBEVOICE_REALTIME_SAFETENSORS");
+        let output = std::env::var_os("VOKRA_VIBEVOICE_REALTIME_GGUF")
+            .expect("VAST integrity test requires VOKRA_VIBEVOICE_REALTIME_GGUF");
+
+        let source_bytes = std::fs::read(&input).expect("read authenticated safetensors source");
+        assert_eq!(
+            source_bytes.len(),
+            RT_CHECKPOINT_BYTES,
+            "VAST source length drifted"
+        );
+        assert_eq!(
+            hex(&sha256(&source_bytes)),
+            RT_CHECKPOINT_SHA256,
+            "VAST source SHA-256 drifted"
+        );
+        let source = SafetensorsFile::parse(source_bytes).expect("parse authenticated source");
+        validate_realtime_checkpoint(&source).expect("authenticated manifest must validate");
+
+        let artifact = GgufFile::open(&output).expect("open converted Realtime GGUF");
+        assert_eq!(artifact.tensors().len(), RT_TENSOR_COUNT);
+
+        let mut source_names = source
+            .tensors()
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect::<Vec<_>>();
+        let mut artifact_names = artifact
+            .tensors()
+            .iter()
+            .map(|tensor| tensor.name.as_str())
+            .collect::<Vec<_>>();
+        source_names.sort_unstable();
+        artifact_names.sort_unstable();
+        assert_eq!(artifact_names, source_names, "tensor name set drifted");
+
+        for source_tensor in source.tensors() {
+            let artifact_tensor = artifact
+                .tensor_info(&source_tensor.name)
+                .expect("every source tensor must exist in GGUF");
+            assert_eq!(
+                artifact_tensor.dtype,
+                GgmlType::BF16,
+                "dtype drifted for {}",
+                source_tensor.name
+            );
+            assert_eq!(
+                artifact_tensor.dimensions, source_tensor.shape,
+                "shape drifted for {}",
+                source_tensor.name
+            );
+            assert_eq!(
+                artifact.tensor_bytes(artifact_tensor),
+                source.tensor_bytes(source_tensor),
+                "payload drifted for {}",
+                source_tensor.name
+            );
+        }
+
+        let metadata_string = |key: &str| {
+            artifact
+                .get(key)
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| panic!("missing string metadata {key}"))
+        };
+        assert_eq!(metadata_string(chunks::KEY_MODEL_ARCH), ARCH_STREAMING);
+        assert_eq!(metadata_string(chunks::KEY_MODEL_NAME), NAME_REALTIME_05B);
+        assert_eq!(
+            metadata_string(chunks::KEY_PROVENANCE_SOURCE),
+            VibeVoiceVariant::Realtime05B.upstream_hf()
+        );
+        assert_eq!(metadata_string(chunks::KEY_PROVENANCE_LICENSE), "mit");
+        assert_eq!(metadata_string(KEY_SOURCE_REVISION), RT_SOURCE_REVISION);
+        assert_eq!(metadata_string(KEY_MODEL_REVISION), RT_MODEL_REVISION);
+        assert_eq!(metadata_string(KEY_CHECKPOINT_SHA256), RT_CHECKPOINT_SHA256);
+        assert_eq!(
+            metadata_string(KEY_TENSOR_MANIFEST_SHA256),
+            RT_TENSOR_MANIFEST_SHA256
+        );
+        assert_eq!(
+            artifact
+                .get(KEY_CHECKPOINT_BYTES)
+                .and_then(|value| value.as_u64()),
+            Some(RT_CHECKPOINT_BYTES as u64)
         );
     }
 }

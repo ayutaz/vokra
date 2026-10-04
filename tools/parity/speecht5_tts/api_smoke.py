@@ -26,7 +26,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from torch_compat import install_float8_import_compat, require_non_quantized_config, self_test as torch_compat_self_test
+from torch_compat import require_native_float8_dtype, require_non_quantized_config, self_test as torch_compat_self_test
 
 
 UPSTREAM_HF = "microsoft/speecht5_tts"
@@ -335,7 +335,7 @@ def validate_evidence_document(path: Path, status: str) -> dict[str, Any]:
         for key in ("input_sha256", "output_sha256", "call_checkpoint_sha256", "project_sha256", "lock_sha256", "package_rows_sha256", "package_sha256"):
             if not HEX64.fullmatch(str(value.get(key))):
                 raise RuntimeError(f"API smoke evidence has invalid {key}")
-        if value.get("float8_import_compat") not in {"native", "shimmed"}:
+        if value.get("float8_import_compat") != "native":
             raise RuntimeError("API smoke evidence has invalid float8_import_compat")
         if value.get("conversion_source_sha256") != SOURCE_WEIGHT_SHA256:
             raise RuntimeError("API smoke evidence lacks the original conversion source hash")
@@ -558,7 +558,7 @@ def run(checkpoint: Path, project_dir: Path, output_dir: Path, approval_path: Pa
         # Imports are intentionally kept inside the post-preflight block.
         import numpy as np
         import torch
-        float8_import_compat = install_float8_import_compat(torch)
+        float8_import_compat = require_native_float8_dtype(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
         stage = "model_load"
@@ -856,7 +856,7 @@ def self_test() -> int:
         else:
             raise AssertionError("unknown extra approval field was accepted")
         pass_doc: dict[str, Any] = {key: None for key in PASS_EVIDENCE_KEYS}
-        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "shimmed", "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT, "call": {"checkpoint_sha256": SAFE_TENSOR_WEIGHT_SHA256, "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT}})
+        pass_doc.update({"format": "vokra-speecht5-api-smoke-v1", "status": "PASS", "publication": "NO_UPLOAD", "upload": "NOT_PERFORMED", "vokra_clean": True, "vokra_head": "a" * 40, "vokra_root": str(root), "preflight_gate": "PASS", "preflight_gate_sha256": "3" * 64, "preflight_manifest_sha256": "4" * 64, "approval_evidence_sha256": "a" * 64, "approval_scope_sha256": "b" * 64, "approval_signer": "self-test", "project_dir": str(root), "input_sha256": "c" * 64, "output_sha256": "d" * 64, "call_checkpoint_sha256": "e" * 64, "project_sha256": "f" * 64, "lock_sha256": "0" * 64, "package_rows_sha256": "1" * 64, "package_sha256": "2" * 64, "float8_import_compat": "native", "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT, "call": {"checkpoint_sha256": SAFE_TENSOR_WEIGHT_SHA256, "conversion_source_sha256": SOURCE_WEIGHT_SHA256, "weight_loading": SAFE_TENSOR_LOAD_CONTRACT}})
         pass_dir = root / "pass"
         pass_dir.mkdir()
         pass_path = pass_dir / "evidence.json"

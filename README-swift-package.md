@@ -1,11 +1,13 @@
 # Vokra Swift Package
 
-The workspace is `0.3.0` development. At the 2026-09-09 audit start, PR #79
-was at head `9efcd16e`. No Git tag or GitHub Release is available yet; the
-package is consumed from repository source or a locally built XCFramework
-until an authorized release is published. Apple Silicon CPU/Metal hardware
-evidence is not implied by this source-package guide and remains a separate
-Scaleway gate.
+The workspace release is `0.3.0` (`v0.3.0`), and the XCFramework is published
+as the GitHub Release asset `Vokra.xcframework.zip`. This guide was reviewed
+on 2026-10-04 against the local documentation head `3a3fd822`; that checkout
+is a working branch and is not a replacement for the released tag. The tagged
+source's `Package.swift` still uses the local XCFramework path, so a clean tag
+checkout does not automatically resolve the remote asset. Apple Silicon
+CPU/Metal hardware evidence is not implied by this package guide and remains a
+separate, row-scoped validation gate.
 
 Consumer instructions for integrating Vokra into an iOS/macOS app via Swift Package Manager.
 
@@ -15,19 +17,18 @@ Apache-2.0 (NFR-LC-01). See `LICENSE` at the repository root. The XCFramework is
 
 ## Add to an Xcode project
 
-There is no tagged release or release asset yet. The repository's
-`Package.swift` currently points at the locally generated
-`build/ios/Vokra.xcframework`, so a remote repository dependency cannot resolve
-from a clean clone. Use the local flow below until an authorized CD release
-publishes the XCFramework.
+The `v0.3.0` GitHub Release publishes the XCFramework and checksum. The tagged
+source manifest uses a local binary target, so use the local flow below for a
+clean tag checkout, or place the explicit URL/checksum target shown below in a
+consumer-side manifest when consuming the release asset.
 
-1. Clone the repository and check out the audit-start PR #79 head verified on
-   2026-09-09:
+1. Clone the repository, check out the released tag, and build the local
+   XCFramework:
 
    ```sh
    git clone https://github.com/ayutaz/vokra.git
    cd vokra
-   git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
+   git checkout --detach v0.3.0
    scripts/build-ios.sh
    ```
 
@@ -49,10 +50,17 @@ targets: [
 ```
 
 The `../vokra` path is illustrative; adjust it to the checkout created above.
-The exact revision is selected by the `git checkout` step, not by a currently
-usable remote SwiftPM dependency. After CD publishes an authorized release
-asset and patches the package's binary target to its URL and checksum, a
-versioned remote dependency can be documented here.
+For a released application that consumes the remote asset, use the explicit
+`url`/`checksum` target below in the consumer's package manifest. Do not
+replace the checksum with an unverified local or third-party artifact.
+
+```swift
+.binaryTarget(
+    name: "Vokra",
+    url: "https://github.com/ayutaz/vokra/releases/download/v0.3.0/Vokra.xcframework.zip",
+    checksum: "fe74aeb45cc44c7fc2a1875bdd61af7d88c4ae87d2966851c88cfa4e9dcbc5a5"
+)
+```
 
 ## Usage
 
@@ -68,11 +76,17 @@ defer { vokra_session_destroy(s) }
 // ... call vokra_asr_transcribe / vokra_tts_synthesize etc.
 ```
 
-Minimum platforms: iOS 15.0, macOS 12.0. Metal backend is enabled by default; CUDA is unavailable on iOS by design (see `docs/adr/` iOS build ADR).
+Minimum platforms: iOS 15.0, macOS 12.0. The iOS build enables the Metal
+feature and rejects CUDA at build time; backend availability is still checked
+at runtime and unsupported work returns an explicit error rather than silently
+falling back to CPU.
 
 ## Development vs Release
 
-- **Local dev / CI** — `Package.swift` uses `.binaryTarget(name: "Vokra", path: "build/ios/Vokra.xcframework")`. Build the XCFramework locally with `scripts/build-ios.sh`; the artifact lands at `build/ios/Vokra.xcframework`.
-- **Release (future, after authorized CD)** — `Package.swift` may be patched to
-  a `.binaryTarget` URL and checksum for a GitHub Release asset. Consumers can
-  pin the tag once that release exists; there is no current release asset.
+- **Local dev / the `v0.3.0` tag** — `Package.swift` uses
+  `.binaryTarget(name: "Vokra", path: "build/ios/Vokra.xcframework")`.
+  Build it with `scripts/build-ios.sh`; the artifact lands at
+  `build/ios/Vokra.xcframework`.
+- **Release asset (`v0.3.0`)** — use the explicit URL and checksum in the
+  consumer-side manifest shown in the iOS tutorial. The GitHub asset is
+  published, but the tag's source manifest remains local-path based.
