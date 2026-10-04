@@ -104,7 +104,7 @@ cleared by ignoring the generic notices or reading Torch's metadata alone.
 | NumPy | Current Linux PyPI wheel bundles Fortran runtimes | Pinned source build, artifact hash, build flags, RECORD and ELF/system-library closure audit; currently an unbuilt derived candidate |
 | Torch/libgomp | Actual native library and `NEEDED` bindings, but source/license/exception identity unresolved | Primary source/build/notice evidence tied to the exact bundled bytes and project-policy disposition |
 
-The official [pinned XCodec2 decoder](https://huggingface.co/HKUSTAudio/xcodec2/blob/e9463f16b1a4af077e9d96c06ae99bebc8639c1ee/vq/codec_decoder_vocos.py)
+The official [pinned XCodec2 decoder](https://huggingface.co/HKUSTAudio/xcodec2/blob/e9463f16b1a4af077e9d96c06ae99beb8639c1ee/vq/codec_decoder_vocos.py)
 uses `ResidualFSQ`; [einx 0.4.3 publisher metadata](https://pypi.org/pypi/einx/0.4.3/json)
 declares frozendict. Reviewed older einx releases also retain this dependency;
 no clean official replacement was found in this investigation. Replacing
@@ -141,6 +141,17 @@ exclusion, or blanket CI rerun is used. Local actionlint and workflow-hygiene
 checks cover this configuration change; the new-head remote link verdict
 remains to be observed. CI remediation does not resolve the license conflicts
 or authorize model execution, publication, or merge.
+
+At follow-up head `4fa38735603d6657253b423bebcdf2ed5b55eda0`, run
+`37198249231`, job `111424459319`, reported 847 total / 385 unique links,
+819 successful checks, zero timeouts and one HTTP 404. No HTTP 429 remained
+in that run; this single observation does not prove permanent rate-limit
+resolution. The remaining 404 was the decoder citation above: its revision
+had an extra `c`, producing 41 characters rather than the publisher's
+40-character Git revision. The citation now uses the authenticated publisher
+page. This corrects only the documentation URL, not a model/source execution
+pin, approval, license classification, or numerical contract. Fresh CI must
+verify the corrected documentation head.
 
 ### Dependency and model gates
 
