@@ -12,8 +12,9 @@ EU/Californiaの施行・経過措置を今回の日付で再認証できてい�
 適用主体を再確認する。取得できた[Appleガイドライン](https://developer.apple.com/app-store/review/guidelines/)
 の5.5は引き続きMDMであり、[Google Play AI policy](https://support.google.com/googleplay/android-developer/answer/13985936)
 も生成AIアプリの報告機構等を扱うが、SDK実装だけで規約適合を保証しない。
-[S.1367の公式status](https://www.congress.gov/bill/119th-congress/senate-bill/1367)
-は取得ページではIntroducedだが、キャッシュされた観測を新しい成立状況の保証としない。
+[S.1367の公式提出時記録（GovInfo）](https://www.govinfo.gov/app/details/BILLS-119s1367is)
+は2025-04-09の上院提出版（IS）であり、現在の審議・成立状況を保証するものではない。
+以前のCongress.gov取得ページでのIntroducedというキャッシュ観測も、現在の成立状況の保証としない。
 法務文書の全面的な現行法再確認は未完了であり、owner/legal sign-offを追加・変更していない。
 
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
