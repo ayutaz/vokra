@@ -143,9 +143,9 @@ had to be deferred to e2e for these stages.
 
 ## Variant tag (`vokra.silero.version`, added 2026-07-30)
 
-`SileroWeights` carries a [`SileroVariant`](../../vokra-vad-micro/src/lib.rs)
+`SileroWeights` carries a [`SileroVariant`](../../../vokra-vad-micro/src/lib.rs)
 tag (V5 / V6_2_1) read from the GGUF's `vokra.silero.version` metadata key
-([`vokra_core::gguf::silero`](../../vokra-core/src/gguf/silero.rs)). The
+([`vokra_core::gguf::silero`](../../../vokra-core/src/gguf/silero.rs)). The
 loader contract is:
 
 - **absent key** → V5 (backward compat with pre-tagging GGUFs, including

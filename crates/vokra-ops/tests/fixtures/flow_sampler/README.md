@@ -8,7 +8,7 @@ eight-step F5 sway Heun with dual-forward CFG at scale 1.75.
 Regenerate from `tools/parity`:
 
 ```sh
-uv run flow_sampler_dump_reference.py
+uv run --project . --frozen --python 3.12 python flow_sampler_dump_reference.py
 ```
 
 The Rust test reads the three little-endian float32 files directly and uses a

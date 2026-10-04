@@ -2,8 +2,9 @@
 
 [English](python.md) | **日本語**
 
-> **実装状態（2026-09-09 照合）: workspace `0.3.0` development、source 実装済み・
-> 未公開。** package root は
+> **実装状態（2026-10-04 照合）: workspace release `0.3.0`、source 実装済み・
+> Python package は PyPI 未公開。GitHub `v0.3.0` release には wheel asset が
+> ありますが、PyPI 公開は未検証・未承認です。** package root は
 > `Session`、`Stream`、`Event`、typed error を export し、生成 table は現行 C ABI
 > の全 function を覆います。PyPI 公開は未検証・未承認です。正確な
 > gate は [binding README](../../bindings/python/README.md) を参照してください。
@@ -14,8 +15,8 @@
 - runtime dependency は空。NumPy は任意の interop のみ。
 - public source API: `Session`、`Stream`、`Event`、9 個の error subclass。
   音声 file の decode は caller 側の責務です。
-- 生成済み FFI table: 現行 C header の全 function、4 enums、2 concrete
-  15 typedef、4 enums、2 concrete structs、9 opaque handles。
+- 生成済み FFI table: 現行 C header の全 57 functions、15 typedefs、4 enums、
+  2 concrete structs、9 opaque handles。
 - CI 契約: required `license` job がgenerator driftを検査し、各wheel smokeが
   public names、table件数、native symbolsのloadを検証します。
 

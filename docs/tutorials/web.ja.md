@@ -14,11 +14,12 @@
 ## 1. インストール
 
 ```sh
-npm install @vokra/web
+scripts/build-wasm.sh pkg
+npm install ./web/pkg
 ```
 
-> npm scope の登録はメンテナ作業（M4-01-T27）です。初回 registry publish
-> までは repo からビルドしてください: `scripts/build-wasm.sh pkg` → `web/pkg/`。
+source package は現在 `0.0.0-dev` で、npm registry には未公開です。別途承認
+された npm 公開が行われるまでは local package を使ってください。
 
 ## 2. モデルの用意
 

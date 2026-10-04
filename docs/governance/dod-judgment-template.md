@@ -1,9 +1,10 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
-> **Current state (2026-09-09):** `release-cadence.yml` and
-> `tools/release/test_cadence.py` are landed. There are currently **0 git tags,
-> 0 GitHub releases, and 0 quarterly review records**, so the cadence item is
-> not established. The fields below remain blank for the owner to judge; these
+> **Current state (2026-10-04):** `release-cadence.yml` and
+> `tools/release/test_cadence.py` are landed. The all-pages API reports **one
+> tag and one GitHub release** (`v0.3.0`, 2026-09-20); there are zero tracked
+> quarterly review records. A single release does not establish the cadence item.
+> The fields below remain blank for the owner to judge; these
 > facts must not be turned into a pass.
 
 > **This file is a blank template.** Copy it to
@@ -41,6 +42,10 @@
    the parity evidence and the owner's judgment.
 
 ## How to produce each item's material
+
+Model/corpus-backed DoD scoring is an authorized remote VAST task, not a
+maintainer-Mac recipe. The table lists producer interfaces only; this
+documentation refresh does not run them or imply publication approval.
 
 | Item | Material producer | Command |
 |---|---|---|
@@ -93,9 +98,9 @@ the tag/release reading — doing so would split one judgment across two places
 and drift. Record item 3 from X-07's output + the go-nogo record.
 
 - **X-07 cadence mechanism landed?**: _(記入 — current: landed; `release-cadence.yml` + `tools/release/test_cadence.py`)_
-- **Releases published** (`git tag` / GitHub releases): _(記入 — current: 0; cadence not-established)_
+- **Releases published** (`git tag` / GitHub releases): _(記入 — 2026-10-04: one tag/release, v0.3.0; cadence not-established)_
 - **Release-interval history** (dates, gaps ≤ 28 days for stable operation): _(記入)_
-- **Item 3 verdict** (owner): _(記入 — "stable operation" cannot be true with 0 releases)_
+- **Item 3 verdict** (owner): _(記入 — a single release does not prove stable operation)_
 
 ### Item 4 — none of Kill switch A–L has fired
 

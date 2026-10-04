@@ -50,7 +50,7 @@ use super::encoder::{
 };
 use super::nn::{
     CausalConv1d, CausalConvTranspose1d, ConvState, ConvTrState, MimiTransformer,
-    MimiTransformerState, elu_inplace,
+    MimiTransformerState, elu_with_compute,
 };
 use crate::compute::Compute;
 use crate::csm::backbone::xavier_uniform;
@@ -103,6 +103,8 @@ pub struct MimiDecoderState {
     mid: Vec<Vec<f32>>,
     tf_rows: Vec<f32>,
     proj: Vec<f32>,
+    /// Maximum activation width for out-of-place GPU ELU dispatch.
+    elu: Vec<f32>,
 }
 
 impl std::fmt::Debug for MimiDecoderState {
@@ -445,6 +447,13 @@ impl MimiNeuralDecoder {
         // final conv out [1, t].
         let final_state = self.final_conv.state(t);
         bufs.push(vec![0.0f32; t]);
+        let elu_cap = bufs
+            .iter()
+            .chain(tmp.iter())
+            .chain(mid.iter())
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
         Ok(MimiDecoderState {
             frames_cap,
             frame_up: self.frame_up.state(frames_cap),
@@ -457,6 +466,7 @@ impl MimiNeuralDecoder {
             mid,
             tf_rows,
             proj: vec![0.0; dim],
+            elu: vec![0.0; elu_cap],
         })
     }
 
@@ -569,7 +579,11 @@ impl MimiNeuralDecoder {
         for (si, stage) in self.stages.iter().enumerate() {
             let (up_state, block_states) = &mut state.stages[si];
             // ELU → transposed upsample into the next edge.
-            elu_inplace(&mut state.bufs[edge][..ch * t]);
+            elu_with_compute(
+                &compute,
+                &mut state.bufs[edge][..ch * t],
+                &mut state.elu[..ch * t],
+            )?;
             let t_out = t * stage.up.stride;
             let out_ch = stage.up.out_ch;
             {
@@ -589,7 +603,11 @@ impl MimiNeuralDecoder {
             for (bi, block) in stage.blocks.iter().enumerate() {
                 let hidden = block.conv1.out_ch;
                 state.tmp[si][..ch * t].copy_from_slice(&state.bufs[edge][..ch * t]);
-                elu_inplace(&mut state.tmp[si][..ch * t]);
+                elu_with_compute(
+                    &compute,
+                    &mut state.tmp[si][..ch * t],
+                    &mut state.elu[..ch * t],
+                )?;
                 block.conv1.process_into(
                     &compute,
                     &mut block_states[bi].0,
@@ -597,7 +615,11 @@ impl MimiNeuralDecoder {
                     t,
                     &mut state.mid[si][..hidden * t],
                 )?;
-                elu_inplace(&mut state.mid[si][..hidden * t]);
+                elu_with_compute(
+                    &compute,
+                    &mut state.mid[si][..hidden * t],
+                    &mut state.elu[..hidden * t],
+                )?;
                 block.conv2.process_into(
                     &compute,
                     &mut block_states[bi].1,
@@ -613,7 +635,11 @@ impl MimiNeuralDecoder {
         }
 
         // ELU → final conv → [1, t] PCM.
-        elu_inplace(&mut state.bufs[edge][..ch * t]);
+        elu_with_compute(
+            &compute,
+            &mut state.bufs[edge][..ch * t],
+            &mut state.elu[..ch * t],
+        )?;
         {
             let (before, after) = state.bufs.split_at_mut(edge + 1);
             self.final_conv.process_into(
@@ -740,6 +766,21 @@ mod tests {
     fn decoder(project: bool) -> MimiNeuralDecoder {
         MimiNeuralDecoder::synthesized(&MimiNeuralConfig::tiny_for_tests(), 9, project)
             .expect("decoder")
+    }
+
+    #[test]
+    fn decoder_elu_scratch_covers_every_activation_source() {
+        let dec = decoder(true);
+        let state = dec.state(3).expect("state");
+        let max_source = state
+            .bufs
+            .iter()
+            .chain(state.tmp.iter())
+            .chain(state.mid.iter())
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
+        assert!(state.elu.len() >= max_source);
     }
 
     fn features(n_frames: usize, width: usize) -> Vec<f32> {

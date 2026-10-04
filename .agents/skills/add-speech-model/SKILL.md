@@ -47,7 +47,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
   # shared_pairs は shared_pairs.json に audit trail として吐く（後で復元ロジックが要る）
   ```
   [[reference-safetensors-shared-tensor-dedup]]。
-- **5D 以上の tensor**: GGUF writer は現状 4D まで（>4D は `"too many dimensions: 5"` で hard-error）。Qwen2.5-Omni 系 multimodal adapter が該当し publish blocked。回避 = writer 拡張 or `reshape(5D → 4D + metadata)`、判断は M6 investigation phase。着手前に上流 tensor shape を `uv run --project tools/parity python -c "import safetensors; ..."` で確認して 5D を含むなら **converter に着手しない**。[[project-gguf-5d-tensor-limit]]。
+- **5D 以上の tensor**: GGUF writer は現状 4D まで（>4D は `"too many dimensions: 5"` で hard-error）。Qwen2.5-Omni 系 multimodal adapter が該当し publish blocked。回避 = writer 拡張 or `reshape(5D → 4D + metadata)`、判断は M6 investigation phase。着手前に上流 tensor shape を `uv run --project tools/parity --python 3.12 python -c "import safetensors; ..."` で確認して 5D を含むなら **converter に着手しない**。[[project-gguf-5d-tensor-limit]]。
 
 ### 2.2 合計 2 GB 以上のモデル artefact は M1 iMac で処理しない
 
@@ -71,7 +71,10 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 - `docs/license-audit.md` に行追加（code/weight ライセンス・商用可否・学習データ由来）。
 - attribution / 配布条件があれば `NOTICE` に追記（例: Mimi は CC-BY 4.0 で credit 要）。
-- 対応モデルのstatusは `docs/license-audit.md` §3.1、現行M5/mac handoff（`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`）、および `scripts/publish/check-catalog-reality.sh` の実測を突合して更新。
+- 対応モデルのstatusは `docs/license-audit.md` §3.1、現行の pre-Scaleway
+  ledger（`docs/handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md`）、
+  実行計画（`docs/handoff/mac-cpu-metal-execution-plan-2026-09-07.md`）、
+  および `scripts/publish/check-catalog-reality.sh` の実測を突合して更新。
 - 調査値・レイテンシ・パラメータ数は **出典必須**（ハルシネーション厳禁）。不明なら `docs/_research/*.md` を読み返す。
 
 ## 7. 検証してコミット

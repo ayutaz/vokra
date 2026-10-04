@@ -32,7 +32,7 @@ environment:
 ```sh
 git clone https://github.com/myshell-ai/MeloTTS.git /tmp/melotts-upstream
 git -C /tmp/melotts-upstream checkout 209145371cff8fc3bd60d7be902ea69cbdb7965a
-uv run --project tools/parity/melotts --frozen \
+uv run --project tools/parity/melotts --frozen --python 3.12 \
   python tools/parity/melotts_dump_reference.py \
   --source-root /tmp/melotts-upstream \
   --variant <english|chinese|korean|spanish|japanese> \
