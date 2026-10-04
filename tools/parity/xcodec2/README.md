@@ -1,11 +1,51 @@
 # X-Codec2 official parity oracle
 
 > **Publication boundary (2026-10-04): `NO_UPLOAD`.** The primary-source
-> bytes and production-gate packet required for a replacement artifact are
-> still pending in the open draft PR #152 candidate (`b0add994b4d0350c338e60cb29b8165d8145fe32`).
+> license/build decisions and production-gate packet required for a replacement
+> artifact are still pending in open draft PR #152. The archive-only audit
+> verified candidate `a7bb24cbd7896d770d4da375febc3669b768ae9f`; it did not
+> approve execution or publication of the dependency closure.
 > That candidate is not merged and must not be described as released. The
 > audited GGUF hash below identifies an input only; it does not authorize
 > conversion, publication, or a fresh parity/completion claim.
+
+## Latest archive-only evidence and disposition — 2026-10-04
+
+The final A7 source candidate passed 35 stdlib-only tests and five helper
+self-tests on disposable VAST worker `54137450`. All 13 source/contract
+hashes, the clean HEAD, and main baseline
+`4d753d81b084f6d2369e330656035042fd00fb9f` matched before and after.
+The merged audit collected all 62 external archive rows; the earlier 61 rows
+were retained unchanged and only the missing Torch row was supplemented.
+This is **ARCHIVE_ONLY / BLOCKED_OWNER_REVIEW / NO_UPLOAD**, not approval of
+all 62 licenses, installed RECORD/build identity, or runtime compatibility.
+The worker and its stored data were destroyed after small-evidence recovery.
+
+Primary bytes confirm LGPLv3 in `frozendict==2.4.7` and in setuptools 84's
+vendored autocommand, and GPL/GCC-exception plus LGPL notices for NumPy 2.0.2's
+bundled Fortran components. The exact Torch wheel also contains
+`torch/lib/libgomp.so.1`, needed by `libtorch_cpu.so`, `libshm.so`, and
+`libtorch_global_deps.so`; its exact source/license/exception binding remains
+unresolved. Generic GPL notices in Torch's NVTX, kineto test, and llvm-openmp
+license trees are not by themselves proof that those components are in the
+selected native payload.
+
+`frozendict` is required by the official decoder's
+`xcodec2 -> vector-quantize-pytorch -> einx -> frozendict` path. Removing a
+lock edge or substituting our own FSQ implementation would not preserve the
+official independent oracle. Setuptools remains a Torch dependency even if
+the direct declaration is removed. De-vendored setuptools and a source-built
+NumPy wheel are unbuilt, unapproved candidates, not fixes. No downgrade to a
+vulnerable historical Torch pair or change to upstream dependency metadata
+is accepted as a shortcut.
+
+The [dated audit and remediation record](../../../docs/handoff/xcodec2-dependency-license-disposition-2026-10-04.md)
+binds the recovered receipt hashes, confirmed blockers, remaining evidence,
+and acceptance criteria. Its current readback supersedes the pending-primary
+collection and pending A7 remote-test statements in the older sections below;
+historical runs retain their own exact heads. The execution gate manifest
+still deliberately refuses the unapproved closure. This documentation update
+does not relabel the A7 test receipt as a test of a later documentation commit.
 
 ## 2026-10-04 existing-PR refresh boundary
 
