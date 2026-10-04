@@ -583,3 +583,36 @@ source still requires a new clean committed HEAD and exact-head remote
 Rust verification. The original secure dependency/native closure,
 composite approval, independent official capture, real-weight PCM/KV
 comparison and numerical disposition remain incomplete.
+
+## Actual library-test compilation and coverage correction — 2026-10-05 JST
+
+Clean candidate `d8a8d7fe2ae4dccd38ace311f42a91682c632082` was tested
+on owned VAST worker `54166305` using complete-history bundle SHA-256
+`f5607ae5d1f96f04556ccb23d49538aba8d67bedf02a8d564bfd2f6449fd7751`.
+The two old clippy commands passed, but the first actual library-test build
+failed with five errors: missing `AsBytes` trait for two mmap calls, nonexistent
+`JsonValue::as_f64`, `Vec::len` where the JSON API returns a slice, and a
+borrowed test contract passed to a by-value `finish` method. Thus the old
+`--lib --test <integration-target>` clippy command did not establish that the
+native `cfg(test)` module had compiled. Earlier source-only descriptions of
+that command as cfg(test) lint coverage are withdrawn; the failed actual
+library-test build is the stronger evidence. No Rust test pass is claimed.
+
+Root independently verified all 16 recovered raw-log digests. Actual failed
+library-test log SHA-256:
+`7e80475437739e8e44e14d9f2e27e9209cc5cb792082f65ccf96d1af44af89cd`;
+FAIL_MODEL_FREE evidence SHA-256:
+`ec74fd3badd0a9776455b1211de361aacff8e13e8cb3b52683048a0e75cafe30`.
+Owned worker and storage were destroyed on the first attempt, with both
+individual null readback and independent owned-ID inventory absence.
+The current official Moshi dependency recheck still finds the fixed revision
+and Torch upper bound unchanged; secure supported real-execution closure and
+the complete composite approval remain unresolved.
+
+Luna repaired the four API/type boundaries in the two owned Rust files,
+without changing production math, loader/approval guards, test inventory,
+or numerical bounds. Verification tooling is being corrected to lint actual
+library test targets and bind that coverage to verbose compiler evidence.
+A new clean HEAD must pass actual Rust lint and tests before code push or PR.
+No passing result from either old lint command is reused as native library-
+test coverage, real-weight evidence or independent numerical parity.

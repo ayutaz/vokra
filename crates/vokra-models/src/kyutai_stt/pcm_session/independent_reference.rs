@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use vokra_core::gguf::AsBytes;
 use vokra_core::json::{self, JsonValue};
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -680,7 +681,11 @@ fn json_bytes(value: &JsonValue, key: &str, label: &str) -> Result<u64> {
 fn json_f64(value: &JsonValue, key: &str, label: &str) -> Result<f64> {
     value
         .get(key)
-        .and_then(JsonValue::as_f64)
+        .and_then(|number| match number {
+            JsonValue::Float(number) => Some(*number),
+            JsonValue::Int(number) => Some(*number as f64),
+            _ => None,
+        })
         .ok_or_else(|| invalid(format!("{label}.{key} must be a number")))
 }
 
@@ -2672,7 +2677,7 @@ fn primary_source_contract_fixture_preserves_helper_shape_and_missing_fact() {
         value
             .get("contracts")
             .and_then(JsonValue::as_array)
-            .map(Vec::len),
+            .map(|contracts| contracts.len()),
         Some(3)
     );
     assert_eq!(

@@ -1097,7 +1097,7 @@ mod tests {
             probe.frame_call_ordinal += 1;
             Ok(if previous.is_none() { 11 } else { 2 })
         };
-        control.finish(&contract, encode, step).unwrap();
+        control.finish(contract, encode, step).unwrap();
         let probe = probe.borrow();
         let reset_calls: Vec<_> = probe
             .calls
