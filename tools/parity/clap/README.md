@@ -53,10 +53,10 @@ result. A VAST run must use:
 
 ```sh
 UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
-  uv run --no-sync --project tools/parity/clap \
+  uv run --no-sync --project tools/parity/clap --python 3.12 \
   python tools/parity/clap_dump_reference.py --self-test
 UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
-  uv run --no-sync --project tools/parity/clap \
+  uv run --no-sync --project tools/parity/clap --python 3.12 \
   python tools/parity/clap/license_gate.py --self-test
 UV_CACHE_DIR=/private/tmp/vokra-clap-uv-cache \
   uv run --no-project --offline --python 3.12 python \

@@ -11,8 +11,9 @@ getting from `git clone` to a running Vokra call on device.
 - **Xcode 14 or newer** on macOS.
 - **iOS 15+** target device or Simulator (iOS 14 and older is out of scope).
 - Apple Developer signing profile for device deployment.
-- The Vokra repository. A tagged release URL can be used after an authorized
-  release is published; no tagged release is currently available.
+- The Vokra repository or the released `v0.3.0` package. The release asset is
+  `Vokra.xcframework.zip`; when using it, verify the published SHA-256 in the
+  consumer-side `Package.swift` target rather than substituting an unverified binary.
 
 ## 2. Build the XCFramework
 
@@ -37,16 +38,16 @@ scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
 
 ### Path B — release download
 
-After an authorized release, CD may publish `Vokra.xcframework.zip` + its
-SHA-256 as a GitHub Release asset. No such asset is available currently.
-Update `Package.swift` to the URL form (the file already has the template
-commented out) once a release exists:
+The `v0.3.0` GitHub Release publishes `Vokra.xcframework.zip` and its SHA-256.
+The `v0.3.0` tag's `Package.swift` remains local-path based, so use the local
+build path above for a clean tag checkout. A consumer that chooses the release
+asset must add this explicit URL/checksum target:
 
 ```swift
 .binaryTarget(
     name: "Vokra",
-    url: "https://github.com/ayutaz/vokra/releases/download/<tag>/Vokra.xcframework.zip",
-    checksum: "<sha256>"
+    url: "https://github.com/ayutaz/vokra/releases/download/v0.3.0/Vokra.xcframework.zip",
+    checksum: "fe74aeb45cc44c7fc2a1875bdd61af7d88c4ae87d2966851c88cfa4e9dcbc5a5"
 )
 ```
 

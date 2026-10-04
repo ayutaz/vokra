@@ -2,6 +2,12 @@
 
 Updated with owner-independent evidence on 2026-09-09.
 
+> **2026-10-04 reading boundary:** 63 below is the frozen, hash-bound owner
+> decision-ledger denominator, not today's unresolved public inventory. The
+> fresh metadata-only audit has 58 unresolved rows (CPU/Metal code-artifact
+> full 136); later named Apple/publish scopes do not rewrite an immutable
+> approval packet or authorize a new run/upload. See the [current index](../README.md).
+
 > **2026-09-11 disposition update:** the executable decisions used by the
 > bounded post-PR #79 batch are recorded in the
 > [2026-09-09 owner decision record](mac-cpu-metal-owner-decision-record-2026-09-09.md),

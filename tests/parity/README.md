@@ -75,8 +75,12 @@ comparison logic is fully written and runs once the fixtures exist:
 uv run --no-project --python 3.12 \
   --with-requirements tests/parity/parity-requirements.txt \
   python tests/parity/gen_parity_fixtures.py stft      # or: mel / dct / all
-cargo test -p vokra-parity -- --ignored                # then runs the shells
+CARGO_BUILD_JOBS=1 cargo test -p vokra-parity -- --ignored                # then runs the shells
 ```
+
+The Cargo leg is the narrow test-only package and must not be expanded to a
+workspace or model build on the maintainer Mac; use CI/VAST when a follow-up
+adds model consumers or broadens the package scope.
 
 This is tracked as a follow-up: WP completion names PyTorch / librosa /
 torchaudio; those three references are wired but gated on their libraries being
