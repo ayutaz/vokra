@@ -446,6 +446,30 @@ pub enum HotOp {
     CausalHifiGan,
 }
 
+/// Mimi-only backend capabilities that are intentionally not part of the
+/// public exhaustive [`HotOp`] enum.  Keeping these model-specific seams here
+/// preserves the historical `HotOp` discriminants while retaining a single
+/// fail-closed coverage gate for the Mimi encoder/transformer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MimiHotOp {
+    ResidualScaleAdd,
+    MimiRvqEncode,
+}
+
+impl MimiHotOp {
+    const ALL: [Self; 2] = [Self::ResidualScaleAdd, Self::MimiRvqEncode];
+
+    fn covered_by_backend(self, backend: BackendKind) -> bool {
+        let _ = self;
+        matches!(backend, BackendKind::Cpu)
+            || (matches!(backend, BackendKind::Metal)
+                && cfg!(all(
+                    feature = "metal",
+                    any(target_os = "macos", target_os = "ios")
+                )))
+    }
+}
+
 impl HotOp {
     /// Whether the Metal backend's imperative [`Compute`] seam covers this op.
     ///
@@ -756,6 +780,37 @@ impl Compute {
         Ok(compute)
     }
 
+    /// Builds a Mimi dispatcher after checking its two model-specific learned
+    /// capabilities in addition to the ordinary [`HotOp`] requirements.
+    /// These capabilities stay out of the public exhaustive enum so adding a
+    /// Mimi seam cannot renumber existing public variants. Unsupported
+    /// backends still fail explicitly; this helper never partitions work onto
+    /// the CPU.
+    pub(crate) fn for_mimi_backend(kind: BackendKind, required: &[HotOp]) -> Result<Self> {
+        // An unavailable Metal build must retain `for_backend`'s precise
+        // BackendUnavailable result. On every other uncovered backend, reject
+        // the Mimi-specific capabilities before probing or constructing a
+        // device context.
+        if kind == BackendKind::Metal
+            && !cfg!(all(
+                feature = "metal",
+                any(target_os = "macos", target_os = "ios")
+            ))
+        {
+            return Self::for_backend(kind, required);
+        }
+        if let Some(capability) = MimiHotOp::ALL
+            .iter()
+            .copied()
+            .find(|capability| !capability.covered_by_backend(kind))
+        {
+            return Err(VokraError::UnsupportedOp(format!(
+                "{kind:?} backend does not cover Mimi capability {capability:?}; Vokra does not silently run it on the CPU"
+            )));
+        }
+        Self::for_backend(kind, required)
+    }
+
     /// Builds a dispatcher for `kind`, requiring it to cover every op in
     /// `required` (one model = one backend, FR-EX-08).
     ///
@@ -1043,6 +1098,80 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
+        }
+    }
+
+    /// Fused row-wise learned residual update used by Mimi LayerScale.
+    ///
+    /// `dst` and `src` are row-major `[rows, channels]` buffers and `scale` is
+    /// one learned multiplier per channel. Shape and overflow checks happen
+    /// before the CPU loop or any Metal allocation, so a rejected call cannot
+    /// partially mutate `dst`. The CPU expression intentionally remains
+    /// `dst[i] += scale[c] * src[i]`, matching the pre-seam Mimi loop's
+    /// operand/order and signed-zero behavior. The Metal arm uses a real
+    /// device kernel and copies the completed result back only after the
+    /// command buffer succeeds; no backend falls back to the CPU. Metal also
+    /// requires `rows`, `channels`, and their checked product to fit the
+    /// kernel's `u32` dimensions.
+    pub fn residual_scale_add_f32(
+        &self,
+        rows: usize,
+        channels: usize,
+        dst: &mut [f32],
+        scale: &[f32],
+        src: &[f32],
+    ) -> Result<()> {
+        let total = rows.checked_mul(channels).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 rows*channels overflow: {rows} * {channels}"
+            ))
+        })?;
+        if scale.len() != channels {
+            return Err(VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 scale length {} != channels {channels}",
+                scale.len()
+            )));
+        }
+        if src.len() != total {
+            return Err(VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 src length {} != rows*channels {total}",
+                src.len()
+            )));
+        }
+        if dst.len() != total {
+            return Err(VokraError::InvalidArgument(format!(
+                "residual_scale_add_f32 dst length {} != rows*channels {total}",
+                dst.len()
+            )));
+        }
+
+        match &self.be {
+            Be::Cpu => {
+                if total == 0 {
+                    return Ok(());
+                }
+                for row in 0..rows {
+                    let base = row * channels;
+                    for channel in 0..channels {
+                        dst[base + channel] += scale[channel] * src[base + channel];
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.residual_scale_add_f32(rows, channels, dst, scale, src),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "residual_scale_add_f32 has no CUDA kernel; Vokra does not silently run Mimi \
+                 LayerScale on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "residual_scale_add_f32 has no WebGPU kernel; Vokra does not silently run Mimi \
+                 LayerScale on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -2233,6 +2362,167 @@ impl Compute {
                  ops only; the RVQ codec GPU arms are deferred like Metal/CUDA). Select \
                  BackendKind::Cpu — Vokra does not silently run the op on the CPU (FR-EX-08)."
                     .to_owned(),
+            )),
+        }
+    }
+
+    /// Batched Mimi RVQ encoder for one codebook.
+    ///
+    /// `residuals` is row-major `[frames, d_model]`; `table` is row-major
+    /// `[codebook_size, d_model]` and `table_t` is the already-transposed
+    /// `[d_model, codebook_size]` view used by the CPU encoder. The CPU arm
+    /// retains the existing dimension-major accumulation and strict-`<` tie
+    /// rule. Metal performs distance, lowest-index argmin, and subtraction on
+    /// the device; it never falls back to a host search. Caller buffers are
+    /// updated only after the complete backend operation succeeds.
+    #[allow(clippy::too_many_arguments)] // intrinsic one-codebook batch shape
+    pub fn mimi_rvq_encode_f32(
+        &self,
+        frames: usize,
+        d_model: usize,
+        codebook_size: usize,
+        residuals: &mut [f32],
+        codes: &mut [u32],
+        table: &[f32],
+        table_t: &[f32],
+    ) -> Result<()> {
+        if d_model == 0 || codebook_size == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_encode_f32: d_model and codebook_size must be > 0, got d_model={d_model} codebook_size={codebook_size}"
+            )));
+        }
+        let residual_len = frames.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "mimi_rvq_encode_f32: frames * d_model overflows usize".into(),
+            )
+        })?;
+        let table_len = codebook_size.checked_mul(d_model).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "mimi_rvq_encode_f32: codebook_size * d_model overflows usize".into(),
+            )
+        })?;
+        let distance_len = frames.checked_mul(codebook_size).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "mimi_rvq_encode_f32: frames * codebook_size overflows usize".into(),
+            )
+        })?;
+        for (name, value) in [
+            ("frames", frames),
+            ("d_model", d_model),
+            ("codebook_size", codebook_size),
+            ("frames*d_model", residual_len),
+            ("codebook_size*d_model", table_len),
+            ("frames*codebook_size", distance_len),
+        ] {
+            if value > u32::MAX as usize {
+                return Err(VokraError::InvalidArgument(format!(
+                    "mimi_rvq_encode_f32: {name}={value} exceeds Metal u32 dispatch limit"
+                )));
+            }
+        }
+        if residuals.len() != residual_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_encode_f32: residuals.len() {} != frames*d_model {residual_len}",
+                residuals.len()
+            )));
+        }
+        if codes.len() != frames {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_encode_f32: codes.len() {} != frames {frames}",
+                codes.len()
+            )));
+        }
+        if table.len() != table_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_encode_f32: table.len() {} != codebook_size*d_model {table_len}",
+                table.len()
+            )));
+        }
+        if table_t.len() != table_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "mimi_rvq_encode_f32: table_t.len() {} != d_model*codebook_size {table_len}",
+                table_t.len()
+            )));
+        }
+        if frames == 0 {
+            return Ok(());
+        }
+
+        match &self.be {
+            Be::Cpu => {
+                for frame in 0..frames {
+                    let residual = &mut residuals[frame * d_model..(frame + 1) * d_model];
+                    let mut best = 0usize;
+                    let mut best_distance = f32::INFINITY;
+                    const BLOCK: usize = 32;
+                    let full = codebook_size - codebook_size % BLOCK;
+                    let mut block_start = 0usize;
+                    while block_start < full {
+                        let mut distances = [0.0f32; BLOCK];
+                        for (dim, &value) in residual.iter().enumerate() {
+                            let row = &table_t[dim * codebook_size + block_start
+                                ..dim * codebook_size + block_start + BLOCK];
+                            for (distance, &codebook_value) in distances.iter_mut().zip(row) {
+                                let diff = value - codebook_value;
+                                *distance += diff * diff;
+                            }
+                        }
+                        for (lane, &distance) in distances.iter().enumerate() {
+                            if distance < best_distance {
+                                best_distance = distance;
+                                best = block_start + lane;
+                            }
+                        }
+                        block_start += BLOCK;
+                    }
+                    if block_start < codebook_size {
+                        let lanes = codebook_size - block_start;
+                        let mut distances = [0.0f32; BLOCK];
+                        let block = &mut distances[..lanes];
+                        for (dim, &value) in residual.iter().enumerate() {
+                            let row = &table_t[dim * codebook_size + block_start
+                                ..dim * codebook_size + block_start + lanes];
+                            for (distance, &codebook_value) in block.iter_mut().zip(row) {
+                                let diff = value - codebook_value;
+                                *distance += diff * diff;
+                            }
+                        }
+                        for (lane, &distance) in block.iter().enumerate() {
+                            if distance < best_distance {
+                                best_distance = distance;
+                                best = block_start + lane;
+                            }
+                        }
+                    }
+                    codes[frame] = best as u32;
+                    let row = &table[best * d_model..(best + 1) * d_model];
+                    for (value, codebook_value) in residual.iter_mut().zip(row) {
+                        *value -= *codebook_value;
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => {
+                let (gpu_codes, gpu_residuals) = ctx.mimi_rvq_encode_f32(
+                    frames,
+                    d_model,
+                    codebook_size,
+                    residuals,
+                    table,
+                    table_t,
+                )?;
+                codes.copy_from_slice(&gpu_codes);
+                residuals.copy_from_slice(&gpu_residuals);
+                Ok(())
+            }
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "mimi_rvq_encode_f32 has no wired CUDA kernel; Vokra does not silently run the Mimi learned search on the CPU (FR-EX-08)".into(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "mimi_rvq_encode_f32 has no wired WebGPU kernel; Vokra does not silently run the Mimi learned search on the CPU (FR-EX-08)".into(),
             )),
         }
     }
@@ -4819,6 +5109,87 @@ mod tests {
     }
 
     #[test]
+    fn mimi_residual_scale_add_cpu_preserves_operand_order_and_signed_zero() {
+        let mut actual = [-0.0f32, 1.0, -2.0, 3.0];
+        let scale = [-0.0f32, 2.0];
+        let src = [1.0f32, -0.0, -3.0, 4.0];
+        Compute::cpu()
+            .residual_scale_add_f32(2, 2, &mut actual, &scale, &src)
+            .unwrap();
+
+        let mut expected = [-0.0f32, 1.0, -2.0, 3.0];
+        for row in 0..2 {
+            for channel in 0..2 {
+                expected[row * 2 + channel] += scale[channel] * src[row * 2 + channel];
+            }
+        }
+        assert!(actual.iter().all(|value| value.is_finite()));
+        assert_eq!(
+            actual
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            "LayerScale CPU seam changed the pre-seam operand order"
+        );
+    }
+
+    #[test]
+    fn mimi_residual_scale_add_rejects_shapes_before_mutation() {
+        let mut dst = [1.0f32, -2.0, 3.0, -4.0];
+        let before = dst;
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(2, 2, &mut dst, &[1.0], &[1.0, 2.0, 3.0, 4.0])
+                .is_err()
+        );
+        assert_eq!(dst, before);
+
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(2, 2, &mut dst, &[1.0, 1.0], &[1.0, 2.0])
+                .is_err()
+        );
+        assert_eq!(dst, before);
+
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(2, 2, &mut dst[..3], &[1.0, 1.0], &[1.0, 2.0, 3.0, 4.0],)
+                .is_err()
+        );
+        assert_eq!(dst, before);
+
+        // Empty dimensions are valid declared shapes and must be no-ops. The
+        // Metal arm additionally rejects non-empty dimensions that exceed its
+        // checked u32 kernel contract before allocating or mutating output.
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(0, 3, &mut [], &[1.0, 1.0, 1.0], &[])
+                .is_ok()
+        );
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(3, 0, &mut [], &[], &[])
+                .is_ok()
+        );
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(usize::MAX, 0, &mut [], &[], &[])
+                .is_ok()
+        );
+
+        assert!(
+            Compute::cpu()
+                .residual_scale_add_f32(usize::MAX, 2, &mut dst, &[], &[])
+                .is_err()
+        );
+        assert_eq!(dst, before);
+    }
+
+    #[test]
     fn cpu_fir_resample_matches_sgmse_fixed_kernel_contract() {
         let mut up = vec![0.0f32; 16];
         Compute::cpu()
@@ -5025,6 +5396,182 @@ mod tests {
             matches!(err, VokraError::InvalidArgument(_)),
             "expected InvalidArgument, got {err:?}",
         );
+    }
+
+    #[test]
+    fn cpu_mimi_rvq_encode_batch_matches_transposed_order_and_ties() {
+        for &codebook_size in &[1usize, 31, 32, 33, 65] {
+            let frames = 3usize;
+            let d_model = 4usize;
+            let table: Vec<f32> = (0..codebook_size * d_model)
+                .map(|i| (i as f32 - 17.0) * 0.03125)
+                .collect();
+            let mut table_t = vec![0.0f32; table.len()];
+            for entry in 0..codebook_size {
+                for dim in 0..d_model {
+                    table_t[dim * codebook_size + entry] = table[entry * d_model + dim];
+                }
+            }
+            let original = vec![
+                0.25f32, -0.5, 1.25, 2.0, -1.0, 0.75, 0.5, -2.25, 3.0, 1.5, -0.25, 0.125,
+            ];
+            let mut got_residuals = original.clone();
+            let mut got_codes = vec![u32::MAX; frames];
+            Compute::cpu()
+                .mimi_rvq_encode_f32(
+                    frames,
+                    d_model,
+                    codebook_size,
+                    &mut got_residuals,
+                    &mut got_codes,
+                    &table,
+                    &table_t,
+                )
+                .expect("CPU Mimi RVQ encode");
+
+            let mut want_residuals = original;
+            let mut want_codes = vec![0u32; frames];
+            for frame in 0..frames {
+                let row = &mut want_residuals[frame * d_model..(frame + 1) * d_model];
+                let mut best = 0usize;
+                let mut best_distance = f32::INFINITY;
+                for entry in 0..codebook_size {
+                    let mut distance = 0.0f32;
+                    for dim in 0..d_model {
+                        let diff = row[dim] - table_t[dim * codebook_size + entry];
+                        distance += diff * diff;
+                    }
+                    if distance < best_distance {
+                        best_distance = distance;
+                        best = entry;
+                    }
+                }
+                want_codes[frame] = best as u32;
+                for dim in 0..d_model {
+                    row[dim] -= table[best * d_model + dim];
+                }
+            }
+            assert_eq!(got_codes, want_codes, "codebook size {codebook_size}");
+            assert_eq!(
+                got_residuals, want_residuals,
+                "codebook size {codebook_size}"
+            );
+        }
+
+        let table = vec![1.0f32, 2.0, 1.0, 2.0];
+        let table_t = vec![1.0f32, 1.0, 2.0, 2.0];
+        let mut residuals = vec![0.0f32, 0.0];
+        let mut codes = [u32::MAX];
+        Compute::cpu()
+            .mimi_rvq_encode_f32(1, 2, 2, &mut residuals, &mut codes, &table, &table_t)
+            .expect("tie fixture");
+        assert_eq!(codes, [0], "strict < must retain the lowest tied index");
+    }
+
+    #[test]
+    fn mimi_rvq_encode_rejects_shape_before_mutation() {
+        let table = [0.0f32, 1.0, 2.0, 3.0];
+        let table_t = [0.0f32, 2.0, 1.0, 3.0];
+        let mut residuals = [9.0f32, 8.0];
+        let mut codes = [7u32];
+        let residuals_before = residuals;
+        let codes_before = codes;
+        let err = Compute::cpu()
+            .mimi_rvq_encode_f32(1, 2, 2, &mut residuals, &mut codes, &table[..3], &table_t)
+            .expect_err("malformed table must be rejected before writes");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert_eq!(residuals, residuals_before);
+        assert_eq!(codes, codes_before);
+
+        for (label, result) in [
+            (
+                "zero d_model",
+                Compute::cpu().mimi_rvq_encode_f32(
+                    1,
+                    0,
+                    2,
+                    &mut [1.0, 2.0],
+                    &mut [3],
+                    &table,
+                    &table_t,
+                ),
+            ),
+            (
+                "zero codebook",
+                Compute::cpu().mimi_rvq_encode_f32(
+                    1,
+                    2,
+                    0,
+                    &mut [1.0, 2.0],
+                    &mut [3],
+                    &table,
+                    &table_t,
+                ),
+            ),
+            (
+                "usize product overflow",
+                Compute::cpu().mimi_rvq_encode_f32(
+                    usize::MAX,
+                    2,
+                    1,
+                    &mut [],
+                    &mut [],
+                    &[0.0],
+                    &[0.0],
+                ),
+            ),
+            (
+                "u32 distance product overflow",
+                Compute::cpu().mimi_rvq_encode_f32(
+                    (u32::MAX as usize / 2) + 1,
+                    1,
+                    2,
+                    &mut [],
+                    &mut [],
+                    &[0.0, 1.0],
+                    &[0.0, 1.0],
+                ),
+            ),
+        ] {
+            assert!(
+                matches!(result, Err(VokraError::InvalidArgument(_))),
+                "{label} must fail closed"
+            );
+        }
+
+        Compute::cpu()
+            .mimi_rvq_encode_f32(0, 2, 2, &mut [], &mut [], &table, &table_t)
+            .expect("valid empty frame batch is a no-op");
+
+        for (name, residuals_len, codes_len, table_len, table_t_len) in [
+            ("residual length", 1usize, 1usize, 4usize, 4usize),
+            ("code length", 2, 0, 4, 4),
+            ("table length", 2, 1, 3, 4),
+            ("table_t length", 2, 1, 4, 3),
+        ] {
+            let mut residuals = vec![5.0f32; residuals_len];
+            let mut codes = vec![7u32; codes_len];
+            let residuals_before = residuals.clone();
+            let codes_before = codes.clone();
+            let table_arg = vec![0.0f32; table_len];
+            let table_t_arg = vec![0.0f32; table_t_len];
+            assert!(
+                Compute::cpu()
+                    .mimi_rvq_encode_f32(
+                        1,
+                        2,
+                        2,
+                        &mut residuals,
+                        &mut codes,
+                        &table_arg,
+                        &table_t_arg,
+                    )
+                    .is_err(),
+                "{name} must fail"
+            );
+            assert_eq!(residuals, residuals_before, "{name} residual mutation");
+            assert_eq!(codes, codes_before, "{name} code mutation");
+        }
     }
 
     #[test]
@@ -5405,6 +5952,278 @@ mod tests {
             compute.encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs),
             Err(VokraError::UnsupportedOp(_))
         ));
+        let mut residuals = [0.0f32];
+        let mut codes = [0u32];
+        assert!(matches!(
+            compute.mimi_rvq_encode_f32(1, 1, 1, &mut residuals, &mut codes, &[0.0], &[0.0],),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    /// Device-gated component parity for the native Mimi RVQ encoder. This
+    /// exercises ties, a near-tie, multiple frames, and the real three-pass
+    /// Metal path; it is not a full Mimi or performance claim.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn metal_mimi_rvq_encode_dispatches_and_preserves_shape_errors() {
+        let compute = match Compute::for_mimi_backend(BackendKind::Metal, &[]) {
+            Ok(compute) => compute,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; Mimi RVQ encode component test skipped");
+                return;
+            }
+            Err(error) => panic!("unexpected Metal setup error: {error}"),
+        };
+        let next_one = f32::from_bits(1.0f32.to_bits() + 1);
+        let table = vec![
+            0.0f32, 0.0, 0.0, 0.0, // row 0
+            0.0, 0.0, 0.0, 0.0, // row 1: true identical-row tie
+            1.0, 1.0, 1.0, 1.0, // row 2
+            next_one, next_one, next_one, next_one, // adjacent-f32 near tie
+        ];
+        let mut table_t = vec![0.0f32; table.len()];
+        for entry in 0..4 {
+            for dim in 0..4 {
+                table_t[dim * 4 + entry] = table[entry * 4 + dim];
+            }
+        }
+        // The middle frame is the symmetric midpoint between rows 0 and 2;
+        // strict `<` must retain row 0. The final frame is exactly row 2 and
+        // only one adjacent-f32 step from row 3, exercising the deterministic
+        // near-tie choice without relying on a fabricated tolerance.
+        let input = vec![
+            -0.0f32, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0,
+        ];
+        let mut gpu_residuals = input.clone();
+        let mut gpu_codes = [u32::MAX; 3];
+        compute
+            .mimi_rvq_encode_f32(
+                3,
+                4,
+                4,
+                &mut gpu_residuals,
+                &mut gpu_codes,
+                &table,
+                &table_t,
+            )
+            .expect("Mimi RVQ encode Metal kernel");
+        let mut cpu_residuals = input;
+        let mut cpu_codes = [u32::MAX; 3];
+        Compute::cpu()
+            .mimi_rvq_encode_f32(
+                3,
+                4,
+                4,
+                &mut cpu_residuals,
+                &mut cpu_codes,
+                &table,
+                &table_t,
+            )
+            .unwrap();
+        assert_eq!(gpu_codes, cpu_codes, "deterministic argmin must match CPU");
+        for (index, (gpu, cpu)) in gpu_residuals.iter().zip(&cpu_residuals).enumerate() {
+            assert_eq!(
+                gpu.to_bits(),
+                cpu.to_bits(),
+                "subtraction must be bit-exact at element {index}"
+            );
+        }
+
+        let mut bad_residuals = [7.0f32; 12];
+        let mut bad_codes = [9u32; 3];
+        let before_residuals = bad_residuals;
+        let before_codes = bad_codes;
+        assert!(
+            compute
+                .mimi_rvq_encode_f32(
+                    3,
+                    4,
+                    4,
+                    &mut bad_residuals,
+                    &mut bad_codes,
+                    &table[..11],
+                    &table_t,
+                )
+                .is_err()
+        );
+        assert_eq!(bad_residuals, before_residuals);
+        assert_eq!(bad_codes, before_codes);
+
+        // Exercise the real Metal dispatch over the ragged/full block sizes
+        // used by Mimi codebooks. The same three-frame fixture includes a
+        // signed zero, a symmetric midpoint tie, and an adjacent-f32 near tie;
+        // codes must match the CPU reference exactly, while residual bits are
+        // compared explicitly (not with `assert_eq!`, which hides signed-zero
+        // differences).
+        for &codebook_size in &[1usize, 31, 32, 33, 65] {
+            let mut table = vec![0.0f32; codebook_size * 4];
+            for entry in 0..codebook_size {
+                let value = match entry {
+                    0 | 1 => 0.0,
+                    2 => 1.0,
+                    3 => next_one,
+                    _ => 10.0 + entry as f32,
+                };
+                for dim in 0..4 {
+                    table[entry * 4 + dim] = value;
+                }
+            }
+            let mut table_t = vec![0.0f32; table.len()];
+            for entry in 0..codebook_size {
+                for dim in 0..4 {
+                    table_t[dim * codebook_size + entry] = table[entry * 4 + dim];
+                }
+            }
+            let input = [
+                -0.0f32, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0,
+            ];
+            let mut gpu_residuals = input;
+            let mut gpu_codes = [u32::MAX; 3];
+            compute
+                .mimi_rvq_encode_f32(
+                    3,
+                    4,
+                    codebook_size,
+                    &mut gpu_residuals,
+                    &mut gpu_codes,
+                    &table,
+                    &table_t,
+                )
+                .expect("Metal RVQ codebook-size fixture");
+            let mut cpu_residuals = input;
+            let mut cpu_codes = [u32::MAX; 3];
+            Compute::cpu()
+                .mimi_rvq_encode_f32(
+                    3,
+                    4,
+                    codebook_size,
+                    &mut cpu_residuals,
+                    &mut cpu_codes,
+                    &table,
+                    &table_t,
+                )
+                .unwrap();
+            assert_eq!(gpu_codes, cpu_codes, "codes for bins={codebook_size}");
+            for (index, (gpu, cpu)) in gpu_residuals.iter().zip(&cpu_residuals).enumerate() {
+                assert_eq!(
+                    gpu.to_bits(),
+                    cpu.to_bits(),
+                    "residual bits for bins={codebook_size} element={index}"
+                );
+            }
+        }
+
+        // Every rejected shape must leave caller-owned buffers untouched. These
+        // checks are host-side validation on a Metal Compute, so they do not
+        // allocate or dispatch a malformed GPU workload.
+        let valid_table = [0.0f32, 1.0, 2.0, 3.0];
+        let valid_table_t = [0.0f32, 2.0, 1.0, 3.0];
+
+        let mut zero_dim_residuals = [5.0f32; 2];
+        let mut zero_dim_codes = [7u32; 1];
+        let zero_dim_residuals_before = zero_dim_residuals;
+        let zero_dim_codes_before = zero_dim_codes;
+        assert!(
+            compute
+                .mimi_rvq_encode_f32(
+                    1,
+                    0,
+                    2,
+                    &mut zero_dim_residuals,
+                    &mut zero_dim_codes,
+                    &valid_table,
+                    &valid_table_t,
+                )
+                .is_err()
+        );
+        assert_eq!(zero_dim_residuals, zero_dim_residuals_before);
+        assert_eq!(zero_dim_codes, zero_dim_codes_before);
+
+        let mut zero_bins_residuals = [5.0f32; 2];
+        let mut zero_bins_codes = [7u32; 1];
+        let zero_bins_residuals_before = zero_bins_residuals;
+        let zero_bins_codes_before = zero_bins_codes;
+        assert!(
+            compute
+                .mimi_rvq_encode_f32(
+                    1,
+                    2,
+                    0,
+                    &mut zero_bins_residuals,
+                    &mut zero_bins_codes,
+                    &[],
+                    &[],
+                )
+                .is_err()
+        );
+        assert_eq!(zero_bins_residuals, zero_bins_residuals_before);
+        assert_eq!(zero_bins_codes, zero_bins_codes_before);
+
+        let mut overflow_residuals = [5.0f32; 1];
+        let mut overflow_codes = [7u32; 1];
+        let overflow_residuals_before = overflow_residuals;
+        let overflow_codes_before = overflow_codes;
+        assert!(
+            compute
+                .mimi_rvq_encode_f32(
+                    usize::MAX,
+                    2,
+                    1,
+                    &mut overflow_residuals,
+                    &mut overflow_codes,
+                    &[0.0, 1.0],
+                    &[0.0, 1.0],
+                )
+                .is_err()
+        );
+        assert_eq!(overflow_residuals, overflow_residuals_before);
+        assert_eq!(overflow_codes, overflow_codes_before);
+
+        let mut u32_overflow_residuals = [5.0f32; 1];
+        let mut u32_overflow_codes = [7u32; 1];
+        let u32_overflow_residuals_before = u32_overflow_residuals;
+        let u32_overflow_codes_before = u32_overflow_codes;
+        assert!(
+            compute
+                .mimi_rvq_encode_f32(
+                    (u32::MAX as usize / 2) + 1,
+                    1,
+                    2,
+                    &mut u32_overflow_residuals,
+                    &mut u32_overflow_codes,
+                    &[0.0, 1.0],
+                    &[0.0, 1.0],
+                )
+                .is_err()
+        );
+        assert_eq!(u32_overflow_residuals, u32_overflow_residuals_before);
+        assert_eq!(u32_overflow_codes, u32_overflow_codes_before);
+
+        compute
+            .mimi_rvq_encode_f32(0, 2, 2, &mut [], &mut [], &valid_table, &valid_table_t)
+            .expect("valid empty Metal batch is a no-op");
+
+        for (label, residuals_len, codes_len, table_len, table_t_len) in [
+            ("residual length", 1usize, 1usize, 4usize, 4usize),
+            ("code length", 2, 0, 4, 4),
+            ("table length", 2, 1, 3, 4),
+            ("table_t length", 2, 1, 4, 3),
+        ] {
+            let mut residuals = vec![5.0f32; residuals_len];
+            let mut codes = vec![7u32; codes_len];
+            let residuals_before = residuals.clone();
+            let codes_before = codes.clone();
+            let table = vec![0.0f32; table_len];
+            let table_t = vec![0.0f32; table_t_len];
+            assert!(
+                compute
+                    .mimi_rvq_encode_f32(1, 2, 2, &mut residuals, &mut codes, &table, &table_t,)
+                    .is_err(),
+                "{label} must fail"
+            );
+            assert_eq!(residuals, residuals_before, "{label} residual mutation");
+            assert_eq!(codes, codes_before, "{label} code mutation");
+        }
     }
 
     /// M3-06 T14 (2026-08-13): the Metal arm of `mimi_rvq_f32` now dispatches
@@ -5807,6 +6626,82 @@ mod tests {
     }
 
     #[test]
+    fn public_hot_op_discriminants_match_main_81d72f23() {
+        let discriminants = [
+            HotOp::Gemm as usize,
+            HotOp::Gemv as usize,
+            HotOp::Softmax as usize,
+            HotOp::LayerNorm as usize,
+            HotOp::RmsNorm as usize,
+            HotOp::ScaleNorm as usize,
+            HotOp::GroupNorm as usize,
+            HotOp::Gelu as usize,
+            HotOp::GeluNew as usize,
+            HotOp::Relu as usize,
+            HotOp::Elu as usize,
+            HotOp::Tanh as usize,
+            HotOp::Silu as usize,
+            HotOp::OuveSde as usize,
+            HotOp::Conv1d as usize,
+            HotOp::Conv1dDilation as usize,
+            HotOp::ConvTranspose1d as usize,
+            HotOp::Conv2d as usize,
+            HotOp::ConvTranspose2d as usize,
+            HotOp::FirResample2d as usize,
+            HotOp::MimiRvq as usize,
+            HotOp::DacRvq as usize,
+            HotOp::EncodecRvq as usize,
+            HotOp::WavTokenizerVq as usize,
+            HotOp::Xcodec2Fsq as usize,
+            HotOp::GroupFsq as usize,
+            HotOp::SnakeActivation as usize,
+            HotOp::SnacDecode as usize,
+            HotOp::DenoiseApplyMask as usize,
+            HotOp::Qwen3TtsCodec as usize,
+            HotOp::SnakeBeta as usize,
+            HotOp::SinegenDeterministic as usize,
+            HotOp::AntiAliasedUpsample as usize,
+            HotOp::GroupedConv1d as usize,
+            HotOp::CausalHifiGan as usize,
+        ];
+        for (actual, expected) in discriminants.into_iter().enumerate() {
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn mimi_capabilities_keep_backend_gate_explicit() {
+        for capability in MimiHotOp::ALL {
+            assert!(capability.covered_by_backend(BackendKind::Cpu));
+            assert_eq!(
+                capability.covered_by_backend(BackendKind::Metal),
+                cfg!(all(
+                    feature = "metal",
+                    any(target_os = "macos", target_os = "ios")
+                ))
+            );
+            assert!(!capability.covered_by_backend(BackendKind::Cuda));
+            assert!(!capability.covered_by_backend(BackendKind::Vulkan));
+            assert!(!capability.covered_by_backend(BackendKind::WebGpu));
+            assert!(!capability.covered_by_backend(BackendKind::CoreMl));
+            assert!(!capability.covered_by_backend(BackendKind::Qnn));
+        }
+        assert!(Compute::for_mimi_backend(BackendKind::Cpu, &[]).is_ok());
+        for backend in [
+            BackendKind::Cuda,
+            BackendKind::Vulkan,
+            BackendKind::WebGpu,
+            BackendKind::CoreMl,
+            BackendKind::Qnn,
+        ] {
+            assert!(matches!(
+                Compute::for_mimi_backend(backend, &[]),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+        }
+    }
+
+    #[test]
     fn make_backend_cpu_is_the_cpu_backend() {
         let b = make_backend(BackendKind::Cpu).expect("cpu backend");
         assert_eq!(b.name(), "cpu");
@@ -6028,6 +6923,67 @@ mod tests {
         }
     }
 
+    /// Device-gated component parity for the Mimi LayerScale seam. A Linux or
+    /// feature-off run cannot establish this result; on an Apple Metal device
+    /// it compares the real kernel with the CPU reference under NFR-QL-01's
+    /// existing FP32 bound. This is not a full Mimi residency or performance
+    /// claim.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn residual_scale_add_metal_matches_cpu_when_device_is_available() {
+        let metal = match Compute::for_mimi_backend(BackendKind::Metal, &[]) {
+            Ok(compute) => compute,
+            Err(VokraError::BackendUnavailable(message)) => {
+                eprintln!("no Metal device; residual_scale_add parity is device-gated: {message}");
+                return;
+            }
+            Err(error) => panic!("unexpected Metal LayerScale setup error: {error}"),
+        };
+        let scale = [0.25f32, -0.5, 1.25];
+        let src = [1.0f32, -2.0, 3.0, -4.0, 5.0, -6.0];
+        let initial = [0.5f32, 1.0, -1.5, 2.0, -2.5, 3.0];
+        let mut malformed_dst = [9.0f32; 5];
+        let malformed_before = malformed_dst;
+        assert!(
+            metal
+                .residual_scale_add_f32(2, 3, &mut malformed_dst, &scale, &src)
+                .is_err()
+        );
+        assert_eq!(malformed_dst, malformed_before);
+
+        // This reaches the Metal wrapper's explicit u32 dimension guard: the
+        // checked product is empty, but the declared row dimension is not
+        // representable by the MSL `uint` field.
+        let oversized_rows = (u32::MAX as usize)
+            .checked_add(1)
+            .expect("Metal parity target must expose usize wider than u32");
+        let mut empty_dst = [];
+        assert!(
+            metal
+                .residual_scale_add_f32(oversized_rows, 0, &mut empty_dst, &[], &[])
+                .is_err()
+        );
+        assert!(empty_dst.is_empty());
+
+        let mut expected = initial;
+        Compute::cpu()
+            .residual_scale_add_f32(2, 3, &mut expected, &scale, &src)
+            .unwrap();
+        let mut actual = initial;
+        metal
+            .residual_scale_add_f32(2, 3, &mut actual, &scale, &src)
+            .unwrap();
+        let mut max_delta = 0.0f32;
+        for (&got, &want) in actual.iter().zip(expected.iter()) {
+            assert!(got.is_finite() && want.is_finite());
+            max_delta = max_delta.max((got - want).abs());
+        }
+        assert!(
+            max_delta <= 0.01,
+            "Mimi LayerScale Metal parity exceeded NFR-QL-01: max_delta={max_delta}"
+        );
+    }
+
     /// On a CUDA build, coverage is enforced. As of Phase 4 (M2-03 T10-T14) the
     /// CUDA backend covers the **whole** Whisper hot-op set, so `for_backend`
     /// never returns `UnsupportedOp` for it — it either builds (device present)
@@ -6063,6 +7019,7 @@ mod tests {
              if it has just landed, flip `HotOp::covered_by_cuda` for MimiRvq and update this \
              test.",
         );
+        assert!(!MimiHotOp::MimiRvqEncode.covered_by_backend(BackendKind::Cuda));
         // Same deferred posture for the M4-04 RVQ siblings, the M4-16 FSQ
         // family, the Vocoder wave WF2 SnakeActivation, and the Vocoder wave
         // WF5 SnacDecode / DenoiseApplyMask (lock-step with the CUDA arms of
