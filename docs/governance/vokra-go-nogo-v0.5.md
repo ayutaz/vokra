@@ -1,10 +1,11 @@
 # Go / No-go review record — v0.5 (M2)
 
-> **Current state (2026-09-09):** This remains a blank v0.5 template. There
-> are **0 git tags, 0 GitHub releases, and 0 quarterly review records**. The
+> **Current state (2026-10-04):** This remains a blank v0.5 template. The
+> all-pages API reports **one tag and one GitHub release** (`v0.3.0`,
+> 2026-09-20), but there are zero tracked quarterly review records. The
 > X-07 cadence mechanism (`release-cadence.yml` +
-> `tools/release/test_cadence.py`) is landed, but no release cadence is
-> established and no verdict is implied. The Kill switch thresholds below are
+> `tools/release/test_cadence.py`) is landed, but a single release does not
+> establish cadence and no verdict is implied. The Kill switch thresholds below are
 > normative owner policy and are not changed by this status note.
 
 > **This file is a blank template.** Copy it to
@@ -100,8 +101,9 @@ source of truth). "該当" means the switch fires, i.e. argues for withdrawal.
 | **K** | _(記入)_ | _(記入 — competitor selection is a judgement call; name the comparator)_ | _(記入)_ |
 
 **Start-date note (C and D)**: the runbook derives these from the `v0.5.0`
-release tag date. **No git tag and no GitHub release currently exist**, and the
-planning documents contain two different calendar windows for the D verdict.
+release tag date. **No `v0.5.0` tag/release exists**; the published `v0.3.0`
+source release is not an automatic substitute for the owner-approved milestone
+start date. The planning documents contain two different calendar windows for the D verdict.
 Record the start date you used and the basis for choosing it (X-05-T23).
 
 ## Continuous monitoring — A / B / E / F / G / H / L

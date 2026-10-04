@@ -155,15 +155,20 @@ OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec, and Voice Gender Classifier.
 All former immutable packet inputs were destroyed with their VAST storage;
 none is retained or immediately executable. Each packet must be regenerated
 on a new disposable VAST worker immediately before transfer to Scaleway.
-In the current 0.3.0 line, GigaAM v3 and GigaAM Multilingual have complete
-conservative Metal code routes, but their Apple-hardware verdict is still
-unmeasured. OmniASR likewise remains pending the authenticated Scaleway run;
-source-level route completeness is not an Apple-device result. The live public
-audit-start coverage snapshot is CPU `full=131`, `partial=45`,
-`no-runtime-binder=17`,
-`not-artifact=1`, and Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`,
-with source-level CPU-only coverage at 0.
-There are currently 0 release tags and 0 GitHub Releases.
+In the current 0.3.0 line, the 2026-09-11 Apple batch passed the exact
+approval-bound CPU/Metal checks for the named GigaAM v3, GigaAM Multilingual,
+OmniASR, ReazonSpeech, BiCodec and Voice Gender scopes. Those verdicts apply
+only to their exact heads and contracts; source-level route completeness does
+not generalize to the catalog. The fresh 2026-10-04 metadata-only public audit
+reports CPU `full=136`, `partial=43`,
+`no-runtime-binder=14`,
+`not-artifact=1`, and Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`,
+with source-level CPU-only coverage at 0, leaving 58 unresolved public rows.
+The `v0.3.0` release tag and GitHub release
+are published. On 2026-10-04, a corrected VAST source-only audit authenticated
+fixed Kyutai source inputs and independently verified cleanup; it did not
+execute model weights or advance CPU parity, Apple hardware, or publication
+status.
 
 This guide documents the *procedure*. It does **not** run devices: real GPU /
 NPU parity and soak on physical hardware (an Apple Neural Engine, a Hexagon
@@ -173,8 +178,7 @@ metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-09-09 — against the audit-start PR #79 head
-`9efcd16eb63b857f48fc00d0b83d1113defd578b` and the five implemented compute backends,
+**Last verified: 2026-10-04 — against local checkout `3a3fd822` and the five implemented compute backends,
 the generic convolution seams above, the CoreML whole-submodel delegate path,
 and the SDK-gated QNN delegate scaffold.**
 

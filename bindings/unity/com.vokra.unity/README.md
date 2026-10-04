@@ -11,13 +11,13 @@ authorized CD; they are not present in the tracked UPM tree.
 
 ## Status
 
-The workspace is `0.3.0` development. At the 2026-09-09 audit start, PR #79
-was at head `9efcd16e`; no Git tag or GitHub release exists. The Unity package source metadata remains `0.1.0` in
-`package.json`, but that package version is unpublished. Native binaries are
-not bundled in this checkout: the tracked `Plugins/` tree contains only
-`.gitkeep`/`.meta` placeholders. They are assembled by CD when an authorized
-release is created (see
-`.github/workflows/release.yml` job `unity-package-release`).
+The workspace and UPM metadata are released at `0.3.0` (`v0.3.0`). The UPM
+registry publication remains owner-gated; the GitHub release workflow assembles
+the signed package tarball and native slices. This source checkout intentionally
+does not contain those binaries: its tracked `Plugins/` tree contains only
+`.gitkeep`/`.meta` placeholders. The release job is the source of truth for the
+assembled package (see `.github/workflows/release.yml`, job
+`unity-package-release`).
 
 ## Supported Unity versions
 
@@ -28,7 +28,7 @@ release is created (see
 
 | Platform | Native lib after local staging | ABI | Feature set |
 |---|---|---|---|
-| macOS (Editor + Standalone) | `Plugins/macOS/libvokra.dylib` | universal2 (arm64+x86_64) | CPU (Metal opt-in via feature flag) |
+| macOS (Editor + Standalone) | `Plugins/macOS/libvokra.dylib` | CI host architecture; universal2 is not claimed | CPU by default (Metal requires a feature-specific build) |
 | Windows (Editor + Standalone) | `Plugins/Windows/x86_64/vokra.dll` | x86_64 | CPU (CUDA opt-in, system-installed) |
 | Linux (Editor + Standalone) | `Plugins/Linux/x86_64/libvokra.so` | x86_64 | CPU (CUDA opt-in, system-installed) |
 | iOS (Player) | `Plugins/iOS/libvokra.a` (`__Internal`) | arm64 (device) | CPU |
@@ -81,14 +81,14 @@ runnable because the native libraries are not included yet.
 }
 ```
 
-Before opening the Unity project, clone the repository, check out the
-audit-start PR #79 head verified on 2026-09-09, and stage the native library
+Before opening the Unity project, clone the repository, check out the released
+`v0.3.0` tag, and stage the native library
 for the target platform:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
+git checkout --detach v0.3.0
 
 # Host desktop (macOS, Linux, or Windows): stages the current host library.
 scripts/build-unity-plugin.sh
@@ -105,19 +105,21 @@ Run only the helper(s) for the platform(s) you will test; each helper requires
 its corresponding native SDK/toolchain. These local outputs are development
 artifacts, not a release claim.
 
-### Tarball from a future GitHub Release (production)
+### GitHub Release tarball (production)
 
-Once an authorized
-release is published, download `com.vokra.unity-<version>.tgz` and `npm`-
-install / drag into Package Manager's *Add package from tarball…* dialog.
+Download `com.vokra.unity-0.3.0.tgz` from the authorized `v0.3.0` GitHub
+Release and drag it into Package Manager's *Add package from tarball…* dialog.
+OpenUPM publication remains a separate owner-gated decision.
 
 ## Samples
 
 Import the *VAD -> ASR -> TTS demo* from the Package Manager window.
 Demo model weights (Silero VAD v5 MIT, Whisper base MIT, piper-plus
-voice MIT) are NOT bundled; run
-`Samples~/VadAsrTts/scripts/fetch-demo-models.sh` after import per
-NFR-DS-04.
+voice MIT) are NOT bundled, and the `v0.3.0` GitHub Release contains no GGUF
+assets. Before running `Samples~/VadAsrTts/scripts/fetch-demo-models.sh`, set
+all three URL environment variables to independently verified MIT sources;
+release presence alone does not make the model fetches usable. See the sample
+README for the required variables and license/provenance checks (NFR-DS-04).
 
 ## License and third-party notices
 

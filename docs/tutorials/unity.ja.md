@@ -2,12 +2,11 @@
 
 [English](unity.md) | **日本語**
 
-Vokra は Unity パッケージ（`com.vokra.unity`）のソース/API スケルトンと、
-IL2CPP AOT・iOS 静的リンク制約を満たす C# API を提供します。tracked UPM
-tree にはネイティブ plugin の `.gitkeep`/`.meta` placeholder だけがあり、
-clean Git URL import はソース確認専用で、対象 native library を build・stage
-するまで実行できません。全対応 platform の prebuilt library は、将来の承認済み
-CD release の deliverable です。
+Vokra は Unity パッケージ（`com.vokra.unity`）と、IL2CPP AOT・iOS 静的リンク
+制約を満たす C# API を提供します。tracked UPM tree にはネイティブ plugin の
+`.gitkeep`/`.meta` placeholder だけがあり、clean Git URL import はソース確認
+専用です。`v0.3.0` GitHub Release の workflow が package tarball と native
+slice を組み立てますが、source tree には native plugin を commit しません。
 
 ## 1. 前提
 
@@ -15,14 +14,16 @@ CD release の deliverable です。
   `.github/workflows/nightly-il2cpp.yml` の nightly IL2CPP smoke test で
   検証済み）
 - 対応プラットフォーム: macOS / Windows / Linux / iOS / Android
-  （Editor + Standalone / Player）。WebGL は staticlib リンク経路が v1.0-rc（M4-02、`vokra_session_create_from_bytes` 経由）で追加済。
-  Unity WebGL CI の検証は `secrets.UNITY_LICENSE` 設定待ち
+  （Editor + Standalone / Player）と WebGL。WebGL は CPU-only staticlib 経路
+  （M4-02、`vokra_session_create_from_bytes` 経由）で、nightly Unity Editor
+  smoke は `secrets.UNITY_LICENSE` により license-gated です。
 - iOS ビルド: Xcode 14 以上。Android ビルド: Unity インストールに合った
   Android SDK / NDK
 
 ## 2. パッケージのインストール
 
-3 通りを示します。承認済み release 前に実行できるのは、以下の local flow だけです:
+3 通りを示します。Git URL は source 確認用、local flow は開発用、`v0.3.0`
+tarball は release 用です:
 
 ### UPM Git URL（ソース確認専用）
 
@@ -32,7 +33,8 @@ Window → Package Manager → + → Add package from git URL…
 https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 ```
 
-現行の未公開 tree では、この Git URL から実行可能な native binary は取得できません。
+この Git URL は source-only package tree を指すため、実行可能な native binary は
+取得できません。staged slice が必要なら `v0.3.0` release tarball を使います。
 
 ### ローカル file: 参照（開発用）
 
@@ -44,14 +46,13 @@ https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 }
 ```
 
-2026-09-09 の監査開始時点で確認した PR #79 head を clone し、
-検証する platform の native library を build・stage してから Unity project を
-開きます:
+release tag（または別途レビュー済みの新しい commit）を clone し、検証する
+platform の native library を build・stage してから Unity project を開きます:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
+git checkout --detach v0.3.0
 
 # host desktop（macOS / Linux / Windows）
 scripts/build-unity-plugin.sh
@@ -69,9 +70,9 @@ scripts/build-unity-webgl-lib.sh
 
 ### tarball（本番）
 
-承認済みの GitHub Release が公開された後に
-`com.vokra.unity-<version>.tgz` をダウンロードし、Package Manager の
-**Add package from tarball…** で追加します。現時点でその release はありません。
+承認済み GitHub Release の `com.vokra.unity-0.3.0.tgz` をダウンロードし、
+Package Manager の **Add package from tarball…** で追加します。OpenUPM 公開は
+別途 owner-gated です。
 
 ## 3. 対応プラットフォーム
 
@@ -196,16 +197,19 @@ install の `libcuda.so` / `nvcuda.dll` を `dlopen` でロードします。CI 
 
 Package Manager の **Samples** タブから *VAD → ASR → TTS demo* をイン
 ポートします。デモ用モデル weight（Silero VAD v5 MIT、Whisper base MIT、
-piper-plus voice MIT）は**同梱していません** — インポート後に
-`Samples~/VadAsrTts/scripts/fetch-demo-models.sh` を実行してください
-（NFR-DS-04）。
+piper-plus voice MIT）は**同梱しておらず**、`v0.3.0` GitHub Release にも
+GGUF asset はありません。`Samples~/VadAsrTts/scripts/fetch-demo-models.sh`
+を実行する前に、3 つすべての環境変数へ個別に検証した MIT source URL を
+設定してください。release の存在だけでは model URL の存在を示しません
+（NFR-DS-04）。必要な URL 変数と license/provenance 確認は sample README を
+参照してください。
 
 ## 10. トラブルシューティング
 
 - **`DllNotFoundException: vokra`**: プラットフォーム向けネイティブラ
-  イブラリが Plugins フォルダにありません。現行の未公開 tree では Git URL
-  import から取得できないため、local `file:` install では section 2 の対応する
-  staging helper を実行してください。
+  イブラリが Plugins フォルダにありません。source-only tree の Git URL import
+  からは取得できないため、local `file:` install では section 2 の対応する
+  staging helper、または `v0.3.0` release tarball を使ってください。
 - **`VokraException: Unsupported backend`**: FR-EX-08 により silent
   fallback は禁止されています。対応する backend feature でビルドする
   か、op が CPU でカバーされる GGUF を使ってください。

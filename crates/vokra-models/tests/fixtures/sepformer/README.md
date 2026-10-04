@@ -6,7 +6,7 @@ generated with the pinned official `speechbrain==1.0.3` model, at the exact
 upstream revisions recorded in each `manifest.json`, by:
 
 ```text
-uv run --project tools/parity --locked python \
+uv run --project tools/parity --locked --python 3.12 python \
   tools/parity/sepformer_dump_reference.py ... --dtype float64
 ```
 

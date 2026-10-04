@@ -1,17 +1,18 @@
 # Vokra CI/CD workflow 目次
 
-本ドキュメントは Vokra の GitHub Actions workflow の **single source of truth (SoT)** です。
-cron 時刻・required check name・trigger の記述に各 workflow file の comment との差異が
-あった場合、**本 file が真** とみなし、各 workflow file 側を後追いで揃えます。
+本ドキュメントは Vokra の GitHub Actions workflow の運用 index です。
+cron 時刻・trigger・job の実行内容は各 workflow の実定義、required check name は
+GitHub branch protection API が一次資料です。本文や comment と実定義に差異が
+あれば、本 index を一次資料に合わせます。本文だけを根拠に workflow を変更しません。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**実数 46 file**。旧記載「2026-07-23 時点で 20 file」は
-  その後の parity workflow 増設で陳腐化していたため実測値に更新）
-- **2026-09-09 網羅確認**: 46 workflow file の全てを本 index に収録済み。
+- 対象範囲: `.github/workflows/*.yml` 全件（**2026-10-04実数 47 file**）。
+  2026-09-09 の46 fileに `lightning-checkpoint-security.yml` が追加されています。
+- **2026-10-04 inventory確認**: 47 workflow file を本 index に収録。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
   を primary source として取得し、本 file の §1 に転記。現行は **16 contexts、strict=true**。
-- Actions policy の実態: `sha_pinning_required=true`（2026-09-09確認）。
+- Actions policy の実態: `sha_pinning_required=true`（2026-10-04 API再確認）。
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
   各 workflow の comment 側は本 file を参照する形に段階的に集約予定
 - 変更禁止事項: 本 file の書式や見出し名の変更は required check job id の追跡性を
@@ -29,7 +30,17 @@ Apple-hardware verdict; Scaleway has not started. These are CI/audit facts,
 not Apple-device sign-off. UTMOS numeric parity is not claimed because its
 legacy Lightning checkpoint is intentionally refused by the restricted
 `weights_only=True` loader.
-There are currently 0 release tags and 0 GitHub Releases.
+At that historical audit start there were 0 release tags and 0 GitHub Releases.
+
+**2026-10-04 current readback:** GitHub `main` is
+`97447185361a37af64c1b30fe87e8e2618d96e20`; the latest release is `v0.3.0`
+(2026-09-20, 18 assets). Branch protection still lists the same 16 contexts
+with `strict=true`. The fresh metadata-only HF audit is CPU full 136 /
+partial 43 / no-runtime-binder 14 / non-artifact 1, and Metal full 136 /
+CPU-blocked 57 / non-artifact 1: 58 unresolved rows, not all-model Apple
+completion. Bounded Apple results and later source-only/real-weight probes
+are recorded in [the current documentation index](../../docs/README.md).
+No CI rerun or model execution was performed for this readback.
 
 ---
 
@@ -94,9 +105,9 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 | capi-smoke | .github/workflows/ci-quality.yml | C ABI smoke test (bytes error-path / session / stream / aec / s2s) |
 | msrv | .github/workflows/ci-quality.yml | Minimum Supported Rust Version 追随 |
 | abi-surface | .github/workflows/ci-quality.yml | `include/vokra.h` drift + Rust public-api snapshot + m0 anchor 差分 |
-| doc-examples | .github/workflows/ci-quality.yml | rustdoc code fence の compile & run |
+| doc-examples | .github/workflows/ci-quality.yml | Markdown例のsource/headerベースのtier A/B静的検査。Swift/C#/Godot/model実行はtier Cとして未検証 |
 | doctests | .github/workflows/ci-quality.yml | `cargo test --doc` |
-| rustdoc | .github/workflows/ci-quality.yml | `cargo doc --workspace` warn-as-error |
+| rustdoc (advisory) | .github/workflows/ci-quality.yml | `cargo doc --no-deps --workspace` のwarning件数ratchet（baseline 266）。greenはzero-warningを意味しない |
 | fa-v3-confinement | .github/workflows/ci-quality.yml | FlashAttention v3 が v1.5+ 前倒し禁止に閉じ込められていることの assert |
 | python-license-audit | .github/workflows/ci-quality.yml | Python 補助 tool の pip-licenses audit |
 | server-compat | .github/workflows/ci-quality.yml | OpenAI / vLLM / Wyoming プロトコル互換 leg (3-OS cross-build) |
@@ -135,6 +146,7 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 | cargo-semver-checks (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR | publishable crate の意図しない public API break を base SHA と比較 |
 | miri / address-sanitizer (`.github/workflows/rust-advanced.yml`) | weekly / manual | unsafe boundary の UB、provenance、memory error を nightly toolchain で検出 |
 | fuzz-* (`.github/workflows/rust-advanced.yml`) | Rust 関連 PR / main / weekly / manual | GGUF / safetensors / JSON の不正入力を libFuzzer で検査、reproducer を artifact 保存 |
+| Lightning checkpoint security (`.github/workflows/lightning-checkpoint-security.yml`) | 対象pathのPR / manual | nanocodec / pyannote diarization / segmentationの3 locked environmentでstatic self-testとcheckpoint `_instantiator` security regression。数値parityではない |
 
 weekly cron は CodeQL=`Thursday 02:41 UTC`、CI Security=`Wednesday 03:23 UTC`、
 Scorecard=`Thursday 03:17 UTC`、Rust Advanced=`Sunday 01:37 UTC`。PR のセキュリティ
@@ -250,13 +262,13 @@ gh attestation verify <artifact-path> --repo ayutaz/vokra \
 
 ## 6. 手動 / docs 連動 (workflow_dispatch or docs path push)
 
-PR/cron/tag のいずれでも起動せず、`workflow_dispatch` か特定 path への push だけを
-trigger とする workflow。
+ここではmanual/docs連動workflowと、対象pathでのみ起動するsecurity補助workflowを示します。
 
 | trigger | workflow | 目的 |
 |---|---|---|
 | workflow_dispatch only | .github/workflows/bench-baseline-capture.yml | `iters` iteration で bench baseline を再取得 |
 | push main (`docs/bench-baselines/**`, `docs/perf/**`, `docs/benchmarks/**`, `tools/bench/build_dashboard.py`, `.github/workflows/dashboard.yml`) + workflow_dispatch | .github/workflows/dashboard.yml | perf dashboard 再生成 + GitHub Pages deploy |
+| 対象pathのpull_request + workflow_dispatch | .github/workflows/lightning-checkpoint-security.yml | 3 reference environmentのcheckpoint security regression（§2.2） |
 
 path filter で PR trigger にも参加している workflow は §3 の weekly parity と
 `nightly-full-parity.yml` に含めた。各 workflow の `pull_request.paths` に該当する
@@ -404,9 +416,11 @@ state (banned; the caller believes it got GPU results but got CPU numbers).
    `.github/pins.yaml`.
 2. If the drift is persistent (2 consecutive weeks), owner opens or advances
    WP X-10-Txx (self-mirror) — see `docs/adr/X-10-corpus-self-mirror.md`.
-3. Owner uploads a bit-identical mirror to
-   `huggingface.co/datasets/vokra/<slug>` via the existing 5-gate
-   `scripts/publish-one.sh` pipe. Mirror SHA lands in
+3. Only after the exact corpus/redistribution sign-off and dataset-upload
+   authorization, owner follows the corpus-specific
+   [X-10 mirror runbook](../../docs/handoff/x-10.md) to upload a bit-identical
+   dataset mirror. The GGUF model publisher is not a dataset-upload interface.
+   Mirror revision/SHA lands in
    `.github/pins.yaml:entries[*].mirror.hf_revision` +
    `entries[*].mirror.sha256`.
 4. Workflow env switches to the graceful-fallback seam:
@@ -439,12 +453,15 @@ closed with zero exceptions:
 
 - stdlib-only helpers use
   `uv run --no-project --python 3.12 python <script>`;
-- dependency-bearing jobs create an environment with `uv venv`, install with
-  `uv pip --python <venv-python>`, and run with an explicit interpreter;
+- dependency-bearing jobs use their checked-in `pyproject.toml`/`uv.lock`
+  through `uv sync --frozen` and `uv run --project` where implemented;
+  the dated migration also contains isolated `uv venv` / `uv pip --python`
+  bootstrap recipes. Do not replace a current locked tree with a new ad-hoc
+  installation; dependency changes use `uv add` in that tree;
 - shell activation, direct venv executables, bare pip/pytest, and runner-user
   site mutation are prohibited;
 - every Python-using job installs the pinned
-  `astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d` action (v10.0.0).
+  `astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7` action (v10.2.0、2026-10-04 checkout).
 
 `scripts/check-workflow-hygiene.sh` enforces the command rule over block and
 scalar `run:` entries. The migration inventory, cross-platform wheel recipe,
