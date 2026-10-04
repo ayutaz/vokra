@@ -332,3 +332,52 @@ preserves old tensor names, so a newer checkpoint is not a drop-in replacement.
 No mapper or manifest was changed, no dependency or weight was obtained,
 and no model, conversion, CUDA work or upload was executed. The existing
 license/security/owner gates and Draft / NO_UPLOAD posture remain unchanged.
+
+## Official wheel-packaging provenance boundary — 2026-10-05 JST
+
+The existing PR152 was revalidated at clean
+`1f75166bd0f35eff087394debf67ff729414c65e`: OPEN/Draft, 69 successful
+checks and one skipped. This is its prior exact-head CI, not approval of
+the external/native closure or verification of this documentation addition.
+
+Read-only investigation resolved the official PyTorch `v2.13.0` source to
+commit `cf30153c4c131c8164ee7798e5022d810682e2cb`, tree
+`7cda5eae52ace99ca4daa7e623920cc93782cc6c`. Each source below was checked
+against the API byte count and Git blob header, then SHA-256 hashed without
+importing it or obtaining a wheel, native binary or model.
+
+| Fixed primary source | Bytes / Git blob | SHA-256 |
+| --- | --- | --- |
+| [wheel repair](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/.ci/manywheel/repair_wheel.py) | 14,927 / `ae964c5c6d0a79f8367f7b65dda72aeddea2fced` | `d3f798285acaa11ce98f3c57cd84c39b73be111afaf2a5918805fed89aebf559` |
+| [x86_64 image recipe](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/.ci/docker/manywheel/Dockerfile_2_28) | 7,889 / `67b8b60f832076240058dd0ba629fdf2e160da56` | `db310e80bf585c105436141c7fba5c90b0bdfbcd4679a837204f6b19d5b98dc9` |
+| [aarch64 image recipe](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/.ci/docker/manywheel/Dockerfile_2_28_aarch64) | 2,625 / `6aeffe2e44dfa0cfe4a0478cdf3477ea5a9b5b48` | `8f9d99e555bf71b4c187378ec80528efc1d25913698461061814789f0057fbcd` |
+| [libgomp source-build recipe](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/.ci/docker/common/install_libgomp.sh) | 1,671 / `308915ec4f61888c0ddd0a1d3f85bfb19e5704c9` | `b9ec9a21ca62e11e700521b2f77732a8cc2aa105c77f5bad4a693e9479a40d5b` |
+
+The repair source selects `/usr/lib/<architecture>-linux-gnu/libgomp.so.1`
+on Ubuntu and `/usr/lib64/libgomp.so.1` otherwise. It copies that actual
+filesystem library into `torch/lib/libgomp.so.1`, including the CPU branch.
+The inspected code does not bind the copied file to an RPM/source-package
+digest or to the observed `78511033...` library digest. Recipe existence
+therefore supports the packaging mechanism, not the exact wheel's provenance.
+
+The x86_64 recipe uses a manylinux/AlmaLinux environment with a configurable
+GCC toolset (default 13). It does not invoke the inspected libgomp source-
+build helper. The aarch64 recipe does invoke that helper; the helper names
+GCC 13.3.0 and explicit `armv8-a` flags. That ARM source-build identity must
+not be assigned to the audited x86_64 library. Compiler version, filesystem
+library path and applicable exception are separate facts, not interchangeable.
+
+The [generated nightly workflow](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/.github/workflows/generated-linux-binary-manywheel-nightly.yml)
+has a Python 3.12 CPU row naming `manylinux2_28-builder` and image tag
+`cpu-78e737ad29420ffc4800e677c51e2a852caf8359`. This is a nightly recipe,
+not an authenticated release-build run or immutable image digest for the
+locked 191,817,609-byte wheel. Its presence does not prove that image
+produced the selected artifact or clear installed RECORD/native terms.
+
+Disposition remains **BUILD_RECIPE_LOCATED / EXACT_BINARY_BINDING_UNPROVEN**.
+Required next evidence is the selected release wheel's authenticated build
+run/image identity and the copied library's exact package/source/build/notice
+binding, followed by project-policy review. No blanket absence of such
+evidence is claimed beyond the inspected sources. No package was installed,
+source recipe executed, VAST worker allocated, signature supplied, exception
+approved or execution/publication gate relaxed by this supplement.
