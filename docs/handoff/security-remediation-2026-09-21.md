@@ -5,7 +5,19 @@ OpenSSF Scorecard findings after the `v0.3.0` GitHub release. It records the
 current routing boundary; it is not evidence that an alert is fixed, and it
 does not authorize model publication or a weaker numerical oracle.
 
-## 2026-10-02 current security readback
+## 2026-10-04 JST read-only refresh
+
+An all-pages GitHub API re-read returns the same 209 open Dependabot alerts:
+182 name a patched version and 27 do not. The three response pages contain
+100/100/9 alerts, with patched counts 88/85/9 and unpatched counts 12/15/0.
+The open Code Scanning response again contains only Scorecard
+`CIIBestPracticesID`, `CodeReviewID` and `VulnerabilitiesID`. GitHub `main`
+is `97447185361a37af64c1b30fe87e8e2618d96e20`. No alert dismissal, CI rerun,
+package execution, model verification or external write occurred for this
+documentation refresh. The SARIF/closed-alert facts below remain their dated
+2026-10-02 evidence, not a fresh artifact inspection.
+
+## 2026-10-02 security readback (historical evidence)
 
 A fresh all-pages Dependabot API read reports 209 open alerts: 182 with a
 published patched version and 27 without one. This supersedes the older
@@ -178,7 +190,8 @@ The 32 alerts without a published fixed version are not to be bulk-dismissed:
 ## Execution rules
 
 1. One logical reference environment is the default update and review unit.
-   Do not combine all 275 alerts into one lockfile wave.
+   Do not combine the whole queue into one lockfile wave (275 at the historical
+   2026-09-21 baseline; 209 at the 2026-10-04 readback).
 2. Use the environment's `pyproject.toml` and `uv.lock`; all Python commands
    run through `uv` with Python 3.12. Do not use bare Python, pip, or conda.
 3. A dependency bump is not complete when the lock resolves. Re-run its
@@ -264,7 +277,8 @@ was introduced for that environment.
 
 ### S3 — no-fixed-version and mixed environments
 
-Keep the 32 no-fixed-version alerts visible. Re-check upstream advisories and
+Keep all no-fixed-version alerts visible (32 at the original baseline, 27 in
+the latest readback above). Re-check upstream advisories and
 available releases after each patched-only wave. For a mixed environment,
 avoid a partial update that produces an unreviewable oracle state; either
 prove the complete locked closure or defer it with the exact unresolved
@@ -278,7 +292,7 @@ a narrowly reasoned disposition.
 ## OpenSSF Scorecard routing
 
 The five historical findings and their remediation routes are listed below.
-The 2026-10-02 readback above identifies which three remain open on `main`;
+The 2026-10-04 readback above identifies which three remain open on `main`;
 the older causes here are retained as dated context, not current verdicts.
 
 | Alert | Current cause | Resolution route |
@@ -293,19 +307,21 @@ The existing Scorecard workflow is already SHA-pinned, least-privilege,
 scheduled, run on `main` pushes and branch-protection changes, and uploads
 SARIF. The existing CodeQL workflow runs on pull requests, `main`, schedule,
 and manual dispatch, and `CodeQL` is a required branch-protection check. Do not
-dismiss the five findings merely to improve the score.
+dismiss an open finding merely to improve the score; the two historically
+fixed findings are not newly dismissed by this refresh.
 
 ## Completion proof
 
 This plan is complete only when:
 
-- all 243 currently patchable alerts are closed by reviewed dependency changes
+- all currently patchable alerts (182 at the 2026-10-04 snapshot; 243 at the
+  original baseline) are closed by reviewed dependency changes
   with environment-specific evidence, or a later API snapshot proves that the
   upstream advisory no longer applies;
 - every alert without a fixed version has a current upstream status and an
   explicit, evidence-backed disposition without bulk suppression;
-- Scorecard is re-run after dependency remediation and the remaining four
-  process findings reflect their actual external, historical, or review-policy
+- Scorecard is re-run after dependency remediation and its process findings
+  reflect their actual external, historical, or review-policy
   state;
 - the current public documentation and English/Japanese security policies
   agree with the released repository state; and
