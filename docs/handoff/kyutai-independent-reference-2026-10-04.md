@@ -546,3 +546,40 @@ dtype behavior and a distinct dependency/native closure remain unproved.
 The current PyTorch composite/approvals cannot be reused for it. This is an
 alternative to evaluate, not a replacement of the original full PCM/KV,
 reset/eviction and real-weight task, nor a reason to rewrite native math.
+
+## Corrected candidate lint diagnostics — 2026-10-05 JST
+
+Candidate `95f164f20d1e77a3624bad805a5927790a75312d` passed normal
+pre-commit gates and was transferred in a complete-history bundle, SHA-256
+`92ae5e8bb3ba3df93ced8664f2bdf0a7cf39977b8876a71520a3abca5dccb857`.
+Owned VAST worker `54163567` authenticated the clean HEAD, ancestry, bundle
+and toolchain, fingerprinted its environment and passed formatting. Clippy
+then rejected the legacy consumer's index-based audio-code loop with
+`needless_range_loop`; the earlier type/API errors were no longer reported.
+Raw lint log SHA-256:
+`109f6c3616cd2d45041240d65bfe234588d23a3e42e5f98a9a2e8abdc37f58f2`.
+FAIL_MODEL_FREE evidence SHA-256:
+`33b26e823690c6f7e530e7049896a26dfb7f8349de2470c9507c2ab91d74dbb5`.
+Root independently matched all 14 recovered raw logs to their evidence
+digests. No Rust tests or real-weight comparison passed in this attempt.
+The controller destroyed the owned worker on its first attempt and recorded
+both individual null readback and independent inventory absence. These
+owned-ID receipts do not claim the provider account is otherwise empty.
+
+Luna replaced only the index-based loop with iteration and enumeration.
+Root confirmed the authenticated manifest already requires exactly FRAMES
+audio rows and N_Q valid codes per row; no truncation, warning suppression,
+numerical bound change or native PCM/KV math change was introduced. Legacy
+source SHA-256 is
+`f2cb3d63c6931b99dba3c545ccd409306e312982bf05a468a419d7101a15be9d`;
+the native consumer remains at its preceding recorded source identity.
+
+Disposable verification tooling now collects both required clippy steps
+even if the first fails, then stops before tests if either is nonzero.
+This is diagnostic aggregation, not a passing-gate exception. Root ran the
+actual eight-job CLI offline self-test, leaf smoke test, bash syntax and
+ShellCheck successfully; none executes Cargo or a model. The repaired
+source still requires a new clean committed HEAD and exact-head remote
+Rust verification. The original secure dependency/native closure,
+composite approval, independent official capture, real-weight PCM/KV
+comparison and numerical disposition remain incomplete.

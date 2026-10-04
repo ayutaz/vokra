@@ -1521,14 +1521,14 @@ fn authenticate_and_run() {
         assert_eq!(stream.layer_cache_view(layer).unwrap().0, &[]);
     }
     let mut metrics = Metrics::default();
-    for step in 0..FRAMES {
+    for (step, audio_frame) in audio_codes.iter().enumerate() {
         let previous = (step > 0).then(|| {
             *expected_tokens
                 .get(&("warmup".to_owned(), step - 1))
                 .expect("warmup previous text token")
         });
         let output = stream
-            .step_frame(previous, &audio_codes[step])
+            .step_frame(previous, audio_frame)
             .expect("native streaming step");
         let actual = output.logits().as_slice();
         assert!(
