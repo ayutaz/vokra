@@ -297,3 +297,38 @@ become viable, exact real-weight correspondence and independent native CPU
 parity belong on VAST. No model was obtained, no dependency was installed or
 imported, and no source, lock, approval or execution gate was changed by this
 investigation. Draft / blocked execution / NO_UPLOAD remains the disposition.
+
+## Official checkpoint-mapping source — 2026-10-04
+
+Read-only review found the publisher-supported Transformers
+[conversion script at the same fixed revision](https://github.com/huggingface/transformers/blob/469230357aab0f2b303b0d638c1f8d06edb14184/src/transformers/models/xcodec2/convert_xcodec2_checkpoint.py).
+The manager independently authenticated Git blob
+`da0790db43235c26b16a5619ab345eb9e300a7cc`, 15,257 bytes, SHA-256
+`d91c3e278d9b1ba5c43bd8467e8579878bc35deb8759e284b253617ab70cb456`.
+Its contents were inspected, not imported or executed.
+
+The script defines an ordered mapping rather than a single prefix rename:
+the old generator backbone becomes the acoustic decoder, the final backbone
+norm becomes the decoder norm, the output head becomes its linear head,
+quantizer layers move to the top-level quantizer, and `fc_post_a` becomes the
+decoder input projection. Acoustic-encoder and semantic-adapter paths also
+have explicit hierarchy changes. The fused attention projection is split
+along dimension zero into Q/K/V; **Q and K**, but not V, undergo the source's
+RoPE permutation before being assigned to separate projection names.
+
+The script is written to remove non-persistent buffers and unused semantic
+layers, reject extra/missing state-dict names, and load with strict matching.
+These are inspected checks, not observed successful conversion. Its complete
+entry point additionally applies/removes encoder weight normalization,
+requires a CUDA device, and obtains external semantic configuration and
+feature-extractor information. Those inputs and dependency paths would need
+their own fixed identities and review before any approved execution; do not
+run the script as-is or permit its optional Hub-upload branch.
+
+This establishes **OFFICIAL_STRUCTURAL_MAPPING_LOCATED**, not exact payload
+correspondence, native binder compatibility, independent numerical parity,
+or a permitted complete dependency closure. The current native converter
+preserves old tensor names, so a newer checkpoint is not a drop-in replacement.
+No mapper or manifest was changed, no dependency or weight was obtained,
+and no model, conversion, CUDA work or upload was executed. The existing
+license/security/owner gates and Draft / NO_UPLOAD posture remain unchanged.
