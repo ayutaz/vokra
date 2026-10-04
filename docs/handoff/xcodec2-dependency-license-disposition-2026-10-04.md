@@ -205,3 +205,30 @@ The next acceptable action remains resolving the official quantizer path and
 exact native/license binding, followed by artifact/RECORD/API review if a
 permissible closure becomes viable. Existing GPL/LGPL conflicts and missing
 primary licenses remain open; green model-free CI is not their remedy.
+
+## Primary-source license supplement — 2026-10-04
+
+Read-only publisher-source review recovered two versioned license texts.
+GitHub tag readbacks resolve ANTLR `4.9.3` to
+`e4c1a74c66bd5290364ea2b36c97cd724b247357` and SentencePiece `v0.2.2` to
+`e0cce7d37b065b5140349dbe12c6bcf6192fdd78`. Their exact source files are:
+
+| Primary source | Bytes / Git blob | Text SHA-256 | Observed terms |
+| --- | --- | --- | --- |
+| [ANTLR LICENSE.txt](https://github.com/antlr/antlr4/blob/e4c1a74c66bd5290364ea2b36c97cd724b247357/LICENSE.txt) | 2,699 / `2042d1bda6c933e504d9dc2fe3197a6e42a71fe2` | `b1b379fcaf3219593a4c433feb1b35c780bed23fafaae440b1ae2771a9521e3a` | BSD-3-Clause plus named JavaScript MIT notices |
+| [SentencePiece LICENSE](https://github.com/google/sentencepiece/blob/e0cce7d37b065b5140349dbe12c6bcf6192fdd78/LICENSE) | 11,358 / `d645695673349e3947e8e5ae42332d0ac3164cd7` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` | Apache-2.0 |
+
+This is **SOURCE_LICENSE_LOCATED / ARCHIVE_BINDING_UNPROVEN**, not a
+replacement for the immutable V6 report. That report's missing-member facts
+remain unchanged. The locked ANTLR sdist (`f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b`)
+and selected SentencePiece wheel (`c8a168b040bc61681293f79a949b5d911c8e25086f4260285b8d97ab5f1195da`)
+still need exact source/build/member/RECORD bindings and any applicable
+vendored/native notice review. A source tag is not proof of a wheel's full
+contents or of installed runtime provenance.
+
+XCodec2 0.1.5's primary package-license binding remains unresolved; its PyPI
+metadata or model-weight license is not substituted for that binding. No
+archive was downloaded, dependency installed, owner sign-off added, native
+payload executed, or model imported for this supplement. The policy conflicts,
+secure dependency closure, real-reference gates and Draft / NO_UPLOAD posture
+remain unchanged.
