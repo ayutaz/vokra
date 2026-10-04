@@ -340,7 +340,7 @@ fn read_bounded_file(path: &Path, label: &str, max_bytes: u64) -> Vec<u8> {
         "{label} replaced while opening"
     );
     let mut body = Vec::with_capacity(before.len() as usize);
-    let mut limited = file.by_ref().take(max_bytes.saturating_add(1));
+    let mut limited = std::io::Read::by_ref(&mut file).take(max_bytes.saturating_add(1));
     limited
         .read_to_end(&mut body)
         .unwrap_or_else(|error| panic!("{label}: {error}"));
@@ -1506,7 +1506,7 @@ fn authenticate_and_run() {
     let weights =
         KyutaiSttWeights::from_component_gguf(&file).expect("bind authenticated Kyutai weights");
     assert!(
-        !weights.is_synthesized(),
+        !weights.is_synthesized,
         "streaming consumer must not use synthesized weights"
     );
     let asr = KyutaiSttAsr::new(

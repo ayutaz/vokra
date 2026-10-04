@@ -555,7 +555,7 @@ fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<(Vec<u8
     let identity = file_identity(&before);
     let mut file = File::open(path).map_err(|error| invalid(format!("{label}: {error}")))?;
     let mut body = Vec::with_capacity(before.len() as usize);
-    let mut limited = file.by_ref().take(max_bytes.saturating_add(1));
+    let mut limited = Read::by_ref(&mut file).take(max_bytes.saturating_add(1));
     limited
         .read_to_end(&mut body)
         .map_err(|error| invalid(format!("{label}: {error}")))?;

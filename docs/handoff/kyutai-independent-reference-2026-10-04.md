@@ -503,3 +503,46 @@ A clean committed candidate and exact-head VAST Rust verification are still
 required. Secure compatible dependency/native closure, composite approval,
 official capture, independent real-weight comparison and measured numerical
 disposition remain the original incomplete responsibility.
+
+## First committed candidate and VAST compile diagnostics — 2026-10-05 JST
+
+The normal pre-commit gates passed for candidate
+`c654719e56d3a7d06d02e111eba94cedced3b5c8`. Its complete-history transfer
+bundle was verified locally and remotely, SHA-256
+`689cbb2ee2df6ba000e7172e1bb0024b1ca979fd09e29335e28c37ab90210c8d`.
+An initial SSH-readiness failure occurred before Cargo on owned worker
+`54161884`; root independently confirmed its individual null readback and
+inventory absence after the old controller's acknowledgement-parser error.
+The repaired controller requires actual direct `22/tcp` mapping, bounded
+same-endpoint readiness checks, and both owned-ID destroy readbacks; it does
+not infer cleanup from a successful mutation response.
+
+Second owned worker `54162678` authenticated the clean candidate and ancestry,
+recorded environment fingerprints and passed formatting. The first clippy
+step failed with Rust E0034 and E0599: `File::by_ref` was ambiguous with both
+Read and Write in scope, and `KyutaiSttWeights.is_synthesized` was called as a
+method despite being a public field. Raw diagnostic log SHA-256:
+`9661583254ec8f4bd352106de8c9440e0267c910fc2ef03e9e8505e260e04480`;
+FAIL_MODEL_FREE evidence SHA-256:
+`e831b44a951ea6a98ee493350811d696fcc5df349149fce29bc33a9d37bbf04d`.
+Root recovered the logs, and the controller completed destroy on its first
+attempt with both individual null and independent inventory absence. No
+tests or real-weight comparison passed in this failed attempt.
+
+Luna corrected only these API boundaries and the analogous native bounded
+reader, preserving all resource/identity/anti-synthetic gates and test counts.
+Root reviewed the three-line diff against the actual first-party APIs.
+Legacy source SHA-256 is
+`7eb82a58b6e04c64a88e666164eab833a3d5ee7d1214c04bca1456bbe1a4a0c2`;
+native source SHA-256 is
+`d74c7b8519acb1cc6180b4994df25d79764ebb7fc345749d3e841331336049f3`.
+They still require compilation and model-free test execution on a new clean
+HEAD. No old-head failure is reused as a passing verification receipt.
+
+An independent source-only investigation located an official Rust/Candle
+ASR/cache route, but did not establish a drop-in oracle: all-layer bounded
+capture, exact Rust source/model/tensor identities, different PCM schedule,
+dtype behavior and a distinct dependency/native closure remain unproved.
+The current PyTorch composite/approvals cannot be reused for it. This is an
+alternative to evaluate, not a replacement of the original full PCM/KV,
+reset/eviction and real-weight task, nor a reason to rewrite native math.
