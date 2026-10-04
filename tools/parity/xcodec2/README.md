@@ -1,5 +1,30 @@
 # X-Codec2 official parity oracle
 
+> **Publication boundary (2026-10-04): `NO_UPLOAD`.** The primary-source
+> bytes and production-gate packet required for a replacement artifact are
+> still pending in the open draft PR #152 candidate (`b0add994b4d0350c338e60cb29b8165d8145fe32`).
+> That candidate is not merged and must not be described as released. The
+> audited GGUF hash below identifies an input only; it does not authorize
+> conversion, publication, or a fresh parity/completion claim.
+
+## 2026-10-04 existing-PR refresh boundary
+
+PR #152 is being refreshed in its existing branch, rather than replaced by
+another PR. Its previous head was
+`b0add994b4d0350c338e60cb29b8165d8145fe32`; the integration baseline is
+`main` at `4d753d81b084f6d2369e330656035042fd00fb9f`. The refreshed candidate
+is still draft and `NO_UPLOAD`. The earlier replay heads below are dated
+evidence, not verification of this new integration.
+
+The model-free, stdlib-only tests pass (32 tests), as do the dependency audit
+self-test and documents-only guard. No dependency installation or third-party
+import was performed in this refresh. A fresh exact-HEAD remote verification
+and CI are still required before a merge-readiness decision. In particular,
+setuptools' bundled license payload, NumPy's native license closure, XCodec2's
+primary license bytes, and the patched-pair compatibility/owner review remain
+unresolved. Passing a fail-closed self-test does not clear those blockers or
+authorize a model run, artifact replacement, or upload.
+
 `dump_reference.py` imports the official `xcodec2==0.1.5` PyPI package,
 verifies the installed decoder source and the audited public GGUF SHA-256,
 restores the official `CodecDecoderVocos` modules, and calls their FSQ plus
@@ -13,7 +38,7 @@ contains only codes and the official output:
 ```bash
 cd tools/parity/xcodec2
 uv sync --frozen --python 3.12
-uv run --frozen python dump_reference.py \
+uv run --frozen --python 3.12 python dump_reference.py \
   --gguf /path/to/vokra-xcodec2/model.gguf \
   --codes /path/to/codes.u32le \
   --output /path/to/reference

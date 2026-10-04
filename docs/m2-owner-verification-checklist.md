@@ -1,5 +1,14 @@
 # M2 (v0.5) Owner Verification Checklist
 
+> **2026-10-04 reading boundary:** this is a historical milestone record,
+> not the current task count or a runnable authorization. Preserve the dated
+> hardware, test totals, commands and decisions below. For the refreshed
+> 136 code/artifact-full / 58 unresolved metadata classification, bounded
+> Apple results and remaining GA conditions, use the
+> [documentation index](README.md) and [M5 checklist](m5-owner-verification-checklist.md).
+> Historical broad Cargo/model commands are not run on the maintainer Mac;
+> follow `AGENTS.md` and the applicable remote workflow for new verification.
+
 > **2026-09-09 audit-start snapshot:** This M2 checklist is historical. Before
 > this documentation refresh, PR #79 was at `9efcd16e` (`CLEAN` / `MERGEABLE`;
 > 110 CI success / 13 intentional skip / 0 fail), and exact VAST implementation

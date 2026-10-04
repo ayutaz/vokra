@@ -5,6 +5,18 @@
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
 
+**2026-10-04 文書レビューの境界:** 本文の2026-08-30法令確認日は履歴として保持する。
+一次資料への再アクセスを試みたが、EUR-Lexのbot確認とCalifornia条文ページの取得失敗により、
+EU/Californiaの施行・経過措置を今回の日付で再認証できていない。
+これらを「2026-10-04に現行法を確認済み」と扱わず、配布・導入時に公式の現行条文と
+適用主体を再確認する。取得できた[Appleガイドライン](https://developer.apple.com/app-store/review/guidelines/)
+の5.5は引き続きMDMであり、[Google Play AI policy](https://support.google.com/googleplay/android-developer/answer/13985936)
+も生成AIアプリの報告機構等を扱うが、SDK実装だけで規約適合を保証しない。
+[S.1367の公式提出時記録（GovInfo）](https://www.govinfo.gov/app/details/BILLS-119s1367is)
+は2025-04-09の上院提出版（IS）であり、現在の審議・成立状況を保証するものではない。
+以前のCongress.gov取得ページでのIntroducedというキャッシュ観測も、現在の成立状況の保証としない。
+法務文書の全面的な現行法再確認は未完了であり、owner/legal sign-offを追加・変更していない。
+
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
 implementation remains fail-closed for unsupported model/license paths;
@@ -173,7 +185,7 @@ consent, disclosure, and model rights before release or deployment.
 - VOICEVOX、A.I.VOICE、CoeFont、VOICEROID、UTAU等を利用する場合は、対象モデルとキャラクターごとの現行利用規約を一次資料で確認し、必要な許諾・表示・配布条件を記録する。Vokraはこれらの許諾を提供・保証しない。
 - 日本法の適用・判例の評価は、具体的な利用形態を踏まえて法務確認する。
 
-根拠: [個人情報の保護に関する法律（e-Gov法令API）](https://laws.e-gov.go.jp/api/1/lawdata/415AC0000000057)（2026-08-30確認）。
+根拠: [個人情報の保護に関する法律（e-Gov法令検索）](https://laws.e-gov.go.jp/law/415AC0000000057)（2026-08-30確認）。
 
 ---
 
@@ -319,7 +331,7 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 - [Google Play AI-generated content policy overview](https://support.google.com/googleplay/android-developer/answer/14094294)
 - [Apple App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)
 - [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html)
-- [個人情報の保護に関する法律（e-Gov法令API）](https://laws.e-gov.go.jp/api/1/lawdata/415AC0000000057)
+- [個人情報の保護に関する法律（e-Gov法令検索）](https://laws.e-gov.go.jp/law/415AC0000000057)
 - [HHS: Covered Entities and Business Associates](https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html)
 - [HHS: Business Associates](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/business-associates/index.html)
 - [Kadrey v. Meta case — U.S. District Court, Northern District of California](https://cand.uscourts.gov/cases-e-filing/cases/323-cv-03417-vc/kadrey-et-al-v-meta-platforms-inc)

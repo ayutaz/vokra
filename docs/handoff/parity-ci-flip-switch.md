@@ -1,5 +1,7 @@
 # parity-CI flip-the-switch — owner runbook
 
+> **2026-10-04 reading boundary:** The ten-family roster below is a dated handoff, not the current full CI inventory. Use the [workflow index](../../.github/workflows/README.md) and each actual workflow definition for current enable/dispatch gates. A successful workflow can contain skipped real-weight/device legs; this refresh does not dispatch workflows or infer model parity from overall CI success.
+
 Tracked / public. This handoff is the operational counterpart to the family
 parity-CI workflows landed on `feat/sota-phase1-2026-07-23` for SoTA plan Phase
 1-4 (originally seven; two follow-up workflows landed 2026-07-28 — see
