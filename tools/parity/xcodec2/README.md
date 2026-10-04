@@ -16,7 +16,7 @@ another PR. Its previous head was
 is still draft and `NO_UPLOAD`. The earlier replay heads below are dated
 evidence, not verification of this new integration.
 
-The model-free, stdlib-only tests pass (32 tests), as do the dependency audit
+The initial model-free, stdlib-only refresh tests pass (32 tests), as do the dependency audit
 self-test and documents-only guard. No dependency installation or third-party
 import was performed in this refresh. A fresh exact-HEAD remote verification
 and CI are still required before a merge-readiness decision. In particular,
@@ -24,6 +24,37 @@ setuptools' bundled license payload, NumPy's native license closure, XCodec2's
 primary license bytes, and the patched-pair compatibility/owner review remain
 unresolved. Passing a fail-closed self-test does not clear those blockers or
 authorize a model run, artifact replacement, or upload.
+
+### Additional hardening candidate, still blocked
+
+The follow-up candidate makes the already-locked `setuptools==84.0.0`
+explicit in the project and override contract, without changing its official
+wheel URL, digest, or size. It records a **`CANDIDATE_NOT_BUILT`** downstream
+de-vendoring contract. Setuptools' [official v71.0.0 release
+notes](https://setuptools.pypa.io/en/latest/history.html#v71-0-0) describe that
+downstream packaging option and warn that compatible external dependencies
+are required. That documentation is not evidence of a clean derived wheel,
+an audited replacement dependency closure, or compatible XCodec2 execution.
+This candidate does not remove vendored files, build or install a replacement,
+or clear GPL/LGPL, native-payload, owner/legal, or publication blockers.
+
+The dumper hardening preserves the audited 3,291,064,672-byte GGUF input
+contract rather than imposing a local-memory-sized cap on a VAST input.
+Code input must be a bounded, regular, uint32-aligned file. All four output
+paths are checked for existing files or symlinks before imports/inference;
+publication of each new file uses an exclusive temporary file and a
+no-overwrite atomic link. This is file-I/O safety, not numerical parity. The
+workflow still requires a trusted output parent: path ancestry checks are not
+a sandbox against a concurrently hostile process replacing parent directories.
+The reference equations, source pins, and numerical bounds are unchanged.
+
+The manager-reviewed follow-up passed 35 stdlib-only tests, including a
+partial-writer failure, a competing output-file creation, and AST ordering
+checks for the four-path preflight. The five audit/collector/derived-source
+self-tests also passed without installing dependencies or importing their
+runtime packages. These results verify the tooling contract only: primary
+package license bytes, native `NEEDED` review, compatibility, and exact-HEAD
+remote verification remain pending. The PR remains draft and `NO_UPLOAD`.
 
 `dump_reference.py` imports the official `xcodec2==0.1.5` PyPI package,
 verifies the installed decoder source and the audited public GGUF SHA-256,

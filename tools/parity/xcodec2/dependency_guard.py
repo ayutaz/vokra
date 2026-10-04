@@ -23,6 +23,7 @@ LOCKFILE = ROOT / "uv.lock"
 EXPECTED_OVERRIDES = [
     "torch==2.13.0",
     "torchaudio==2.11.0",
+    "setuptools==84.0.0",
     "transformers ; python_version < '0'",
 ]
 EXPECTED_LOCK_OVERRIDES = [
@@ -35,6 +36,10 @@ EXPECTED_LOCK_OVERRIDES = [
         "name": "torchaudio",
         "specifier": "==2.11.0",
         "index": "https://download.pytorch.org/whl/cpu",
+    },
+    {
+        "name": "setuptools",
+        "specifier": "==84.0.0",
     },
     {
         "name": "transformers",
@@ -60,6 +65,11 @@ EXPECTED_PLATFORM_WHEELS = {
         "2.11.0": ("macosx_11_0_arm64",),
         "2.11.0+cpu": ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64"),
     },
+}
+SETUPTOOLS_WHEEL = {
+    "url": "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl",
+    "hash": "sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+    "size": 818216,
 }
 FORBIDDEN_LOCK_ROWS = ("transformers", "tokenizers", "typer", "shellingham")
 
@@ -88,6 +98,7 @@ def _validate_documents(pyproject: dict, lock: dict) -> None:
     for declaration in (
         "torch==2.13.0",
         "torchaudio==2.11.0",
+        "setuptools==84.0.0",
         "transformers==5.10.4",
         "xcodec2==0.1.5",
     ):
@@ -140,6 +151,15 @@ def _validate_documents(pyproject: dict, lock: dict) -> None:
                     raise AssertionError(
                         f"{name} {version} lacks an audited {platform_token} wheel"
                     )
+
+    setuptools = [package for package in packages if package.get("name") == "setuptools"]
+    if len(setuptools) != 1 or setuptools[0].get("version") != "84.0.0":
+        raise AssertionError("uv.lock must contain exactly setuptools 84.0.0")
+    wheels = setuptools[0].get("wheels", [])
+    if SETUPTOOLS_WHEEL not in [
+        {key: wheel.get(key) for key in SETUPTOOLS_WHEEL} for wheel in wheels
+    ]:
+        raise AssertionError("setuptools 84.0.0 lacks the audited wheel identity")
 
     xcodec2 = [package for package in packages if package.get("name") == "xcodec2"]
     if len(xcodec2) != 1:
@@ -242,6 +262,7 @@ def _tamper_self_test(pyproject_text: str, lock_text: str) -> None:
     for index, replacement, label in (
         (0, "torch==2.5.0", "Torch"),
         (1, "torchaudio==2.5.0", "TorchAudio"),
+        (2, "setuptools==75.1.0", "setuptools"),
     ):
         tampered_pyproject = copy.deepcopy(pyproject)
         tampered_pyproject["tool"]["uv"]["override-dependencies"][index] = replacement
@@ -280,6 +301,7 @@ def _tamper_self_test(pyproject_text: str, lock_text: str) -> None:
     for index, replacement, label in (
         (0, "==2.5.0", "Torch"),
         (1, "==2.5.0", "TorchAudio"),
+        (2, "==75.1.0", "setuptools"),
     ):
         tampered_lock = copy.deepcopy(lock)
         tampered_lock["manifest"]["overrides"][index]["specifier"] = replacement
@@ -327,6 +349,17 @@ def _tamper_self_test(pyproject_text: str, lock_text: str) -> None:
             copy.deepcopy(pyproject),
             tampered_lock,
         )
+
+    tampered_lock = copy.deepcopy(lock)
+    setuptools = next(
+        package
+        for package in tampered_lock["package"]
+        if package.get("name") == "setuptools"
+    )
+    setuptools["wheels"][0]["hash"] = "sha256:" + "0" * 64
+    assert_rejected(
+        "setuptools wheel hash drift", copy.deepcopy(pyproject), tampered_lock
+    )
 
     for name in EXPECTED_RESOLVED_VERSIONS:
         tampered_lock = copy.deepcopy(lock)

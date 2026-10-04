@@ -25,6 +25,7 @@ import importlib.metadata
 import importlib.util
 import json
 from dataclasses import dataclass
+import os
 import sys
 import types
 from pathlib import Path
@@ -84,6 +85,13 @@ EXPECTED_MODULE_NAMES = {
 MAX_RECORD_BYTES = 16 * 1024 * 1024
 MAX_RECORD_ENTRIES = 250_000
 MAX_PREIMPORT_BYTES = 8 * 1024 * 1024 * 1024
+# The audited public GGUF is 3,291,064,672 bytes.  This is an input contract,
+# not a local-memory allowance: VAST is required for the real artifact path.
+AUDITED_GGUF_BYTES = 3_291_064_672
+MAX_GGUF_BYTES = AUDITED_GGUF_BYTES
+MAX_CODES_BYTES = 1 * 1024 * 1024
+MAX_REFERENCE_OUTPUT_BYTES = 512 * 1024 * 1024
+REFERENCE_OUTPUT_NAMES = ("codes.u32le", "features.f32", "decoded_pcm.f32", "manifest.json")
 
 
 @dataclass(frozen=True)
@@ -94,6 +102,126 @@ class _PreimportProof:
 
 
 _PREIMPORT_NONCE = object()
+
+
+def _absolute_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _reject_symlink_ancestry(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            if current == Path("/var") and current.resolve() == Path("/private/var"):
+                continue
+            raise RuntimeError(f"path has symlink ancestry: {path}")
+
+
+def _bounded_size_ok(size: int, limit: int) -> bool:
+    return 0 < size <= limit
+
+
+def _regular_bounded_file(path: Path, limit: int, label: str) -> Path:
+    absolute = _absolute_path(path)
+    _reject_symlink_ancestry(absolute)
+    if absolute.is_symlink() or not absolute.is_file():
+        raise RuntimeError(f"{label} must be a regular file: {path}")
+    size = absolute.stat().st_size
+    if not _bounded_size_ok(size, limit):
+        raise RuntimeError(f"{label} exceeds the bounded size: {size} > {limit}")
+    return absolute
+
+
+def _validate_codes_file(path: Path) -> Path:
+    """Validate the bounded code input before numpy can silently drop bytes."""
+
+    absolute = _regular_bounded_file(path, MAX_CODES_BYTES, "codes input")
+    size = absolute.stat().st_size
+    if size % 4:
+        raise RuntimeError(f"codes input byte size is not uint32-aligned: {size}")
+    return absolute
+
+
+def _safe_output_dir(path: Path) -> Path:
+    absolute = _absolute_path(path)
+    if not absolute.parent.is_dir():
+        raise RuntimeError(f"output parent must already exist: {absolute.parent}")
+    _reject_symlink_ancestry(absolute.parent)
+    if absolute.exists() or absolute.is_symlink():
+        if absolute.is_symlink() or not absolute.is_dir():
+            raise RuntimeError(f"output must be a regular directory: {path}")
+        return absolute
+    absolute.mkdir()
+    _reject_symlink_ancestry(absolute)
+    return absolute
+
+
+def _atomic_write(path: Path, writer) -> None:
+    _reject_symlink_ancestry(path.parent)
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"refusing to overwrite output: {path}")
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            writer(stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    except Exception:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    else:
+        temporary.unlink()
+
+
+def _atomic_write_array(path: Path, values) -> None:
+    _atomic_write(path, values.tofile)
+
+
+def _atomic_write_bytes(path: Path, body: bytes) -> None:
+    _atomic_write(path, lambda stream: stream.write(body))
+
+
+def _new_output_paths(output_dir: Path) -> tuple[Path, ...]:
+    paths = tuple(output_dir / name for name in REFERENCE_OUTPUT_NAMES)
+    for path in paths:
+        if path.exists() or path.is_symlink():
+            raise RuntimeError(f"refusing to overwrite output: {path}")
+    return paths
+
+
+def _remove_outputs_created_by_us(created: list[tuple[Path, int, int]]) -> None:
+    """Recover only files whose device/inode was created by this invocation."""
+
+    for path, device, inode in reversed(created):
+        try:
+            _reject_symlink_ancestry(path.parent)
+            if path.is_symlink():
+                continue
+            stat = path.stat()
+            if stat.st_dev == device and stat.st_ino == inode:
+                path.unlink()
+        except FileNotFoundError:
+            continue
+
+
+def _record_created_output(created: list[tuple[Path, int, int]], path: Path) -> None:
+    stat = path.stat()
+    created.append((path, stat.st_dev, stat.st_ino))
+
+
+def _validate_reference_budget(code_count: int) -> None:
+    code_bytes = code_count * 4
+    feature_bytes = code_count * HIDDEN_DIM * 4
+    pcm_bytes = code_count * HOP_LENGTH * 4
+    if code_bytes > MAX_CODES_BYTES or feature_bytes + pcm_bytes > MAX_REFERENCE_OUTPUT_BYTES:
+        raise RuntimeError("reference input/output exceeds the bounded byte budget")
 
 
 def validate_execution_authorization() -> None:
@@ -473,25 +601,30 @@ def main() -> int:
     # Keep all third-party imports below the existing audit/owner gate and
     # installed identity gate. Neither gate accepts an environment override.
     validate_execution_authorization()
+    gguf_path = _regular_bounded_file(args.gguf, MAX_GGUF_BYTES, "GGUF input")
+    codes_path = _validate_codes_file(args.codes)
+    output_dir = _safe_output_dir(args.output)
+    output_codes_path, features_path, pcm_path, manifest_path = _new_output_paths(output_dir)
     preimport = validate_patched_runtime()
     torch_version = preimport.versions["torch"]
     torchaudio_version = preimport.versions["torchaudio"]
     import numpy as np
     import torch
 
-    gguf_sha256 = sha256_file(args.gguf)
+    gguf_sha256 = sha256_file(gguf_path)
     if gguf_sha256 != GGUF_SHA256:
         raise RuntimeError(f"GGUF SHA-256 {gguf_sha256} != {GGUF_SHA256}")
     if importlib.metadata.version("vector-quantize-pytorch") != VECTOR_QUANTIZE_VERSION:
         raise RuntimeError("vector-quantize-pytorch version mismatch")
 
-    codes = np.fromfile(args.codes, dtype="<u4")
+    codes = np.fromfile(codes_path, dtype="<u4")
     if codes.size == 0 or np.any(codes >= CODEBOOK_SIZE):
         raise RuntimeError(f"codes must be non-empty and each below {CODEBOOK_SIZE}")
+    _validate_reference_budget(int(codes.size))
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     torch.use_deterministic_algorithms(True)
-    decoder, fc_post_a, loaded_count, defaulted = load_official_modules(args.gguf, preimport)
+    decoder, fc_post_a, loaded_count, defaulted = load_official_modules(gguf_path, preimport)
 
     code_tensor = torch.from_numpy(codes.astype(np.int64)).reshape(1, 1, -1)
     with torch.inference_mode():
@@ -509,40 +642,45 @@ def main() -> int:
     if not bool(torch.isfinite(decoded).all()):
         raise RuntimeError("official decoder emitted non-finite PCM")
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    codes_path = args.output / "codes.u32le"
-    features_path = args.output / "features.f32"
-    pcm_path = args.output / "decoded_pcm.f32"
-    np.asarray(codes, dtype="<u4").tofile(codes_path)
-    np.asarray(features.cpu().numpy(), dtype="<f4").tofile(features_path)
-    np.asarray(decoded.cpu().numpy(), dtype="<f4").tofile(pcm_path)
-    manifest = {
-        "format": "vokra-xcodec2-reference-v1",
-        "oracle": "official xcodec2==0.1.5 CodecDecoderVocos FSQ + forward",
-        "source_distribution": "xcodec2==0.1.5",
-        "source_distribution_sha256": XCODEC2_SDIST_SHA256,
-        "decoder_source_sha256": DECODER_SOURCE_SHA256,
-        "transformer_source_sha256": TRANSFORMER_SOURCE_SHA256,
-        "gguf_sha256": gguf_sha256,
-        "torchtune": TORCHTUNE_VERSION,
-        "torchtune_rope_sha256": TORCHTUNE_ROPE_SHA256,
-        "vector_quantize_pytorch": VECTOR_QUANTIZE_VERSION,
-        "torch": torch_version,
-        "torchaudio": torchaudio_version,
-        "official_state_tensors_loaded": loaded_count + 2,
-        "official_defaulted_deterministic_buffers": defaulted,
-        "code_count": int(codes.size),
-        "feature_shape": list(features.shape),
-        "decoded_shape": list(decoded.shape),
-        "files": {
-            path.name: sha256_file(path)
-            for path in (codes_path, features_path, pcm_path)
-        },
-    }
-    manifest_path = args.output / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    created: list[tuple[Path, int, int]] = []
+    try:
+        _atomic_write_array(output_codes_path, np.asarray(codes, dtype="<u4"))
+        _record_created_output(created, output_codes_path)
+        _atomic_write_array(features_path, np.asarray(features.cpu().numpy(), dtype="<f4"))
+        _record_created_output(created, features_path)
+        _atomic_write_array(pcm_path, np.asarray(decoded.cpu().numpy(), dtype="<f4"))
+        _record_created_output(created, pcm_path)
+        manifest = {
+            "format": "vokra-xcodec2-reference-v1",
+            "oracle": "official xcodec2==0.1.5 CodecDecoderVocos FSQ + forward",
+            "source_distribution": "xcodec2==0.1.5",
+            "source_distribution_sha256": XCODEC2_SDIST_SHA256,
+            "decoder_source_sha256": DECODER_SOURCE_SHA256,
+            "transformer_source_sha256": TRANSFORMER_SOURCE_SHA256,
+            "gguf_sha256": gguf_sha256,
+            "torchtune": TORCHTUNE_VERSION,
+            "torchtune_rope_sha256": TORCHTUNE_ROPE_SHA256,
+            "vector_quantize_pytorch": VECTOR_QUANTIZE_VERSION,
+            "torch": torch_version,
+            "torchaudio": torchaudio_version,
+            "official_state_tensors_loaded": loaded_count + 2,
+            "official_defaulted_deterministic_buffers": defaulted,
+            "code_count": int(codes.size),
+            "feature_shape": list(features.shape),
+            "decoded_shape": list(decoded.shape),
+            "files": {
+                path.name: sha256_file(path)
+                for path in (output_codes_path, features_path, pcm_path)
+            },
+        }
+        _atomic_write_bytes(
+            manifest_path,
+            (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        )
+        _record_created_output(created, manifest_path)
+    except Exception:
+        _remove_outputs_created_by_us(created)
+        raise
     print(json.dumps(manifest, sort_keys=True))
     return 0
 

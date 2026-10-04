@@ -14,6 +14,7 @@ import tomllib
 import unittest
 import zipfile
 from types import SimpleNamespace
+from unittest import mock
 
 import collect_dependency_evidence as collector
 import dependency_audit as audit
@@ -109,6 +110,32 @@ class DependencyAuditTests(unittest.TestCase):
         self.assertTrue(audit.marker_reaches("python_full_version == '3.12'", {**audit.TARGET_ENV, "python_full_version": "3.12.0"}))
         self.assertTrue(audit.marker_reaches("python_version >= '3.12.0'", {**audit.TARGET_ENV, "python_version": "3.12"}))
 
+    def test_artifact_urls_and_dependency_edges_are_strictly_bound(self) -> None:
+        for url in (
+            "https://files.pythonhosted.org/packages/pkg.whl",
+            "https://files.pythonhosted.org:443/packages/pkg.whl",
+        ):
+            audit._artifact_url_ok(url, torch=False)
+        for url in (
+            "http://files.pythonhosted.org/packages/pkg.whl",
+            "https://files.pythonhosted.org:444/packages/pkg.whl",
+            "https://files.pythonhosted.org/packages/pkg.whl?redirect=1",
+            "https://files.pythonhosted.org",
+            "https://evil.example/packages/pkg.whl",
+            "https://@files.pythonhosted.org/packages/pkg.whl",
+            "https://files.pythonhosted.org/packages/pkg.whl\n",
+        ):
+            with self.subTest(url=url), self.assertRaises(audit.AuditError, msg=url):
+                audit._artifact_url_ok(url, torch=False)
+
+        lock = tomllib.loads(audit.LOCK.read_text(encoding="utf-8"))
+        xcodec = next(row for row in lock["package"] if row.get("name") == "xcodec2")
+        for edge in xcodec["dependencies"]:
+            if edge.get("name") == "torch":
+                edge["version"] = "2.5.0"
+        with self.assertRaises(audit.AuditError):
+            audit.reachable_lock_identities(lock)
+
     def test_activated_extra_reaches_aiohttp_subgraph(self) -> None:
         lock = tomllib.loads(audit.LOCK.read_text(encoding="utf-8"))
         closure = set(audit.reachable_lock_identities(lock))
@@ -143,6 +170,14 @@ class DependencyAuditTests(unittest.TestCase):
         source_tampered["source_digests"]["collect_dependency_evidence.py"] = "0" * 64
         with self.assertRaises(audit.AuditError):
             audit.validate_gate_documents(manifest, rows, source_tampered, closure)
+        devendor_tampered = copy.deepcopy(manifest)
+        devendor_tampered["setuptools_devendoring"]["upstream_contract"]["vendor_root"] = "setuptools/vendor"
+        with self.assertRaises(audit.AuditError):
+            audit.validate_gate_documents(devendor_tampered, rows, actual, closure)
+        rows_tampered = copy.deepcopy(rows)
+        rows_tampered["setuptools_devendoring"]["status"] = "APPROVED"
+        with self.assertRaises(audit.AuditError):
+            audit.validate_gate_documents(manifest, rows_tampered, actual, closure)
 
     def test_reference_defers_third_party_imports_until_preflight(self) -> None:
         tree = ast.parse(
@@ -169,6 +204,137 @@ class DependencyAuditTests(unittest.TestCase):
             source.index("    validate_execution_authorization()", main_start),
             source.index("    import numpy as np", main_start),
         )
+        main_node = next(
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "main"
+        )
+        output_preflight = next(
+            node.lineno
+            for node in ast.walk(main_node)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_new_output_paths"
+        )
+        runtime_preflight = next(
+            node.lineno
+            for node in ast.walk(main_node)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "validate_patched_runtime"
+        )
+        module_load = next(
+            node.lineno
+            for node in ast.walk(main_node)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "load_official_modules"
+        )
+        numpy_import = next(
+            node.lineno
+            for node in ast.walk(main_node)
+            if isinstance(node, ast.Import)
+            and any(alias.name == "numpy" for alias in node.names)
+        )
+        self.assertLess(output_preflight, runtime_preflight)
+        self.assertLess(output_preflight, numpy_import)
+        self.assertLess(output_preflight, module_load)
+
+    def test_reference_inputs_and_outputs_are_bounded_and_non_overwriting(self) -> None:
+        self.assertEqual(reference.AUDITED_GGUF_BYTES, 3_291_064_672)
+        self.assertTrue(reference._bounded_size_ok(reference.AUDITED_GGUF_BYTES, reference.MAX_GGUF_BYTES))
+        self.assertFalse(reference._bounded_size_ok(reference.AUDITED_GGUF_BYTES + 1, reference.MAX_GGUF_BYTES))
+        with tempfile.TemporaryDirectory(prefix="xcodec2-reference-io-test-") as directory:
+            root = Path(directory)
+            codes = root / "codes.u32le"
+            codes.write_bytes(b"\x00\x00\x00\x00")
+            self.assertEqual(reference._validate_codes_file(codes), codes)
+            misaligned = root / "misaligned.u32le"
+            misaligned.write_bytes(b"\x00\x00\x00")
+            with self.assertRaises(RuntimeError):
+                reference._validate_codes_file(misaligned)
+            oversized = root / "oversized"
+            oversized.write_bytes(b"x" * 5)
+            with self.assertRaises(RuntimeError):
+                reference._regular_bounded_file(oversized, 4, "codes")
+            link = root / "codes-link"
+            link.symlink_to(codes)
+            with self.assertRaises(RuntimeError):
+                reference._regular_bounded_file(link, 4, "codes")
+
+            with self.assertRaises(RuntimeError):
+                reference._validate_reference_budget(
+                    reference.MAX_REFERENCE_OUTPUT_BYTES // (reference.HIDDEN_DIM * 4) + 1
+                )
+            output = reference._safe_output_dir(root / "output")
+            paths = reference._new_output_paths(output)
+            self.assertEqual(tuple(path.name for path in paths), reference.REFERENCE_OUTPUT_NAMES)
+            untouched = output / "untouched.bin"
+            untouched.write_bytes(b"keep")
+            existing = output / "features.f32"
+            existing.write_bytes(b"keep")
+            with self.assertRaises(RuntimeError):
+                reference._new_output_paths(output)
+            self.assertEqual(existing.read_bytes(), b"keep")
+            existing.unlink()
+            output_symlink = output / "features.f32"
+            output_symlink.symlink_to("untouched.bin")
+            with self.assertRaises(RuntimeError):
+                reference._new_output_paths(output)
+            output_symlink.unlink()
+            target = output / "manifest.json"
+            reference._atomic_write_bytes(target, b"first\n")
+            self.assertEqual(target.read_bytes(), b"first\n")
+            with self.assertRaises(RuntimeError):
+                reference._atomic_write_bytes(target, b"second\n")
+            target_link = output / "linked.json"
+            target_link.symlink_to(target)
+            with self.assertRaises(RuntimeError):
+                reference._atomic_write_bytes(target_link, b"blocked\n")
+            output_link = root / "output-link"
+            output_link.symlink_to(output, target_is_directory=True)
+            with self.assertRaises(RuntimeError):
+                reference._safe_output_dir(output_link)
+
+            created: list[tuple[Path, int, int]] = []
+            recoverable = output / "recoverable.bin"
+            try:
+                reference._atomic_write_bytes(recoverable, b"new output")
+                reference._record_created_output(created, recoverable)
+                raise RuntimeError("simulated later output failure")
+            except RuntimeError:
+                reference._remove_outputs_created_by_us(created)
+            self.assertFalse(recoverable.exists())
+            self.assertEqual(untouched.read_bytes(), b"keep")
+
+    def test_atomic_writer_failure_and_link_race_are_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xcodec2-atomic-failure-test-") as directory:
+            output = Path(directory)
+            sibling = output / "sibling.bin"
+            sibling.write_bytes(b"preserve")
+            partial = output / "partial.bin"
+
+            def fail_after_partial_write(stream) -> None:
+                stream.write(b"partial")
+                raise RuntimeError("simulated writer failure")
+
+            with self.assertRaises(RuntimeError):
+                reference._atomic_write(partial, fail_after_partial_write)
+            self.assertFalse(partial.exists())
+            self.assertEqual(sibling.read_bytes(), b"preserve")
+            self.assertEqual(list(output.glob(".partial.bin.*.tmp")), [])
+
+            raced = output / "raced.bin"
+            original_link = reference.os.link
+
+            def create_race_target(source, destination):
+                Path(destination).write_bytes(b"racer-owned")
+                return original_link(source, destination)
+
+            with mock.patch.object(reference.os, "link", side_effect=create_race_target):
+                with self.assertRaises(FileExistsError):
+                    reference._atomic_write(raced, lambda stream: stream.write(b"new"))
+            self.assertEqual(raced.read_bytes(), b"racer-owned")
+            self.assertEqual(list(output.glob(".raced.bin.*.tmp")), [])
 
     def test_archive_license_bytes_are_literal_and_traversal_safe(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xcodec2-audit-test-") as directory:

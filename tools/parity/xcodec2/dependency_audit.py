@@ -19,6 +19,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -49,6 +50,21 @@ TARGET_ENV = {
 PYPI_HOSTS = {"files.pythonhosted.org", "pypi.org"}
 TORCH_HOSTS = {"download.pytorch.org", "download-r2.pytorch.org"}
 TORCH_REGISTRIES = {"https://download.pytorch.org/whl/cpu"}
+SETUPTOOLS_WHEEL = {
+    "url": "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl",
+    "sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+    "bytes": 818216,
+}
+SETUPTOOLS_DEVENDORING = {
+    "distribution": "setuptools",
+    "version": "84.0.0",
+    "locked_wheel_sha256": SETUPTOOLS_WHEEL["sha256"],
+    "locked_wheel_bytes": SETUPTOOLS_WHEEL["bytes"],
+    "upstream_contract_url": "https://setuptools.pypa.io/en/latest/history.html",
+    "upstream_contract_release": "71.0.0",
+    "vendor_root": "setuptools/_vendor",
+    "status": "CANDIDATE_NOT_BUILT",
+}
 FORBIDDEN_ROWS = {"transformers", "tokenizers", "typer", "shellingham"}
 EXPECTED_NON_LINUX_ROWS_EXCLUDED_FROM_PRIOR_TALLY = {("torch", "2.13.0"), ("torchaudio", "2.11.0")}
 # Independent `uv tree --frozen --offline --python-version 3.12
@@ -75,7 +91,14 @@ EXPECTED_PROJECT_NAME = "vokra-xcodec2-parity"
 EXPECTED_LOCK_OVERRIDES = [
     {"name": "torch", "specifier": "==2.13.0", "index": "https://download.pytorch.org/whl/cpu"},
     {"name": "torchaudio", "specifier": "==2.11.0", "index": "https://download.pytorch.org/whl/cpu"},
+    {"name": "setuptools", "specifier": "==84.0.0"},
     {"name": "transformers", "marker": "python_full_version < '0'"},
+]
+EXPECTED_PYPROJECT_OVERRIDES = [
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+    "setuptools==84.0.0",
+    "transformers ; python_version < '0'",
 ]
 
 
@@ -199,12 +222,28 @@ def marker_reaches_any(markers: Any) -> bool:
 
 
 def _artifact_url_ok(url: Any, *, torch: bool) -> None:
-    if not isinstance(url, str) or not url.startswith("https://") or "?" in url or "#" in url:
+    if not isinstance(url, str):
         raise AuditError("artifact URL must be an HTTPS URL without query/fragment")
-    host = url.split("/", 3)[2]
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in url):
+        raise AuditError("artifact URL contains a control character")
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise AuditError("artifact URL port is malformed") from exc
     allowed = TORCH_HOSTS if torch else PYPI_HOSTS
-    if host not in allowed:
-        raise AuditError(f"artifact URL host is outside the pinned index: {host}")
+    if (
+        parsed.scheme != "https"
+        or "@" in parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or port not in (None, 443)
+        or parsed.hostname not in allowed
+        or not parsed.path
+    ):
+        raise AuditError("artifact URL is not a strict HTTPS URL on the pinned host")
 
 
 def _validate_artifact(artifact: Any, *, torch: bool) -> None:
@@ -298,7 +337,20 @@ def reachable_lock_identities(lock: dict[str, Any]) -> list[tuple[str, str]]:
             marker = dependency.get("marker")
             if marker is not None and not marker_reaches(marker):
                 continue
-            candidates = [key for key, row in rows.items() if key[0] == dependency["name"].casefold() and marker_reaches_any(row.get("resolution-markers"))]
+            edge_version = dependency.get("version")
+            if edge_version is not None and (not isinstance(edge_version, str) or not edge_version):
+                raise AuditError("lock dependency version is malformed")
+            edge_source = dependency.get("source")
+            if edge_source is not None and not isinstance(edge_source, dict):
+                raise AuditError("lock dependency source is malformed")
+            candidates = [
+                key
+                for key, row in rows.items()
+                if key[0] == dependency["name"].casefold()
+                and (edge_version is None or key[1] == edge_version)
+                and (edge_source is None or row.get("source") == edge_source)
+                and marker_reaches_any(row.get("resolution-markers"))
+            ]
             if len(candidates) != 1:
                 raise AuditError(f"Linux closure edge is ambiguous or missing: {dependency['name']}")
             candidate = candidates[0]
@@ -339,6 +391,11 @@ def load_contract(expected_head: str | None = None) -> dict[str, Any]:
     lock = tomllib.loads(lock_bytes.decode("utf-8"))
     if pyproject.get("project", {}).get("name") != EXPECTED_PROJECT_NAME:
         raise AuditError("project name drifted")
+    tool_uv = pyproject.get("tool", {}).get("uv", {})
+    if tool_uv.get("override-dependencies") != EXPECTED_PYPROJECT_OVERRIDES:
+        raise AuditError("pyproject override contract drifted")
+    if "setuptools==84.0.0" not in pyproject.get("project", {}).get("dependencies", []):
+        raise AuditError("setuptools 84 must remain an explicit project dependency")
     parse_lock_data(lock)
     actual = {
         "pyproject_sha256": sha256_bytes(pyproject_bytes),
@@ -368,6 +425,20 @@ def validate_gate_documents(manifest: dict[str, Any], rows: dict[str, Any], actu
     dependency_contract = manifest.get("dependency_audit")
     if not isinstance(dependency_contract, dict) or dependency_contract.get("rows_file") != "dependency_audit.json" or dependency_contract.get("collector") != "collect_dependency_evidence.py" or dependency_contract.get("status") != "BLOCKED_PENDING_PRIMARY_BYTES" or type(dependency_contract.get("owner_review_required")) is not bool or dependency_contract["owner_review_required"] is not True:
         raise AuditError("manifest dependency audit contract drifted")
+    if manifest.get("setuptools_devendoring") != {
+        "distribution": "setuptools",
+        "version": "84.0.0",
+        "locked_wheel": SETUPTOOLS_WHEEL,
+        "upstream_contract": {
+            "source_url": SETUPTOOLS_DEVENDORING["upstream_contract_url"],
+            "release": SETUPTOOLS_DEVENDORING["upstream_contract_release"],
+            "vendor_root": SETUPTOOLS_DEVENDORING["vendor_root"],
+            "operation": "downstream_devendor_by_removing_vendor_root",
+        },
+        "status": "CANDIDATE_NOT_BUILT",
+        "owner_review_required": True,
+    }:
+        raise AuditError("setuptools de-vendoring contract drifted")
     policy = manifest.get("policy")
     if not isinstance(policy, dict) or policy.get("license_classification") != "UNRESOLVED_PRIMARY_BYTES" or policy.get("native_payload") != "UNRESOLVED_PRIMARY_BYTES_AND_NEEDED" or policy.get("numpy_runtime") != "UNRESOLVED_GPL_GCC_LGPL_OR_OTHER" or type(policy.get("automatic_exceptions")) is not bool or policy["automatic_exceptions"] is not False or type(policy.get("no_upload")) is not bool or policy["no_upload"] is not True:
         raise AuditError("manifest policy is not fail-closed")
@@ -377,6 +448,8 @@ def validate_gate_documents(manifest: dict[str, Any], rows: dict[str, Any], actu
         raise AuditError("dependency rows do not bind project/lock hashes")
     if rows.get("source_digests") != expected_sources:
         raise AuditError("dependency rows do not bind audited helper source digests")
+    if rows.get("setuptools_devendoring") != SETUPTOOLS_DEVENDORING:
+        raise AuditError("dependency rows lost the setuptools de-vendoring contract")
     if set(closure) != EXPECTED_LINUX_CLOSURE:
         raise AuditError("Linux closure identity set differs from the audited UV target tree")
     if rows.get("expected_linux_closure_rows") != len(closure) or rows.get("expected_linux_external_rows") != len(closure) - 1:

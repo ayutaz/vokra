@@ -4,18 +4,28 @@
   "publication": "NO_UPLOAD",
   "python": "==3.12.*",
   "platform": "linux-x86_64",
-  "pyproject_sha256": "289c96a0775a7e013dccc579810a4b18fcf573d79536fdd84e05db3ea4733bcc",
-  "uv_lock_sha256": "d59f4541f665d3517bec3498e8b5b48fdc24aa0299885cac7ae0574f9fc1d9d4",
+  "pyproject_sha256": "8ab3bed941e2f77a04b6311f8ba0e27363274507dfc0dcef41e97358e9b6e2c5",
+  "uv_lock_sha256": "2ffd17d936fef2b660e3865e3d8cdecbde24f48ae7537254b1d78c9f2c77b220",
   "source_digests": {
-    "dependency_audit.py": "f6d8a4fa59c11192c0319055626b85b90e3a86fff64ce20157714a3652503244",
-    "dependency_guard.py": "18b8dd228831531bb574b1d1c7e3c1a781d78bead846abab9fa19e264ed42c63",
+    "dependency_audit.py": "5db6ce2ebb520da978f77b3ee5327e405ab4a62f49a26fcbb1261a05254757ff",
+    "dependency_guard.py": "c180ea5338f492fbb8cde5ff03eadf077a92edf68a3f5823fcd80f52285d10b2",
     "collect_dependency_evidence.py": "b8754c2946de03a346539a5f77e4e78b08ee71e9591fac769fae65363f604407",
     "inspect_locked_sdist_sources.py": "a17ef3fb4b124bff5a53f22d2ee67afb353ed85e3c1016e8a1392a0dfaae1958",
     "build_derived_locked_sdists.py": "b0712410a1cc28d67aeaa8629e2ba5ffb559362964457e386e154fad76b8b98f",
-    "dump_reference.py": "8e0cecc231c5c5f8d416c52c677bdcc7b7e0a6fcca4debc07d6f0df1c02e41ce"
+    "dump_reference.py": "0be4854099243e85725f6acc912d010387f2d260cd3bb667608021f15461b2d9"
   },
   "expected_linux_closure_rows": 63,
   "expected_linux_external_rows": 62,
+  "setuptools_devendoring": {
+    "distribution": "setuptools",
+    "version": "84.0.0",
+    "locked_wheel_sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+    "locked_wheel_bytes": 818216,
+    "upstream_contract_url": "https://setuptools.pypa.io/en/latest/history.html",
+    "upstream_contract_release": "71.0.0",
+    "vendor_root": "setuptools/_vendor",
+    "status": "CANDIDATE_NOT_BUILT"
+  },
   "package_rows": [],
   "license_rows": [],
   "native_rows": [],
@@ -24,6 +34,8 @@
     "xcodec2==0.1.5 has no verified primary LICENSE bytes in the candidate evidence",
     "NumPy wheel GPL/GCC/LGPL runtime components remain explicitly unresolved until the selected Linux artifact and ELF dependencies are inspected",
     "native payloads and readelf NEEDED results require owner review",
+    "setuptools 84 remains a reachable Linux edge; its upstream de-vendoring contract is recorded but no derived wheel or runtime compatibility proof exists",
+    "the locked setuptools wheel's vendored license members must be independently retained and reviewed; metadata alone is insufficient",
     "owner/legal approval and publication remain absent"
   ]
 }

@@ -17,6 +17,7 @@ dependencies = [
     "torch==2.13.0",
     "torchao==0.5.0",
     "torchaudio==2.11.0",
+    "setuptools==84.0.0",
     "torchtune==0.3.1",
     "transformers==5.10.4",
     "vector-quantize-pytorch==1.17.8",
@@ -35,6 +36,7 @@ package = false
 override-dependencies = [
     "torch==2.13.0",
     "torchaudio==2.11.0",
+    "setuptools==84.0.0",
     "transformers ; python_version < '0'",
 ]
 
