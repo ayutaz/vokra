@@ -154,6 +154,24 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             .map(|cache| cache.positions.as_slice())
     }
 
+    /// Returns the borrowed chronological KV view for one transformer layer.
+    ///
+    /// The view is intentionally read-only and exposes the native f32 seam
+    /// without changing cache ownership or eviction semantics.  An external
+    /// reference comparator must first discard upstream ring slots whose
+    /// official position is `-1`, then reorder the remaining rows by absolute
+    /// position before comparing this view.
+    #[must_use]
+    pub fn layer_cache_view(&self, layer: usize) -> Option<(&[usize], &[f32], &[f32])> {
+        self.layers.get(layer).map(|cache| {
+            (
+                cache.positions.as_slice(),
+                cache.keys.as_slice(),
+                cache.values.as_slice(),
+            )
+        })
+    }
+
     /// Executes one audio/text frame.
     ///
     /// `previous_text_token` is the token sampled from the preceding output;
@@ -1110,6 +1128,37 @@ mod tests {
             next_b.logits(),
             "current audio must not be shifted"
         );
+    }
+
+    #[test]
+    fn layer_cache_view_is_readonly_structural_state_and_resets() {
+        let (asr, config) = fixture();
+        let mut stream = asr.streaming_lm(BackendKind::Cpu).expect("stream");
+        assert!(stream.layer_cache_view(config.backbone.n_layer).is_none());
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert!(positions.is_empty());
+        assert!(keys.is_empty());
+        assert!(values.is_empty());
+
+        stream
+            .step_frame(None, &vec![0; config.n_q])
+            .expect("first frame");
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert_eq!(
+            positions,
+            stream.layer_cache_positions(0).expect("positions")
+        );
+        assert_eq!(positions.len(), 1);
+        assert_eq!(keys.len(), config.backbone.d_model);
+        assert_eq!(values.len(), config.backbone.d_model);
+        assert!(keys.iter().all(|value| value.is_finite()));
+        assert!(values.iter().all(|value| value.is_finite()));
+
+        stream.reset();
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert!(positions.is_empty());
+        assert!(keys.is_empty());
+        assert!(values.is_empty());
     }
 
     #[test]

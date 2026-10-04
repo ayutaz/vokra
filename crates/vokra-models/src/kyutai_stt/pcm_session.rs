@@ -15,6 +15,8 @@ use crate::compute::Compute;
 use crate::mimi::{MimiEncoder, MimiEncoderState, MimiNeuralConfig};
 use crate::strict_checkpoint::sha256_bytes;
 
+#[cfg(test)]
+use super::KyutaiSttStreamingLmStep;
 use super::{
     KYUTAI_STT_MIMI_BYTES, KYUTAI_STT_MIMI_SHA256, KyutaiSttAsr, KyutaiSttConfig,
     KyutaiSttStreamingContract, KyutaiSttStreamingLm, KyutaiSttTextLogits, KyutaiSttTokenizer,
@@ -228,35 +230,139 @@ impl KyutaiSttPcmSession<'_> {
     }
 
     fn push_pcm_with_callbacks(&mut self, samples: &[f32]) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.push_pcm_observed(samples, None)
+        }
+        #[cfg(not(test))]
+        {
+            self.push_pcm_observed(samples)
+        }
+    }
+
+    fn finish_with_callbacks(&mut self) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.finish_observed(None)
+        }
+        #[cfg(not(test))]
+        {
+            self.finish_observed()
+        }
+    }
+
+    fn push_pcm_observed(
+        &mut self,
+        samples: &[f32],
+        #[cfg(test)] observer: Option<&mut dyn PcmObserver>,
+    ) -> Result<()> {
         let contract = self.engine.contract;
         let mimi = &self.engine.mimi;
         let mimi_state = &mut self.mimi_state;
         let lm = &mut self.lm;
+        #[cfg(test)]
+        let observer = std::cell::RefCell::new(observer);
         self.control.push(
             contract,
             samples,
-            |frame, codes| mimi.encode_into(mimi_state, frame, codes),
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                #[cfg(test)]
+                notify_frame(&observer, frame, codes)?;
+                Ok(())
+            },
             |previous, codes| {
                 let step = lm.step_frame(previous, codes)?;
+                #[cfg(test)]
+                notify_lm_call(&observer, previous, codes, &step, lm)?;
                 greedy_token(step.logits(), contract.text_card())
             },
         )
     }
 
-    fn finish_with_callbacks(&mut self) -> Result<()> {
+    fn finish_observed(
+        &mut self,
+        #[cfg(test)] observer: Option<&mut dyn PcmObserver>,
+    ) -> Result<()> {
         let contract = self.engine.contract;
         let mimi = &self.engine.mimi;
         let mimi_state = &mut self.mimi_state;
         let lm = &mut self.lm;
+        #[cfg(test)]
+        let observer = std::cell::RefCell::new(observer);
         self.control.finish(
             contract,
-            |frame, codes| mimi.encode_into(mimi_state, frame, codes),
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                #[cfg(test)]
+                notify_frame(&observer, frame, codes)?;
+                Ok(())
+            },
             |previous, codes| {
                 let step = lm.step_frame(previous, codes)?;
+                #[cfg(test)]
+                notify_lm_call(&observer, previous, codes, &step, lm)?;
                 greedy_token(step.logits(), contract.text_card())
             },
         )
     }
+
+    #[cfg(test)]
+    fn push_pcm_with_observer(
+        &mut self,
+        samples: &[f32],
+        observer: &mut dyn PcmObserver,
+    ) -> Result<()> {
+        self.push_pcm_observed(samples, Some(observer))
+    }
+
+    #[cfg(test)]
+    fn finish_with_observer(&mut self, observer: &mut dyn PcmObserver) -> Result<()> {
+        self.finish_observed(Some(observer))
+    }
+}
+
+/// Test-only synchronous observation of the existing production PCM callback
+/// seam. Implementations receive borrowed views and must consume them before
+/// returning; the seam itself retains no KV data, while each consumer must
+/// enforce its own bounded retention/export policy.
+#[cfg(test)]
+trait PcmObserver {
+    fn on_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()>;
+
+    fn on_lm_call(
+        &mut self,
+        previous_text_token: Option<u32>,
+        codes: &[u32],
+        step: &KyutaiSttStreamingLmStep,
+        lm: &KyutaiSttStreamingLm<'_>,
+    ) -> Result<()>;
+}
+
+#[cfg(test)]
+fn notify_frame(
+    observer: &std::cell::RefCell<Option<&mut dyn PcmObserver>>,
+    frame: &[f32],
+    codes: &[u32],
+) -> Result<()> {
+    if let Some(observer) = observer.borrow_mut().as_deref_mut() {
+        observer.on_frame(frame, codes)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn notify_lm_call(
+    observer: &std::cell::RefCell<Option<&mut dyn PcmObserver>>,
+    previous_text_token: Option<u32>,
+    codes: &[u32],
+    step: &KyutaiSttStreamingLmStep,
+    lm: &KyutaiSttStreamingLm<'_>,
+) -> Result<()> {
+    if let Some(observer) = observer.borrow_mut().as_deref_mut() {
+        observer.on_lm_call(previous_text_token, codes, step, lm)?;
+    }
+    Ok(())
 }
 
 /// The exact PCM carry/padding state machine is kept separate from the model
@@ -777,6 +883,9 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
+mod independent_reference;
+
+#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -788,6 +897,74 @@ mod tests {
     fn contract() -> KyutaiSttStreamingContract {
         KyutaiSttStreamingContract::from_config(&super::super::KyutaiSttConfig::stt_2_6b_en())
             .unwrap()
+    }
+
+    #[derive(Default)]
+    struct ObserverProbe {
+        frames: usize,
+        frame_lengths: Vec<usize>,
+        code_rows: Vec<Vec<u32>>,
+        calls: Vec<(usize, usize, Option<u32>, usize, usize)>,
+    }
+
+    impl PcmObserver for ObserverProbe {
+        fn on_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()> {
+            self.frames += 1;
+            self.frame_lengths.push(frame.len());
+            self.code_rows.push(codes.to_vec());
+            Ok(())
+        }
+
+        fn on_lm_call(
+            &mut self,
+            previous_text_token: Option<u32>,
+            codes: &[u32],
+            step: &KyutaiSttStreamingLmStep,
+            lm: &KyutaiSttStreamingLm<'_>,
+        ) -> Result<()> {
+            let last_codes = self.code_rows.last().ok_or_else(|| {
+                VokraError::ModelLoad("observer saw LM call before Mimi frame".to_owned())
+            })?;
+            if last_codes != codes {
+                return Err(VokraError::ModelLoad(
+                    "observer saw a different LM code row".to_owned(),
+                ));
+            }
+            let layer_count = KyutaiSttConfig::stt_2_6b_en().backbone.n_layer;
+            for layer in 0..layer_count {
+                let (positions, keys, values) = lm.layer_cache_view(layer).ok_or_else(|| {
+                    VokraError::ModelLoad(format!("observer missing KV layer {layer}"))
+                })?;
+                let _borrowed_lengths = (positions.len(), keys.len(), values.len());
+            }
+            let frame_call_ordinal = self
+                .calls
+                .iter()
+                .rev()
+                .find(|call| call.0 + 1 == self.frames)
+                .map_or(0, |call| call.1 + 1);
+            self.calls.push((
+                self.frames - 1,
+                frame_call_ordinal,
+                previous_text_token,
+                step.logits().as_slice().len(),
+                layer_count,
+            ));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observer_dispatch_borrows_frame_and_code_rows_without_kv_retention() {
+        let mut probe = ObserverProbe::default();
+        let observer = std::cell::RefCell::new(Some(&mut probe as &mut dyn PcmObserver));
+        let frame = [0.25_f32; 1_920];
+        let codes = [7_u32; 32];
+        notify_frame(&observer, &frame, &codes).unwrap();
+        drop(observer);
+        assert_eq!(probe.frames, 1);
+        assert_eq!(probe.frame_lengths, [1_920]);
+        assert_eq!(probe.code_rows, vec![codes.to_vec()]);
     }
 
     #[test]
@@ -855,6 +1032,81 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, [(None, 7), (Some(19), 7)]);
+    }
+
+    #[test]
+    fn trace_schedule_records_first_double_call_and_reset_finish() {
+        #[derive(Default)]
+        struct Probe {
+            generation: usize,
+            frame: usize,
+            frame_call_ordinal: usize,
+            calls: Vec<(usize, usize, usize, Option<u32>)>,
+        }
+
+        let contract = contract();
+        let mut control =
+            PcmSessionControl::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        let probe = std::cell::RefCell::new(Probe::default());
+
+        let encode = |_: &[f32], codes: &mut [u32]| {
+            let mut probe = probe.borrow_mut();
+            codes.fill(0);
+            probe.frame += 1;
+            probe.frame_call_ordinal = 0;
+            Ok(())
+        };
+        let step = |previous: Option<u32>, _codes: &[u32]| {
+            let mut probe = probe.borrow_mut();
+            let frame = probe.frame - 1;
+            let ordinal = probe.frame_call_ordinal;
+            let generation = probe.generation;
+            probe.calls.push((generation, frame, ordinal, previous));
+            probe.frame_call_ordinal += 1;
+            Ok(if previous.is_none() { 11 } else { 2 })
+        };
+        control.push(contract, &[0.0], encode, step).unwrap();
+
+        {
+            let probe = probe.borrow();
+            assert_eq!(probe.calls[0], (0, 0, 0, None));
+            assert_eq!(probe.calls[1], (0, 0, 1, Some(11)));
+            assert_eq!(probe.calls[2], (0, 1, 0, Some(2)));
+        }
+
+        control.reset(&contract, || {}, || {});
+        {
+            let mut probe = probe.borrow_mut();
+            probe.generation = 1;
+            probe.frame = 0;
+            probe.frame_call_ordinal = 0;
+        }
+        let encode = |_: &[f32], codes: &mut [u32]| {
+            let mut probe = probe.borrow_mut();
+            codes.fill(0);
+            probe.frame += 1;
+            probe.frame_call_ordinal = 0;
+            Ok(())
+        };
+        let step = |previous: Option<u32>, _codes: &[u32]| {
+            let mut probe = probe.borrow_mut();
+            let frame = probe.frame - 1;
+            let ordinal = probe.frame_call_ordinal;
+            let generation = probe.generation;
+            probe.calls.push((generation, frame, ordinal, previous));
+            probe.frame_call_ordinal += 1;
+            Ok(if previous.is_none() { 11 } else { 2 })
+        };
+        control.finish(&contract, encode, step).unwrap();
+        let probe = probe.borrow();
+        let reset_calls: Vec<_> = probe
+            .calls
+            .iter()
+            .copied()
+            .filter(|call| call.0 == 1)
+            .collect();
+        assert_eq!(reset_calls[0], (1, 0, 0, None));
+        assert_eq!(reset_calls[1], (1, 0, 1, Some(11)));
     }
 
     #[test]
