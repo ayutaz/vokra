@@ -730,3 +730,54 @@ The original secure compatible upstream closure, native/legal evidence,
 complete composite approval, official PCM/KV/reset/eviction capture and
 independent real-weight comparison remain incomplete. Neither Draft PR is
 merged, and no upload, Apple completion or numerical PASS is claimed.
+
+## Actual OS readback and Windows rooted-ancestry correction — 2026-10-05 JST
+
+Run8 for clean `cc08a7babe415ceb98ee330c758708d5c62bd0b0` passed
+all twenty model-free steps and raw-log digest checks, with 26 Rust tests
+passed and two real tests ignored. Root and an independent reviewer accepted
+the actual native libtest compiler line and five result counts. Evidence
+SHA-256 `51585c0ee841d78210ad7af3573f2cf7d028b3bdc678bad3c2e1b54b51845293`;
+lifecycle SHA-256 `b1ef57add88e5dd2ee7957c129e22a97cfbefd1df630ccc3797498de01e8795e`.
+Owned worker `54173247` and storage were destroyed with both owned-ID
+readbacks. Source was pushed to the same Draft PR191 only after acceptance.
+
+Actual fresh CI proved macOS default, Metal and CoreML target jobs successful
+on cc08a7ba. Windows still failed one native file-binding test, not the earlier
+Unix-only positive fixture: job `111480749364` reported inaccessible path
+component with `Incorrect function (os error 1)`. Raw log SHA-256:
+`16750e2c9de9c037d401b0da8aa564dad7d051bb95a370a38430da3f12e48425`.
+The old component-by-component construction probes a Windows verbatim drive
+prefix before its root separator exists. Such a prefix is not the complete
+filesystem path. The manager and independent reviewer identified this
+remaining platform-grammar defect; old Linux success does not override it.
+
+Luna's next bounded correction checks the complete target with
+`symlink_metadata`, rejects symlinks/non-regular files, then checks each
+complete parent from `path.ancestors().skip(1)`. Absolute/dot-path rejection
+and every metadata-error rejection remain. The [official Rust Path
+documentation](https://doc.rust-lang.org/std/path/struct.Path.html#method.ancestors)
+defines this traversal through successive parents and marks it stable since
+1.28, within the project's 1.85 MSRV. No actual input is canonicalized to
+permit a symlink, and no identity, host, approval or numerical gate changes.
+The existing test now also rejects an owned parent-directory symlink leading
+to an otherwise regular file. Only that owned link, owned test file and empty
+owned directory are removed afterward. Test inventory remains 13 normal plus
+one ignored. Reviewed native source SHA-256:
+`7f795fa7e9e266b3a46a1b667f0509ce2736ca273e67dd94d346a549b5f862fb`.
+Formatting and whitespace checks pass; this correction is not yet compiled,
+remote-tested or Windows-validated. It needs another clean exact-head run.
+
+Fresh CI also reported two external HF timeout failures. Coverage advisory
+job `111480748720` timed out reading the public model-listing API before
+classification (raw SHA-256
+`cbe026d443387a317613b17933a7594c4a0dc21cb80f95e7baf1c590fcd2cb19`).
+A bounded metadata-only probe reproduced TimeoutError at 30.11 seconds with
+no weights or token transferred. Documentation-links job `111480749007`
+reported zero link errors and two timeouts on existing HF organization links
+(raw SHA-256
+`3068a8378c434d3cecd6feddb0d66e41f5354336ffc5a60370e5628d52cd5105`).
+No exclusion, timeout widening, source gate relaxation, catalog promotion or
+workflow rerun is attributed to these diagnoses. Other existing CI handles
+remain tracked. The original official/real-weight responsibility is still
+open; no merge, upload or full goal completion follows from these repairs.

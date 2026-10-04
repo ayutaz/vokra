@@ -515,19 +515,20 @@ fn reject_symlink_path(path: &Path, label: &str) -> Result<()> {
     }) {
         return Err(invalid(format!("{label} contains a dot path component")));
     }
-    let mut prefix = PathBuf::new();
-    for component in path.components() {
-        prefix.push(component.as_os_str());
-        let metadata = fs::symlink_metadata(&prefix)
-            .map_err(|error| invalid(format!("{label} path component is inaccessible: {error}")))?;
-        if metadata.file_type().is_symlink() {
-            return Err(invalid(format!("{label} path contains a symlink")));
-        }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| invalid(format!("{label} path is inaccessible: {error}")))?;
+    if metadata.file_type().is_symlink() {
+        return Err(invalid(format!("{label} path contains a symlink")));
     }
-    let metadata =
-        fs::metadata(path).map_err(|error| invalid(format!("{label} is inaccessible: {error}")))?;
     if !metadata.is_file() {
         return Err(invalid(format!("{label} is not a regular file")));
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let metadata = fs::symlink_metadata(ancestor)
+            .map_err(|error| invalid(format!("{label} path ancestry is inaccessible: {error}")))?;
+        if metadata.file_type().is_symlink() {
+            return Err(invalid(format!("{label} path contains a symlink ancestry")));
+        }
     }
     Ok(())
 }
@@ -2818,6 +2819,34 @@ fn file_binding_detects_hash_and_byte_changes() {
         std::os::unix::fs::symlink(&path, &symlink).unwrap();
         assert!(verify_file_binding(&symlink, body.len() as u64, &digest, "synthetic").is_err());
         std::fs::remove_file(symlink).unwrap();
+
+        let owned_parent = temp_root.join(format!(
+            "vokra-kyutai-pcm-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&owned_parent).unwrap();
+        let owned_target = owned_parent.join(path.file_name().unwrap());
+        std::fs::write(&owned_target, body).unwrap();
+        let parent_symlink = temp_root.join(format!(
+            "vokra-kyutai-pcm-parent-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::os::unix::fs::symlink(&owned_parent, &parent_symlink).unwrap();
+        let linked_target = parent_symlink.join(path.file_name().unwrap());
+        assert!(
+            verify_file_binding(&linked_target, body.len() as u64, &digest, "synthetic").is_err()
+        );
+        std::fs::remove_file(parent_symlink).unwrap();
+        std::fs::remove_file(owned_target).unwrap();
+        std::fs::remove_dir(owned_parent).unwrap();
     }
     std::fs::remove_file(path).unwrap();
 }
