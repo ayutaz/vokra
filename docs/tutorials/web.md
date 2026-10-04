@@ -13,12 +13,13 @@ This tutorial covers the **Vokra Web runtime** (`web/pkg`, npm package
 ## 1. Install
 
 ```sh
-npm install @vokra/web
+scripts/build-wasm.sh pkg
+npm install ./web/pkg
 ```
 
-> The npm scope is registered by the maintainer (M4-01-T27); until the
-> first registry publish, build the package from the repo:
-> `scripts/build-wasm.sh pkg` → `web/pkg/`.
+The source package is currently `0.0.0-dev` and is not an npm registry
+release. Use the local package until a separately authorized npm publication
+exists.
 
 ## 2. Get a model
 

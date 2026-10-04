@@ -5,15 +5,16 @@ Python binding sources for **Vokra**, implemented as a thin
 The intended wheel bundles `libvokra.dylib`, `libvokra.so`, or `vokra.dll` and
 keeps third-party Python runtime dependencies at zero.
 
-## Status: source implementation current, package unpublished
+## Status: source implementation current; PyPI/TestPyPI unpublished; GitHub wheels available
 
-**Reviewed:** 2026-09-09 against the audit-start PR #79 head
-`9efcd16eb63b857f48fc00d0b83d1113defd578b` (110 successful checks / 13
-expected skips / 0 failures) and the generated C header.
+**Reviewed:** 2026-10-04 against the generated C header and the local
+documentation head `3a3fd822`. That head is an unpushed working branch; the
+released workspace tag is `v0.3.0`.
 
-The workspace is `0.3.0` development with no Git tag or published release;
-the package metadata remains `0.1.0.dev0` for unpublished source wheels. This
-checkout must not be documented as an installed `vokra==0.1.0` release. The source tree exports `Session`,
+The Python package remains unpublished because the project has not authorized a
+PyPI/TestPyPI destination. Its source metadata therefore remains
+`0.1.0.dev0`; do not document a source checkout as an installed
+`vokra==0.1.0` release. The source tree exports `Session`,
 `Stream`, `Event`, and the typed `VokraError` hierarchy without loading the
 native library at import time. `vokra.__abi_version__` is not exposed: the C
 header has a runtime version function, not a separately versioned ABI symbol.
@@ -29,9 +30,11 @@ The source-side C-ABI drift is closed in this worktree:
   loads the matching native library after asserting the public API and exact
   generated table.
 
-This is still not a publication claim. A final branch CI run must prove the
-four release wheels against their bundled libraries, and PyPI/TestPyPI upload
-requires separate authorization and destination verification.
+This is still not a PyPI publication claim. The GitHub `v0.3.0` release
+contains four platform wheel assets, while the package remains unpublished on
+PyPI/TestPyPI. This documentation refresh does not re-run the historical
+release CI; any index upload requires separate authorization and destination
+verification.
 
 The release matrix is Linux x86_64 (`manylinux_2_28`), macOS arm64, macOS
 x86_64, and Windows x86_64. The two macOS architectures are separate truthful

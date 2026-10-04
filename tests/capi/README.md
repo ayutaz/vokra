@@ -34,7 +34,8 @@ enforced by `scripts/check-forbidden-symbols.sh`). The fixtures under
 ## Run
 
 ```sh
-# All three, with the symbol check and header drift check:
+# All model-free paths plus any enabled environment-gated legs, with the symbol
+# check and header drift check:
 scripts/run-capi-smoke.sh
 
 # ASR + TTS + the S2S duplex leg live as well:
