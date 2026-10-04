@@ -1,5 +1,12 @@
 # Vokra ABI Changelog (historical prerelease buckets; current line: v0.3.0)
 
+> **2026-10-04 read-only refresh:** the GitHub API reports one published
+> tag/release, `v0.3.0` (2026-09-20). The local ABI changelog checker passes:
+> all changed C symbols and 124 converter-stamped GGUF prefixes are covered.
+> It still compares the historical v1.0-rc anchor; no snapshot rotation,
+> v1.0 tag, required-check promotion or ABI freeze is performed here.
+> Preserve the dated zero-release observations and milestone buckets below.
+
 This file tracks **binary-facing** surface changes on the way to v1.0 GA (the
 IF-01 freeze point, owned by **M5-13** — see the historical reassignment note
 below). It is **narrower and machine-checkable** than the human-readable

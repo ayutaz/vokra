@@ -2,16 +2,23 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**2026-09-21 current-state / supersession note:** the observed `main` baseline
-for this campaign is `0df21558c0a8f699a4b2b11c108f413ee21fc8c2`. The latest live, read-only public audit,
-evaluated with audit logic through `a4af7800`, reports 194 repositories, 193
+**2026-10-04 JST current-state / supersession note:** the read-only GitHub
+API observes `main` at `97447185361a37af64c1b30fe87e8e2618d96e20`.
+The local review starts at `3a3fd82281ae3ef9e995cb212ec794531ed13493`;
+local source-only acceptance is not a merged-main or model-completion claim.
+The fresh metadata-only public audit using the local
+`tools/audit/hf_mac_coverage.py` reports 194 repositories, 193
 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`,
 `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal status is
 `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved
 public rows. VibeVoice Realtime-0.5B now has a strict structural
 `vibevoice_streaming` binder and CLI inspection route, so it is partial;
-synthesis, the complete weight manifest, independent reference, and CPU parity
-remain pending. PR #109 supersedes the earlier Qwen3-TTS model-free note: its
+synthesis and full streaming parity remain pending. The 2026-09-30 VAST
+replay authenticated and converted its complete 605-tensor checkpoint and
+ran a narrow independent Microsoft-source probe; that probe is not complete
+streaming or Apple CPU/Metal parity and did not replace the public artifact.
+See the [bounded evidence](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback).
+PR #109 supersedes the earlier Qwen3-TTS model-free note: its
 clean no-upload VAST candidate completed strict official-weight reload,
 converted all four public variants plus the shared 12 Hz decoder, passed
 independent real-weight CPU parity 4/4, and closed 38/38 recovered packet
@@ -25,7 +32,7 @@ release does not close M5, complete the catalog, or freeze the ABI. This
 checklist is not a GA or ABI-freeze declaration.
 
 The current literal Markdown ledger count is **53 checked / 29 unchecked**
-(mechanically counted on 2026-09-21). This is not an exhaustive task count:
+(mechanically re-counted on 2026-10-04). This is not an exhaustive task count:
 prose-only GA gates remain independently tracked.
 
 **2026-09-09 historical audit-start snapshot:** Before this documentation refresh, PR #79
@@ -86,7 +93,7 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (2026-09-21)
+## 0. Live remaining-work index (reviewed 2026-10-04)
 
 This table is the complete M5 routing index. The 29 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must
@@ -108,7 +115,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. Exact-revision CLI routing then promoted BiCodec and SGMSE. VibeVoice Realtime-0.5B now has a strict structural `vibevoice_streaming` binder and CLI inspection route, so it is partial; synthesis, the complete weight manifest, independent reference and CPU parity remain pending. The live inventory is CPU `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
+| Mac CPU/Metal model closure | The bounded authorized Scaleway batch passed Apple CPU/reference, Metal/reference and Metal/CPU no-fallback checks only for its named scopes (Metal backend, Apple BF16 GEMM, SpeechT5, ReazonSpeech NeMo v2, Voice Gender Classifier, OmniASR CTC 1B, BiCodec, GigaAM v3, GigaAM Multilingual and SGMSE VoiceBank). Four separately approved artifacts were subsequently published. Exact-revision CLI routing then promoted BiCodec and SGMSE. VibeVoice Realtime-0.5B has a strict structural `vibevoice_streaming` binder and CLI inspection route, plus a bounded 2026-09-30 complete-checkpoint conversion and independent source probe; synthesis and full streaming/Apple parity remain pending. The 2026-10-04 metadata inventory is CPU `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. | The remaining catalog rows still require their own source, owner/legal, artifact, runtime, VAST CPU-parity and (when ready) Apple evidence. The named batch does not close the broader catalog or the remaining M5 GA/platform gates. |
 | SoTA / parity / publish | Converters and many structural proofs landed | The 29 current literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab

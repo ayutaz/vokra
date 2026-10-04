@@ -17,8 +17,8 @@ This demo is intentionally narrow. Out-of-scope items and where they live:
 - **(a) Desktop 3 OS only** — macOS / Linux / Windows. **iOS**
   (`DllImport("__Internal")` static linking, **NFR-RL-03**) and **Android**
   (`StreamingAssets` jar-URL → `persistentDataPath` extraction, **NFR-RL-04**)
-  are the **v0.5 official plugin** (**FR-API-04**: demo = v0.1 spike, official
-  plugin = v0.5).
+  are the **`com.vokra.unity` official package** (current release `0.3.0`;
+  **FR-API-04**: demo = v0.1 spike, official package = separate surface).
 - **(b) Single worker thread** — `Session`/`Stream` thread-safety
   (`Send + Sync`, atomic ref count, **FR-API-03**) is **v0.1 MVP** scope, so the
   demo makes every C ABI call on one worker thread (`PipelineRunner`) and never
@@ -93,13 +93,14 @@ the sentence spoken when ASR has no real text yet.
 
 - **UI = IMGUI (`OnGUI`).** The ticket proposed uGUI; this demo uses IMGUI so the
   whole UI is code-only (no Canvas/EventSystem/Font/TMP setup that varies by Unity
-  version and needs scene authoring). The v0.5 official plugin can ship a richer
+  version and needs scene authoring). The official package can ship a richer
   uGUI/UI-Toolkit front end.
 - **Callbacks = polling in M0.** `include/vokra.h` exposes **no** callback API;
   streaming is poll-based (`vokra_stream_push_pcm` + `vokra_stream_poll`). So
   `VokraCallbacks.cs` is a compile-checked **template** of the IL2CPP-safe pattern
   (`[MonoPInvokeCallback]` static method + `GCHandle` userdata, NFR-RL-02),
-  carried to v0.5 (FR-API-04) — it is not wired to any current symbol.
+  carried to the official package (FR-API-04) — it is not wired to any current
+  symbol in this demo.
 - **ASR text** is UTF-8 decoded by `WhisperAsr::transcribe` through
   `render_ids`; the converter embeds `vokra.tokenizer.model` in the GGUF. The
   demo speaks a fallback sentence only when ASR returns no usable text.

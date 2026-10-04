@@ -1,5 +1,789 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-04 JST actual source-authentication acceptance:** the corrected
+> fail-closed leaf passes five tests and the real fixed raw/API/receipt audit
+> on VAST, with all process exits zero. Root verifies all four recovered
+> hashes and exact source identity. Worker `54047047` and its data are
+> independently confirmed destroyed; none of this turn's four owned workers
+> remains. This closes the source-only authentication gate, not model,
+> dependency/license, real-weight CPU, Apple or publication gates. All 194
+> rows and the metadata-only 136 full / 58 unresolved split remain unchanged.
+> See the [accepted source-only verdict](public-catalog-security-completion-2026-09-29.md#corrected-leaf-actual-source-authentication-and-cleanup-acceptance).
+
+> **2026-10-04 JST source-transfer authorization and transport failure:** the
+> owner approves the six fixed source-only inputs and a disposable VAST
+> worker capped at $0.20/hour including storage. The first run stops at SSH
+> readiness. The corrected transport's second run connects and transfers the
+> inputs, then stops at uv bootstrap before source authentication. Workers
+> `54044547` and `54045481` and their data are destroyed; root independently
+> verifies individual null and absence from the closed inventory. The prior
+> authorization hold is resolved
+> for this exact scope only; model/Apple/publication gates are unchanged.
+> See the [actual transport verdict](public-catalog-security-completion-2026-09-29.md#2026-10-04-jst-approved-source-only-transport-attempt).
+
+> **2026-10-03 external source-transfer hold:** auto-review refuses the
+> hash-bound source-only VAST activation before process creation. No new
+> worker, transfer or actual source audit runs; no workaround is attempted.
+> Root independently verifies an isolated 16-wheel dependency packet, not
+> a derived-wheel/license approval. See the
+> [activation boundary and unaffected evidence](public-catalog-security-completion-2026-09-29.md#source-only-remote-activation-refused-before-execution).
+
+> **2026-10-03 static dependency review:** root verifies the corrected
+> 137-source / 61-request / 68-candidate hash inventory. Six dynamic calls
+> and generated-script reachability remain unresolved; no derived wheel,
+> package execution or model row is approved. See the
+> [limited static acceptance and residual gates](public-catalog-security-completion-2026-09-29.md#setuptools-static-reachability-correction-and-limited-acceptance).
+
+> **2026-10-03 source-pin review acceptance:** existing safe Git inspection
+> flags resolve the review hold without modifying a hook. Root reviews and
+> commits the two-file Kyutai source-pin correction at `48731912`; five
+> synthetic tests and five cheap static gates pass. Actual source audit,
+> model execution and Apple validation remain unexecuted. See the
+> [review contract and exact correction](public-catalog-security-completion-2026-09-29.md#safe-git-review-contract-and-accepted-source-pin-correction).
+
+> **2026-10-03 PR #152 actual Linux acceptance:** exact `b0add994` passes
+> 32 tests with zero skips and three static gates on VAST; recovered process
+> statuses and all ten log hashes pass. The worker and storage are destroyed.
+> The correction is pushed; fresh exact-head CI completes with 76 successes,
+> three skips and zero failures/pending. No model or Apple completion is
+> inferred. See the
+> [actual verdict and failed-attempt disposition](public-catalog-security-completion-2026-09-29.md#2026-10-03-pr-152-actual-linux-acceptance).
+
+> **2026-10-03 recovered-source correction acceptance (13:31 UTC):** root
+> authenticates the single missing 1,088-byte license and independently
+> passes all six unchanged validators on a separate 129-file packet.
+> All 128 original file hashes/copies and owner/legal/execution fields are
+> preserved. No second lease, model execution, approval or Apple promotion;
+> the original collector itself remains unmodified. See the
+> [bounded correction and exact hashes](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovered-source-correction-acceptance-1331-utc).
+
+> **2026-10-03 actual source recovery and first-failure diagnosis:** the
+> separately reviewed V8 retrieves all 128 primary text/metadata files on
+> VAST, but terminates 1 at the strict full-source gate. The fixed Moshi tree
+> contains one omitted `moshi/LICENSE.audiocraft`; five other recovered-data
+> checks pass. Preserve originals and recover only that pinned license into
+> a separate packet, without weakening the gate or repeating the lease.
+> Owned worker `54014752` and storage are destroyed. The fresh 13:17 account
+> readback has zero Vokra instances, one other instance and zero volumes;
+> do not describe that as an empty account. See the
+> [actual recovery and bounded corrective action](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-primary-source-recovery-and-missing-license-diagnosis).
+
+> **2026-10-03 full lifecycle recurrence acceptance (12:55 UTC):** root's
+> actual normal-entry replay terminates zero with all 22 intended lifecycle
+> cases and the subsequent bulk-transfer/rejection tests. Cleanup lifetime,
+> genuine interruption handling and bounded fixture compaction are verified
+> without raising capacity limits. This is offline orchestration acceptance,
+> not authentic source recovery or a model/Apple verdict. VAST account
+> readbacks at 12:36/12:39 show zero instances and zero volumes. See the
+> [cause/fix and exact acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-03-full-lifecycle-recurrence-acceptance-1255-utc).
+
+> **2026-10-03 lifecycle root-cause review (12:21 UTC):** root independently
+> passes the actual rendered helper's focused faults, but the next full
+> matrix still fails its positive path after packet completion. The EXIT
+> cleanup outlives function-local state; tiny paired Bash probes reproduce
+> that scope defect. Require structural cleanup-lifetime correction and
+> actual end-to-end teardown, not another unchanged retry or a partial PASS.
+> See the [cause/action and acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-03-lifecycle-root-cause-review-1221-utc).
+
+> **2026-10-03 harness coverage audit and directional tool contracts (12:10 UTC):**
+> add owned-PID absence, oversized-diagnostic content/truncation and packet
+> trigger checks to previously unexecuted modes. Root catches wrong transfer
+> scope/direction before another full run and independently passes the tiny
+> upload-failure/diagnostic-download tests. Rendered parent-signal coverage
+> must not be borrowed from the outer helper. PR #152's fresh green checks
+> still cover its old public head, not the local correction. See the
+> [coverage and exact-head record](public-catalog-security-completion-2026-09-29.md#2026-10-03-harness-coverage-audit-and-directional-tool-contracts-1210-utc).
+
+> **2026-10-03 causal focused acceptance and rendered-leaf diagnosis (11:59 UTC):**
+> root passes corrected `3ed7a5cc`'s focused replay and rejects external test
+> injection. The actual full matrix reaches ten intended negative cases,
+> then fails its positive rendered leaf: foreground execution is followed
+> by an unbound background-PID reference and unrelated cleanup variables.
+> Correct and test the actual rendered helper, not only the outer wrapper;
+> no cloud retry or model promotion. See the
+> [focused result and positive-path diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-causal-focused-acceptance-and-rendered-leaf-diagnosis-1159-utc).
+
+> **2026-10-03 full-matrix first-failure review (11:52 UTC):** the actual
+> matrix stops in the first fixture's HEAD reader before provider logic.
+> Preserve `head changed`, not a full pass. Whole-stat comparison includes
+> access time; a later read does not reproduce the original change. Require
+> a regression that distinguishes the old defect, rather than changing time
+> before the reader samples its baseline. Cloud activation remains disabled.
+> See the [first-failure and test-review record](public-catalog-security-completion-2026-09-29.md#2026-10-03-full-matrix-first-failure-review-1152-utc).
+
+> **2026-10-03 independent cleanup-regression acceptance (11:47 UTC):**
+> root passes frozen V6 `8d202d86`'s focused tests, including transfer
+> supervision, parent INT/TERM, descendant reaping, strict snapshots and
+> bounded diagnostics. This supersedes the preceding focused failure, not
+> the pending full outer matrix. Root also catches and returns a harness
+> combined-body hash mismatch before replay; model/source/legal readiness
+> and all 194-row Apple gates remain unchanged. See the
+> [focused acceptance and remaining retry gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-cleanup-regression-acceptance-1147-utc).
+
+> **2026-10-03 recovery capacity and cleanup regression diagnosis (11:36 UTC):**
+> remove 20 exact clean synthetic clones only after complete-history bundle,
+> HEAD, ignored-file and non-symlink ancestor checks. Logs/outputs/backups
+> remain; the recovery floor is restored. A focused candidate run still fails:
+> tiny paired probes reproduce KILL rejection for an exited, unreaped process
+> group, but absence after reaping. Correct and test the cleanup lifecycle;
+> do not ignore permission errors or advance model readiness. See the
+> [capacity and diagnosis record](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-capacity-and-cleanup-regression-diagnosis-1136-utc).
+
+> **2026-10-03 independent regression review (11:23 UTC):** root finds a
+> missing transfer wait/status tail, a stale harness pin and an inline-command
+> rejection defect in the unaccepted candidates. An actual Bash 3.2 probe also
+> shows that the proposed background-parent INT test ignores the signal.
+> Return these defects for correction, not another unchanged cloud retry.
+> Six additional semantically redundant bundles are removed after backup
+> verification; original logs and canonical bundles remain. Space is still
+> below the 2 GiB floor. See the
+> [review and cleanup evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-regression-review-and-bundle-cleanup-1123-utc).
+
+> **2026-10-03 redundant transfer-bundle cleanup (11:07 UTC):** root
+> removes only two pre-allocation bundles after independent inspection and
+> retained complete-history/same-HEAD verification. Original logs and actual
+> A19 bundles remain. These are Git-content-equivalent, not byte-identical
+> backups. Local space remains below the unchanged 2 GiB floor, so full
+> fixture/transfer execution is still withheld. Later V6/harness corrections
+> are candidates, not accepted runs. See the
+> [cleanup and remaining gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-redundant-transfer-bundle-cleanup-1107-utc).
+
+> **2026-10-03 actual Bash 3.2 primitive verification (11:01 UTC):** root
+> independently passes frozen V6 `a552efb2`'s bounded-helper tests: stdin
+> bytes/hash, exit/timeout status, INT/TERM descendant cleanup and shell-option
+> restoration. This closes the focused recurrence risks, not the outer
+> lifecycle or primary-source gate. Full fault integration, provider snapshot
+> and diagnostic-archive corrections remain; no new lease or model verdict.
+> See the [focused evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-bash-32-primitive-verification-1101-utc).
+
+> **2026-10-03 recurrence-prevention review (10:54 UTC):** unchanged cloud
+> retries remain suspended. Separate the logged BigVGAN working-directory
+> defect, unresolved raw-metadata binding and Qwen legal stop from newly
+> identified source-only controller/harness defects. Tiny shell probes
+> reproduce asynchronous stdin loss and caller shell-option mutation; these
+> are candidate risks, not retroactive diagnoses of A19. Require the full
+> shared-path fault matrix and fixed-input acceptance before another lease.
+> No model row is promoted. See the
+> [cause/action/retry gates](public-catalog-security-completion-2026-09-29.md#2026-10-03-recurrence-prevention-review-1054-utc).
+
+> **2026-10-03 paired terminal diagnosis (10:40 UTC):** session `44590`
+> terminates one with recovered original logs. Qwen API exits zero, dependency
+> audit remains license-blocked; BigVGAN tests use the wrong working-directory
+> root and its metadata validator rejects raw-API descriptor binding. Do not
+> rerun unchanged inputs or relax legal/identity gates. Owned `54000184` and
+> storage are destroyed, with fresh independent absence/zero-Vokra readback.
+> Source-only V6 remains under correction, not accepted. See the
+> [terminal diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-03-paired-terminal-diagnosis-and-independent-cleanup-1040-utc).
+
+> **2026-10-03 recovery headroom and live paired replay (10:36 UTC):**
+> remove only two clean synthetic checkouts after independent inspection and
+> full-history bundle verification; retain all outputs/logs/backups. Frozen
+> A19 starts owned `54000184`, session `44590`, and reaches SSH readiness on
+> probe 19. Keep that live handle; no paired result or model-row promotion
+> is claimed. See the
+> [checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-headroom-and-live-paired-replay-1036-utc).
+
+> **2026-10-03 post-fix environmental checks (10:28 UTC):** two A19
+> attempts terminate before instance creation: restricted-network offer
+> lookup fails DNS, then the network-authorized retry refuses insufficient
+> local recovery space. Both record `cleanup_rc=0 instance=none`. A fresh
+> authorized read-only query succeeds and confirms zero Vokra instances;
+> leave the unrelated account instance untouched. Do not retry allocation
+> below the unchanged 2 GiB floor, or claim an actual model-free pass from
+> the accepted offline regressions. See the
+> [environmental readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-post-fix-environmental-checks-1028-utc).
+
+> **2026-10-03 independently verified failure countermeasures (10:17 UTC):**
+> frozen paired controller A19 passes root's full offline regression, including
+> eight normal-shell failure modes, original log/exit retention and compound
+> first-failure preservation. This accepts bounded orchestration preparation,
+> not a production model/source/Apple verdict. No new worker is allocated;
+> source-only V5 remains disabled. See the
+> [verification record](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-failure-countermeasure-verification-1017-utc).
+
+> **2026-10-03 concrete BigVGAN call-contract diagnosis (10:03 UTC):**
+> independent source review finds that A15 pre-creates the leaf's evidence
+> directory and nests its output there, violating two explicit leaf guards.
+> The permissive fixture missed both. Correct to fresh disjoint siblings and
+> require failure-log regressions before new allocation. Fresh paginated VAST
+> readback confirms zero Vokra instances; the unrelated instance is untouched.
+> See the [diagnosis and cleanup record](public-catalog-security-completion-2026-09-29.md#2026-10-03-bigvgan-call-contract-and-cleanup-confirmation-1003-utc).
+
+> **2026-10-03 repeated-failure investigation (09:55 UTC):** stop further
+> allocations until production-context regression and bounded failure-log
+> recovery are independently accepted. A14's helper changed caller shell
+> flags; A15 corrects that and reaches SSH readiness, but its incomplete
+> BigVGAN manifest aborts before useful diagnostics are recovered. The
+> collector's original failure remains unknown. Do not repeat green Cargo or
+> advance any model row; preserve all 194 rows and see the
+> [root-cause record](public-catalog-security-completion-2026-09-29.md#2026-10-03-repeated-failure-investigation-0955-utc).
+
+> **2026-10-03 bounded synthetic-copy cleanup (09:32 UTC):** root removes
+> only two clean, bundle-backed work roots from a completed synthetic test,
+> preserving their outputs/logs and a full counterpart. Available space
+> recovers above the 2 GiB floor. The A13 offline test then stops at an
+> unrelated-directory permission error; fix task-prefix enumeration before
+> retrying. No new provider allocation or model verdict is claimed. See the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-bounded-synthetic-copy-cleanup-0932-utc).
+
+> **2026-10-03 SSH failure and local-space boundary (09:28 UTC):** the
+> corrected exact-HEAD bundles reach owned VAST `53991834`, but the first
+> SSH operation exits 255 before remote work. Worker and storage are destroyed;
+> a fresh complete account readback reports zero instances. The next offline
+> test stops at local `ENOSPC`, not at a model gate. Require independently
+> verified fail-closed temporary-directory and SSH-readiness handling before
+> retrying. Preserve all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-ssh-failure-and-local-space-boundary-0928-utc).
+
+> **2026-10-03 actual pre-allocation failure (09:06 UTC):** independently
+> tested Qwen/BigVGAN V9 stops before provider allocation because raw-SHA-only
+> Git bundle creation produces no advertised ref. Cleanup records
+> `instance=none`; require exact-HEAD bundle correction before retrying.
+> Source-only rendered-path tests reject invented primary bytes, not establish
+> source readiness. Preserve all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-independent-production-path-tests-and-pre-allocation-failure-0906-utc).
+
+> **2026-10-03 recovery headroom and CI readback (08:29 UTC):** root removes
+> only 112 authenticated, reproducible synthetic cap-test files while retaining
+> logs, source and Git history. PR #152 remains open at `dd6f0154` with 76
+> successful and three skipped checks; these do not cover local correction
+> `b0add994`. Source recovery revisions remain under review; no new worker or
+> model verdict is claimed. Preserve all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-headroom-and-exact-head-ci-readback-0829-utc).
+
+> **2026-10-03 committed import gate (08:04 UTC):** the isolated PR #152
+> correction is clean at `b0add994`, with 32 independent stdlib tests and
+> normal commit gates passed, but is not pushed or legally/model approved.
+> Source-only replay still requires actual collectors and the original
+> 111-file full receipt plus profile validators, not a synthetic 128-row
+> substitute. No new worker is allocated; all 194 rows remain in scope.
+> See the [dated acceptance](public-catalog-security-completion-2026-09-29.md#2026-10-03-committed-import-gate-and-source-only-production-boundary-0804-utc).
+
+> **2026-10-03 import-gate and bulk-transfer review (07:55 UTC):** root
+> independently passes 29 tiny stdlib tests for the uncommitted PR #152
+> correction, but confirms that its installed RECORD/origin checks do not
+> authorize imports while the primary/native/owner manifest is blocked.
+> Require the assigned shared execution gate and bounded collector fixes
+> before acceptance. Source-only recovery must transfer one validated packet,
+> not 128 remote operands to one SCP invocation. No replacement worker is
+> allocated; fresh complete VAST readback confirms zero Vokra instances.
+> Keep all 194 rows and final Apple gates; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-import-gate-and-bulk-transfer-review-0755-utc).
+
+> **2026-10-03 terminal code pass and incomplete source recovery (07:40 UTC):**
+> exact `52e4ddbe` passes workspace tests (8,223 passed, zero failed, 108
+> ignored across 307 result-bearing suites), both Clippy legs and the named
+> PCM/KV/source tests. V24 nevertheless terminates one when its 300-second
+> serial recovery expires; only ten of 128 primary-source files are retained.
+> Owned VAST `53978818` and storage are independently confirmed destroyed.
+> Reacquire only the missing source packet with reviewed bulk recovery; do
+> not promote acquisition logs to source/legal readiness or replay already
+> green Cargo merely to recover bytes. All 194 rows and final Apple gates
+> remain in scope; see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-pass-and-incomplete-source-recovery-0740-utc).
+
+> **2026-10-03 corrected replay and native PCM boundary (07:01 UTC):**
+> V24 passes root's 53 independent offline cases at fixed correction
+> `52e4ddbe`. After two pre-create offer misses, session `94842` creates owned
+> eight-core VAST worker `53978818`; SSH and tool bootstrap pass, but the run
+> is live and no code/source recovery or cleanup outcome is claimed yet.
+> The candidate already has a private native Mimi-to-LM-to-tokenizer PCM chain;
+> public ASR, independent real-weight parity and Apple gates remain deferred.
+> Preserve all 194 rows and see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-corrected-replay-and-native-pcm-boundary-0701-utc).
+
+> **2026-10-03 actual source-batch failure and correction (06:45 UTC):**
+> root passes the activated V23's 53 offline cases and executes clean `0f26b6ea`
+> on disposable VAST `53977035`. The three source legs and their 26/26/16
+> tests exit zero, but workspace compilation fails with Rust E0689 before
+> native-KV/full-source verification. Diagnostic logs, not the primary source
+> packet, are recovered; the worker and storage are destroyed and independently
+> absent. Reviewed one-line test typing correction `52e4ddbe` still needs its
+> own VAST replay. BigVGAN metadata preparation `af462cff` is independently
+> self-tested, not acquired or approved. Retain all 194 rows and see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-source-batch-failure-and-correction-0645-utc).
+
+> **2026-10-03 capacity and independent lifecycle review (06:26 UTC):** root
+> removes 140 authenticated duplicate mock input Git bundles while retaining
+> valid backups, checkouts and logs. Recovery headroom is about 8 GiB at this
+> checkpoint. Frozen V23 passes root's 52 offline cases, but its public
+> production entry remains disabled pending a separately reviewed activation
+> delta. No worker is allocated and no real-weight or Apple verdict advances.
+> Keep all 194 rows and see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-capacity-and-independent-lifecycle-review-0626-utc).
+
+> **2026-10-03 reviewed source-batch checkpoint (05:40 UTC):** clean
+> integrated `0f26b6ea` contains separately pinned XCodec2 source profiles
+> and the bounded five-file SpeechT5 primary legal-context collector. Root
+> passes 26 and 16 offline tests respectively, plus V22's actual shared-path
+> 46-case lifecycle harness. These are source/orchestration preparation,
+> not real acquisition, legal approval, numerical parity or Apple results.
+> Bind and review the new batch controller before allocation; retain all
+> 194 rows and see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-03-reviewed-source-batch-and-lifecycle-checkpoint-0540-utc).
+
+> **2026-10-03 bounded reference preparation (05:22 UTC):** root accepts
+> the fixed six-file XCodec2 source collector at clean integrated `dd7db2cf`,
+> independently passing 22 offline tests and the normal commit gates. No
+> upstream bytes or weights are acquired by that acceptance. The official
+> original-conversion source is now identified at a separate immutable
+> revision; its receipt and mapping review remain pending. V22 remains
+> disabled while endpoint, pre-transfer caps and cleanup-signal paths are
+> corrected. Preserve all 194 rows and see the
+> [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-bounded-reference-preparation-and-transfer-safety-review-0522-utc).
+
+> **2026-10-03 primary evidence recovery (04:58 UTC):** root verifies the
+> original SpeechT5 full audit, whose project/lock hashes match the current
+> environment; avoid repeating the full audit merely to recover its existing
+> facts. Current legal/operator review remains pending. Official publisher
+> and Transformers documentation identify a native XCodec2 reference
+> candidate, not yet a pinned or numerically verified replacement for the
+> old PyPI route. V22 remains unaccepted; retain all 194 rows and see the
+> [dated evidence](public-catalog-security-completion-2026-09-29.md#2026-10-03-primary-evidence-recovery-and-official-reference-candidate-0458-utc).
+
+> **2026-10-03 accepted KV preparation (04:36 UTC):** corrected parent-driven
+> reset transactions are normally committed as `42ba5cf2`, followed by the
+> upstream citation fix at clean integrated `07e04668`. Root independently
+> passes all 20 model-free tap tests. This supersedes the earlier KV draft
+> rejection, not the outstanding real-weight or Apple gates. V22 still needs
+> actual production-path fault coverage; SpeechT5's current approval and
+> primary native/build legal evidence remain open. All 194 rows stay in scope;
+> see the [dated acceptance](public-catalog-security-completion-2026-09-29.md#2026-10-03-accepted-kv-preparation-and-execution-boundaries-0436-utc).
+
+> **2026-10-03 actual-path review (04:25 UTC):** root independently passes
+> 14 synthetic KV-tap tests and 31 V22 validator checks, but rejects both
+> candidates for uncovered production-state and lifecycle paths. Corrections
+> remain in progress; V22 is disabled and no new worker is allocated. Current
+> SpeechT5 approval has a different scope from its historical approval, and
+> XCodec2's critical Torch alert remains open. Preserve all 194 rows and see
+> the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-actual-path-and-current-scope-review-0425-utc).
+
+> **2026-10-03 recovery-space and controller review (04:09 UTC):** root
+> removes only 64 terminal synthetic XCodec2 bundle duplicates after exact
+> hash comparison and complete-history backup verification; logs and primary
+> receipts remain. Local free space is about 4.8 GiB. The next V22 script is
+> still a disabled draft: its standalone toy checks do not verify the actual
+> collector, Rust legs or provider lifecycle. Implementation of those actual
+> paths is assigned before any new provision. Keep all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-recovery-space-and-controller-review-0409-utc).
+
+> **2026-10-03 terminal V21 code/source readback (04:02 UTC):** fixed
+> `1cbc4abc` / `a5e4c810` replay exits zero; root verifies 80 recovered
+> checksums, 8,293 workspace passes and the three primary Moshi raw/API
+> receipts. Owned worker `53959731` and storage are destroyed, with fresh
+> individual and complete account readbacks confirming absence. New source
+> preparation `fd7159f5` is clean but has no remote native-KV or real-weight
+> result. All 194 rows and final Apple gates remain in scope; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-v21-code-source-readback-0402-utc).
+
+> **2026-10-03 official KV preparation review (03:52 UTC):** root accepts
+> bounded independent KV snapshots after full source review and nine offline
+> tests. Normal commit `2c0f855e` is integrated with the empty tracked-Python
+> closure correction as clean candidate `11d97f14`; root independently passes
+> the latter's 19 PCM tests. These are preparation, not real-weight parity.
+> Live V21 remains fixed at `1cbc4abc` / `a5e4c810`; individual workspace,
+> Clippy and security exits are zero, but final recovery and destruction are
+> pending. Preserve all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-official-kv-preparation-review-0352-utc).
+
+> **2026-10-03 integrated candidate and live code replay (03:34 UTC):** root
+> reviews clean integrated candidate `858bfa46` and independently passes its
+> 18 model-free PCM tests. Its native KV tests still need a later exact-head
+> run. Separate frozen `1cbc4abc` / `a5e4c810` code-only V21 is live on owned
+> worker `53959731`; terminal results, primary receipt recovery and destruction
+> remain pending. A new official KV tap fails root review on borrowed-history
+> and pre-mutation guards and must be corrected. No real-weight or Apple row
+> advances; retain all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-integrated-candidate-and-live-code-replay-0334-utc).
+
+> **2026-10-03 PCM/KV preparation readback (03:15 UTC):** root normally
+> commits source-only PCM capture preparation `fc977f3b`, independently passing
+> 18 model-free tests. Separate native KV observation `6c015bb9` is reviewed
+> and committed, but its three Rust tests remain `NOT_RUN`. Neither candidate
+> is the fixed `1cbc4abc` remote scope. Official transformer receipts identify
+> the distinct per-layer ring-cache tap; actual KV values, dependency/legal
+> closure and real-weight/Apple parity remain open. Preserve all 194 rows; see
+> the [preparation record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcmkv-preparation-readback-0315-utc).
+
+> **2026-10-03 PCM oracle review (02:54 UTC):** root independently passes
+> all 13 model-free tests, but full source review rejects the candidate's
+> pre-import, dependency and native-owner gates. The synthetic orchestration
+> bypasses actual identity validators and is not numerical evidence. Require
+> the assigned corrections before execution; preserve all 194 rows and see
+> the [review record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcm-oracle-review-0254-utc).
+
+> **2026-10-03 source-only audit readback (02:46 UTC):** corrected PyYAML V24
+> completes at fixed `e8b93b4b`; root verifies both locked artifact identities
+> and their primary license bytes. Native LibYAML closure and owner review
+> remain open; this is not permission for dependency or model execution.
+> Worker `53954812` and storage are destroyed and independently absent, with
+> no Vokra row in complete account readback. New PCM code/reference and final
+> Apple gates remain pending. Preserve all 194 rows; see the
+> [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-source-only-audit-readback-0246-utc).
+
+> **2026-10-03 terminal code-only readback (02:30 UTC):** frozen `a0ef540a`
+> replay terminates with exit zero: 307 workspace suites, 8,287 passed,
+> zero failed and 108 ignored; focused Kyutai 13, OWSM 40 and XCodec2 76 pass
+> without skips. Root verifies all 66 recovered checksums. Owned worker
+> `53951140` and storage are destroyed and independently absent; complete
+> VAST readback has no Vokra row. New combined `1cbc4abc` still needs its
+> own tests; neither independent PCM nor real-weight/Apple parity is proved.
+> See the [terminal readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-only-readback-0230-utc).
+
+> **2026-10-03 integrated PyTorch PCM and source-audit readback (02:26 UTC):**
+> root normally commits reviewed combined candidate `1cbc4abce1752f4a267f6ae024de5fdcbf0feb32`,
+> preserving the streaming guards and historical MLX policy while adding the
+> private source-bound PyTorch session. Its 24 PCM tests and three source-audit
+> tests still require a distinct exact-head remote run. Frozen `a0ef540a`
+> verification remains live on owned worker `53951140`, with evidence recovery
+> and destruction pending. Source-only PyYAML V23 terminates at the strict
+> wheel-filename gate after its six tests pass; worker `53952644` is destroyed
+> and independently absent. No license, real-weight or Apple verdict advances.
+> Preserve all 194 rows and see the [dated readback](public-catalog-security-completion-2026-09-29.md#2026-10-03-integrated-pytorch-pcm-and-source-audit-readback-0226-utc).
+
+> **2026-10-03 streaming guard and PCM policy review (01:41 UTC):** root
+> verifies clean separate guard candidate `deba8c6a`, with five newly defined
+> tests still awaiting exact-head remote execution. The current combined
+> PCM session's raw-sample/floor padding and two initial LM calls are not
+> equivalent to the authenticated PyTorch caller's frame-ceiling padding
+> and one LM call per frame. Preserve the historical MLX policy and require
+> a separately source-bound native PyTorch route and independent PCM oracle.
+> Decoder-only parity cannot prove this composite. Root's full source-only
+> controller V19 offline test passes; acquisition remains disabled. Keep all
+> 194 rows and see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-03-streaming-guard-pcm-policy-and-offline-cleanup-review-0141-utc).
+
+> **2026-10-03 PCM integration and baseline correction (01:29 UTC):** root
+> reviews and normally commits the combined FireRed/OWSM/Kyutai candidate at
+> clean `3c15ea1d`, preserving the already merged incremental LM and private
+> PCM session. A duplicate decoder draft based on the older management
+> checkout is not adopted. Focused fixes now target the existing LM's
+> pre-mutation validation and allocation guards. The combined candidate has
+> static evidence only; its exact-head remote replay is pending. Fixed DSM
+> caller source confirms the full audio-plus-padding loop, not an EOS early
+> stop. A fresh complete VAST readback has zero Vokra instances. Preserve all
+> 194 rows and see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-pcm-integration-baseline-correction-and-caller-source-0129-utc).
+
+> **2026-10-03 terminal combined replay (01:12 UTC):** frozen code-only
+> V13 is terminal with exit one, not an overall pass. Root verifies all 63
+> recovered checksums: workspace 8,274 passed / zero failed / 108 explicit
+> ignores, OWSM 40 passed and XCodec2 76 passed without skips. Workspace and
+> OWSM Clippy fail on decoder documentation, an indexed mask loop and an
+> unused binding. Reviewed separate correction `741ba4a2` passes the normal
+> five compile-free commit gates, but still needs its own remote replay.
+> Worker `53940991` and storage are independently absent in fresh individual
+> and complete paginated readbacks; no Vokra instance remains. Preserve all
+> 194 rows and the dated metadata-only classification, not a hardware-complete
+> count; see the [terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-combined-replay-correction-and-generation-source-0112-utc).
+
+> **2026-10-03 combined candidate and live replay (00:32 UTC):** reviewed
+> FireRed and ordinary-decoder OWSM histories are now preserved together at
+> clean `dc7afa5e`, rather than treating files absent from a different baseline
+> as deletions. Root passes the normal five compile-free gates and genuine
+> decoder-source self-test. A separate supplemental ANTLR receipt validator
+> is committed at `f28259c0`, with eight retained-input tests passing; it does
+> not approve dependency execution or publication. New owned VAST `53940991`
+> is running the combined code-only scope with 48 effective build jobs. A
+> compiler warning needs a separate correction; terminal verdicts, evidence
+> recovery and destruction are pending. Preserve all 194 rows and see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-combined-candidate-primary-receipt-validation-and-live-replay-0032-utc).
+
+> **2026-10-03 terminal code-only family replay (00:04 UTC):** the same
+> frozen job on `53934208` finishes successfully. Root authenticates all 59
+> recovered checksums: workspace 8,239 passed / zero failed / 108 explicit
+> ignores, OWSM 30 passed without ignores, and all named FireRed/XCodec2
+> source-only gates pass. Worker and storage are independently absent in
+> individual and complete paginated API readbacks; no Vokra instance remains.
+> A separate reviewed decoder candidate is fixed at `0c616382` with 40
+> source-defined Rust tests still requiring remote execution. Neither code-only
+> result closes real-weight, owner/legal or final Apple gates. Preserve all
+> 194 rows; see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-code-only-family-replay-and-decoder-candidate-0004-utc).
+
+> **2026-10-02 actual sdist inspection (23:45 UTC):** the distinct
+> XCodec2 source-only V11 replay recovered both exact public sdists and a
+> checksum-verified packet. Its 76 Linux tests pass without skips, but both
+> releases lack primary LICENSE/NOTICE/COPYING members and remain
+> `BLOCKED_FACTUAL` / `UNAPPROVED_NO_EXECUTION` / `NO_UPLOAD`. Worker
+> `53935735` and storage are independently absent. The same family worker
+> `53934208` is still in use; the separate decoder remains under corrective
+> review. Preserve all 194 rows; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-actual-two-sdist-inspection-and-decoder-counterexamples-2345-utc).
+
+> **2026-10-02 Linux gate and next family replay (23:24 UTC):** XCodec2
+> now passes all 76 named Linux stdlib tests at fixed `a5e4c810`, with no
+> skips. Source archive inspection still stops at the relative-lock-path
+> preflight, so this is not dependency approval or model parity. Its worker
+> `53933207` and storage are independently absent. A new code-only family
+> replay is live on owned `53934208` with 48 allocated cores; its terminal
+> gates and destruction remain pending. Preserve all 194 rows; see the
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-named-linux-gate-and-new-family-replay-2324-utc).
+
+> **2026-10-02 source-only Linux replay (23:10 UTC):** owned worker
+> `53932071` is terminal with exit 24: all 76 XCodec2 stdlib tests ran without
+> skips, but three subprocess tests could not find `uv` on PATH. The source
+> archive collector was not reached. Root independently confirmed destruction
+> and complete account ID/label absence, with no Vokra worker remaining.
+> Reviewed SBV2 Clippy fixes are committed in separate FireRed and OWSM
+> candidates; their exact-head remote gates remain pending. The new decoder
+> candidate failed source review and requires correction. Preserve all 194
+> rows; see the [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-02-source-only-linux-replay-and-corrective-source-review-2310-utc).
+
+> **2026-10-02 terminal family replay (22:48 UTC):** worker `53926242`
+> is terminal, not an overall pass. Workspace tests passed 8,239 with zero
+> failures and 108 explicit ignores; OWSM's 28 focused tests passed without
+> ignores. Clippy and three Python verification legs failed. Root verified
+> all 59 recovered checksums and fixed HEAD/source identities. Individual
+> and complete paginated account readbacks prove the owned worker and label
+> absent, with no Vokra instance left. Corrections are isolated; no real-weight
+> or Apple verdict advances. Preserve all 194 rows and see the
+> [terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-family-replay-and-production-gate-corrections-2248-utc).
+
+> **2026-10-02 source/controller review (22:25 UTC):** the same code-only
+> worker `53926242` remains live; do not restart it. Root reproduced the
+> separate source-only V6 controller's offline suite, but did not accept it
+> for rent: authenticated UV bootstrap, reserved cleanup time and stronger
+> fault evidence still require corrections. Root also reauthenticated the
+> OWSM encoder source and assigned the full 18-layer native stack in a
+> separate child candidate; implementation and remote evidence remain
+> pending. No model, dependency archive or Apple run started in this review.
+> Preserve all 194 rows; see the [dated review](public-catalog-security-completion-2026-09-29.md#2026-10-02-source-controller-review-and-full-encoder-scope-2225-utc).
+
+> **2026-10-02 live latest-head replay (22:14 UTC):** root independently
+> passed the retargeted V5 controller's full offline suite and started one
+> disposable code-only worker, `53926242`. API and read-only SSH confirm its
+> exact label, all three reviewed HEADs, 48 allocated/build cores and the
+> cgroup-bounded memory budget. Workspace tests are progressing; terminal
+> gates, packet recovery and destruction remain unproved. No actual model,
+> source-archive collector or Apple run was started. Preserve all 194 rows;
+> see the [dated live record](public-catalog-security-completion-2026-09-29.md#2026-10-02-live-latest-family-head-replay-and-effective-config-gap-2214-utc).
+
+> **2026-10-02 selected-layer supersession (22:01 UTC):** root accepted
+> and committed OWSM's source-ordered selected E-Branchformer layer at clean
+> `15ec2f0d`, with 28 source-defined Rust tests still requiring exact-head
+> remote execution. The next code-only controller is being retargeted to that
+> candidate and clean XCodec2 `e9c7b8d0` / 72 stdlib tests; FireRed remains
+> `a3fb0fc2`. No replacement worker has been rented. A separate source-only
+> controller failed root review and remains inert. Preserve all 194 rows and
+> the metadata-only 136 full / 58 unresolved snapshot; see the
+> [dated acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-selected-layer-and-latest-code-only-targets-2201-utc).
+
+> **2026-10-02 corrected-source preparation (21:45 UTC):** root reviewed
+> and committed the production-lock correction and source-only collector at
+> clean `e9c7b8d0`. Its 72 stdlib tests have 71 passes and one explicit
+> Linux-only skip; actual archives, installed builds and model execution remain
+> unproved. A separate code-only VAST attempt stopped before any API/create
+> call because its controller incorrectly rejected a valid linked worktree.
+> That layout gate and OWSM's next selected-layer semantic checks require
+> corrections. No public row or Apple status is promoted; see the
+> [dated correction record](public-catalog-security-completion-2026-09-29.md#2026-10-02-corrected-source-packet-and-linked-worktree-preflight-2145-utc).
+
+> **2026-10-02 production-lock supersession (21:30 UTC):** root's
+> metadata-only check of the actual tracked XCodec2 lock found a valid-input
+> rejection missed by synthetic tests: UV artifact fields and the builder's
+> pinned identity use different schemas. The separate `38e5c0ed` preparation
+> helper and new source collector require a corrective child; neither proves
+> actual installed-build or model execution. The fresh HF API/card audit still
+> reports 194 rows and metadata-only 136 full / 58 unresolved. Fixed code-only
+> remote targets are unchanged; see the
+> [dated production-lock finding](public-catalog-security-completion-2026-09-29.md#2026-10-02-production-lock-counterexample-and-fresh-catalog-readback-2130-utc).
+
+> **2026-10-02 derived-proof supersession (21:18 UTC):** root accepted
+> the bounded XCodec2 preparation helper at clean `38e5c0ed`; 56 of 57
+> stdlib tests pass locally, with one explicit Linux-only skip. This does not
+> approve actual sdist builds/installation or unlock reference execution.
+> The separate next VAST target remains `99e6a157` / 48 tests, and its
+> controller remains under review. No model row is promoted; see the
+> [dated proof record](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-derived-sdist-preparation-helper-2118-utc).
+
+> **2026-10-02 OWSM attention supersession (21:12 UTC):** root accepted
+> and committed the bounded standard-attention slice at clean `387d1f79`,
+> extending the frozen CGMLP candidate. Its 23 source-defined Rust tests
+> still require exact-head remote execution. The primary attention AST passes
+> all 20 checks and rejects five independently constructed semantic mutations;
+> the retained overall source packet still lacks five other roles. The next
+> VAST controller and XCodec2 derived-sdist proof remain under corrective
+> review. The 21:05 UTC complete account readback has no Vokra instance.
+> Preserve all 194 rows and the metadata-only 136 full / 58 unresolved split;
+> see the [dated acceptance record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-owsm-attention-and-remaining-proof-gates-2112-utc).
+
+> **2026-10-02 XCodec2 review supersession (20:51 UTC):** root accepted
+> the hardened model-free execution gates and independently verified clean
+> XCodec2-only family `99e6a157`, directly on main `97447185`. Its local
+> stdlib suite has 48 tests, 47 passed and one explicit Linux-only skip;
+> exact-head Linux verification still requires all 48 with no skip. OWSM's
+> next attention slice and the next VAST controller remain under corrective
+> review. A fresh complete VAST account readback has no Vokra instance.
+> No real-weight or Apple result is inferred; retain all 194 rows and see the
+> [dated review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-accepted-xcodec2-family-and-corrective-attentioncontroller-review-2051-utc).
+
+> **2026-10-02 OWSM candidate supersession (20:33 UTC):** root accepted
+> the corrected bounded CGMLP/source slice and independently checked clean
+> family-only `12c32984` directly on main `97447185`. Its inspector now accepts
+> both authenticated primary sources and passes mutation self-tests. Exact-head
+> remote compilation, full inference, independent real-weight and Apple gates
+> remain open. XCodec2 and the next controller still require corrections;
+> no replacement VAST worker has started. Preserve all 194 rows; see the
+> [dated candidate record](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-owsm-family-candidate-and-next-source-boundary-2033-utc).
+
+> **2026-10-02 corrective-review supersession (20:26 UTC):** the new
+> XCodec2 hardening candidate passes 38 local stdlib tests with one explicit
+> Linux-only skip, but root review still rejects incomplete payload-closure
+> authentication. OWSM's current inspector also rejects authenticated primary
+> LayerNorm source; its source-AST correction remains pending. These findings
+> require corrections before fixing new remote HEADs, not a new parity claim.
+> No replacement VAST worker was started in this review. All 194 rows and
+> final Apple gates remain; see the [dated review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-independent-corrective-review-and-pr-readback-2026-utc).
+
+> **2026-10-02 terminal V8 supersession (20:17 UTC):** the exact clean V8
+> code replay passed: 308 workspace result lines, 8,289 passed / zero failed /
+> 111 explicitly ignored; all 11 exit records are zero and all 22 recovered
+> checksums match. Worker `53908796` and its storage are independently absent;
+> a complete paginated account query has no Vokra worker. The clean FireRed
+> family-only candidate is now `a3fb0fc2`, with fresh exact-head remote checks
+> still required. OWSM and XCodec2 additions remain under review. This does not
+> establish real-weight or Apple parity; preserve all 194 rows and the last
+> metadata-only 136 full / 58 unresolved snapshot. See the
+> [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-v8-proof-and-family-only-firered-candidate-2017-utc).
+
+> **2026-10-02 code-review and live-progress supersession (20:02 UTC):**
+> V8 remains live on the same owned worker `53908796`; independent API/SSH
+> confirms 28 allocated cores and progression beyond the previously failing
+> FireRed mutation test. Its terminal workspace/security verdict, recovered
+> packet and destruction are not yet proved. CosyVoice3's reviewed declaration
+> candidate `4f389505` is committed, not installed or compatibility-validated.
+> XCodec2's execution-gate review identified additional hardening work, and
+> FireRed requires a fresh main-based, family-only PR scope. No public row is
+> promoted; retain all 194 rows and the metadata-only 136 full / 58 unresolved
+> split. See the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-live-v8-progress-and-family-security-review-2002-utc).
+
+> **2026-10-02 terminal V7 and reviewed V8 supersession (19:46 UTC):** V7
+> is terminal with one failing FireRed mutation-setup test, not a workspace
+> pass. All 22 recovered checksums match; worker `53905822` and storage are
+> independently absent in individual and complete paginated account queries.
+> The reviewed fixture-traversal correction is committed at `4edc870f`;
+> V8 is independently running on owned `53908796` with exact HEADs and 28
+> allocated/build cores. The fresh metadata/card-only HF audit still has
+> 194 public rows and the metadata-only 136 full / 58 unresolved split.
+> Neither replay proves real-weight or Apple parity; see the
+> [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-v7-and-reviewed-v8-replay-1946-utc).
+
+> **2026-10-02 reviewed-diagnostic replay supersession (19:25 UTC):** the
+> exact clean `8f98e110` code candidate is now being verified on owned
+> disposable `53905822`; independent API/SSH confirm both HEADs and 28
+> allocated/build cores. Terminal gates and destruction remain pending.
+> Additional source receipts and the fresh complete security readback do
+> not promote any model row; the separate archive transfer is still held.
+> Preserve all 194 rows; see the [dated checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-reviewed-diagnostic-replay-and-complete-security-readback-1925-utc).
+
+> **2026-10-02 terminal integrated-replay supersession (19:10 UTC):** the
+> clean `39b7570f` V5 code replay is terminal, not successful. FireRed's
+> BOOL correction and the new OWSM stem tests pass, but one resealed mask
+> mutation test fails because its correct rejection lacks the expected
+> diagnostic. Clippy, deny/audit and XCodec2's 32 tests pass; all 22 recovered
+> checksums were independently verified. Worker `53902589` and storage are
+> independently absent, with zero Vokra workers in the complete account
+> readback. Eleven additional ESPnet task/model sources now have independently
+> matched API/raw receipts, not model-effective config or numerical parity.
+> All 194 rows and the metadata-only 136 full / 58 unresolved split remain;
+> see the [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-integrated-replay-and-authenticated-task-source-1910-utc).
+
+> **2026-10-02 integrated code-replay supersession (18:54 UTC):** reviewed
+> clean `39b7570f` combines the two local correction commits. A separate
+> source-bundle-only V5 replay is live on disposable worker `53902589`, with
+> exact ID/label and 16 allocated cores independently confirmed. Bootstrap
+> reached Python 3.12; terminal Rust gates, packet recovery and destruction
+> remain pending. This does not run the denied five-input archive collection
+> or establish any real-weight/Apple result. All 194 rows remain in scope;
+> see the [dated integrated replay record](public-catalog-security-completion-2026-09-29.md#2026-10-02-clean-integrated-candidate-and-distinct-code-only-replay-1854-utc).
+
+> **2026-10-02 terminal replay and reviewed-candidate supersession (18:47 UTC):**
+> the `7b6b49cd` V4 replay recovered and independently verified all 22 packet
+> checksums, but workspace tests failed four FireRed consumer cases. XCodec2's
+> 32 tests, Clippy and deny/audit passed. Worker `53899353` and its storage
+> are independently absent; the complete account readback reports no Vokra
+> worker. Local reviewed corrections are FireRed `2ae2e459` and bounded OWSM
+> stem `00daef06`; integrated remote Rust results remain pending. The archive
+> V6 controller and exact hook pin passed independent offline checks, but
+> transferring its five inputs requires an explicit approval recognized by
+> auto-review. Both attempted launches were rejected before process creation.
+> Preserve all 194 rows and the metadata-only 136 full / 58 unresolved split;
+> see the [dated terminal and review record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-code-replay-reviewed-stem-and-archive-transfer-boundary-1847-utc).
+
+> **2026-10-02 corrected-bootstrap replay supersession (18:27 UTC):** root
+> independently passed the frozen generic V4 controller's full offline suite.
+> A new disposable worker `53899353` has passed all four real bootstrap
+> checksums and is running code verification at clean `7b6b49cd` with separate
+> XCodec2 `e6552853`. Independent API and read-only SSH observations confirm
+> the exact ID/label, both HEADs and 16 allocated/build cores. Terminal gates,
+> complete packet recovery and destruction remain pending. This is not model
+> parity or Apple completion; preserve all 194 rows and the metadata-only
+> 136 full / 58 unresolved split. See the
+> [dated replay checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-corrected-bootstrap-and-live-code-replay-1827-utc).
+
+> **2026-10-02 bootstrap-failure supersession:** the separate `7b6b49cd`
+> workspace replay stopped before tests on a release-asset checksum mismatch.
+> The official uv digest matches the pin; bounded HEAD probes identify an
+> unhandled HTTPS redirect in the acquisition command. Worker `53895587`
+> and its storage are independently confirmed absent. Fix and re-review the
+> bootstrap before another replay; no Rust, parity or model row passed in
+> this attempt. See the [dated diagnosis](public-catalog-security-completion-2026-09-29.md#2026-10-02-release-asset-bootstrap-failure-and-independent-destruction).
+
+> **2026-10-02 terminal-failure and corrected-head supersession (17:50 UTC):**
+> the `db26d377` VAST replay ended with five FireRed consumer failures, not
+> parity success. Its worker and storage were destroyed and independently
+> read back absent. Reviewed clean correction `7b6b49cd` is now the target
+> of a separate all-feature workspace/XCodec2 replay; that result is pending.
+> Preserve all 194 rows, the metadata-only 136 full / 58 unresolved split,
+> and independent real-weight and final Apple/publication gates; see the
+> [dated terminal record](public-catalog-security-completion-2026-09-29.md#2026-10-02-terminal-firered-schema-failure-cleanup-and-corrected-head-replay).
+
+> **2026-10-02 controller acceptance and replay-start supersession:** root's
+> independent full offline FireRed V10 suite passed at frozen controller
+> SHA-256 `1469c3827bfcacb498fee7ea18cc17ee5909a5643bd9aeca954457116ce7595a`.
+> A single disposable VAST worker is now verifying clean correction candidate
+> `db26d377f90c308e690e37a0871195c712d88a80`; its result and destruction
+> are still pending. This is model-free code/source verification, not parity
+> or Apple completion. Preserve all 194 rows and the metadata-only 136 full /
+> 58 unresolved split; see the [dated replay-start record](public-catalog-security-completion-2026-09-29.md#2026-10-02-controller-acceptance-and-new-code-verification-start).
+
+> **2026-10-02 failed-run and correction supersession (16:30 UTC):** the
+> actual VAST code-verification run at `3315339e` failed on FireRed consumer
+> compilation and authenticated-record setup; it is not parity evidence.
+> The next isolated, clean correction candidate is
+> `db26d377f90c308e690e37a0871195c712d88a80`. Its static checks and source
+> review do not replace the pending remote Rust and real-weight gates. The
+> worker and its storage were destroyed and independently read back absent.
+> Preserve all 194 rows, the metadata-only 136 full / 58 unresolved split,
+> and every final Apple and publication gate; see the
+> [dated diagnostics](public-catalog-security-completion-2026-09-29.md#2026-10-02-failed-run-diagnostics-destruction-and-bounded-correction-1630-utc)
+> and [clean-candidate checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-clean-correction-candidate-and-pr-link-check-readback).
+
+> **2026-10-02 row-level audit and candidate supersession (14:15 UTC):** the
+> latest retained metadata-only TSV at `597164c7` enumerates all 194 public
+> rows and confirms 136 code/artifact-full and 58 unresolved. The next clean
+> reviewed candidate is `3315339ebbb1f664969ad0172ab205c68813af13`, adding
+> the ECAPA worker's authenticated current replacement-target identity, not a
+> model replacement or parity result. Preserve the 194-row denominator and
+> every unresolved source, approval, real-weight, Apple and publication gate;
+> the [dated evidence](public-catalog-security-completion-2026-09-29.md#2026-10-02-row-level-audit-controller-regression-and-ecapa-identity-correction)
+> distinguishes the two HEADs and the still-unapproved production controllers.
+
+> **2026-10-02 read-only metadata refresh:** at clean candidate HEAD
+> `597164c7d1a81abf016ebc26400e597a91ab8811`, the live HF API/card audit
+> still reports 194 public repositories, 193 GGUF-bearing repositories and
+> 198 GGUF files. CPU code/artifact classification remains 136 full, 43
+> partial, 14 no-runtime-binder and one non-artifact (58 unresolved). Metal
+> code classification remains 136 full, 57 blocked-by-CPU and one
+> non-artifact. This queried metadata and README cards only, not model bytes.
+> It is not real-weight or Apple parity evidence. The latest
+> [integration checkpoint](public-catalog-security-completion-2026-09-29.md#2026-10-02-canonical-fixture-integration-and-fresh-metadata-audit)
+> fixes the next remote verification HEAD without promoting any model row.
+
+> **2026-09-30 metadata-audit supersession:** the read-only public inventory
+> at `main` `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` remains 194
+> repositories, 193 with GGUFs and 198 GGUF files: CPU code/artifact status is
+> 136 full, 43 partial, 14 no-runtime-binder and one non-artifact; Metal is
+> 136 full, 57 blocked-by-cpu and one non-artifact. The live unresolved count
+> is 58; the 63-row tables below retain their historical scope. These counts
+> are not independent real-weight or Apple parity verdicts. The latest
+> [catalog/security readback](public-catalog-security-completion-2026-09-29.md#2026-09-30-catalog-security-and-verification-readback-0801-utc)
+> records pending implementation validation, security residuals and disposable
+> worker cleanup. No further row completion or publication is inferred.
+
 > **2026-09-11 post-PR #79 execution note:** PR #79 was merged as
 > `1787818e702bdaba488d52aa1666fd5f08c5ae16`. The subsequently authorized,
 > bounded VAST and Scaleway batch is recorded in
@@ -26,7 +810,15 @@
 > Hugging Face upload remains unapproved. This note supersedes earlier live
 > status prose in this dated ledger; historical evidence below is retained.
 
-## Scope and current truth
+## Scope and historical audit snapshot (2026-09-09)
+
+**2026-10-04 reconciliation:** the table and five-class 63-row split below
+retain the 2026-09-09 snapshot. Today's metadata-only audit reports CPU
+`136 full / 43 partial / 14 no-runtime-binder / 1 not-artifact` and Metal
+`136 full / 57 blocked-by-cpu / 1 not-artifact`: 58 unresolved public rows.
+Neither classification proves whole-catalog Apple parity. Keep the frozen
+63-row decision/evidence ledger intact; use the latest dated notes above and
+the [current index](../README.md) for new work.
 
 This is the execution ledger for finishing the public Mac CPU / Apple Metal
 campaign while keeping Scaleway as the final **compute and hardware-validation

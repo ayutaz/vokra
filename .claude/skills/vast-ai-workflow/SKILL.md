@@ -39,7 +39,15 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 1. **rent**: vast.ai 上で GPU instance を借りる（cheapest でも RAM ≥64 GB / disk ≥200 GB は必須、convert 用途なら GPU は 4090 で十分、H100 は FA v3 bench 用）
 2. **provision**: `scripts/publish/vast-ai/provision.sh` を SSH 上で実行（4 gotcha を pre-handle）
 3. **work**: `run-one.sh` per model or 直接 cargo コマンド
-4. **destroy**: **必ず `vastai-safe.sh destroy instance <instance-id>` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）。ただし、直近に再開することが明示された retained handoff（たとえば別環境への転送待ち）に限り、一時的な `stop` を許可できる。Stop は compute 課金を止めてデータを保持するが storage 課金は継続し、再開時の GPU 確保は保証されない。重要データは外部にも backup し、handoff 完了後は必ず destroy する。
+4. **destroy**: 対象が今回借りた instance ID であることを確認し、**必ず
+   `vastai-safe.sh destroy instance <instance-id> --yes` で非対話 destroy
+   してから、個別 readback でその ID が消えたことを確認する**（走らせっぱなしは
+   $/h で課金継続、ADR §D6）。CLI は `--yes` がないと確認プロンプトを中断しても
+   終了コード 0 を返し得るため、コマンドの成功だけを削除の証拠にしない。
+   ただし、直近に再開することが明示された retained handoff（たとえば別環境への
+   転送待ち）に限り、一時的な `stop` を許可できる。Stop は compute 課金を止めて
+   データを保持するが storage 課金は継続し、再開時の GPU 確保は保証されない。
+   重要データは外部にも backup し、handoff 完了後は必ず destroy する。
 
 ### 一時停止の限定例外（retained handoff のみ）
 
@@ -58,20 +66,22 @@ storage 課金は継続し、再開時の GPU 確保は保証されません。D
 削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
 と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
 
-**retained handoff の現状 (2026-09-09)**: Scaleway 実行までの待機長期化に
+**retained handoff の現状 (2026-09-09、履歴スナップショット)**: Scaleway 実行までの待機長期化に
 伴い、instance `49168183` (`vokra-mac-coverage-771970dc`, 500 GB) と
 `49261078` (`vokra-htdemucs-inspection-20260830`, 200 GB) は保存データを
 含めて destroy 済みである。両方とも個別 API が `instances: null` を返した。
 `apple-transfer-bc9d1db2`、`apple-transfer-reazon-a59c48c8`、
-`apple-transfer-bicodec-5cd97d12` も VAST 上に存在しない。現在 Vokra 用の
+`apple-transfer-bicodec-5cd97d12` も VAST 上に存在しない。
+この段落は当時の readback 記録であり、現在の provider inventory や課金状態を
+問い合わせたり保証したりするものではない。この履歴時点では Vokra 用の
 retained handoff はなく、storage 課金も継続していない。Apple 実機検証を
 再開するときは、固定 revision/hash 契約から新しい disposable VAST instance
 で artefact と reference packet を再生成し、完了後に destroy する。
 
-**最終 replay の現状 (2026-09-09)**: implementation head `caf70eb1` の exact
+**最終 replay の現状 (2026-09-09、履歴スナップショット)**: implementation head `caf70eb1` の exact
 VAST replay に使った disposable instance `50320338`（150 GB storage）は、
 evidence transfer/verification 後に保存データを含めて destroy 済みである。
-現在 Vokra 用の retained handoff はなく、storage 課金もない。Apple 検証を
+この段落も当時の readback 記録であり、現在の provider inventory や課金状態を問い合わせたり保証したりするものではない。Apple 検証を
 再開するときは固定 revision/hash 契約から新しい disposable instance で
 artefact と reference packet を再生成する。履歴 instance ID は再起動先や
 転送元として扱わない。
@@ -110,11 +120,14 @@ vast.ai の stock image が持つ 4 個の trap を `provision.sh` が **`instal
 
 **呼び方**:
 ```bash
-# vast.ai instance に SSH した後
-export HF_TOKEN='hf_xxxxxxxx'
+# vast.ai instance に SSH した後。token のリテラルを command/history に書かない。
+# 承認済みの暗号化 SSH stdin / secret manager から一時的に注入し、終了後に unset する。
+read -r -s HF_TOKEN
+export HF_TOKEN
 git clone https://github.com/ayutaz/vokra.git ~/vokra
 cd ~/vokra
 bash scripts/publish/vast-ai/provision.sh  # idempotent, rerun-safe
+unset HF_TOKEN
 ```
 
 **idempotent**: rerun-safe。各 step が artifact を probe して skip する。`git pull` 後にも安全に再実行できる。
@@ -146,12 +159,14 @@ scripts/publish/vast-ai/run-one.sh \
 ### 4.3 provenance-only の低メモリ経路
 
 ```bash
-# 大 GGUF を convert する必要がなく、既存 HF から DL → restamp → repush だけの場合
-# ローカル (M1 iMac) の restamp_provenance で peak 6.4 MB で完結する
-# → vast.ai を借りずに済む（Voxtral 8.7 GB で実証）
+# 既に取得済みで許可された大 GGUF の metadata だけを再刻印する場合。
+# ローカル (M1 iMac) の restamp_provenance は tensor を読まず peak 6.4 MB で完結する
+# （Voxtral 8.7 GB の実証）。download / weight inference / conversion は行わず、
+# upload 権限も付与しない。入力取得・変換・実weight検証・publish staging は VAST。
 ```
 
-**vast.ai を借りる vs 借りない判断**: convert が要る = 借りる / provenance だけ = ローカル restamp。
+**vast.ai を借りる vs 借りない判断**: convert・入力取得・実weight検証・publish
+staging が要る = 借りる / 既存バイト列の provenance だけ = ローカル restamp。
 
 ### 4.4 workspace 検証を逃がす（GPU も provision.sh も不要）
 
@@ -193,7 +208,7 @@ git fetch -q /root/wave.bundle HEAD:work && git checkout -q work
 git rev-parse --short HEAD    # 手元と一致することを必ず確認
 ```
 
-**判定に使える実測値**: フル workspace = `6965 passed / 0 failed / 23 ignored / 234 suites`。ローカル並列実行で落ちる 2 件は **regression ではない** — `kyutai_stt` は正当に **155 秒**かかるため 180 秒タイムアウトに接触し、`csm_frame_loop_allocates_zero_after_open` は alloc カウンタが他スレッドに撹乱される。どちらも単独・大容量機では通る。
+**履歴の VAST 実測値 (2026-08-16、現行 live inventory ではない)**: フル workspace = `6965 passed / 0 failed / 23 ignored / 234 suites`。ローカル並列実行で落ちる 2 件は **regression ではない** — `kyutai_stt` は正当に **155 秒**かかるため 180 秒タイムアウトに接触し、`csm_frame_loop_allocates_zero_after_open` は alloc カウンタが他スレッドに撹乱される。どちらも単独・大容量機では通る。
 
 検証が green なら、手元からのコード push は pre-push の重い経路を踏まないよう `VOKRA_SKIP_HOOKS=1` を使う。**無検証のまま bypass しないこと** — 根拠はリモート検証結果。remote branch の削除-only push は compliance 回帰テストを実行した後、Cargo leg を自動 skip する。
 
@@ -203,7 +218,9 @@ git rev-parse --short HEAD    # 手元と一致することを必ず確認
 
 ```bash
 # 手元 CLI から
-scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>
+scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id> --yes
+scripts/publish/vast-ai/vastai-safe.sh show instance <instance-id> --raw
+# ↑ 対象の id がなく instances: null であることを確認。残存・照会不能なら未完了扱い
 ```
 
 ラッパーの契約（資格情報クエリの redaction、通常出力、終了コード保持）は
@@ -213,12 +230,7 @@ scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>
 scripts/publish/vast-ai/test-vastai-safe.sh
 ```
 
-**auto-destroy を仕込む**: ローカルの lifecycle controller で、measure が終わったら trap で自動 destroy する pattern（ADR §D6）。Vast ホスト上ではローカル CLI/credential を前提にしない:
-```bash
-# 手元の lifecycle controller 内（VAST_CONTAINERLABEL は instance id）
-trap 'scripts/publish/vast-ai/vastai-safe.sh destroy instance "$VAST_CONTAINERLABEL"' EXIT
-# ↑ ローカル controller 終了時に自動 destroy
-```
+**auto-destroy を仕込む**: ローカルの lifecycle controller の `EXIT` trap で、今回借りた ID への `destroy instance "$VAST_INSTANCE_ID" --yes` と `show instance "$VAST_INSTANCE_ID" --raw` による個別 readback を一つの cleanup 処理にまとめる（ADR §D6）。destroy の終了コードが 0 でも対象が残る、または照会不能なら失敗として通知・非ゼロ終了する。Vast ホスト上ではローカル CLI/credential を前提にしない。
 
 **destroy 忘れは $/h で継続課金**。H100 は $1.7-2.5/h、8h 忘れると $15+ 溶ける。
 
@@ -235,7 +247,7 @@ trap 'scripts/publish/vast-ai/vastai-safe.sh destroy instance "$VAST_CONTAINERLA
 
 | Task | vast.ai 費用目安 | 判断 |
 |------|--------------|------|
-| Voxtral-Small-24B convert + publish | RTX 4090 8h × $0.30/h = $2.4 | 妥当（M1 で試すと mac 強制終了 = 復旧に時間 loss） |
+| Voxtral-Small-24B convert + publish（履歴見積） | RTX 4090 8h × $0.30/h = $2.4 | 当時の判断（現在価格ではない） |
 | H100 FA v3 bakeoff | H100 60 min × $1.73/h = $1.73 | 妥当（M4-07 実績） |
 | **workspace 全体の cargo 検証** | **21 min × $0.082/h = $0.03**（実績） | **妥当**（ローカルは再起動、復旧コストが桁違い） |
 | provenance だけの差替 | $0（ローカル restamp、tensor 不読み） | **借りない** |
@@ -245,7 +257,7 @@ trap 'scripts/publish/vast-ai/vastai-safe.sh destroy instance "$VAST_CONTAINERLA
 
 - **「今回くらいはローカルで」**: これが 2026-08-16 に mac を再起動させた。現在の閾値は artefact 合計 2 GB、Cargo は workspace 全体または `-p vokra-models`。**判断で防げなかったので hook で強制した** = `guard-local-memory.sh`。`VOKRA_ALLOW_LOCAL_HEAVY=1` は依頼者がその1回を明示承認した場合だけ使う
 - **未検証のまま `VOKRA_SKIP_HOOKS=1` で push**: bypass の根拠はリモート検証結果であって、急いでいることではない
-- **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap `vastai-safe.sh destroy instance <instance-id>` を必ず仕込む
+- **vast.ai を借りっぱなしで放置**: $/h 課金継続、trap には今回の ID に対する `vastai-safe.sh destroy instance <instance-id> --yes` を仕込み、個別 readback で削除を確認する
 - **provision.sh を skip して pip 手打ちで頑張る**: 4 gotcha に順番にハマる（実績 1 day 溶かす）
 - **`huggingface_hub` を local と同じ最新版で使う**: vast.ai 上では <0.30 pin 必須（xet-token regression）、local との差分を明示的に持つ
 - **`HF_TOKEN` を CLI 引数で渡す**: shell history + `ps` に残る → 環境変数経由で

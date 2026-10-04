@@ -10,7 +10,7 @@ Run it only on the authorized VAST host after the exact commit has been
 transferred and the `uv.lock` environment has been synchronized:
 
 ```bash
-uv run --project tools/parity/bf16_gemm --locked \
+uv run --project tools/parity/bf16_gemm --locked --python 3.12 \
   python tools/parity/bf16_gemm/dump_reference.py \
   --output tests/parity/bf16_gemm
 ```

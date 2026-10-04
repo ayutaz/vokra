@@ -1,10 +1,11 @@
 """Fail-closed compatibility checks for the pinned SpeechT5 oracle.
 
 Transformers 5.10.4 imports an unrelated FP8 module that names
-``torch.float8_e8m0fnu``.  The exact approved torch 2.4.1+cpu wheel does not
-export that name.  This module installs a narrow alias only after verifying
-both installed distribution identities; it never changes model configuration
-or selects an FP8/quantized execution route.
+``torch.float8_e8m0fnu``.  The exact approved torch 2.13.0+cpu wheel is
+expected to export that native dtype; this module keeps the same identity
+check and requires the native symbol. It does not synthesize an alias for a
+missing dtype: an ABI/API mismatch is a hard failure, and this module never
+changes model configuration or selects an FP8/quantized execution route.
 """
 
 from __future__ import annotations
@@ -19,22 +20,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SUPPORTED_TORCH = "2.4.1+cpu"
+SUPPORTED_TORCH = "2.13.0+cpu"
 SUPPORTED_TRANSFORMERS = "5.10.4"
 MISSING = object()
 COMPATIBILITY_SMOKE_SENTINEL = (
     "SPEECHT5_COMPATIBILITY_SMOKE status=PASS torch={torch} "
-    "transformers={transformers} alias={alias} "
+    "transformers={transformers} dtype={dtype} "
     "model_load=NOT_PERFORMED upload=NOT_PERFORMED"
 )
 
 
-def install_float8_import_compat(
+def require_native_float8_dtype(
     torch_module: Any,
     *,
     version_reader: Callable[[str], str] | None = None,
 ) -> str:
-    """Validate exact package identities and install one import-only alias.
+    """Validate exact package identities and require the native FP8 dtype.
 
     ``version_reader`` is used only by the model-free self-test. Production
     callers use installed distribution metadata and cannot override it.
@@ -43,28 +44,22 @@ def install_float8_import_compat(
     torch_version = read_version("torch")
     transformers_version = read_version("transformers")
     if torch_version != SUPPORTED_TORCH:
-        raise RuntimeError(f"unsupported torch identity for FP8 import shim: {torch_version}")
+        raise RuntimeError(f"unsupported torch identity for native FP8 dtype: {torch_version}")
     if transformers_version != SUPPORTED_TRANSFORMERS:
         raise RuntimeError(
-            f"unsupported Transformers identity for FP8 import shim: {transformers_version}"
+            f"unsupported Transformers identity for native FP8 dtype: {transformers_version}"
         )
 
     dtype_type = getattr(torch_module, "dtype", MISSING)
     if not isinstance(dtype_type, type):
-        raise RuntimeError("torch dtype type is unavailable; refusing compatibility mutation")
+        raise RuntimeError("torch dtype type is unavailable; refusing native FP8 check")
     existing = getattr(torch_module, "float8_e8m0fnu", MISSING)
-    if existing is not MISSING:
-        if not isinstance(existing, dtype_type):
-            raise RuntimeError("unexpected existing torch.float8_e8m0fnu state")
-        return "native"
-
-    sentinel = getattr(torch_module, "float8_e4m3fn", MISSING)
-    if sentinel is MISSING or not isinstance(sentinel, dtype_type):
-        raise RuntimeError("approved torch FP8 sentinel is unavailable")
-    setattr(torch_module, "float8_e8m0fnu", sentinel)
-    if getattr(torch_module, "float8_e8m0fnu", MISSING) is not sentinel:
-        raise RuntimeError("torch.float8_e8m0fnu compatibility mutation was not exact")
-    return "shimmed"
+    if existing is MISSING or not isinstance(existing, dtype_type):
+        raise RuntimeError(
+            "Torch 2.13 native torch.float8_e8m0fnu is unavailable; "
+            "refusing an ABI/API compatibility alias"
+        )
+    return "native"
 
 
 def require_non_quantized_config(checkpoint: Path) -> None:
@@ -140,7 +135,7 @@ def compatibility_smoke() -> int:
     try:
         import torch
 
-        alias_status = install_float8_import_compat(torch)
+        dtype_status = require_native_float8_dtype(torch)
         import transformers
         from transformers import SpeechT5ForTextToSpeech, SpeechT5Tokenizer
     finally:
@@ -159,11 +154,11 @@ def compatibility_smoke() -> int:
         raise RuntimeError("Transformers does not expose SpeechT5ForTextToSpeech exactly")
     if getattr(transformers, "SpeechT5Tokenizer", MISSING) is not SpeechT5Tokenizer:
         raise RuntimeError("Transformers does not expose SpeechT5Tokenizer exactly")
-    if alias_status not in {"native", "shimmed"}:
-        raise RuntimeError(f"unexpected FP8 compatibility status: {alias_status}")
+    if dtype_status != "native":
+        raise RuntimeError(f"unexpected native FP8 dtype status: {dtype_status}")
     print(
         COMPATIBILITY_SMOKE_SENTINEL.format(
-            torch=torch.__version__, transformers=transformers.__version__, alias=alias_status
+            torch=torch.__version__, transformers=transformers.__version__, dtype=dtype_status
         )
     )
     return 0
@@ -176,62 +171,33 @@ def self_test() -> None:
     class FakeTorch:
         dtype = FakeDType
 
-        def __init__(self, *, native: Any = MISSING, sentinel: Any = None) -> None:
-            self.float8_e4m3fn = sentinel if sentinel is not None else FakeDType()
+        def __init__(self, *, native: Any = MISSING) -> None:
             if native is not MISSING:
                 self.float8_e8m0fnu = native
 
     versions = {"torch": SUPPORTED_TORCH, "transformers": SUPPORTED_TRANSFORMERS}
     reader = versions.__getitem__
-    shimmed = FakeTorch()
-    sentinel = shimmed.float8_e4m3fn
-    assert install_float8_import_compat(shimmed, version_reader=reader) == "shimmed"
-    assert shimmed.float8_e8m0fnu is sentinel
+    missing_native = FakeTorch()
+    try:
+        require_native_float8_dtype(missing_native, version_reader=reader)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("missing native FP8 dtype was accepted")
 
     native_value = FakeDType()
     native = FakeTorch(native=native_value)
-    assert install_float8_import_compat(native, version_reader=reader) == "native"
+    assert require_native_float8_dtype(native, version_reader=reader) == "native"
     assert native.float8_e8m0fnu is native_value
 
     wrong_versions = {"torch": "2.4.1", "transformers": SUPPORTED_TRANSFORMERS}
     rejected = FakeTorch()
     try:
-        install_float8_import_compat(rejected, version_reader=wrong_versions.__getitem__)
+        require_native_float8_dtype(rejected, version_reader=wrong_versions.__getitem__)
     except RuntimeError:
         assert not hasattr(rejected, "float8_e8m0fnu")
     else:
         raise AssertionError("wrong torch identity was accepted")
-
-    mutated = FakeTorch(native=object())
-    try:
-        install_float8_import_compat(mutated, version_reader=reader)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("unexpected native symbol state was accepted")
-
-    class MutatingTorch(FakeTorch):
-        def __setattr__(self, name: str, value: Any) -> None:
-            if name == "float8_e8m0fnu":
-                object.__setattr__(self, name, object())
-            else:
-                object.__setattr__(self, name, value)
-
-    mutating = MutatingTorch()
-    try:
-        install_float8_import_compat(mutating, version_reader=reader)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("mutating FP8 compatibility state was accepted")
-
-    missing_sentinel = FakeTorch(sentinel=object())
-    try:
-        install_float8_import_compat(missing_sentinel, version_reader=reader)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("unknown FP8 sentinel state was accepted")
 
     with tempfile.TemporaryDirectory(prefix="speecht5-config-selftest-") as directory:
         checkpoint = Path(directory)

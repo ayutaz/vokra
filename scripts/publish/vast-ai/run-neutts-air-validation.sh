@@ -48,8 +48,10 @@ usage: run-neutts-air-validation.sh --approval-evidence <file> [--work-dir <abse
        run-neutts-air-validation.sh --self-test
 
 VAST-only, non-publishing gate for the exact public NeuTTS Air release. It
-downloads the pinned public LM GGUF and Distill NeuCodec companion, downloads
-the exact gated upstream snapshot, executes the fixed Neuphonic prompt method
+syncs and audits the frozen closure, checks the fixed Neuphonic source/API
+without weights, then downloads the pinned public LM GGUF and Distill NeuCodec
+companion plus the exact gated upstream snapshot, and executes the fixed
+Neuphonic prompt method
 and official Transformers Qwen2 model in CPU FP32, then compares Vokra logits
 at atol=0.01 and greedy ids exactly. Workspace and Apple-target feature builds
 run only after the real CPU gate.
@@ -266,7 +268,7 @@ require_one_named_test_passed() {
 }
 
 run_self_test() {
-  local failed=0 probe_root probe_output gate_line host_line tooling_line sync_line audit_line download_line identity_size identity_sha
+  local failed=0 probe_root probe_output gate_line host_line tooling_line sync_line audit_line source_line smoke_line download_line identity_size identity_sha
   [[ "$PUBLIC_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$UPSTREAM_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
@@ -278,9 +280,11 @@ run_self_test() {
   tooling_line="$(grep -n '^  require_tooling$' "$0" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^  uv sync --project' "$0" | tail -1 | cut -d: -f1)"
   audit_line="$(grep -n 'DEPENDENCY_AUDIT_WRAPPER.*--output' "$0" | tail -1 | cut -d: -f1)"
+  source_line="$(grep -n '^  checkout_source "\$source_dir"' "$0" | tail -1 | cut -d: -f1)"
+  smoke_line="$(grep -n -- '--api-smoke' "$0" | tail -1 | cut -d: -f1)"
   download_line="$(grep -n '^  download_hf_file' "$0" | tail -1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$download_line" =~ ^[0-9]+$ ]] || failed=1
-  (( gate_line < host_line && gate_line < tooling_line && tooling_line < sync_line && sync_line < audit_line && audit_line < download_line )) || failed=1
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$source_line" =~ ^[0-9]+$ && "$smoke_line" =~ ^[0-9]+$ && "$download_line" =~ ^[0-9]+$ ]] || failed=1
+  (( gate_line < host_line && gate_line < tooling_line && tooling_line < sync_line && sync_line < audit_line && audit_line < source_line && source_line < smoke_line && smoke_line < download_line )) || failed=1
   probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-neutts-air-sentinel.XXXXXX")"
   printf '{}\n' > "$probe_root/path-approval.json"
   mkdir -p "$probe_root/nested-parent"
@@ -422,6 +426,13 @@ main() {
   VOKRA_PUBLISH_ON_VAST=1 VOKRA_ROOT="$VOKRA_ROOT" \
     "$DEPENDENCY_AUDIT_WRAPPER" --output "$evidence_dir/dependency-audit.json"
 
+  step "Checkout fixed official source and run model-free API smoke before model acquisition"
+  checkout_source "$source_dir"
+  uv run --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 python \
+    "$REFERENCE_DUMPER" --api-smoke \
+    --source-file "$source_dir/$SOURCE_RELATIVE" \
+    2>&1 | tee "$evidence_dir/api-smoke.log"
+
   step "Download and authenticate exact public GGUFs"
   download_hf_file "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" "$public_dir"
   download_hf_file "$COMPANION_REPO" "$COMPANION_REVISION" "$COMPANION_FILE" "$companion_dir"
@@ -429,9 +440,8 @@ main() {
   require_identity "Distill NeuCodec public GGUF" "$companion" \
     "$COMPANION_BYTES" "$COMPANION_SHA256"
 
-  step "Download exact gated upstream snapshot and official source"
+  step "Download exact gated upstream snapshot"
   download_upstream_snapshot "$upstream_dir"
-  checkout_source "$source_dir"
 
   step "Generate independent official FP32 reference"
   VOKRA_REFERENCE_TORCH_THREADS="${VOKRA_REFERENCE_TORCH_THREADS:-8}" \

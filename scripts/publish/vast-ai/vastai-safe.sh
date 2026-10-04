@@ -38,6 +38,28 @@ if (($# == 0)); then
   exit 64
 fi
 
+# `vastai destroy instance` is destructive and the CLI asks for an
+# interactive confirmation when `--yes` is omitted.  A lifecycle controller
+# may have no tty, and the CLI can otherwise abort with status 0, leaving the
+# instance (and its charges) behind.  Require an explicit non-interactive
+# confirmation before invoking the CLI.  Keep this check before creating
+# temporary files or starting the wrapped command so a rejected request has no
+# side effects and never reaches a credential-bearing process.
+if (($# >= 2)) && [[ "$1" == destroy && "$2" == instance ]]; then
+  has_destroy_confirmation=0
+  for arg in "$@"; do
+    if [[ "$arg" == --yes ]]; then
+      has_destroy_confirmation=1
+      break
+    fi
+  done
+  if ((has_destroy_confirmation == 0)); then
+    printf '%s\n' \
+      'vastai-safe.sh: refusing "destroy instance" without explicit --yes' >&2
+    exit 64
+  fi
+fi
+
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/vokra-vastai-safe.XXXXXX")"
 stdout_file="$tmp_dir/stdout"
 stderr_file="$tmp_dir/stderr"

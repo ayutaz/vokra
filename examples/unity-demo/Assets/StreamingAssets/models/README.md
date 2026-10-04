@@ -15,9 +15,9 @@ convert/place yourself; until then the demo cleanly reports those stages as
 "skipped" (matching the M0-09 C-smoke env-gating).
 
 Desktop (macOS/Linux/Windows) reads `StreamingAssets` as real file paths, so the
-C ABI receives a plain path. (Android's `StreamingAssets` jar-URL problem —
-NFR-RL-04 — and the `persistentDataPath` extraction helper are v0.5 scope,
-FR-API-04.)
+C ABI receives a plain path. Android's `StreamingAssets` jar-URL problem is
+handled by the `com.vokra.unity` package's `persistentDataPath` extraction
+helper (NFR-RL-04 / FR-API-04); this v0.1 demo does not include that path.
 
 ## G2P (piper-plus, JA/EN)
 
