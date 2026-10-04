@@ -1,5 +1,14 @@
 # M4 (v1.0-rc) Owner Verification Checklist
 
+> **2026-10-04 reading boundary:** this is a historical milestone record,
+> not the current task count or a runnable authorization. Preserve the dated
+> hardware, test totals, commands and decisions below. For the refreshed
+> 136 code/artifact-full / 58 unresolved metadata classification, bounded
+> Apple results and remaining GA conditions, use the
+> [documentation index](README.md) and [M5 checklist](m5-owner-verification-checklist.md).
+> Historical broad Cargo/model commands are not run on the maintainer Mac;
+> follow `AGENTS.md` and the applicable remote workflow for new verification.
+
 **Historical current-state reconciliation (2026-08-18; superseded):** this remains an M4-era owner
 ledger and evidence index. M4 merged in PR #8; the project baseline is now
 `main` `6d64fdf`. The 33-function ABI and test counts below are explicitly

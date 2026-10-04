@@ -242,6 +242,72 @@ pub use native::{
     FireRedDictionary, FireRedRelativeAttention, relative_positional_encoding,
 };
 
+/// Best result returned by the explicit PCM-to-beam composition seam.
+///
+/// This result type is deliberately separate from [`Transcription`] and from
+/// [`FireRedBeamHypothesis`]: the former would make the ordinary ASR surface
+/// look complete, while the latter contains native `usize` ids and no rendered
+/// text. The composition remains parity-pending and is not used by the
+/// [`AsrEngine`] implementation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FireRedPcmBeamHypothesis {
+    /// Content token ids, excluding SOS and a terminal EOS.
+    pub token_ids: Vec<u32>,
+    /// Text rendered through the authenticated FireRed output dictionary.
+    pub text: String,
+    /// Official GNMT-normalized beam score (larger is better).
+    pub normalized_log_score: f32,
+}
+
+fn validate_pcm_beam_hypothesis(
+    best: FireRedBeamHypothesis,
+    cfg: &FireredAsrAedConfig,
+    dictionary: &FireRedDictionary,
+) -> Result<FireRedPcmBeamHypothesis> {
+    if !best.normalized_log_score.is_finite() {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l PCM beam composition returned a non-finite hypothesis score"
+                .to_owned(),
+        ));
+    }
+
+    let mut token_ids = Vec::with_capacity(best.token_ids.len());
+    for id in best.token_ids {
+        let id = u32::try_from(id).map_err(|_| {
+            VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition emitted a token id outside u32".to_owned(),
+            )
+        })?;
+        if id >= cfg.vocab_size {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l PCM beam composition emitted token id {id} outside authenticated vocabulary size {}",
+                cfg.vocab_size
+            )));
+        }
+        if id == cfg.sos_id || id == cfg.eos_id || id == cfg.pad_id || id == cfg.blank_id {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l PCM beam composition emitted forbidden structural token id {id}"
+            )));
+        }
+        token_ids.push(id);
+    }
+    // The pinned upstream decoder slices `nbest_ys` at the count of
+    // non-EOS ids. Immediate EOS therefore yields a legitimate empty
+    // hypothesis and empty rendered text; do not turn that source result into
+    // a fabricated error. Non-empty content still uses the authenticated
+    // dictionary renderer and its structural/empty-text checks.
+    let text = if token_ids.is_empty() {
+        String::new()
+    } else {
+        dictionary.decode_token_ids(&token_ids)?
+    };
+    Ok(FireRedPcmBeamHypothesis {
+        token_ids,
+        text,
+        normalized_log_score: best.normalized_log_score,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of
 // `crates/vokra-convert/src/models/firered_asr_aed_l.rs`.
@@ -2745,6 +2811,88 @@ impl FireredAsrAed {
         Ok(hypotheses)
     }
 
+    /// Composes the authenticated PCM frontend, encoder, official FireRed
+    /// `batch_beam_search`, and output dictionary into one explicit
+    /// **parity-pending** result.
+    ///
+    /// This is intentionally not [`Self::transcribe_tokens`] and does not
+    /// alter the [`AsrEngine`] contract. It is a low-level validation seam
+    /// for the exact converted release only: CMVN, geometry/special ids,
+    /// search policy, dictionary, and runtime tensors all come from this
+    /// handle. No caller-supplied transform or fallback backend is accepted.
+    /// `from_gguf_with_backend` selects the backend before decoding and every
+    /// hot operation is dispatched through [`Compute::for_backend`].
+    ///
+    /// The result must still be compared with an independent upstream
+    /// reference and real-weight CPU parity before the ordinary transcription
+    /// APIs may be enabled. A green call here is not a parity or publication
+    /// claim.
+    pub fn transcribe_pcm_beam_pending(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<FireRedPcmBeamHypothesis> {
+        let cfg = self.cfg.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires authenticated frontend/decoder metadata; refusing to guess sample rate or special-token ids".to_owned(),
+            )
+        })?;
+        if cfg.sample_rate != sample_rate {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-asr-aed-l: PCM sample rate {sample_rate} Hz does not match authenticated metadata {} Hz",
+                cfg.sample_rate
+            )));
+        }
+        let search = self.search.ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires authenticated official batch_beam_search metadata".to_owned(),
+            )
+        })?;
+        if !search.is_official() {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l: PCM beam composition search policy drifted from official batch_beam_search defaults".to_owned(),
+            ));
+        }
+        let cmvn = self.cmvn.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires the exact authenticated cmvn.txt sidecar".to_owned(),
+            )
+        })?;
+        let dictionary = self.dictionary.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires the exact authenticated dict.txt sidecar".to_owned(),
+            )
+        })?;
+        self.runtime_weights.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "firered-asr-aed-l: PCM beam composition requires exact runtime tensor binding; use from_gguf_with_backend after the exact-provenance 940-tensor artifact is available".to_owned(),
+            )
+        })?;
+
+        let (features, frames) = pcm_to_features(pcm, sample_rate, cmvn)?;
+        let memory = self.encode_features(&features, frames, &vec![true; frames])?;
+        if memory.is_empty() || memory.len() % AUTHENTICATED_ENCODER_D_MODEL as usize != 0 {
+            return Err(VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition produced an invalid encoder memory shape"
+                    .to_owned(),
+            ));
+        }
+        let source_frames = memory.len() / AUTHENTICATED_ENCODER_D_MODEL as usize;
+        let hypotheses = self.decode_features_beam(
+            &memory,
+            source_frames,
+            &vec![true; source_frames],
+            cfg.sos_id as usize,
+            cfg.eos_id as usize,
+        )?;
+        let best = hypotheses.into_iter().next().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "firered-asr-aed-l PCM beam composition returned no hypothesis".to_owned(),
+            )
+        })?;
+        validate_pcm_beam_hypothesis(best, cfg, dictionary)
+    }
+
     /// Runs the authenticated PCM → Kaldi fbank/CMVN → encoder → greedy
     /// decoder seam and returns raw decoder ids.
     ///
@@ -3556,6 +3704,20 @@ mod tests {
             b.add_u32(key, value);
         }
         finish(&b)
+    }
+
+    /// Synthetic execution-contract fixture: every pre-runtime composition
+    /// field is present, but there are no runtime tensors. The CMVN and
+    /// dictionary are deliberately model-free test values; production
+    /// construction binds their authenticated sidecar bytes before this
+    /// method can be reached.
+    fn executable_inspection_model() -> FireredAsrAed {
+        let mut model = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("bind");
+        model.search = Some(FireredAsrAedSearchConfig::OFFICIAL);
+        model.cmvn = Some(identity_cmvn());
+        model.dictionary = Some(test_dictionary());
+        model.has_dictionary = true;
+        model
     }
 
     #[test]
@@ -4663,6 +4825,170 @@ mod tests {
             .expect_err("inspection-only binding must not execute decoder operands");
         assert!(
             matches!(error, VokraError::UnsupportedOp(message) if message.contains("feature tensor binding is absent"))
+        );
+    }
+
+    #[test]
+    fn pcm_beam_composition_requires_exact_runtime_binding() {
+        let model = executable_inspection_model();
+        let error = model
+            .transcribe_pcm_beam_pending(&vec![0.0; 1_600], 16_000)
+            .expect_err("inspection-only binding must not execute PCM or fall back to CPU");
+        match error {
+            VokraError::UnsupportedOp(message) => {
+                assert!(message.contains("exact runtime tensor binding"));
+                assert!(message.contains("from_gguf_with_backend"));
+            }
+            other => panic!("expected UnsupportedOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pcm_beam_composition_checks_policy_and_sample_rate_before_execution() {
+        let mut model = executable_inspection_model();
+        let error = model
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 8_000)
+            .expect_err("wrong authenticated sample rate must fail before runtime binding");
+        assert!(matches!(
+            error,
+            VokraError::InvalidArgument(message) if message.contains("does not match authenticated metadata")
+        ));
+
+        model.search = Some(FireredAsrAedSearchConfig {
+            name: DECODE_POLICY_NAME,
+            beam_size: SEARCH_BEAM_SIZE,
+            nbest: SEARCH_NBEST,
+            decode_max_len: SEARCH_DECODE_MAX_LEN,
+            softmax_smoothing: SEARCH_SOFTMAX_SMOOTHING,
+            length_penalty: 0.5,
+            eos_penalty: SEARCH_EOS_PENALTY,
+        });
+        let error = model
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 16_000)
+            .expect_err("drifted policy must fail before sidecar/runtime work");
+        assert!(matches!(
+            error,
+            VokraError::ModelLoad(message) if message.contains("search policy drifted")
+        ));
+
+        model.search = None;
+        let error = model
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 16_000)
+            .expect_err("missing official policy must fail closed");
+        assert!(matches!(
+            error,
+            VokraError::UnsupportedOp(message) if message.contains("official batch_beam_search metadata")
+        ));
+    }
+
+    #[test]
+    fn pcm_beam_composition_reports_each_missing_execution_contract_piece() {
+        let mut missing_search = executable_inspection_model();
+        missing_search.search = None;
+        let error = missing_search
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 16_000)
+            .expect_err("missing search policy");
+        assert!(matches!(
+            error,
+            VokraError::UnsupportedOp(message) if message.contains("official batch_beam_search metadata")
+        ));
+
+        let mut missing_cmvn = executable_inspection_model();
+        missing_cmvn.cmvn = None;
+        let error = missing_cmvn
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 16_000)
+            .expect_err("missing CMVN");
+        assert!(matches!(
+            error,
+            VokraError::UnsupportedOp(message) if message.contains("authenticated cmvn.txt")
+        ));
+
+        let mut missing_dictionary = executable_inspection_model();
+        missing_dictionary.dictionary = None;
+        missing_dictionary.has_dictionary = false;
+        let error = missing_dictionary
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 16_000)
+            .expect_err("missing dictionary");
+        assert!(matches!(
+            error,
+            VokraError::UnsupportedOp(message) if message.contains("authenticated dict.txt")
+        ));
+
+        let missing_config = FireredAsrAed::from_gguf(&converter_shaped_gguf()).expect("bind");
+        let error = missing_config
+            .transcribe_pcm_beam_pending(&[0.0; 1_600], 16_000)
+            .expect_err("missing frontend/decoder config");
+        assert!(matches!(
+            error,
+            VokraError::UnsupportedOp(message) if message.contains("frontend/decoder metadata")
+        ));
+    }
+
+    #[test]
+    fn pcm_beam_result_validation_preserves_empty_and_rejects_invalid_results() {
+        let model = FireredAsrAed::from_gguf(&spec_stamped_gguf()).expect("bind");
+        let cfg = model.config().expect("synthetic config");
+        let dictionary = test_dictionary();
+        let valid = FireRedBeamHypothesis {
+            token_ids: vec![5],
+            normalized_log_score: -1.0,
+        };
+        let rendered = validate_pcm_beam_hypothesis(valid, cfg, &dictionary).expect("valid result");
+        assert_eq!(rendered.token_ids, vec![5]);
+        assert_eq!(rendered.text, "你好");
+
+        let empty = validate_pcm_beam_hypothesis(
+            FireRedBeamHypothesis {
+                token_ids: Vec::new(),
+                normalized_log_score: -1.0,
+            },
+            cfg,
+            &dictionary,
+        )
+        .expect("immediate EOS is a legitimate empty upstream hypothesis");
+        assert!(empty.token_ids.is_empty());
+        assert!(empty.text.is_empty());
+
+        let invalid = [
+            ("sos", vec![cfg.sos_id as usize], -1.0),
+            ("eos", vec![cfg.eos_id as usize], -1.0),
+            ("pad", vec![cfg.pad_id as usize], -1.0),
+            ("blank", vec![cfg.blank_id as usize], -1.0),
+            ("vocab", vec![cfg.vocab_size as usize], -1.0),
+            ("u32", vec![usize::MAX], -1.0),
+            ("nonfinite", vec![5], f32::NAN),
+            ("positive_infinite", vec![5], f32::INFINITY),
+            ("negative_infinite", vec![5], f32::NEG_INFINITY),
+            ("empty_nonfinite", Vec::new(), f32::NAN),
+        ];
+        for (name, token_ids, score) in invalid {
+            let error = validate_pcm_beam_hypothesis(
+                FireRedBeamHypothesis {
+                    token_ids,
+                    normalized_log_score: score,
+                },
+                cfg,
+                &dictionary,
+            )
+            .expect_err(name);
+            assert!(
+                matches!(error, VokraError::ModelLoad(_)),
+                "{name} must remain a model-load validation error: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pcm_beam_backend_preflight_fails_closed_before_provenance() {
+        let error =
+            FireredAsrAed::from_gguf_with_backend(&converter_shaped_gguf(), BackendKind::Vulkan)
+                .expect_err("unsupported Vulkan path must not fall back to CPU");
+        assert!(
+            matches!(
+                error,
+                VokraError::UnsupportedOp(_) | VokraError::BackendUnavailable(_)
+            ),
+            "backend preflight must run before provenance binding: {error:?}"
         );
     }
 

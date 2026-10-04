@@ -69,8 +69,8 @@ import closure.
 Prepare one of the three audited public checkpoints:
 
 ```sh
-uv sync --project tools/parity/nanocodec --locked
-uv run --project tools/parity/nanocodec \
+uv sync --project tools/parity/nanocodec --locked --python 3.12
+uv run --project tools/parity/nanocodec --python 3.12 \
   python tools/parity/nanocodec/prepare_checkpoint.py \
   --checkpoint /path/to/model.nemo \
   --model-id nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps \
@@ -110,8 +110,8 @@ it. A model artifact at or above 2 GB and every `vokra-models` build/test belong
 on VAST under the repository safety rules.
 
 ```sh
-uv sync --project tools/parity/nanocodec
-uv run --project tools/parity/nanocodec tools/parity/nanocodec/dump_reference.py \
+uv sync --project tools/parity/nanocodec --python 3.12
+uv run --project tools/parity/nanocodec --python 3.12 tools/parity/nanocodec/dump_reference.py \
   --checkpoint /workspace/model.nemo \
   --checkpoint-id nvidia/nemo-nano-codec-22khz-0.6kbps-12.5fps \
   --checkpoint-revision 5c8e22ed763c14d81337fbe6ca74062f3d10f7e5 \

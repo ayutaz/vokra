@@ -1,6 +1,7 @@
 # Vokra Unity — Testing procedure
 
-**Current evidence status (2026-09-09):** the CI and nightly procedures below
+**Current evidence status (reviewed 2026-10-04; device evidence dated
+separately):** the CI and nightly procedures below
 remain the authoritative automation paths. No physical iOS/Android device
 results are recorded in this file yet; owner device verification remains an
 open evidence item tracked by the current M5 checklist.

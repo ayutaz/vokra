@@ -10,7 +10,8 @@ gate focused on the learned LM rather than a host eSpeak installation.
 
 The snapshot and source checkout must already be local. Network fallback is
 disabled before Transformers is imported. This script is VAST-only and has no
-upload or publication path.
+upload or publication path. The ``--api-smoke`` path imports the locked
+Transformers/API closure and fixed source class without opening a checkpoint.
 """
 
 from __future__ import annotations
@@ -38,7 +39,8 @@ SOURCE_REPO = "https://github.com/neuphonic/neutts.git"
 SOURCE_PATH = "neuttsair/neutts.py"
 SOURCE_BYTES = 9_035
 SOURCE_SHA256 = "e68b87dae6718903337a08eff56afbd58ba261d829624ea5a00a343c8cefb7c1"
-TRANSFORMERS_VERSION = "5.5.0"
+TRANSFORMERS_VERSION = "5.10.4"
+TRANSFORMERS_SECURITY_FLOOR = "5.10.0"
 MODEL_SAFETENSORS_BYTES = 1_495_893_752
 
 TEXT_PROMPT_START = 151_666
@@ -238,18 +240,99 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--source-file", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--max-new-tokens", type=int, default=4)
+    parser.add_argument("--api-smoke", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
 
 
+def api_smoke(source_file: Path) -> int:
+    """Check the fixed source/API seam without loading a checkpoint."""
+    require_source(source_file)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    try:
+        import inspect
+        import torch
+        import transformers
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as error:
+        die(f"official API smoke dependencies are required: {error}")
+    if transformers.__version__ != TRANSFORMERS_VERSION:
+        die(f"transformers={transformers.__version__}, expected {TRANSFORMERS_VERSION}")
+    for label, factory in (
+        ("AutoModelForCausalLM.from_pretrained", AutoModelForCausalLM.from_pretrained),
+        ("AutoTokenizer.from_pretrained", AutoTokenizer.from_pretrained),
+    ):
+        parameters = inspect.signature(factory).parameters
+        if not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            die(f"{label} does not expose the kwargs compatibility seam")
+    release_class = load_official_release_class(source_file)
+    method_parameters = tuple(inspect.signature(release_class._apply_chat_template).parameters)
+    if method_parameters != ("self", "ref_codes", "ref_text", "input_text"):
+        die(f"official NeuTTSAir._apply_chat_template signature drifted: {method_parameters}")
+    # Exercise argument acceptance against a tiny local Qwen2 config with no
+    # weight file. local_files_only prevents network access; the expected
+    # missing-weight error proves config/class/loader dispatch without loading
+    # a checkpoint or running a forward/generation step.
+    with tempfile.TemporaryDirectory(prefix="neutts-air-api-smoke-") as directory:
+        missing = Path(directory) / "config-only"
+        missing.mkdir()
+        (missing / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen2ForCausalLM"],
+                    "model_type": "qwen2",
+                    "hidden_size": 16,
+                    "intermediate_size": 32,
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 2,
+                    "vocab_size": 32,
+                    "max_position_embeddings": 32,
+                    "rms_norm_eps": 1.0e-6,
+                    "rope_theta": 10_000.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        try:
+            AutoModelForCausalLM.from_pretrained(
+                str(missing),
+                local_files_only=True,
+                trust_remote_code=False,
+                dtype=torch.float32,
+                low_cpu_mem_usage=False,
+            )
+        except (OSError, ValueError):
+            pass
+        except TypeError as error:
+            die(f"official from_pretrained rejected the pinned loader kwargs: {error}")
+        else:
+            die("API smoke unexpectedly loaded an absent checkpoint")
+    print(
+        "neutts_air API smoke PASS "
+        f"transformers={TRANSFORMERS_VERSION} source={SOURCE_REVISION} "
+        "checkpoint_access=none"
+    )
+    return 0
+
+
 def self_test() -> int:
     """Check the fixed oracle contract without importing ML packages or data."""
+    if TRANSFORMERS_VERSION != "5.10.4" or TRANSFORMERS_SECURITY_FLOOR != "5.10.0":
+        die("Transformers security floor invariant failed")
+    if tuple(int(part) for part in TRANSFORMERS_VERSION.split(".")) < tuple(
+        int(part) for part in TRANSFORMERS_SECURITY_FLOOR.split(".")
+    ):
+        die("Transformers pin is below the security floor")
     if not re.fullmatch(r"[0-9a-f]{40}", UPSTREAM_REVISION):
         die("upstream revision invariant failed")
     if not re.fullmatch(r"[0-9a-f]{40}", SOURCE_REVISION):
         die("source revision invariant failed")
     if SOURCE_BYTES != 9_035 or not re.fullmatch(r"[0-9a-f]{64}", SOURCE_SHA256):
         die("source byte/hash invariant failed")
+    if "def api_smoke" not in Path(__file__).read_text(encoding="utf-8"):
+        die("API smoke entrypoint invariant failed")
     if VOCAB_SIZE != 217_652 or not all(0 <= code <= 65_535 for code in REFERENCE_CODES):
         die("token/code range invariant failed")
     if SPEECH_TOKEN_BASE + 65_535 != SPEECH_TOKEN_LAST:
@@ -301,9 +384,13 @@ def self_test() -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.self_test:
-        if args.model_dir is not None or args.source_file is not None or args.output is not None:
-            die("--self-test accepts no model/source/output arguments")
+        if args.model_dir is not None or args.source_file is not None or args.output is not None or args.api_smoke:
+            die("--self-test accepts no model/source/output/api-smoke arguments")
         return self_test()
+    if args.api_smoke:
+        if args.model_dir is not None or args.output is not None or args.max_new_tokens != 4 or args.source_file is None:
+            die("--api-smoke requires only --source-file")
+        return api_smoke(args.source_file.resolve())
     if args.model_dir is None or args.source_file is None or args.output is None:
         die("--model-dir, --source-file and --output are required")
     model_dir = args.model_dir.resolve()
@@ -366,7 +453,11 @@ def main(argv: list[str] | None = None) -> int:
         local_files_only=True,
         trust_remote_code=False,
         dtype=torch.float32,
-        low_cpu_mem_usage=True,
+        # Keep the official Transformers loader on its torch-only path.  The
+        # Accelerate dependency is intentionally absent because its open
+        # advisory has no patched release; this route must not silently
+        # reintroduce it through low_cpu_mem_usage.
+        low_cpu_mem_usage=False,
     )
     model.eval()
     if model.device.type != "cpu" or model.dtype != torch.float32:
