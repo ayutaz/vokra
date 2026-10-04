@@ -123,6 +123,27 @@ to a vulnerable old Torch pair is not a license/security remedy.
 
 ## Remaining work and acceptance boundary
 
+### Existing-PR CI rate-limit remediation
+
+At pushed head `5a26355ed2e621fc9bfe1c73ec2645baaabe24b4`, CI Security run
+`37196989338`, documentation-links job `111420816168`, failed with nine
+Hugging Face HTTP 429 responses and zero timeouts (847 total links, 385
+unique). The other two security jobs passed. This receipt does not show
+that those URLs are missing, nor does it prove why the host rate-limited
+this runner.
+
+The follow-up workflow bounds global concurrency to 32, per-host concurrency
+to two, and per-host request spacing to one second; the retry wait is five
+seconds. These are supported by the action's pinned lychee v0.24.2 CLI.
+The three retries, 20-second timeout, input scope, existing exclusions,
+action pin, and fail-closed result are unchanged. No 429 acceptance, new
+exclusion, or blanket CI rerun is used. Local actionlint and workflow-hygiene
+checks cover this configuration change; the new-head remote link verdict
+remains to be observed. CI remediation does not resolve the license conflicts
+or authorize model execution, publication, or merge.
+
+### Dependency and model gates
+
 1. Resolve the required frozendict path and Torch/libgomp primary binding
    without changing the independent-oracle or security contract.
 2. If a permissible closure is viable, authenticate/build its exact artifacts
