@@ -91,14 +91,14 @@ algorithm and verified byte-for-byte by
 
 ```bash
 cd tools/parity
-uv run python torch_randn_cpu_dump.py --self-test
-uv run python torch_randn_cpu_dump.py --seed 0     --randn-samples 4    --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed0_k4.f32.bin
-uv run python torch_randn_cpu_dump.py --seed 42    --randn-samples 100  --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed42_k100.f32.bin
-uv run python torch_randn_cpu_dump.py --seed 12345 --randn-samples 1000 --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed12345_k1000.f32.bin
+uv run --project . --frozen --python 3.12 python torch_randn_cpu_dump.py --self-test
+uv run --project . --frozen --python 3.12 python torch_randn_cpu_dump.py --seed 0     --randn-samples 4    --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed0_k4.f32.bin
+uv run --project . --frozen --python 3.12 python torch_randn_cpu_dump.py --seed 42    --randn-samples 100  --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed42_k100.f32.bin
+uv run --project . --frozen --python 3.12 python torch_randn_cpu_dump.py --seed 12345 --randn-samples 1000 --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_randn_seed12345_k1000.f32.bin
 # Kept-for-Philox-primitive vectors (u32 raw block output — used only by
 # rng_philox_kat.rs / rng_philox_state.rs, NOT for torch.randn):
-uv run python torch_philox_dump.py --seed 0  --n 8 --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_philox_seed0_n8.u32.bin
-uv run python torch_philox_dump.py --seed 42 --n 8 --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_philox_seed42_n8.u32.bin
+uv run --project . --frozen --python 3.12 python torch_philox_dump.py --seed 0  --n 8 --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_philox_seed0_n8.u32.bin
+uv run --project . --frozen --python 3.12 python torch_philox_dump.py --seed 42 --n 8 --out ../../crates/vokra-core/tests/fixtures/rng_torch/torch_philox_seed42_n8.u32.bin
 ```
 
 Regenerate ONLY when (a) the algorithm changes upstream (MT19937
