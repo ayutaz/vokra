@@ -305,22 +305,25 @@ fn bytes_digest(body: &[u8]) -> String {
 }
 
 #[cfg(unix)]
-fn file_identity(metadata: &fs::Metadata) -> (u64, u64) {
+fn file_identity(metadata: &fs::Metadata) -> Result<(u64, u64), String> {
     use std::os::unix::fs::MetadataExt;
-    (metadata.dev(), metadata.ino())
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(not(unix))]
-fn file_identity(metadata: &fs::Metadata) -> (u64, u64) {
-    (
-        metadata.len(),
-        metadata.modified().ok().map_or(0, |value| {
-            value
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map_or(0, |duration| duration.as_nanos() as u64)
-        }),
-    )
+fn file_identity(metadata: &fs::Metadata) -> Result<(u64, u64), String> {
+    let modified = metadata
+        .modified()
+        .map_err(|error| format!("file modification time unavailable: {error}"))?;
+    let nanos = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("file modification time predates UNIX epoch: {error}"))?
+        .as_nanos();
+    let nanos = u64::try_from(nanos)
+        .map_err(|_| "file modification time does not fit in the identity bound".to_owned())?;
+    // Windows has no stable std-only inode API in the supported MSRV.  The
+    // epoch timestamp is stable for the read and failures remain fail-closed.
+    Ok((metadata.len(), nanos))
 }
 
 fn read_bounded_file(path: &Path, label: &str, max_bytes: u64) -> Vec<u8> {
@@ -328,14 +331,14 @@ fn read_bounded_file(path: &Path, label: &str, max_bytes: u64) -> Vec<u8> {
     let before = fs::metadata(path).unwrap_or_else(|error| panic!("{label}: {error}"));
     assert!(before.is_file(), "{label} must be a regular file");
     assert!(before.len() <= max_bytes, "{label} exceeds byte bound");
-    let identity = file_identity(&before);
+    let identity = file_identity(&before).unwrap_or_else(|error| panic!("{label}: {error}"));
     let mut file = fs::File::open(path).unwrap_or_else(|error| panic!("{label}: {error}"));
     let opened = file
         .metadata()
         .unwrap_or_else(|error| panic!("{label}: {error}"));
     assert_eq!(opened.len(), before.len(), "{label} changed while opening");
     assert_eq!(
-        file_identity(&opened),
+        file_identity(&opened).unwrap_or_else(|error| panic!("{label}: {error}")),
         identity,
         "{label} replaced while opening"
     );
@@ -364,12 +367,12 @@ fn read_bounded_file(path: &Path, label: &str, max_bytes: u64) -> Vec<u8> {
         "{label} changed while reading"
     );
     assert_eq!(
-        file_identity(&after_file),
+        file_identity(&after_file).unwrap_or_else(|error| panic!("{label}: {error}")),
         identity,
         "{label} replaced while reading"
     );
     assert_eq!(
-        file_identity(&after_path),
+        file_identity(&after_path).unwrap_or_else(|error| panic!("{label}: {error}")),
         identity,
         "{label} replaced while reading"
     );
@@ -1699,7 +1702,8 @@ mod tests {
 
     #[test]
     fn bounded_reader_rejects_growth_bound_before_json_parse() {
-        let path = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let path = temp_root.join(format!(
             "vokra-kyutai-bounded-json-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1708,6 +1712,9 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::write(&path, b"123").unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let identity = file_identity(&metadata).unwrap();
+        assert_eq!(identity, file_identity(&metadata).unwrap());
         assert_eq!(read_bounded_file(&path, "bounded fixture", 3), b"123");
         let result = std::panic::catch_unwind(|| read_bounded_file(&path, "bounded fixture", 2));
         assert!(result.is_err());
@@ -1716,7 +1723,8 @@ mod tests {
 
     #[test]
     fn artifact_binding_hashes_the_returned_bounded_bytes() {
-        let root = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let root = temp_root.join(format!(
             "vokra-kyutai-artifact-hash-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1759,7 +1767,8 @@ mod tests {
 
     #[test]
     fn artifact_walk_rejects_entry_and_depth_explosion() {
-        let root = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let root = temp_root.join(format!(
             "vokra-kyutai-artifact-walk-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -1779,7 +1788,8 @@ mod tests {
         assert!(result.is_err());
         std::fs::remove_dir_all(&root).unwrap();
 
-        let root = std::env::temp_dir().join(format!(
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
+        let root = temp_root.join(format!(
             "vokra-kyutai-artifact-entries-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

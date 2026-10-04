@@ -652,3 +652,81 @@ the correction is not yet compiled or tested. A newly committed clean HEAD
 still requires its own remote model-free verification before code push/PR.
 Secure compatible upstream closure, complete composite approval, official
 real capture and independent real-weight comparison remain open.
+
+## Linux model-free PASS and subsequent OS-CI corrections — 2026-10-05 JST
+
+Clean candidate `a5892f4aa889240cfbde522de03b6390aa512315` passed
+the reviewed model-free run7 on owned VAST worker `54169776`, using sixteen
+build jobs and Rust 1.95.0. All twenty recorded steps returned zero; root
+and an independent reviewer accepted all recovered raw-log SHA-256 bindings.
+Actual native-library test-target compilation is present in the verbose
+clippy log, not inferred from an integration-target lint command. The five
+focused Rust invocations passed 26 tests in total, with two real-weight tests
+ignored. Evidence SHA-256:
+`2f1150b6607ac37878e97e4785c3975124cec63470374c6b8f176d68b5df5df6`.
+The worker and storage were destroyed, with individual null readback and
+independent owned-ID inventory absence. This is Linux model-free evidence
+for a5892f4a only, not official reference, real-weight or Apple parity.
+
+PR [#191](https://github.com/ayutaz/vokra/pull/191) was opened as a distinct
+Draft responsibility on that verified HEAD. Its subsequent actual CI
+contradicted cross-platform test portability: macOS default, Metal and
+CoreML jobs rejected a synthetic temporary-file path with a symlink ancestor;
+Windows rejected a Unix-only positive fixture path and detected a changing
+elapsed-time-based fingerprint in the native consumer. Failed job identities
+and raw diagnostic log SHA-256 values are:
+
+| Job | Failure boundary | Raw log SHA-256 |
+| --- | --- | --- |
+| `111475123039` | macOS default library test | `05d443d90f372b055cf273005516896b63ca08b9b6d48b6a6305c70ced567d80` |
+| `111475121754` | Metal library test | `f2fa7d4bd86efca639810a83996a7ceb25aeb0958a08f974f3674dfc0bd04c70` |
+| `111475121690` | CoreML library test | `f1b42f5371b5d22c95905f189cba8bae76b8ad6648017e499213d53b16d3705b` |
+| `111475123149` | Windows library tests | `3bed3d48ba89925bf327b6626afe15062c6ef2030b25f9a3a002ae9e8bded42b` |
+
+These are diagnosed defects, not flakiness; no known-defective old-head job
+was rerun. Linux run7 success does not override these OS failures. The
+existing CI run `37215524411` still had one live Unity-package job at the
+later API snapshot, while the four failures above were terminal.
+
+Luna's bounded corrections, reviewed by the manager, preserve production
+PCM/KV math, real-input symlink rejection, Linux/x86_64 real-execution gates,
+empty reviewed-closure allowlists, unset numerical bounds and test inventory.
+Trusted test temporary parents are canonicalized before joining synthetic
+names. Positive packet paths are native absolute paths with JSON escaping.
+The native non-Unix fingerprint now uses a checked immutable epoch timestamp
+instead of elapsed time; missing timestamps, pre-epoch values and overflow
+fail closed. Unix device/inode semantics remain unchanged. An independent
+reviewer verified the native diff and guard preservation.
+
+The legacy helper already used epoch time before this correction: the earlier
+agent diagnosis that it also used elapsed time was incorrect and withdrawn.
+Its actual hardening rejects previously defaulted/truncated timestamp errors,
+propagates them through bounded readers, and repairs synthetic temporary
+parents. The stability regression unwraps successful identities before
+comparison. The non-Unix length/mtime fingerprint is not inode-equivalent
+and cannot establish strong replacement detection for equal-size/equal-mtime
+files. It is not promoted into a Windows real-weight execution permission;
+the existing real consumer remains Linux/x86_64-only.
+
+Current source SHA-256 values before the new correction commit are native
+`f47ecab7a3013cec50ba8dcf3ec837480c3f29e7cb1e11ec2301fd36acd0e738`
+and legacy
+`daeb75daf5022183207cb7c49a2ddaf392d119a5385b66624c05910a84837645`.
+Manager-run Python 3.12 stdlib producer/mock discovery passed 52 tests in
+0.343 seconds with `UV_NO_SYNC=1`, `uv run --no-project` and `python -S`;
+the mocked reference-written message is not an official capture. These Rust
+corrections are not yet compiled or tested and require a new clean HEAD's
+own remote verification and subsequent OS CI. The normal a5892f4a commit
+hook previously synchronized 146 parity dependencies; that side effect was
+disclosed in the PR and private review record. Future local hook invocations
+carry `UV_NO_SYNC=1` to prevent repeating it. No model import or execution
+was attributed to that sync.
+
+PR #152 remains OPEN/Draft at
+`1f75166bd0f35eff087394debf67ff729414c65e`, with 69 successful checks,
+one skipped and no live checks in the separate API read. Its dependency/
+license findings are organized, not approved for execution by green CI.
+The original secure compatible upstream closure, native/legal evidence,
+complete composite approval, official PCM/KV/reset/eviction capture and
+independent real-weight comparison remain incomplete. Neither Draft PR is
+merged, and no upload, Apple completion or numerical PASS is claimed.

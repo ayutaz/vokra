@@ -438,7 +438,7 @@ fn validate_disjoint_paths(packet: &ComponentPacket, packet_path: &Path) -> Resu
         .map_err(|error| invalid(format!("component packet canonicalization failed: {error}")))?;
     let packet_metadata = fs::metadata(packet_path)
         .map_err(|error| invalid(format!("component packet metadata failed: {error}")))?;
-    let packet_identity = file_identity(&packet_metadata);
+    let packet_identity = file_identity(&packet_metadata)?;
     let mut seen = BTreeSet::new();
     let mut seen_ids = BTreeSet::new();
     let mut paths = vec![(&packet.pcm.path, "canonical PCM")];
@@ -453,10 +453,11 @@ fn validate_disjoint_paths(packet: &ComponentPacket, packet_path: &Path) -> Resu
         let canonical = fs::canonicalize(path)
             .map_err(|error| invalid(format!("{label} canonicalization failed: {error}")))?;
         let metadata = fs::metadata(path).map_err(|error| invalid(format!("{label}: {error}")))?;
+        let identity = file_identity(&metadata)?;
         if canonical == packet_canonical
-            || file_identity(&metadata) == packet_identity
+            || identity == packet_identity
             || !seen.insert(canonical)
-            || !seen_ids.insert(file_identity(&metadata))
+            || !seen_ids.insert(identity)
         {
             return Err(invalid(format!(
                 "{label} path is not disjoint from another packet input"
@@ -532,19 +533,29 @@ fn reject_symlink_path(path: &Path, label: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64) {
+fn file_identity(metadata: &std::fs::Metadata) -> Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    (metadata.dev(), metadata.ino())
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(not(unix))]
-fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64) {
-    (
-        metadata.len(),
-        metadata.modified().ok().map_or(0, |value| {
-            value.elapsed().ok().map_or(0, |age| age.as_nanos() as u64)
-        }),
-    )
+fn file_identity(metadata: &std::fs::Metadata) -> Result<(u64, u64)> {
+    let modified = metadata
+        .modified()
+        .map_err(|error| invalid(format!("file modification time unavailable: {error}")))?;
+    let nanos = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            invalid(format!(
+                "file modification time predates UNIX epoch: {error}"
+            ))
+        })?
+        .as_nanos();
+    let nanos = u64::try_from(nanos)
+        .map_err(|_| invalid("file modification time does not fit in the identity bound"))?;
+    // Windows has no stable std-only file identity API in the supported MSRV;
+    // this fallback is immutable during the read but is not inode-equivalent.
+    Ok((metadata.len(), nanos))
 }
 
 fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<(Vec<u8>, (u64, u64))> {
@@ -553,7 +564,7 @@ fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<(Vec<u8
     if before.len() > max_bytes {
         return Err(invalid(format!("{label} exceeds its bounded byte budget")));
     }
-    let identity = file_identity(&before);
+    let identity = file_identity(&before)?;
     let mut file = File::open(path).map_err(|error| invalid(format!("{label}: {error}")))?;
     let mut body = Vec::with_capacity(before.len() as usize);
     let mut limited = Read::by_ref(&mut file).take(max_bytes.saturating_add(1));
@@ -573,10 +584,12 @@ fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<(Vec<u8
         .metadata()
         .map_err(|error| invalid(format!("{label}: {error}")))?;
     let after_path = fs::metadata(path).map_err(|error| invalid(format!("{label}: {error}")))?;
+    let after_file_identity = file_identity(&after_file)?;
+    let after_path_identity = file_identity(&after_path)?;
     if after_file.len() != before.len()
         || after_path.len() != before.len()
-        || file_identity(&after_file) != identity
-        || file_identity(&after_path) != identity
+        || after_file_identity != identity
+        || after_path_identity != identity
         || body.len() as u64 != before.len()
     {
         return Err(invalid(format!("{label} changed while being read")));
@@ -646,7 +659,9 @@ fn verify_file_binding(path: &Path, bytes: u64, digest: &str, label: &str) -> Re
     }
     reject_symlink_path(path, label)?;
     let after = fs::metadata(path).map_err(|error| invalid(format!("{label}: {error}")))?;
-    if after.len() != metadata.len() || file_identity(&after) != file_identity(&metadata) {
+    let before_identity = file_identity(&metadata)?;
+    let after_identity = file_identity(&after)?;
+    if after.len() != metadata.len() || after_identity != before_identity {
         return Err(invalid(format!(
             "{label} changed while being authenticated"
         )));
@@ -2579,17 +2594,25 @@ fn verify_empty_native_kv(session: &super::KyutaiSttPcmSession<'_>) -> Result<()
 #[test]
 fn component_packet_parser_is_strict_and_bounded() {
     let digest = "a".repeat(64);
+    let temp_root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let json_path = |path: &Path| {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
     let components = ["decoder", "tokenizer", "mimi_gguf", "raw_mimi"]
         .into_iter()
         .map(|role| {
+            let path = json_path(&temp_root.join(format!("vokra-packet-{role}")));
             format!(
-                "{{\"role\":\"{role}\",\"path\":\"/tmp/{role}\",\"bytes\":1,\"sha256\":\"{digest}\",\"source_sha256\":\"{digest}\"}}"
+                "{{\"role\":\"{role}\",\"path\":\"{path}\",\"bytes\":1,\"sha256\":\"{digest}\",\"source_sha256\":\"{digest}\"}}"
             )
         })
         .collect::<Vec<_>>()
         .join(",");
+    let pcm_path = json_path(&temp_root.join("vokra-packet-input.f32le"));
     let packet = format!(
-        "{{\"format\":\"{PACKET_SCHEMA}\",\"expected_head\":\"{}\",\"reference_manifest_sha256\":\"{digest}\",\"approval_sha256\":\"{digest}\",\"dependency_closure_sha256\":\"{digest}\",\"pcm\":{{\"path\":\"/tmp/input.f32le\",\"bytes\":4,\"sha256\":\"{digest}\",\"sample_rate\":24000,\"channels\":1,\"dtype\":\"float32-le\"}},\"components\":[{components}]}}",
+        "{{\"format\":\"{PACKET_SCHEMA}\",\"expected_head\":\"{}\",\"reference_manifest_sha256\":\"{digest}\",\"approval_sha256\":\"{digest}\",\"dependency_closure_sha256\":\"{digest}\",\"pcm\":{{\"path\":\"{pcm_path}\",\"bytes\":4,\"sha256\":\"{digest}\",\"sample_rate\":24000,\"channels\":1,\"dtype\":\"float32-le\"}},\"components\":[{components}]}}",
         "b".repeat(40),
     );
     let parsed = parse_packet(packet.as_bytes()).unwrap();
@@ -2773,7 +2796,8 @@ fn packet_rejects_relative_pcm_and_aggregate_budget() {
 
 #[test]
 fn file_binding_detects_hash_and_byte_changes() {
-    let path = std::env::temp_dir().join(format!(
+    let temp_root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let path = temp_root.join(format!(
         "vokra-kyutai-pcm-consumer-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -2788,6 +2812,13 @@ fn file_binding_detects_hash_and_byte_changes() {
     verify_file_binding(&path, body.len() as u64, &digest, "synthetic").unwrap();
     assert!(verify_file_binding(&path, body.len() as u64 + 1, &digest, "synthetic").is_err());
     assert!(verify_file_binding(&path, body.len() as u64, &"0".repeat(64), "synthetic").is_err());
+    #[cfg(unix)]
+    {
+        let symlink = path.with_extension("symlink");
+        std::os::unix::fs::symlink(&path, &symlink).unwrap();
+        assert!(verify_file_binding(&symlink, body.len() as u64, &digest, "synthetic").is_err());
+        std::fs::remove_file(symlink).unwrap();
+    }
     std::fs::remove_file(path).unwrap();
 }
 
@@ -2928,7 +2959,8 @@ fn producer_kv_parser_covers_all_events_and_rejects_missing_checkpoint() {
 
 #[test]
 fn reference_tree_counts_empty_directories_and_enforces_entry_bound() {
-    let root = std::env::temp_dir().join(format!(
+    let temp_root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let root = temp_root.join(format!(
         "vokra-kyutai-reference-tree-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
