@@ -232,3 +232,68 @@ archive was downloaded, dependency installed, owner sign-off added, native
 payload executed, or model imported for this supplement. The policy conflicts,
 secure dependency closure, real-reference gates and Draft / NO_UPLOAD posture
 remain unchanged.
+
+## Original publisher repository license readback — 2026-10-04
+
+The publisher's [model card](https://huggingface.co/HKUSTAudio/xcodec2)
+links the original [X-Codec-2.0 repository](https://github.com/zhenye234/X-Codec-2.0).
+A read-only GitHub API check resolves its current main to
+`e5d3b2601146b20da39fc2f7c5a1db1418292138`, with tree
+`0d499b388ac42b66b5d5fcf38886f194e32e1614`. The exact
+[LICENSE at that revision](https://github.com/zhenye234/X-Codec-2.0/blob/e5d3b2601146b20da39fc2f7c5a1db1418292138/LICENSE)
+is MIT, with the named 2025 copyright holder: 1,064 bytes, Git blob
+`ec2d7a448d3294011ea7cab32ec5aa100d1041c0`, SHA-256
+`bc4f68c65be9d49d804447f4567368a6b6d25ba92d9c711621271f7984074f89`.
+The file's history reports creation at
+`c1ed8bf795c4397189e2b64c97236204a941a41a` on 2025-02-10.
+
+This establishes **SOURCE_LICENSE_LOCATED / ARCHIVE_BINDING_UNPROVEN**
+for another primary source. It does not prove that every file in the locked
+XCodec2 0.1.5 sdist comes from that revision or is covered by that license,
+nor does it supply missing bundled notices or installed RECORD evidence.
+The immutable archive report's missing-license-member finding remains valid.
+Code terms are not the CC-BY-NC model-weight terms, and neither clears the
+transitive LGPL or native-library conflicts.
+
+The existing PR was also read back at
+`6e61207a6810a78a84fbecc5c31affc82ebe85dc`: OPEN/Draft/CLEAN, 69 successful
+checks and one skipped check. That is the prior pushed head's CI, not CI for
+this new documentation supplement. No package archive, model or dependency
+was acquired or executed; no approval, execution pin, lock or license gate
+was changed.
+
+## Official Transformers-native candidate — 2026-10-04
+
+The publisher's current model card and original repository now explicitly
+point to [HKUSTAudio/xcodec2-hf](https://huggingface.co/HKUSTAudio/xcodec2-hf),
+an official Transformers-native release. This is a **new oracle candidate to
+investigate**, not permission to replace the pinned decoder or its checkpoint.
+The prior statement that no clean official replacement was established applies
+to the reviewed legacy package path; it is not proof that this newer route is
+unusable.
+
+The manager authenticated the source file at Transformers commit
+`469230357aab0f2b303b0d638c1f8d06edb14184`:
+[modeling_xcodec2.py](https://github.com/huggingface/transformers/blob/469230357aab0f2b303b0d638c1f8d06edb14184/src/transformers/models/xcodec2/modeling_xcodec2.py),
+48,515 bytes, Git blob `edafffa6cb91e2b8b3432442fc1e777fc8638964`, SHA-256
+`781afd94a2d0cfd8eaef3fd05312779d58e74f93c282d0190cdfc54e3a20281e`.
+Its Apache-2.0-header implementation contains the official FSQ module and
+quantizer projections directly. The inspected file's imports do not contain
+the old `vector-quantize-pytorch -> einx -> frozendict` path. This is not a
+complete transitive import/license audit: Torch, NumPy and Transformers
+internals remain, including their native/build/RECORD review requirements.
+
+Independent source/metadata review found the new checkpoint's namespace differs
+from the existing native `generator.*` contract. No exact tensor-name, shape,
+payload-hash or numerical correspondence to the original fixed checkpoint has
+been proved. Similar FSQ geometry is not that proof. The Hub metadata still
+identifies the new model weights as CC-BY-NC-4.0; an Apache-2.0 source header
+does not change the weight terms or authorize upload.
+
+Before changing an oracle, establish an exact source/checkpoint mapping,
+authenticate a secure permitted dependency and native-library closure, and
+review the resulting reference contract separately. If these prerequisites
+become viable, exact real-weight correspondence and independent native CPU
+parity belong on VAST. No model was obtained, no dependency was installed or
+imported, and no source, lock, approval or execution gate was changed by this
+investigation. Draft / blocked execution / NO_UPLOAD remains the disposition.
