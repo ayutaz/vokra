@@ -1275,7 +1275,7 @@ fn authenticate_reference(
         || json_bytes(padding, "unrounded_samples", "padding")?
             != packet.pcm.bytes / 4 + EXPECTED_SAMPLE_RATE + 3 * EXPECTED_SAMPLE_RATE
         || json_bytes(padding, "padded_samples", "padding")?
-            != ((packet.pcm.bytes / 4 + 4 * EXPECTED_SAMPLE_RATE + 1_919) / 1_920) * 1_920
+            != (packet.pcm.bytes / 4 + 4 * EXPECTED_SAMPLE_RATE).div_ceil(1_920) * 1_920
         || json_bytes(padding, "frames", "padding")? != 377
         || json_string(padding, "padding", "padding")?
             != "official evaluator prefix/suffix then ceil to frame_size"
@@ -2096,11 +2096,11 @@ fn validate_source_contract(value: &JsonValue) -> Result<()> {
             || contract
                 .get("roles")
                 .and_then(JsonValue::as_array)
-                .map_or(true, |values| values.is_empty())
+                .is_none_or(|values| values.is_empty())
             || contract
                 .get("expressions")
                 .and_then(JsonValue::as_array)
-                .map_or(true, |values| values.is_empty())
+                .is_none_or(|values| values.is_empty())
         {
             return Err(invalid("source contract row is incomplete"));
         }

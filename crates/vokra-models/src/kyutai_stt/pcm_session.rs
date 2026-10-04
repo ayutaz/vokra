@@ -957,11 +957,12 @@ mod tests {
     #[test]
     fn observer_dispatch_borrows_frame_and_code_rows_without_kv_retention() {
         let mut probe = ObserverProbe::default();
-        let observer = std::cell::RefCell::new(Some(&mut probe as &mut dyn PcmObserver));
         let frame = [0.25_f32; 1_920];
         let codes = [7_u32; 32];
-        notify_frame(&observer, &frame, &codes).unwrap();
-        drop(observer);
+        {
+            let observer = std::cell::RefCell::new(Some(&mut probe as &mut dyn PcmObserver));
+            notify_frame(&observer, &frame, &codes).unwrap();
+        }
         assert_eq!(probe.frames, 1);
         assert_eq!(probe.frame_lengths, [1_920]);
         assert_eq!(probe.code_rows, vec![codes.to_vec()]);

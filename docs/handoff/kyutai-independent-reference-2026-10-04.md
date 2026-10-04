@@ -616,3 +616,39 @@ library test targets and bind that coverage to verbose compiler evidence.
 A new clean HEAD must pass actual Rust lint and tests before code push or PR.
 No passing result from either old lint command is reused as native library-
 test coverage, real-weight evidence or independent numerical parity.
+
+## Actual native library-test lint and corrective review — 2026-10-05 JST
+
+Clean source `1924a8ca74ea761991ab0d188b3f66dc03f811d8` was transferred
+with complete-history bundle SHA-256
+`26ee62f5687e878a09909e043d65ae2a3b6d6bb2b19204225ae9b17d6db5f4e4`.
+Run5 worker `54167641` failed bounded SSH readiness before Cargo and was
+destroyed with both owned-ID readbacks complete; it has no compiler verdict.
+Run6 used a different physical host and owned worker `54169200`, sixteen
+build jobs, and the reviewed corrected verification tooling. SSH succeeded.
+Legacy clippy passed. Native `--lib --tests --no-deps --verbose` clippy
+reached the actual `vokra_models` library test target: one recovered Cargo
+Running line binds clippy-driver, the library source and `--test` together.
+This establishes the missing lint-target coverage, not a passing verdict.
+
+The five prior API/type errors did not recur. Native lint failed on four
+new-code warnings: manual integer ceil, two unnecessarily verbose optional
+empty-array predicates, and explicit drop of a non-Drop observer wrapper
+in a unit test. No Rust tests ran after the failed lint. Root independently
+verified all fifteen recovered raw-log digests, including native lint SHA-256
+`f6b250367201079606b8796e9b20cc8255ed6a6a40cc05e2411ad472faade6e2`.
+FAIL_MODEL_FREE evidence SHA-256 is
+`bb6dfa5277ad5bf17cc5fb2c14eb9f62917e45ae92a13e3c2e36ed18b82aa351`.
+Run6 worker and storage were destroyed on the first attempt, with individual
+null readback and independent owned-ID inventory absence.
+
+Luna's bounded correction uses equivalent integer `div_ceil`, `is_none_or`
+and lexical test-observer scope. Root reviewed the four diff hunks. The
+workspace MSRV is 1.85 and these APIs are available within that boundary.
+Packet size bounds keep the ceil inputs finite and well below overflow.
+No production PCM/KV arithmetic, scheduling, numerical bounds, approval
+allowlists or test inventory changed. Formatting and whitespace checks pass;
+the correction is not yet compiled or tested. A newly committed clean HEAD
+still requires its own remote model-free verification before code push/PR.
+Secure compatible upstream closure, complete composite approval, official
+real capture and independent real-weight comparison remain open.
