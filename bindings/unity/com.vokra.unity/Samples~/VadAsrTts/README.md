@@ -22,9 +22,10 @@ demo** → **Import**. Unity copies the sample under
 ## Models
 
 **Models are never committed to git** (`*.gguf` is `.gitignore`d — see
-NFR-DS-04). There is no Git tag or GitHub Release as of 2026-08-30, so the
-fetcher's `releases/latest` defaults are not usable yet. During this
-unpublished phase, provide all three source URLs before running it:
+NFR-DS-04). The `v0.3.0` GitHub Release contains no GGUF model assets, so
+release presence alone does not make the sample models fetchable. Before
+running the fetcher, operators must provide all three independently verified
+MIT source URLs:
 
 ```
 export VOKRA_SILERO_URL=<verified-silero-gguf-url>
@@ -33,8 +34,7 @@ export VOKRA_PIPER_URL=<verified-piper-gguf-url>
 bash Samples~/VadAsrTts/scripts/fetch-demo-models.sh
 ```
 
-After a future authorized release publishes these assets, the default URLs
-may be used. Verify license and provenance against
+Verify license and provenance against
 [`docs/license-audit.md`](../../../../../docs/license-audit.md) before fetching.
 
 The fetcher expects three artifacts in
@@ -54,8 +54,9 @@ Override each source with `VOKRA_SILERO_URL`, `VOKRA_WHISPER_URL`, and
 
 ### CC-BY-NC / research-flag exclusion (M2-13 compliance)
 
-The `com.vokra.unity` official package and this sample distribute **only**
-MIT-licensed weights. The following are **excluded** from the fetch script:
+The `com.vokra.unity` official package and this sample's fetch script are
+limited to **MIT-licensed** weights. The following are **excluded** from the
+fetch script:
 
 - **F5-TTS** — CC-BY-NC 4.0 (non-commercial).
 - **Fish-Speech v1.4 / v1.5** — CC-BY-NC-SA 4.0 (non-commercial).

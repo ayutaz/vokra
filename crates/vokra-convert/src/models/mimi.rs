@@ -93,10 +93,12 @@
 //! **stale** pre-chain artifact (structural-empty) that fails the neural binder.
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufMetadataValue, chunks};
 
 use crate::ConvertError;
 use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
+
+use super::canary_1b_flash::{hex, sha256};
 
 /// `vokra.model.arch` value for standalone Mimi codec GGUFs.
 pub(crate) const ARCH: &str = "mimi";
@@ -106,6 +108,8 @@ const NAME: &str = "Mimi (Kyutai) neural audio codec";
 const KEY_N_CODEBOOKS: &str = "vokra.mimi.n_codebooks";
 const KEY_CODEBOOK_SIZE: &str = "vokra.mimi.codebook_size";
 const KEY_D_MODEL: &str = "vokra.mimi.d_model";
+const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+const KEY_PROVENANCE_CHECKPOINT_BYTES: &str = "vokra.provenance.checkpoint_bytes";
 
 // --- vokra.mimi.* config keys (duplicated from
 // vokra-models/src/mimi/config.rs per the cross-crate pattern — the same
@@ -225,6 +229,12 @@ fn f32_tensor(st: &SafetensorsFile, name: &str) -> Result<(Vec<u64>, Vec<f32>), 
 /// Converts a moshi-native Mimi safetensors buffer into a populated GGUF
 /// builder (all tensors pass-through + derived tables + metadata).
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, MimiReport), ConvertError> {
+    // Hash the exact caller-provided buffer before parsing consumes it. This
+    // records input identity only; origin/revision and the output GGUF hash
+    // are authenticated by their respective external transfer/provenance
+    // records, not guessed from this converter.
+    let checkpoint_bytes = bytes.len() as u64;
+    let checkpoint_sha256 = hex(&sha256(&bytes));
     let st = SafetensorsFile::parse(bytes)?;
 
     // ---- Locate the quantizer tensors (one accepted naming) ---------------
@@ -362,6 +372,11 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, MimiReport), Conve
         "CC-BY-4.0",
         Some("mimi"),
         Some("kyutai/moshiko-pytorch-bf16 tokenizer-e351c8d8-checkpoint125.safetensors"),
+    );
+    b.add_string(KEY_PROVENANCE_CHECKPOINT_SHA256, &checkpoint_sha256);
+    b.add_metadata(
+        KEY_PROVENANCE_CHECKPOINT_BYTES,
+        GgufMetadataValue::U64(checkpoint_bytes),
     );
     // CC-BY 4.0 obliges whoever redistributes these weights to carry the
     // credit. Burning it into the artifact is what lets a downstream consumer
@@ -1288,7 +1303,10 @@ mod tests {
     #[test]
     #[allow(clippy::identity_op, clippy::erasing_op)] // keep the (cb * rows + i) * d_model formula shape visible
     fn convert_derives_tables_and_metadata_from_checkpoint_shapes() {
-        let (b, report) = convert(synthetic_mimi()).expect("convert");
+        let input = synthetic_mimi();
+        let expected_sha256 = hex(&sha256(&input));
+        let expected_bytes = input.len() as u64;
+        let (b, report) = convert(input).expect("convert");
         assert_eq!(report.n_codebooks, 3);
         assert_eq!(report.codebook_size, 4);
         assert_eq!(report.d_model, 3);
@@ -1346,6 +1364,55 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_MODEL_ID),
             Some(GgufMetadataValue::String(s)) if s == "mimi"
         ));
+        assert!(matches!(
+            file.get(KEY_PROVENANCE_CHECKPOINT_SHA256),
+            Some(GgufMetadataValue::String(s)) if s == &expected_sha256
+        ));
+        assert!(matches!(
+            file.get(KEY_PROVENANCE_CHECKPOINT_BYTES),
+            Some(GgufMetadataValue::U64(value)) if *value == expected_bytes
+        ));
+    }
+
+    #[test]
+    fn checkpoint_fingerprint_changes_for_valid_source_byte_change() {
+        let input = synthetic_mimi();
+        let mut changed = input.clone();
+        let last_f32_lsb = changed.len().checked_sub(4).expect("synthetic input bytes");
+        changed[last_f32_lsb] ^= 1;
+
+        // The mutation is in the safetensors payload, so the source remains a
+        // structurally valid fixture while its measured identity changes.
+        SafetensorsFile::parse(changed.clone()).expect("changed fixture remains valid");
+
+        let stamped = |source: &[u8]| {
+            let expected_sha256 = hex(&sha256(source));
+            let expected_bytes = source.len() as u64;
+            let (builder, _) = convert(source.to_vec()).expect("convert fixture");
+            let file = GgufFile::parse(builder.to_bytes().expect("serialize fixture"))
+                .expect("parse fixture output");
+            let actual_sha256 = match file.get(KEY_PROVENANCE_CHECKPOINT_SHA256) {
+                Some(GgufMetadataValue::String(value)) => value.clone(),
+                other => panic!("missing checkpoint SHA-256 metadata: {other:?}"),
+            };
+            assert_eq!(actual_sha256, expected_sha256);
+            assert_eq!(actual_sha256.len(), 64);
+            assert!(
+                actual_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            );
+            assert!(matches!(
+                file.get(KEY_PROVENANCE_CHECKPOINT_BYTES),
+                Some(GgufMetadataValue::U64(value)) if *value == expected_bytes
+            ));
+            (actual_sha256, expected_bytes)
+        };
+
+        let (input_sha256, input_bytes) = stamped(&input);
+        let (changed_sha256, changed_bytes) = stamped(&changed);
+        assert_ne!(input_sha256, changed_sha256);
+        assert_eq!(input_bytes, changed_bytes);
     }
 
     /// A miniature but geometry-complete moshi-native checkpoint: real
@@ -1586,7 +1653,10 @@ mod tests {
     #[test]
     fn convert_maps_the_neural_chain_to_structural_names_and_config() {
         let entries = synthetic_mimi_full();
-        let (b, report) = convert(build_safetensors(&entries)).expect("convert");
+        let input = build_safetensors(&entries);
+        let expected_sha256 = hex(&sha256(&input));
+        let expected_bytes = input.len() as u64;
+        let (b, report) = convert(input).expect("convert");
         assert_eq!(report.n_codebooks, 3);
         assert_eq!(report.codebook_size, 4);
         assert_eq!(report.d_model, 16);
@@ -1685,6 +1755,14 @@ mod tests {
         // Both split input projections land.
         assert_eq!(f32s("mimi.enc.input_proj").len(), 4 * 16);
         assert_eq!(f32s("mimi.enc.input_proj_rest").len(), 4 * 16);
+        assert!(matches!(
+            file.get(KEY_PROVENANCE_CHECKPOINT_SHA256),
+            Some(GgufMetadataValue::String(s)) if s == &expected_sha256
+        ));
+        assert!(matches!(
+            file.get(KEY_PROVENANCE_CHECKPOINT_BYTES),
+            Some(GgufMetadataValue::U64(value)) if *value == expected_bytes
+        ));
     }
 
     #[test]

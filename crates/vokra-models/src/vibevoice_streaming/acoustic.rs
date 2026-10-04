@@ -15,7 +15,7 @@ use vokra_core::{Result, VokraError};
 
 use crate::compute::Compute;
 use crate::vibevoice::{
-    VIBEVOICE_TOKENIZER_HOT_OPS, VibeVoiceAcousticDecoder, VibeVoiceAcousticDecoderStream,
+    VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS, VibeVoiceAcousticDecoder, VibeVoiceAcousticDecoderStream,
     VibeVoiceLatentScale,
 };
 
@@ -41,16 +41,10 @@ pub struct VibeVoiceRealtimeAcousticDecoder {
 impl VibeVoiceRealtimeAcousticDecoder {
     /// Authenticates the Realtime composite and binds its decoder/scalars.
     pub fn from_gguf(file: &GgufFile, backend: BackendKind) -> Result<Self> {
-        // Keep this preflight ahead of tensor binding.  The shared decoder
-        // uses Conv1d/GroupedConv1d/Gemm/Gelu/RmsNorm through Compute; its
-        // ConvTranspose topology is expressed as a host layout transform
-        // followed by the selected backend's Conv1d kernel.  CUDA currently
-        // lacks the grouped-convolution seam, so it must fail closed here.
-        require_realtime_acoustic_backend(backend)?;
-        // This also reports a feature/device-unavailable Metal build before
-        // the authenticated GGUF payload is bound.  The decoder's forward
-        // path repeats this registry check at execution time.
-        let _ = Compute::for_backend(backend, VIBEVOICE_TOKENIZER_HOT_OPS)?;
+        // Keep this preflight ahead of tensor binding. The shared decoder
+        // uses the complete decoder registry, including ConvTranspose1d, so
+        // an uncovered backend fails before any decoder tensor is bound.
+        preflight_realtime_acoustic_backend(backend)?;
         // This gate must precede the shared decoder/scalar loaders.  In
         // particular, a Realtime file must never be accepted by the 1.5B
         // `VibeVoiceCheckpoint` manifest just because the decoder shapes fit.
@@ -130,9 +124,18 @@ fn require_realtime_acoustic_backend(backend: BackendKind) -> Result<()> {
     }
 }
 
+fn preflight_realtime_acoustic_backend(backend: BackendKind) -> Result<()> {
+    require_realtime_acoustic_backend(backend)?;
+    // This also reports a feature/device-unavailable Metal build before the
+    // authenticated GGUF payload is bound. The decoder's forward path repeats
+    // this registry check at execution time.
+    Compute::for_backend(backend, VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compute::HotOp;
 
     #[test]
     fn realtime_acoustic_contract_is_one_frame_and_one_chunk() {
@@ -143,6 +146,19 @@ mod tests {
     #[test]
     fn metal_backend_selection_is_permitted_without_device_claim() {
         assert!(require_realtime_acoustic_backend(BackendKind::Metal).is_ok());
+    }
+
+    #[test]
+    fn decoder_preflight_uses_the_complete_learned_op_registry() {
+        assert!(VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS.contains(&HotOp::ConvTranspose1d));
+        assert!(preflight_realtime_acoustic_backend(BackendKind::Cpu).is_ok());
+    }
+
+    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+    #[test]
+    fn decoder_preflight_rejects_feature_off_metal_without_binding() {
+        let error = preflight_realtime_acoustic_backend(BackendKind::Metal).unwrap_err();
+        assert!(matches!(error, VokraError::BackendUnavailable(_)));
     }
 
     #[test]

@@ -158,7 +158,7 @@ real-weight replay or publication. The command below is the controlled replay
 command, not an authorization or assertion that replay is currently cleared:
 
 ```text
-uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
+uv run --frozen --python 3.12 --project tools/parity/vibevoice_realtime_0_5b_reference python \
   tools/parity/vibevoice_realtime_0_5b_reference/run_reference.py \
   --source-root /root/VibeVoice \
   --config /root/realtime-checkpoint/config.json \
@@ -212,7 +212,7 @@ Before any real-weight replay, run the model-free import/API smoke on the same
 VAST environment and pinned clean source checkout:
 
 ```text
-uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
+uv run --frozen --python 3.12 --project tools/parity/vibevoice_realtime_0_5b_reference python \
   tools/parity/vibevoice_realtime_0_5b_reference/run_reference.py \
   --compatibility-check --source-root /root/VibeVoice
 ```

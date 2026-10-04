@@ -50,6 +50,7 @@ const REALTIME_COMPOSITE_HOT_OPS: &[HotOp] = &[
     HotOp::Silu,
     HotOp::Relu,
     HotOp::Conv1d,
+    HotOp::ConvTranspose1d,
     HotOp::GroupedConv1d,
     HotOp::Gelu,
 ];
@@ -1036,6 +1037,7 @@ mod tests {
         let component_registries = [
             crate::vibevoice::QWEN2_HOT_OPS,
             crate::vibevoice::VIBEVOICE_TOKENIZER_HOT_OPS,
+            crate::vibevoice::VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS,
             crate::vibevoice_streaming::connector::VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_HOT_OPS,
             crate::vibevoice_streaming::diffusion::VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS,
             crate::vibevoice_streaming::language::VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS,

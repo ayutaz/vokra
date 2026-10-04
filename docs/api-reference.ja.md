@@ -62,16 +62,21 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 現行の workspace release line は `0.3.0` である。
 
-**2026-09-13 current snapshot:** 観測済み `main` baseline は `50981d60` である。監査実装
-`a4af7800` までを使った最新の読み取り専用 live public audit は repository 194、GGUF
+**2026-10-04 current snapshot:** 今回の documentation review は local checkout
+`3a3fd822` を基準にしている。read-only で取得した remote `main` ref は
+`97447185361a37af64c1b30fe87e8e2618d96e20` だった。2026-10-04 の fresh metadata-only public audit は repository 194、GGUF
 repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=43`、
 `no-runtime-binder=14`、`not-artifact=1`、Metal status は `full=136`、
 `blocked-by-cpu=57`、`not-artifact=1` で、未解決の public row は58件
 である。VibeVoice Realtime-0.5B は strict structural `vibevoice_streaming` binder と
-CLI inspection route に進み partial となったが、synthesis、完全な weight manifest、独立
-reference、CPU parity は未完了である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
+CLI inspection route に進み partial のままである。605-tensor の完全な checkpoint は変換済みで、
+Microsoft source に対する狭い independent reference probe も受理済みだが、full streaming、
+native CPU parity、Apple CPU/Metal 検証は未完了である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
 named scope のみ合格し、その後、明示的に承認された4件の artifact が gated workflow 経由で
-公開された。UTMOS numeric parity は未主張で、release tag は0、GitHub Release も0である。
+公開された。UTMOS numeric parity は未主張で、`v0.3.0` release tag と GitHub Release は公開済みである。
+2026-10-04 の修正済み VAST source-only audit は固定した Kyutai source input を認証し、
+worker cleanup を独立に確認したが、model weight を実行せず、CPU、Apple hardware、公開
+verdict は変更していない。
 これは public model catalog 全体の対応完了や v1.0 release readiness を主張するものではない。
 
 **2026-09-09 audit-start historical snapshot:** 監査開始時点の PR #79 head は
@@ -91,7 +96,7 @@ UTMOS の legacy Lightning checkpoint は制限付き `weights_only=True` loader
 
 ## Keeping this page current
 
-**最終確認日: 2026-09-12 — 現行 `main` baseline `43d127f1` および
+**最終確認日: 2026-10-04 — local checkout `3a3fd822` および
 `include/vokra.h` に対して
 確認。** pre-alpha の Python generator と checked-in `ctypes` table は、生成 C
 の全 57 function と完全に一致する。header は 15 typedef、4 enum、2 concrete

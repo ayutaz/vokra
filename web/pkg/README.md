@@ -1,5 +1,10 @@
 # @vokra/web
 
+The source package is currently unpublished (`web/pkg/package.json` keeps the
+`0.0.0-dev` version). This README was reviewed on 2026-10-04 against the
+current WebGPU/WASM loader; do not infer an npm registry release from the
+source tree.
+
 Vokra speech runtime for the browser (M4-01): Whisper base ASR over
 
 - a **WASM CPU path** — two artifacts (`vokra_wasm_simd128.wasm` /

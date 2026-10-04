@@ -1286,7 +1286,7 @@ def self_test() -> int:
     assert len(lock["package"]) == len(active) + len(inactive)
     assert len(inactive) == 3
     assert any(item["status"] == "INACTIVE_VIRTUAL_PROJECT" for item in inactive)
-    assert len(active) == 36
+    assert len(active) == 34
     colorama = next(item for item in inactive if item["name"] == "colorama")
     assert colorama["status"] == "INACTIVE_UNREACHABLE_DEPENDENCY"
     tampered = copy.deepcopy(lock)
@@ -1544,7 +1544,7 @@ def self_test() -> int:
     _, no_fallback_metadata, no_fallback_failures = audit_model_licenses(model_manifest, gated_404_license_fetcher, no_metadata)
     assert no_fallback_metadata == [] and any("BLOCKED_FACTUAL_LICENSE_PATH" in failure for failure in no_fallback_failures)
     approval_state = _approval_state(model_manifest, lock)
-    assert approval_state["dependency_reviews"]["count"] == 39
+    assert approval_state["dependency_reviews"]["count"] == 37
     assert approval_state["model_reviews"]["count"] == 4
     assert approval_state["operator_approval"]["decision"] == "PENDING_REVIEW"
     assert approval_state["publication"] == "NO_UPLOAD"

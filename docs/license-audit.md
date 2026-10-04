@@ -1,5 +1,17 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-04 reading/supersession boundary:** retain the dated license
+> rows, hashes and owner decisions below; this documentation refresh does not
+> grant a new license, execution scope or upload permission. The bounded
+> 2026-09-11 Apple batch and separately approved four-artifact publication
+> supersede the pre-Scaleway state only for their exact scopes. Later narrow
+> VibeVoice and Kyutai source authentication do not close full model parity
+> or dependency/legal gates. Read [the current documentation index](README.md),
+> [owner scope packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
+> and [execution record](handoff/public-catalog-security-completion-2026-09-29.md)
+> alongside the historical rows. Old retained/stopped VAST IDs below are not
+> a current inventory or a reusable transfer source.
+
 **Audit-start snapshot (2026-09-09, PR #79 / implementation head `9efcd16e`)**:
 This records the state reviewed before the documentation refresh; later
 documentation-only commits do not change the implementation head. The audit below is

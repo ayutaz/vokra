@@ -142,8 +142,8 @@ pub use qwen2::{
     SPEECH_DIFFUSION_TOKEN_ID, SPEECH_END_TOKEN_ID, SPEECH_START_TOKEN_ID,
 };
 pub use tokenizer::{
-    VIBEVOICE_TOKENIZER_HOT_OPS, VibeVoiceAcousticDecoder, VibeVoiceAcousticDecoderStream,
-    VibeVoiceTokenizerEncoder, VibeVoiceTokenizerStream,
+    VIBEVOICE_ACOUSTIC_DECODER_HOT_OPS, VIBEVOICE_TOKENIZER_HOT_OPS, VibeVoiceAcousticDecoder,
+    VibeVoiceAcousticDecoderStream, VibeVoiceTokenizerEncoder, VibeVoiceTokenizerStream,
 };
 
 // Public seam re-exports — shared with the VAE + sampler primitives.
