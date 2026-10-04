@@ -97,6 +97,14 @@ extend-ignore-re = [
 # comment naming the offending typos version. Format:
 #   [default.extend-words]
 #   theWord = "theWord"       # v1.48.0 flagged this as "theTypo"
+[default.extend-identifiers]
+# Historical GitHub/VAST identifiers are exact opaque tokens. typos v1.50.2
+# split these IDs and reported the embedded `ba`, `Ot`, and `iy` fragments;
+# keep the identifiers intact without allowing those fragments globally.
+ad3ba2 = "ad3ba2"
+873Ot5 = "873Ot5"
+8iyIfE = "8iyIfE"
+
 [default.extend-words]
 # Canary tokenizer abbreviations: PnC means punctuation/capitalization and
 # no-PnC is its explicit task-control token.
