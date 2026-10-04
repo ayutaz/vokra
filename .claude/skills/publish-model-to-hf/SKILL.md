@@ -13,7 +13,10 @@ description: Vokra の GGUF を huggingface.co/vokra 配下に公式配布する
 
 - **ライセンス audit を先に通す** → skill `license-audit`。§3.1 sign-off が空欄なら **publish しない**（gate 4 で fail-closed refuse される）。primary-source rule で埋められる条件が揃ってから戻る。
 - **モデルサイズ確認**: checkpoint / GGUF / shard 群の合計が **2 GB 以上**なら convert・検証・publish を M1 iMac で行わず、skill `vast-ai-workflow` で VAST へ送る。`publish-one.sh` の legacy 8 GiB gate 7 は追加の backstop であり、2 GB の運用閾値を緩める根拠ではない。[[feedback-large-models-on-vast-ai]]。
-- **既に GGUF がある場合**: 変換不要なら `restamp_provenance`（§7）で provenance だけ差替可能。
+- **既に手元にある GGUF がある場合**: 変換不要なら `restamp_provenance`
+  （§7）で provenance だけ差替可能。この例外は既存バイト列の metadata
+  再刻印だけに限り、weight の取得・ロード・推論・変換を maintainer Mac
+  で許可するものではなく、upload 権限も付与しない。
 - **`--push` は依頼者の明示承認がある回だけ**付ける。ライセンス sign-off や dry-run 成功は upload 権限の代わりにならない。
 
 ## 1. 5 段 gate の全体像
@@ -96,7 +99,11 @@ upstream の LICENSE 実体をどこから取るかは、上流の配布形態�
 
 ## 7. `restamp_provenance` — 低メモリ再刻印（tensor コピーなし）
 
-**用途**: 既存 GGUF に provenance schema を後付け、または license 表記を差替。**tensor は mmap 読取して byte-copy せず、metadata だけ差替える**。
+**用途**: 既に取得済みで許可された GGUF に provenance schema を後付け、または
+license 表記を差替。**tensor は mmap 読取して byte-copy せず、metadata だけ
+差替える**。この経路では weight の download/import/inference/conversion を
+行わず、`--push` を暗黙に許可しない。入力取得、変換、実weight検証、または
+通常の publish staging が必要なら、2 GB 閾値に従って VAST を使う。
 
 - 実測: **8.7 GB Voxtral を M1 16 GB で peak footprint 6.4 MB / RSS 5.4 GB (mmap pages) / swap 0** で再刻印可（[[project-restamp-provenance]]）。
 - 使い所: (a) 旧成果物に schema stamp（`vokra.schema.version` / `vokra.schema.producer`）を追加、(b) 依頼者判断で license class 変更、(c) 上流 fork 変更に伴う `vokra.provenance.upstream_hf` 更新。

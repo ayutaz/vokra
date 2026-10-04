@@ -2,11 +2,12 @@
 
 **English** | [日本語](python.ja.md)
 
-> **Implementation status (reviewed 2026-09-09): workspace `0.3.0` development,
-> source-complete, unpublished.**
+> **Implementation status (reviewed 2026-10-04): workspace release `0.3.0`,
+> source-complete; PyPI/TestPyPI unpublished, GitHub wheel assets available.**
 > The package root exports `Session`, `Stream`, `Event`, and typed errors, and
-> its generated table covers the complete current C function set. No PyPI release has
-> been verified or authorized. See the
+> its generated table covers the complete current C function set. The GitHub
+> `v0.3.0` release has wheel assets, but no PyPI release has been verified or
+> authorized. See the
 > [binding README](../../bindings/python/README.md) for the exact gates.
 
 ## What exists today

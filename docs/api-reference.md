@@ -65,19 +65,24 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 The current release line is workspace version `0.3.0`.
 
-**2026-09-13 current snapshot:** the observed `main` baseline is `50981d60`.
-The latest live, read-only public audit, evaluated with audit logic through
-`a4af7800`, reports 194 repositories, 193 GGUF-bearing repositories and 198
-GGUF files. CPU status is `full=136`, `partial=43`,
+**2026-10-04 current snapshot:** this documentation review is based on local
+checkout `3a3fd822`; the read-only remote `main` ref was observed at
+`97447185361a37af64c1b30fe87e8e2618d96e20`. A fresh 2026-10-04 metadata-only public audit reports 194 repositories,
+193 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`, `partial=43`,
 `no-runtime-binder=14`, `not-artifact=1`; Metal status is `full=136`,
 `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. The
 authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback batch
 passed only for its named scopes; four separately approved artifacts were then
 published through the gated workflow. VibeVoice Realtime-0.5B now has a strict
 structural `vibevoice_streaming` binder and CLI inspection route, so it is
-partial; synthesis, the complete weight manifest, independent reference, and
-CPU parity remain pending. UTMOS numeric parity remains unclaimed,
-and there are 0 release tags and 0 GitHub Releases. This is not a claim of
+partial; its complete 605-tensor checkpoint has been converted and a narrow
+independent Microsoft-source reference probe is accepted, but full streaming,
+native CPU parity, and Apple CPU/Metal verification remain pending. UTMOS
+numeric parity remains unclaimed, and the
+`v0.3.0` release tag and GitHub release are published. On 2026-10-04, a
+corrected VAST source-only audit authenticated fixed Kyutai source inputs and
+independently verified cleanup; it did not execute model weights or change the
+CPU, Apple-hardware, or publication verdicts. This is not a claim of
 complete public model-catalog support or v1.0 release readiness.
 
 **2026-09-09 audit-start historical snapshot:** PR #79 was at
@@ -100,7 +105,7 @@ the restricted `weights_only=True` loader.
 
 ## Keeping this page current
 
-**Last verified: 2026-09-12 — against current `main` baseline `43d127f1` and
+**Last verified: 2026-10-04 — against local checkout `3a3fd822` and
 `include/vokra.h`.** The
 pre-alpha Python generator and checked-in `ctypes` table cover all 57 generated
 C functions exactly; the header has 15 typedefs, four enums, two concrete
