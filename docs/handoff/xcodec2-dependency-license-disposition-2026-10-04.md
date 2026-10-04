@@ -171,3 +171,37 @@ All of these remain incomplete. Source hardening may be reviewed and updated
 in the existing draft PR, but this record does not make its dependency
 candidate merge-ready, mark Mac/Metal support complete, authorize public
 artifact replacement, or close security alerts.
+
+## Exact-pin remediation readback — 2026-10-04
+
+The existing PR API readback at
+`1e3f0385cb21a96ef011781e1a69da9dd1b0f322` reports OPEN / Draft / CLEAN,
+with 69 successful checks and one skipped check. This supersedes the pending
+CI observation above only for that head; it does not clear dependency or
+execution gates. The existing PR body also records the findings below.
+
+The [publisher's XCodec2 0.1.5 metadata](https://pypi.org/pypi/xcodec2/0.1.5/json)
+requires `vector-quantize-pytorch==1.17.8`, not an open older-version range.
+Its sole published archive is `xcodec2-0.1.5.tar.gz`, 22,329 bytes, SHA-256
+`dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b`.
+The [official 1.17.8 ResidualFSQ source](https://github.com/lucidrains/vector-quantize-pytorch/blob/1.17.8/vector_quantize_pytorch/residual_fsq.py)
+imports `einx.get_at`. A pre-einx release such as 1.12.12 is therefore an
+out-of-contract, unbuilt investigation candidate, not an approved replacement
+or proof of decoder API compatibility. Do not repair the audit by substituting
+our own quantizer or removing the official dependency declaration.
+
+For the exact reviewed Torch release, the
+[v2.13.0 CMake options](https://github.com/pytorch/pytorch/blob/v2.13.0/CMakeLists.txt)
+default `USE_OPENMP` to ON, and the
+[same-tag dependency configuration](https://github.com/pytorch/pytorch/blob/v2.13.0/cmake/Dependencies.cmake)
+conditionally links the OpenMP target. An OpenMP-disabled source build is a
+technical candidate only: no such reviewed artifact was built or shown to
+have an acceptable full native/system-library closure. It does not identify
+the source/build/exception applicable to the actual bundled `libgomp` bytes.
+No manual wheel stripping, affected-version downgrade, owner policy waiver,
+dependency installation, model execution, public upload, or merge is implied.
+
+The next acceptable action remains resolving the official quantizer path and
+exact native/license binding, followed by artifact/RECORD/API review if a
+permissible closure becomes viable. Existing GPL/LGPL conflicts and missing
+primary licenses remain open; green model-free CI is not their remedy.
