@@ -33,6 +33,22 @@ is_read_only_inspection() {
         '^(sha(256|512)sum|shasum|b3sum|md5|stat|file|ls|find|rg|grep|head|tail|jq|od|xxd|cmp|diff|wc|sort|awk|sed|cat)([[:space:]]|$)|^git[[:space:]]+(status|diff|show|log|ls-files|rev-parse)([[:space:]]|$)'
 }
 
+is_model_shell_substitution() {
+    local command="$1"
+    case "$command" in
+        *'$('*|*'`'*|*'<('*|*'>('*) ;;
+        *) return 1 ;;
+    esac
+    if model_marker "$command"; then
+        return 0
+    fi
+    # These workers can acquire and execute real weights without a model
+    # filename in the outer command.  Do not let an inspection command hide
+    # one inside command/process substitution.
+    printf '%s' "$command" | grep -Eiq \
+        '(^|[[:space:]/])(scripts/verify/apple-silicon|scripts/publish/vast-ai/run-[^[:space:]]+-(validation|parity))[^[:space:]]*|(^|[[:space:]/])tools/parity/[^[:space:]]+\.py([[:space:]]|\)|$)|(^|[[:space:]/])apple-silicon-[^[:space:]]*([[:space:]]|\)|$)'
+}
+
 is_literal_git_inspection() {
     local command="$1" token subcommand="" path resolved
     local index=1 count after_double_dash=0
@@ -247,6 +263,17 @@ analyse_segment() {
     normalized="$(hook_normalize_segment "$segment")"
     [ -n "$normalized" ] || return 1
 
+    # Read-only/static/help exceptions are only safe when the command itself
+    # is inspected.  A model-bearing command substitution or backtick can
+    # execute before the outer inspection command, so fail closed before any
+    # of those exceptions are considered.  This also catches substitutions in
+    # quoted arguments; the hook deliberately does not attempt to interpret
+    # shell quoting.
+    if is_model_shell_substitution "$segment"; then
+        echo "model/checkpoint execution"
+        return 0
+    fi
+
     is_literal_git_inspection "$segment" && return 1
 
     # One immutable, hash-bound remote controller is allowed to carry its
@@ -447,6 +474,17 @@ self_test() {
     check 'ordinary parity script is guarded' block 'uv run --project tools/parity python tools/parity/foo.py'
     check 'audit script is model-free' allow 'uv run --no-project python tools/audit/hf_mac_coverage.py'
     check 'static check script with marker' allow 'bash scripts/check-doc-references.sh model.gguf'
+    check 'git inspection substitution with model is blocked' block 'git diff --no-ext-diff --no-textconv -- README.md $(vokra-cli run --model ./model.gguf)'
+    check 'read-only substitution with model is blocked' block 'cat $(vokra-cli run --model ./model.gguf)'
+    check 'quoted substitution with model is blocked' block 'git diff --no-ext-diff --no-textconv -- README.md "$(vokra-cli run --model ./model.gguf)"'
+    check 'backtick substitution with model is blocked' block 'sha256sum `vokra-cli run --model ./model.gguf`'
+    check 'parity substitution without model marker is blocked' block 'cat $(uv run --project tools/parity python tools/parity/foo.py)'
+    check 'process substitution with model is blocked' block 'cat <(vokra-cli run --model ./tiny.gguf)'
+    check 'tee process substitution with model is blocked' block 'tee >(vokra-cli run --model ./tiny.gguf) >/dev/null'
+    check 'bash syntax process substitution with model is blocked' block 'bash -n <(vokra-cli run --model ./tiny.gguf)'
+    check 'help plus model substitution is blocked' block 'vokra-cli run --model ./model.gguf --help $(printf x)'
+    check 'self-test plus model substitution is blocked' block 'bash custom-runner.sh model.gguf --self-test $(printf x)'
+    check 'ordinary inspection substitution remains allowed' allow 'git diff --no-ext-diff --no-textconv -- README.md $(printf README.md)'
     git_inspection_fixture="$(mktemp -d "${TMPDIR:-/tmp}/vokra-git-inspection.XXXXXX")"
     git_inspection_fixture="$(CDPATH= cd -P -- "$git_inspection_fixture" 2>/dev/null && pwd -P)"
     git_inspection_link="${git_inspection_fixture}-link"

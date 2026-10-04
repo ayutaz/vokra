@@ -25,6 +25,10 @@ MAX_RECEIPT_BYTES = 64 * 1024
 MAX_API_BYTES = 256 * 1024
 MAX_READ_CHUNK = 64 * 1024
 LEGACY_API_BODY_SHA256 = "b8f00e48832c4f41747c56cef46040f884afa81e632ba21d147ddd4bb9f7d2b5"
+EXPECTED_SCOPE = (
+    "Caller schedule and PCM preparation source identity only; no model, config, "
+    "tokenizer, weight, license, parity, or publication claim."
+)
 
 EXPECTED = {
     "repository": "kyutai-labs/delayed-streams-modeling",
@@ -153,8 +157,8 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         raise ValueError("receipt status is not source-only authenticated")
     if receipt.get("execution") != "NOT_RUN":
         raise ValueError("receipt execution must remain NOT_RUN")
-    if not isinstance(receipt.get("scope"), str) or "model" not in receipt["scope"]:
-        raise ValueError("receipt scope must remain source-only")
+    if receipt.get("scope") != EXPECTED_SCOPE:
+        raise ValueError("receipt scope must remain the exact source-only scope")
 
 
 def validate_api_payload(api: dict[str, Any], raw: bytes, expected: dict[str, Any]) -> None:
@@ -232,7 +236,7 @@ class SourceAuditTests(unittest.TestCase):
             {
                 "status": "AUTHENTICATED_SOURCE_ONLY_RECEIPT",
                 "execution": "NOT_RUN",
-                "scope": "Caller schedule and PCM preparation source identity only; no model claim.",
+                "scope": EXPECTED_SCOPE,
             }
         )
         validate_receipt(receipt)
@@ -246,7 +250,7 @@ class SourceAuditTests(unittest.TestCase):
             {
                 "status": "AUTHENTICATED_SOURCE_ONLY_RECEIPT",
                 "execution": "NOT_RUN",
-                "scope": "Caller schedule and PCM preparation source identity only; no model claim.",
+                "scope": EXPECTED_SCOPE,
             }
         )
         for key, value in (
@@ -259,6 +263,27 @@ class SourceAuditTests(unittest.TestCase):
             mutated = dict(receipt)
             mutated[key] = value
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, rf"receipt {key} mismatch"):
+                validate_receipt(mutated)
+
+    def test_scope_must_remain_exact_and_source_only(self) -> None:
+        receipt = dict(EXPECTED)
+        receipt.update(
+            {
+                "status": "AUTHENTICATED_SOURCE_ONLY_RECEIPT",
+                "execution": "NOT_RUN",
+                "scope": EXPECTED_SCOPE,
+            }
+        )
+        validate_receipt(receipt)
+        for scope in (
+            None,
+            1,
+            "model claim: executed weights and publication approved",
+            "Caller schedule and PCM preparation source identity only; no model claim.",
+        ):
+            mutated = dict(receipt)
+            mutated["scope"] = scope
+            with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, "exact source-only"):
                 validate_receipt(mutated)
 
     def test_strict_duplicate_json_is_rejected(self) -> None:
