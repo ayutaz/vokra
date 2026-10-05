@@ -466,3 +466,77 @@ real-weight packet is generated separately by `run_reference.py`. Independent
 native parity, full acoustic waveform parity, owner/legal approval, dataset
 provenance review, and public publication remain blocked and must not be
 inferred from this structural contract.
+
+## 2026-10-06 bounded installed-closure collector preparation
+
+`audit_installed_closure.py` and its stdlib-only regression tests are a
+source-only preparation for a future Linux x86_64 / CPython 3.12 audit. The
+collector accepts an explicit selected-wheel manifest and a trusted
+site-packages directory; it does not download, install, import, or execute
+third-party packages or models. Every selected archive is rebound to the
+current project and lock hashes, the lock-listed wheel URL/hash/filename/tag,
+archive bytes, wheel `RECORD`, and installed metadata. `LICENCE` and
+`License-File` spellings are resolved explicitly, and native members are
+reported only when their archive and installed bytes are equal. The audit also
+accepts wheel-declared `.data/purelib`/`.data/platlib` relocation and
+`console_scripts`/`gui_scripts` wrappers only through an explicit canonical
+venv root and scripts root. Relocated wrappers are hash-bound to the installed
+RECORD but are separately classified because installers may rewrite shebangs.
+Generated wrappers are classified as `UNPROVEN_INSTALLER_SOURCE`, and the
+report's RECORD status is logical binding rather than RECORD-file byte equality.
+Installer-only additions are limited to `INSTALLER`, `REQUESTED`,
+`direct_url.json`, and bounded bytecode paths. Unknown, out-of-root, or
+undeclared external RECORD paths fail closed.
+
+The selected-wheel manifest is untrusted input, not owner approval or a source
+provenance signature. Reports remain
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`, with package license, native payload,
+runtime compatibility, and owner/legal decisions unresolved. Missing bundled
+license files are reported as unresolved rather than approved. The historical
+installed-closure receipt is not rewritten or re-signed; a real collection
+still requires the reviewed VAST workflow and an independently authenticated
+source checkout.
+
+The bounded synthetic regression entry point is:
+
+```text
+UV_NO_SYNC=1 UV_OFFLINE=1 uv run --no-project --no-sync --offline --python 3.12 python -S tools/parity/vibevoice_realtime_0_5b_reference/audit_installed_closure.py --self-test
+```
+
+Real collection additionally requires explicit `--venv-root` and
+`--scripts-root` paths inside that same trusted environment; no implicit host
+path discovery is permitted. The current family lock statically contains 41
+registry rows and the reviewed CPU Torch row, but this collector intentionally
+blocks before collection when any locked artifact hash is absent (the current
+snapshot includes such a row, e.g. `jinja2`); no lock row is repaired or
+re-signed by this preparation.
+
+The collector's Metadata-Version 2.4+ `License-File` resolution follows
+PEP 639 exactly: a header value is relative to the wheel's
+`<dist-info>/licenses/` directory (so `LICENSE` and `licenses/LICENSE.MIT`
+resolve to distinct nested members). Metadata-Version 2.1 legacy resolution
+is retained separately. Project validation also binds the exact Linux CPU
+Torch declaration, explicit PyTorch CPU index, and `2.13.0+cpu` reference
+fact; a prefix match or alternate index is rejected. Venv `pyvenv.cfg`, the
+CPython 3.12 interpreter, complete site/scripts inventory, wheel WHEEL tags,
+installer-generated wrapper bytes, and bounded read/hash budgets are checked
+before an evidence report is produced. These checks strengthen collection
+integrity only; they do not establish license approval, native compatibility,
+owner sign-off, or upload eligibility.
+
+The venv boundary is strict: `pyvenv.cfg` must identify CPython 3.12 with
+`include-system-site-packages = false`, the running interpreter and
+`python`/`python3`/`python3.12` aliases must resolve to the same executable,
+and the canonical `lib/python3.12/site-packages` plus `bin` layout is required.
+Known activation and virtualenv bootstrap files are enumerated individually,
+captured with bytes/SHA and marked `UNPROVEN_INSTALLER_BOOTSTRAP`; arbitrary
+unregistered files are never ignored, and site `_virtualenv.py`/
+`_virtualenv.pth` bootstrap entries must be regular non-symlink files. Installed package and bootstrap file
+identities (inode, metadata, size, and SHA) are captured and revalidated after
+source inspection. Generated wrappers, relocated wrappers, generated pyc, and
+installer metadata carry their installed bytes/SHA and remain explicitly
+`UNPROVEN_INSTALLER_SOURCE` where installer provenance is not archive-bound.
+The initial installed inventory and clean source checkout are captured before
+package inspection, then both are revalidated after package and archive
+binding. WHEEL metadata may contain multiple distinct expanded platform tags,
+but duplicate tags or filename/tag disagreement remain blocked.
