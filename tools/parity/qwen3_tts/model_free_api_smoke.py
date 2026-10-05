@@ -88,11 +88,11 @@ COMMON_ASSETS = {
     "tokenizer_config.json": (7344, "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"),
     "generation_config.json": (245, "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"),
 }
-PROJECT_SHA256 = "d59ac7d5e6b07be957907c785e58a62b2e88da1a2b26531742a5fc45f8d3d645"
-LOCK_SHA256 = "549809c62df6e2ad37b7494b6b9d9cc18dade54e7b1f19804771787281781ca8"
+PROJECT_SHA256 = "277ac9a2f414a6a41fa473c956c71bb6d7680c83c011afc53cff08276d102711"
+LOCK_SHA256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
 REQUIRED_DEPENDENCIES = {
     "einops==0.8.2", "librosa==1.0.0", "numpy==2.5.2",
-    "soundfile==0.14.0", "torch==2.7.1", "torchaudio==2.7.1",
+    "soundfile==0.14.0", "torch==2.13.0", "torchaudio==2.11.0",
     "transformers==5.10.4",
 }
 EXPECTED_PACKAGE_VERSIONS = {
@@ -100,8 +100,8 @@ EXPECTED_PACKAGE_VERSIONS = {
     "librosa": "1.0.0",
     "numpy": "2.5.2",
     "soundfile": "0.14.0",
-    "torch": "2.7.1+cpu",
-    "torchaudio": "2.7.1+cpu",
+    "torch": "2.13.0+cpu",
+    "torchaudio": "2.11.0+cpu",
     "transformers": "5.10.4",
 }
 FORBIDDEN_PACKAGES = {"gradio", "onnxruntime", "protobuf", "setuptools", "sox"}
@@ -111,7 +111,8 @@ FORBIDDEN_OPTIONAL_MODULES = {
 }
 ALLOWED_OPTIONAL_METADATA = ["__file__", "__spec__"]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-EXPECTED_TORCH_FAMILY = "2.7.1"
+EXPECTED_TORCH_FAMILY = "2.13.0"
+EXPECTED_TORCHAUDIO_FAMILY = "2.11.0"
 CUDA_RUNTIME_PREFIXES = ("nvidia-", "cuda-")
 CUDA_RUNTIME_NAMES = {"cuda", "cudatoolkit", "cudnn"}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -448,8 +449,9 @@ def validate_cpu_torch_closure(packages: list[dict[str, Any]]) -> None:
     for package in selected:
         if package.get("source") != {"registry": PYTORCH_CPU_INDEX}:
             raise ProbeError(f"{package.get('name')} is not resolved from the explicit CPU index")
-        if str(package.get("version", "")).split("+", 1)[0] != EXPECTED_TORCH_FAMILY:
-            raise ProbeError("torch/torchaudio version family is not 2.7.1")
+        expected_family = EXPECTED_TORCH_FAMILY if package["name"] == "torch" else EXPECTED_TORCHAUDIO_FAMILY
+        if str(package.get("version", "")).split("+", 1)[0] != expected_family:
+            raise ProbeError(f"{package['name']} version family is not {expected_family}")
 
 
 def verify_project(project: Path) -> dict[str, Any]:
@@ -719,11 +721,11 @@ def self_test() -> int:
         lock = tomllib.loads((Path(__file__).resolve().parent / "uv.lock").read_text(encoding="utf-8"))
         validate_cpu_torch_closure(lock["package"])
         for bad in (
-            [{"name": "torch", "version": "2.7.1", "source": {"registry": "https://pypi.org/simple"}}] * 4,
-            [{"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
-            + [{"name": "torchaudio", "version": "2.11.0", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2,
-            [{"name": "torch", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
-            + [{"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
+            [{"name": "torch", "version": "2.13.0", "source": {"registry": "https://pypi.org/simple"}}] * 4,
+            [{"name": "torch", "version": "2.13.0", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
+            + [{"name": "torchaudio", "version": "2.7.1", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2,
+            [{"name": "torch", "version": "2.13.0", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
+            + [{"name": "torchaudio", "version": "2.11.0", "source": {"registry": PYTORCH_CPU_INDEX}}] * 2
             + [{"name": "nvidia-cuda-runtime", "version": "12", "source": {"registry": "https://pypi.org/simple"}}],
         ):
             try:

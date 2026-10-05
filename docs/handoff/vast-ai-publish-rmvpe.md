@@ -1,5 +1,7 @@
 # RMVPE VAST validation handoff
 
+> **2026-10-04 reading boundary:** The implementation-in-progress status below describes the original 2026-08-24 handoff. Current source/artifact classification and row-scoped parity/Apple/publication evidence live in the [Mac ledger](mac-pre-scaleway-remaining-tasks-2026-09-05.md). Do not treat this historical status or a complete code route as a new independent-reference, Apple or upload verdict.
+
 Status: native exact E2E0 CPU/Metal implementation is in progress on
 `feat/npu-delegate-execution-2026-08-24`. Real-weight validation has not yet
 been recorded. This document authorizes neither a Hugging Face upload nor a

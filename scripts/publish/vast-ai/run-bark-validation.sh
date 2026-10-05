@@ -13,7 +13,10 @@ LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
-TRANSFORMERS_REVISION="c1c34249fa27deefbd4a377dfbf883a39baf5c6d"
+TRANSFORMERS_VERSION="5.10.4"
+TRANSFORMERS_REVISION="89eb876fdd9eca53400fe06e6c1e267dedf2d554"
+TRANSFORMERS_SDIST_SHA256="de37741509e64ccb88f7f5708beaf5b1914df447f5fe659f9c0fd95950413168"
+TRANSFORMERS_WHEEL_SHA256="8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
 GENERATION_CONFIG_BYTES=4908
 GENERATION_CONFIG_SHA256="ab2969fcd40e085bc924ad99ad419c27f62f5acb61afac5de7490ab0c796b5b9"
 
@@ -38,8 +41,6 @@ FULL_CHECKPOINT_BYTES=4486643861
 FULL_CHECKPOINT_SHA256="4e3d407b9b3b619da184c85786c88e5e35f90f9089303e16db696ed0be477989"
 FULL_CONFIG_BYTES=8806
 FULL_CONFIG_SHA256="48be144c0232acd8c55786d1eea9161ae6c973f21ec4a2f02627c844065ea695"
-TRANSFORMERS_SDIST_SHA256="c8db656cf51c600cd8c75f06b20ef85c72e8b8ff9abc880c5d3e8bc70e0ddcbd"
-TRANSFORMERS_WHEEL_SHA256="821a9ff0961abbb29eb1eb686d78df1c85929fdf213a3fe49dc6bd94f9efa944"
 SMALL_TEST="real_bark_small_matches_official_transformers"
 FULL_TEST="real_bark_full_matches_official_transformers"
 
@@ -57,7 +58,7 @@ usage: run-bark-validation.sh --approval-evidence <file> [--work-dir <absent-dir
 
 VAST-only, non-publishing Bark Small/Full validation. The worker downloads and
 verifies both exact public Vokra GGUFs and exact immutable Suno checkpoints,
-uses locked official Transformers 5.5.0 for independent greedy references,
+uses locked official Transformers 5.10.4 for independent greedy references,
 audits the already synchronized Python closure without importing model code,
 compiles the workspace plus Apple target, verifies CLI routing, and compares
 native CPU generated codes plus embedded-codec PCM.
@@ -104,7 +105,7 @@ license_preflight() {
     --manifest "$LICENSE_MANIFEST" \
     --small-public-repo "$SMALL_PUBLIC_REPO" --small-upstream-repo "$SMALL_UPSTREAM_REPO" \
     --full-public-repo "$FULL_PUBLIC_REPO" --full-upstream-repo "$FULL_UPSTREAM_REPO" \
-    --transformers-version 5.5.0 \
+    --transformers-version "$TRANSFORMERS_VERSION" \
     --small-public-bytes "$SMALL_PUBLIC_BYTES" --small-checkpoint-bytes "$SMALL_CHECKPOINT_BYTES" \
     --small-config-bytes "$SMALL_CONFIG_BYTES" --full-public-bytes "$FULL_PUBLIC_BYTES" \
     --full-checkpoint-bytes "$FULL_CHECKPOINT_BYTES" --full-config-bytes "$FULL_CONFIG_BYTES" \
@@ -250,7 +251,7 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0 fake_root fake_home fake_log rc test_log audit_removed
+  local tmp payload actual script_path cases=0 fail=0 fake_root fake_home fake_log rc test_log audit_removed api_removed
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -294,15 +295,19 @@ run_self_test() {
   script_path="${BASH_SOURCE[0]}"
   for required in "$SMALL_PUBLIC_REVISION" "$FULL_PUBLIC_REVISION" \
     "$SMALL_UPSTREAM_REVISION" "$FULL_UPSTREAM_REVISION" \
-    "$TRANSFORMERS_REVISION" "$SMALL_PUBLIC_SHA256" "$FULL_PUBLIC_SHA256" \
+    'TRANSFORMERS_VERSION="5.10.4"' '--transformers-version "$TRANSFORMERS_VERSION"' \
+    "$TRANSFORMERS_VERSION" "$TRANSFORMERS_REVISION" \
+    "$TRANSFORMERS_SDIST_SHA256" "$TRANSFORMERS_WHEEL_SHA256" \
+    "$SMALL_PUBLIC_SHA256" "$FULL_PUBLIC_SHA256" \
     "$SMALL_CHECKPOINT_SHA256" "$FULL_CHECKPOINT_SHA256" \
-    "bark/dump_reference.py" "license_preflight" "dependency_audit.py" "--no-sync" "--offline" "scripts/verify/apple-silicon-bark.sh" \
+    "bark/dump_reference.py" "license_preflight" "dependency_audit.py" "--api-smoke" "--no-sync" "--offline" "scripts/verify/apple-silicon-bark.sh" \
     "--approval-evidence" "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_EVIDENCE_DIR>" \
     "real_bark_small_matches_official_transformers" \
     "real_bark_full_matches_official_transformers" \
     "test result: ok. 1 passed; 0 failed; 0 ignored" "parity_bark_real" \
     "load_session_routes_only_named_bark_releases_to_tts" \
-    "aarch64-apple-darwin" "--test-threads=1" "--frozen --python 3.12"; do
+    "aarch64-apple-darwin" "--test-threads=1" "--frozen --python 3.12" \
+    "transformers_version=\$TRANSFORMERS_VERSION"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"; fail=1
     fi
@@ -322,16 +327,19 @@ run_self_test() {
   # Keep these checks tied to the actual command sites.  A function-definition
   # mention is insufficient: removing or moving the production audit must
   # fail this regression before a real VAST run can acquire model files.
-  local gate_call_line sync_call_line audit_call_line download_call_line cargo_call_line
+  local gate_call_line sync_call_line audit_call_line api_smoke_call_line download_call_line cargo_call_line api_prefix
   gate_call_line="$(grep -nF "python \"\$LICENSE_GATE\"" "$script_path" | tail -n 1 | cut -d: -f1)"
   sync_call_line="$(grep -nF 'uv sync --project' "$script_path" | tail -n 1 | cut -d: -f1)"
   audit_call_line="$(grep -nF "python \"\$DEPENDENCY_AUDIT\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  api_prefix='UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 python'
+  api_smoke_call_line="$(grep -nF "$api_prefix" "$script_path" | tail -n 1 | cut -d: -f1)"
   download_call_line="$(grep -nF "download_hf_file \"\$SMALL_PUBLIC_REPO\"" "$script_path" | tail -n 1 | cut -d: -f1)"
   cargo_call_line="$(grep -nF 'cargo test --manifest-path' "$script_path" | tail -n 1 | cut -d: -f1)"
-  if [[ -z "$gate_call_line" || -z "$sync_call_line" || -z "$audit_call_line" || -z "$download_call_line" || -z "$cargo_call_line" ]] \
+  if [[ -z "$gate_call_line" || -z "$sync_call_line" || -z "$audit_call_line" || -z "$api_smoke_call_line" || -z "$download_call_line" || -z "$cargo_call_line" ]] \
     || ! (( gate_call_line < sync_call_line && sync_call_line < audit_call_line \
-      && audit_call_line < download_call_line && download_call_line < cargo_call_line )); then
-    log "self-test FAIL: gate/sync/audit/download/Cargo actual-call order drifted"
+      && audit_call_line < api_smoke_call_line && api_smoke_call_line < download_call_line \
+      && download_call_line < cargo_call_line )); then
+    log "self-test FAIL: gate/sync/audit/API-smoke/download/Cargo actual-call order drifted"
     fail=1
   fi
   # Delete the exact production audit invocation from a temporary worker and
@@ -342,6 +350,16 @@ run_self_test() {
   chmod +x "$audit_removed"
   if VOKRA_ROOT="$VOKRA_ROOT" "$audit_removed" --self-test >/dev/null 2>&1; then
     log "self-test FAIL: deleting the production audit invocation was accepted"
+    fail=1
+  fi
+  # Delete the exact production API-smoke invocation and prove that the
+  # self-test rejects the worker even though --api-smoke remains in the
+  # static contract list.
+  api_removed="$tmp/run-bark-without-api-smoke.sh"
+  sed '/step "Run the locked official Bark API smoke without model acquisition"/,+3d' "$script_path" > "$api_removed"
+  chmod +x "$api_removed"
+  if VOKRA_ROOT="$VOKRA_ROOT" "$api_removed" --self-test >/dev/null 2>&1; then
+    log "self-test FAIL: deleting the production API-smoke invocation was accepted"
     fail=1
   fi
   cases=$((cases + 1))
@@ -481,6 +499,10 @@ main() {
     --project "$PARITY_PROJECT" \
     --output "$logs_dir/dependency-audit.json" --fetch-model-licenses 2>&1 | tee "$dependency_audit_log"
 
+  step "Run the locked official Bark API smoke without model acquisition"
+  UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 python \
+    "$PARITY_PROJECT/dump_reference.py" --api-smoke
+
   step "Download exact public and upstream Bark Small inputs"
   download_hf_file "$SMALL_PUBLIC_REPO" "$SMALL_PUBLIC_REVISION" model.gguf "$small_public"
   download_hf_file "$SMALL_UPSTREAM_REPO" "$SMALL_UPSTREAM_REVISION" pytorch_model.bin "$small_upstream/pytorch_model.bin"
@@ -570,6 +592,7 @@ main() {
     echo "full_public_sha256=$FULL_PUBLIC_SHA256"
     echo "full_upstream_revision=$FULL_UPSTREAM_REVISION"
     echo "full_checkpoint_sha256=$FULL_CHECKPOINT_SHA256"
+    echo "transformers_version=$TRANSFORMERS_VERSION"
     echo "transformers_source_revision=$TRANSFORMERS_REVISION"
     echo "small_reference_manifest_sha256=$(sha256_file "$reference_dir/small/manifest.json")"
     echo "full_reference_manifest_sha256=$(sha256_file "$reference_dir/full/manifest.json")"

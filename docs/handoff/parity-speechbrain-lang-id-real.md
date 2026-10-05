@@ -1,5 +1,7 @@
 # SpeechBrain Lang-ID CPU/Metal parity runbook
 
+> **2026-10-04 reading boundary:** The 2026-08-26 harness/credential and measurement status below is historical. Consult the [current Mac ledger](mac-pre-scaleway-remaining-tasks-2026-09-05.md) for the latest row evidence and the [execution plan](mac-cpu-metal-execution-plan-2026-09-07.md) for new authorized runs. This refresh performs no model execution, credential probe or new numerical measurement.
+
 Status on 2026-08-26: source harness prepared; real CPU and Metal measurements
 pending. No numeric parity result or public-artifact readiness is claimed by
 this document.

@@ -2,28 +2,31 @@
 
 **English** | [日本語](unity.ja.md)
 
-Vokra provides a Unity Package (`com.vokra.unity`) source/API skeleton and a
-C# API designed for IL2CPP AOT compilation and iOS static linking constraints.
+Vokra provides a Unity Package (`com.vokra.unity`) and a C# API designed for
+IL2CPP AOT compilation and iOS static linking constraints. The `v0.3.0` GitHub
+Release assembles the package tarball and native slices; the repository tree
+itself remains source-only for native plugins.
 The tracked UPM tree contains only native-plugin `.gitkeep`/`.meta`
 placeholders; a clean Git URL import is source-only and cannot run until the
-target native library is built and staged. Prebuilt libraries for all supported
-platforms are a future authorized CD release deliverable.
+target native library is built and staged. Prebuilt libraries are assembled by
+the release workflow, not committed to the source tree.
 
 ## 1. Prerequisites
 
 - **Unity 2022.3 LTS** or newer (Unity 6 verified via nightly IL2CPP
   smoke test in `.github/workflows/nightly-il2cpp.yml`).
 - Target platforms: macOS, Windows, Linux, iOS, Android (Editor +
-  Standalone / Player). WebGL: a staticlib link path landed in v1.0-rc (M4-02, via
-  `vokra_session_create_from_bytes`); Unity WebGL CI verification is
-  pending `secrets.UNITY_LICENSE`.
+  Standalone / Player), and WebGL. WebGL uses the CPU-only staticlib path
+  (M4-02, via `vokra_session_create_from_bytes`); the nightly Unity Editor
+  smoke remains license-gated by `secrets.UNITY_LICENSE`.
 - For iOS builds: Xcode 14+; for Android builds: Android SDK / NDK
   matching your Unity install.
 
 ## 2. Install the package
 
-The package can be referenced in three ways; before an authorized release,
-only the local flow below is runnable:
+The package can be referenced in three ways: the Git URL is for source
+inspection, the local flow is for development, and the `v0.3.0` tarball is for
+release consumption:
 
 ### UPM Git URL (source inspection only)
 
@@ -33,8 +36,8 @@ Window → Package Manager → + → Add package from git URL…
 https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 ```
 
-This Git URL does not provide runnable native binaries in the current
-unpublished tree.
+This Git URL points at the source-only package tree and does not provide
+runnable native binaries; use the `v0.3.0` release tarball for staged slices.
 
 ### Local file reference (development)
 
@@ -46,13 +49,13 @@ unpublished tree.
 }
 ```
 
-Clone the audit-start PR #79 head verified on 2026-09-09,
-then build and stage the native library for the platform you will test:
+Clone the released tag (or a newer explicitly reviewed commit), then build and
+stage the native library for the platform you will test:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
-git checkout --detach 9efcd16eb63b857f48fc00d0b83d1113defd578b
+git checkout --detach v0.3.0
 
 # Host desktop (macOS, Linux, or Windows).
 scripts/build-unity-plugin.sh
@@ -71,9 +74,9 @@ only after the relevant library is staged.
 
 ### Tarball (production)
 
-Once an authorized GitHub Release is published, download
-`com.vokra.unity-<version>.tgz` and use **Add package from tarball…** in the
-Package Manager. No such release exists yet.
+Download `com.vokra.unity-0.3.0.tgz` from the authorized GitHub Release and use
+**Add package from tarball…** in the Package Manager. OpenUPM publication is a
+separate owner-gated decision.
 
 ## 3. Supported platform matrix
 
@@ -199,17 +202,20 @@ to the `Plugins/` folder.
 ## 9. Samples
 
 Import the *VAD → ASR → TTS demo* from the Package Manager window's
-**Samples** tab. Demo model weights (Silero VAD v5 MIT, Whisper base
-MIT, piper-plus voice MIT) are **not** bundled — run
-`Samples~/VadAsrTts/scripts/fetch-demo-models.sh` after import
-(NFR-DS-04).
+**Samples** tab. Demo model weights (Silero VAD v5 MIT, Whisper base MIT,
+piper-plus voice MIT) are **not** bundled, and the `v0.3.0` GitHub Release
+contains no GGUF assets. Before running
+`Samples~/VadAsrTts/scripts/fetch-demo-models.sh`, set all three environment
+variables to independently verified MIT source URLs; release presence alone is
+not evidence that a model URL exists (NFR-DS-04). See the sample README for
+the required URL variables and license/provenance checks.
 
 ## 10. Troubleshooting
 
 - **`DllNotFoundException: vokra`**: the Plugins folder is missing your
-  platform's native library. A Git URL import cannot supply it in the current
-  unpublished tree; for a local `file:` install, run the matching staging
-  helper described in section 2.
+  platform's native library. A Git URL import cannot supply it from the
+  source-only tree; for a local `file:` install, run the matching staging helper
+  described in section 2, or install the `v0.3.0` release tarball.
 - **`VokraException: Unsupported backend`**: FR-EX-08 forbids silent
   fallback. Either build with the matching backend feature or use a
   GGUF whose ops are covered by CPU.

@@ -26,8 +26,8 @@ the legacy family route and must not be used for this v2.2 packet.
 For the reference dumper itself, use:
 
 ```bash
-uv sync --frozen --project tools/parity/whisper_extras
-uv run --frozen --project tools/parity/whisper_extras python \
+uv sync --frozen --python 3.12 --project tools/parity/whisper_extras
+uv run --frozen --python 3.12 --project tools/parity/whisper_extras python \
   tools/parity/whisper_extras/dump_reference.py \
   --model distil_whisper --checkpoint-dir /vast/hf-snapshot \
   --audio tests/fixtures/audio/jfk-30s.wav --output-dir /vast/reference
@@ -52,7 +52,7 @@ Before a VAST run, the dependency/API contract can be checked without opening
 any checkpoint:
 
 ```bash
-uv run --frozen --project tools/parity/whisper_extras python \
+uv run --frozen --python 3.12 --project tools/parity/whisper_extras python \
   tools/parity/whisper_extras/dump_reference.py --api-self-test
 ```
 

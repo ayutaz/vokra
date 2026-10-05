@@ -7,7 +7,7 @@ dependencies = [
     "huggingface-hub==1.27.0",
     "numpy==2.3.5",
     "safetensors==0.8.0",
-    "torch==2.7.1",
+    "torch==2.13.0",
     "transformers==5.10.4",
 ]
 
@@ -32,3 +32,13 @@ transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
 transformers_security_patched_minimum = "5.10.0"
 isolated_transformers_pin = "5.10.4"
 transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
+previous_isolated_torch_pin = "torch==2.7.1"
+torch_security_advisories = [
+    "GHSA-887c-mr87-cxwp",
+    "GHSA-vgrw-7cvw-pwgx",
+    "GHSA-qfhq-4f3w-5fph",
+    "GHSA-rrmf-rvhw-rf47",
+]
+torch_security_patched_minimum = "2.13.0"
+isolated_torch_pin = "2.13.0"
+torch_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"

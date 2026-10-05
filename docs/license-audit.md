@@ -1,5 +1,17 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-04 reading/supersession boundary:** retain the dated license
+> rows, hashes and owner decisions below; this documentation refresh does not
+> grant a new license, execution scope or upload permission. The bounded
+> 2026-09-11 Apple batch and separately approved four-artifact publication
+> supersede the pre-Scaleway state only for their exact scopes. Later narrow
+> VibeVoice and Kyutai source authentication do not close full model parity
+> or dependency/legal gates. Read [the current documentation index](README.md),
+> [owner scope packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
+> and [execution record](handoff/public-catalog-security-completion-2026-09-29.md)
+> alongside the historical rows. Old retained/stopped VAST IDs below are not
+> a current inventory or a reusable transfer source.
+
 **Audit-start snapshot (2026-09-09, PR #79 / implementation head `9efcd16e`)**:
 This records the state reviewed before the documentation refresh; later
 documentation-only commits do not change the implementation head. The audit below is
@@ -164,6 +176,46 @@ The intended boundary is reference-only and `NO_UPLOAD`.
 - GPL/LGPL 依存が unavoidable な場合は Wyoming Protocol 経由の分離プロセスモデルで実装（Vokra binary に static link しない）
 
 ---
+
+### Shared parity urllib3 release review (2026-10-05, PR #194)
+
+This maintenance review concerns only the `urllib3` 2.7.0 to 2.8.0 update in
+`tools/parity/uv.lock`, based on main
+`a3384b68e7ae434ae5ba01352ccf86d97e89d01f`. The corrected candidate lock
+SHA-256 is
+`4b157e4db79d3b8da224e2ec284177e3ed2dfce9df7bd8243ff3c3a1ebb1d7cd`.
+All 220 other package entries, dependency/platform markers and top-level lock
+metadata match that base; unrelated CUDA/NVIDIA marker removals in the
+original Dependabot candidate were reverted. This does not change the
+zero-dependency Rust runtime or the existing NVIDIA non-bundling/EULA boundary.
+
+The [primary PyPI release metadata](https://pypi.org/pypi/urllib3/2.8.0/json)
+and both exact lock-listed distributions were authenticated with bounded,
+in-memory reads, without installation, package import, archive extraction to
+disk or build-script execution:
+
+| Distribution | Bytes | SHA-256 |
+|---|---:|---|
+| [urllib3 2.8.0 wheel](https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl) | 135,717 | `0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3` |
+| [urllib3 2.8.0 sdist](https://files.pythonhosted.org/packages/e3/05/b17359e1cefb4f909b5e40b1b90a496d987258916dbbf88e842c729f510e/urllib3-2.8.0.tar.gz) | 458,972 | `63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63` |
+
+Wheel `urllib3-2.8.0.dist-info/METADATA` and sdist
+`urllib3-2.8.0/PKG-INFO` are each 7,389 bytes with SHA-256
+`10898c620e8007c030e07fa5622b68358a43010025dfbd78a1cb797699de2bb4`;
+both identify `urllib3` 2.8.0, `License-Expression: MIT` and
+`License-File: LICENSE.txt`. Wheel
+`urllib3-2.8.0.dist-info/licenses/LICENSE.txt` and sdist
+`urllib3-2.8.0/LICENSE.txt` contain byte-identical MIT license text:
+1,093 bytes, SHA-256
+`130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686`.
+The selected wheel is pure Python and contains no native payload.
+
+This release-specific MIT finding is not approval of the entire shared parity
+closure, an owner/model/operator sign-off, Apple parity evidence, or artifact
+publication authorization. No historical license decision or evidence packet
+is re-signed: existing results remain bound to their recorded lock and HEAD;
+future executions must authenticate the lock they actually use. All existing
+unresolved family gates and `NO_UPLOAD` boundaries remain unchanged.
 
 ## 1. Vokra Core ライセンス方針
 

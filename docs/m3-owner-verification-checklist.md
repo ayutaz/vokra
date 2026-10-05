@@ -1,5 +1,14 @@
 # M3 (v0.9) Owner Verification Checklist
 
+> **2026-10-04 reading boundary:** this is a historical milestone record,
+> not the current task count or a runnable authorization. Preserve the dated
+> hardware, test totals, commands and decisions below. For the refreshed
+> 136 code/artifact-full / 58 unresolved metadata classification, bounded
+> Apple results and remaining GA conditions, use the
+> [documentation index](README.md) and [M5 checklist](m5-owner-verification-checklist.md).
+> Historical broad Cargo/model commands are not run on the maintainer Mac;
+> follow `AGENTS.md` and the applicable remote workflow for new verification.
+
 > **2026-08-30 current-state boundary:** This checklist is a historical M3
 > owner handoff and retains its dated campaign results, commands, and open
 > items. It is not the live completion ledger. For current implementation,

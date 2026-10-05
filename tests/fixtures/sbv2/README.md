@@ -105,7 +105,7 @@ steps below remain useful for diagnosis.
 `config.json` onto the `vokra.sbv2.*` hparam schema:
 
 ```bash
-uv run --project tools/parity/sbv2 --frozen python \
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python \
     tools/parity/sbv2_prepare_checkpoint.py \
     --hf-repo litagin/Style-Bert-VITS2-2.0-base-JP-Extra \
     --revision a731761009f3c96d104487be6ad332bf1bb5a3a5 \
@@ -125,7 +125,7 @@ the right `.safetensors` shard yourself if the download has more than one.
 `pytorch_model.bin` and must use the same uv-managed safe bridge as CI:
 
 ```bash
-uv run --project tools/parity/sbv2 --frozen python - <<'PY'
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python - <<'PY'
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="ku-nlp/deberta-v2-large-japanese-char-wwm",
@@ -136,7 +136,7 @@ snapshot_download(
 )
 PY
 
-uv run --project tools/parity/sbv2 --frozen python \
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python \
     tools/parity/bin_to_safetensors.py \
     --hf-repo microsoft/deberta-v3-large \
     --revision 64a8c8eab3e352a784c658aef62be1662607476f \
@@ -151,7 +151,7 @@ token via argv, which can leak through `ps` or shell history.
 pickle through the tracked uv-managed bridge on VAST:
 
 ```bash
-uv run --project tools/parity/sbv2 --frozen python \
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python \
     tools/parity/bin_to_safetensors.py \
     --hf-repo hfl/chinese-roberta-wwm-ext-large \
     --revision a25cc9e05974bd9687e528edd516f2cfdb3f5db9 \
@@ -161,7 +161,7 @@ uv run --project tools/parity/sbv2 --frozen python \
 ### 2. Generate the reference dump (Task 30, `sbv2_dump_reference.py`)
 
 ```bash
-uv run --project tools/parity/sbv2 --frozen python \
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python \
     tools/parity/sbv2_dump_reference.py \
     --checkpoint /tmp/sbv2-checkpoint \
     --output-dir tests/fixtures/sbv2 \
@@ -179,7 +179,7 @@ fallbacks or hand-write a dump.
 For the four-file ZH leg, use all pinned local BERT directories:
 
 ```bash
-uv run --project tools/parity/sbv2 --frozen python \
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python \
     tools/parity/sbv2_dump_reference.py \
     --checkpoint /tmp/sbv2-checkpoint \
     --bert-ja-repo /tmp/deberta-v2-ja \
@@ -193,10 +193,10 @@ loaded directly via HF `transformers`' `AutoModel` in the same uv-managed
 environment:
 
 ```bash
-uv run --project tools/parity python tools/parity/deberta_v2_dump_reference.py \
+uv run --project tools/parity --python 3.12 python tools/parity/deberta_v2_dump_reference.py \
     --hf-repo ku-nlp/deberta-v2-large-japanese-char-wwm \
     --output-dir /tmp/deberta-v2-dump --do-dump
-uv run --project tools/parity python tools/parity/deberta_v3_dump_reference.py \
+uv run --project tools/parity --python 3.12 python tools/parity/deberta_v3_dump_reference.py \
     --hf-repo microsoft/deberta-v3-large \
     --output-dir /tmp/deberta-v3-dump --do-dump
 ```
@@ -219,7 +219,7 @@ vokra-cli convert --model deberta-v2 \
     --tokenizer /tmp/deberta-v2-ja/vocab.txt \
     --output tests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf
 
-uv run --project tools/parity/sbv2 --frozen python \
+uv run --project tools/parity/sbv2 --frozen --python 3.12 python \
     tools/parity/extract_spm_metadata.py \
     --input /tmp/deberta-v3-en/spm.model \
     --output /tmp/deberta-v3-en/tokenizer_spm.json
@@ -268,9 +268,9 @@ CONVERTER-EMIT-EXPLICIT-ZEROS).
 ```bash
 # Run this heavyweight fixture test only on the VAST instance.
 # VAST only for maintainers: every -p vokra-models compile/test runs remotely.
-cargo test -p vokra-models --test sbv2_gguf_loader -- --ignored
-cargo test -p vokra-bert --test deberta_v2_loader -- --ignored
-cargo test -p vokra-models --test parity_sbv2_real \
+CARGO_BUILD_JOBS=1 cargo test -p vokra-models --test sbv2_gguf_loader -- --ignored
+CARGO_BUILD_JOBS=1 cargo test -p vokra-bert --test deberta_v2_loader -- --ignored
+CARGO_BUILD_JOBS=1 cargo test -p vokra-models --test parity_sbv2_real \
   parity_sbv2_real_waveform_matches_reference_dump -- --exact --nocapture
 ```
 
@@ -305,7 +305,7 @@ For debugging the worker, its underlying fixture command is:
 
 ```bash
 cd ~/vokra/tools/parity
-uv run python sbv2_sdp_body_dump.py \
+uv run --project . --frozen --python 3.12 python sbv2_sdp_body_dump.py \
     --checkpoint <VAST-staged-sbv2-dir> \
     --output-dir ~/vokra/tests/fixtures/sbv2 \
     --seed 0 --T 50
@@ -331,7 +331,7 @@ byte-for-byte stdout of `sbv2_dump_reference.py`'s **schema-preview mode**
 `torch`, and no `transformers` to run:
 
 ```bash
-uv run --no-project python tools/parity/sbv2_dump_reference.py \
+uv run --no-project --python 3.12 python tools/parity/sbv2_dump_reference.py \
     --checkpoint /tmp/unused --output-dir /tmp/unused --language ja
 ```
 
