@@ -34,7 +34,7 @@
     "dependency_project": {
       "name": "vokra-xy-tokenizer-reference",
       "pyproject_sha256": "167c19066e8c9debd08468d2ba556a9a4cf05f5cb1838a2c1f8664a0eb968640",
-      "uv_lock_sha256": "ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049",
+      "uv_lock_sha256": "40c15929bddce59be93e035ffb52d6bf9f7c4b7828190bd6df3f684ff47beb26",
       "active_package_count": 57
     },
     "pending_reviews": [
@@ -45,7 +45,7 @@
       "OWNER_SIGNOFF"
     ]
   },
-  "approval_scope_sha256": "fc72e1c2ef76dbc77b53ea7076ebffc49a4df4430b12bfcbd949bf5c53a36d2e",
+  "approval_scope_sha256": "dbcf5191df19a7bb161985d9163bf670dfbac64e2e5de63caf0681692302fd84",
   "blockers": [
     "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER",
     "LICENSE_BYTES_AND_NATIVE_PAYLOAD_EVIDENCE_REQUIRED",
@@ -53,7 +53,7 @@
   ],
   "project": {
     "pyproject_sha256": "167c19066e8c9debd08468d2ba556a9a4cf05f5cb1838a2c1f8664a0eb968640",
-    "uv_lock_sha256": "ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049",
+    "uv_lock_sha256": "40c15929bddce59be93e035ffb52d6bf9f7c4b7828190bd6df3f684ff47beb26",
     "active_package_count": 57
   },
   "source": null
