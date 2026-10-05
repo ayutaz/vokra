@@ -65,6 +65,39 @@ own evidence. Existing `OWNER_REVIEW_REQUIRED` and `NO_UPLOAD` gates are
 unchanged. No real-weight replay, numerical/Apple parity, publication, or
 whole-catalog completion is authorized or established by this supplement.
 
+## 2026-10-06 selected-wheel primary-license supplement
+
+Two independent bounded, in-memory reviews also authenticated these exact
+artifacts from the same unchanged CPU-only lock. The native-package scope is
+**glibc/manylinux Linux x86_64**, not every Linux wheel: the lock also lists
+musllinux candidates, which were not fetched for this review.
+
+| Selected publisher wheel | Bytes | SHA-256 |
+| --- | ---: | --- |
+| [safetensors 0.5.3 manylinux](https://files.pythonhosted.org/packages/a6/f8/dae3421624fcc87a89d42e1898a798bc7ff72c61f38973a65d60df8f124c/safetensors-0.5.3-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl) | 471,642 | `cead1fa41fc54b1e61089fa57452e8834f798cb1dc7a09ba3524f1eb08e0317a` |
+| [tokenizers 0.22.2 manylinux](https://files.pythonhosted.org/packages/2e/76/932be4b50ef6ccedf9d3c6639b056a967a86258c6d9200643f01269211ca/tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl) | 3,274,982 | `369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67` |
+| [tqdm 4.67.1 platform-independent](https://files.pythonhosted.org/packages/d0/30/dc54f88dd4a2b5dc8a0279bdd7270e735851848b762aeb1c1184ed1f6b14/tqdm-4.67.1-py3-none-any.whl) | 78,540 | `26445eca388f82e72884e0d580d5464cd801a3ea01e63e5601bdff9ba6a48de2` |
+
+Each wheel has one `METADATA` member with the expected Name/Version; its
+content matches the corresponding sdist `PKG-INFO` digest above. Safetensors
+and tokenizers have neither a regular LICENSE/LICENCE/COPYING/NOTICE member
+nor License/License-Expression/License-File headers. Their native members are
+`safetensors/_safetensors_rust.abi3.so` and `tokenizers/tokenizers.abi3.so`;
+these were enumerated, not loaded or executed. Located sdist licenses do not
+automatically prove the source/build binding of these native members.
+
+The tqdm wheel does contain `tqdm-4.67.1.dist-info/LICENCE`: 1,985 bytes,
+the same `dc33252e...` digest as its sdist above. Its metadata declares
+`MPL-2.0 AND MIT` and `License-File: LICENCE`, and no native member was found.
+Thus "tqdm has no bundled license" must not be generalized to this selected
+wheel. The older installed-environment receipt remains historical evidence,
+not a newly revalidated installation or RECORD binding.
+
+No archive was extracted or saved, package installed/imported, native code
+executed, or model acquired. Disposition remains **PRIMARY_ARTIFACT_FACTS_BOUND /
+INSTALLED_NATIVE_CLOSURE_UNPROVEN**. Owner review, execution restrictions and
+NO_UPLOAD are unchanged; this is not numerical or Apple verification.
+
 ## 2026-09-30 PR #167 dependency-security boundary
 
 The security review of the Torch 2.7.1 to 2.13.0 Dependabot update uses the
