@@ -17,8 +17,8 @@ import platform
 from typing import Any, MutableMapping
 
 
-EXPECTED_TORCH_PREFIX = "2.13.0"
-EXPECTED_TORCHAUDIO_PREFIX = "2.11.0"
+EXPECTED_TORCH_VERSION = "2.13.0+cpu"
+EXPECTED_TORCHAUDIO_VERSION = "2.11.0+cpu"
 EXPECTED_SPEECHBRAIN_VERSION = "1.1.1"
 SCHEMA = "vokra-speechbrain-lang-id-model-free-api-probe-v2"
 
@@ -33,11 +33,98 @@ def force_offline_environment(environment: MutableMapping[str, str]) -> None:
     environment["TRANSFORMERS_OFFLINE"] = "1"
 
 
+def _matches_exact_pinned_cpu_version(value: object, expected: str) -> bool:
+    """Accept only the exact CPU wheel version recorded by the lock evidence."""
+    if not isinstance(value, str):
+        return False
+    # TorchVersion is a str subclass with an overridden __eq__.  Call the
+    # builtin implementation directly so only its actual text is accepted.
+    return str.__eq__(value, expected) is True
+
+
+def _version_block_status(
+    torch_version: object, torchaudio_version: object
+) -> str | None:
+    """Return the fail-closed status for the two pinned CPU wheel versions."""
+    if not _matches_exact_pinned_cpu_version(torch_version, EXPECTED_TORCH_VERSION):
+        return "BLOCKED_UNEXPECTED_TORCH"
+    if not _matches_exact_pinned_cpu_version(
+        torchaudio_version, EXPECTED_TORCHAUDIO_VERSION
+    ):
+        return "BLOCKED_UNEXPECTED_TORCHAUDIO"
+    return None
+
+
 def self_test() -> None:
     offline = {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}
     force_offline_environment(offline)
     assert offline == {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
     assert EXPECTED_SPEECHBRAIN_VERSION == "1.1.1"
+    assert _version_block_status("2.13.0+cpu", "2.11.0+cpu") is None
+    invalid_torch_versions = (
+        "2.13.0",
+        "2.13.01",
+        "2.13.1+cpu",
+        "2.13.0rc1",
+        "2.13.0.dev0",
+        "2.13.0+cu130",
+        "2.13.0+cpu-junk",
+    )
+    for version in invalid_torch_versions:
+        assert _version_block_status(version, EXPECTED_TORCHAUDIO_VERSION) == (
+            "BLOCKED_UNEXPECTED_TORCH"
+        )
+    invalid_torchaudio_versions = (
+        "2.11.0",
+        "2.11.01",
+        "2.11.1+cpu",
+        "2.11.0rc1",
+        "2.11.0.dev0",
+        "2.11.0+cu130",
+        "2.11.0+cpu-junk",
+    )
+    for version in invalid_torchaudio_versions:
+        assert _version_block_status(EXPECTED_TORCH_VERSION, version) == (
+            "BLOCKED_UNEXPECTED_TORCHAUDIO"
+        )
+    for unsupported in (None, 2.13, True, b"2.13.0+cpu"):
+        assert _version_block_status(unsupported, EXPECTED_TORCHAUDIO_VERSION) == (
+            "BLOCKED_UNEXPECTED_TORCH"
+        )
+    for unsupported in (None, 2.11, False, b"2.11.0+cpu"):
+        assert _version_block_status(EXPECTED_TORCH_VERSION, unsupported) == (
+            "BLOCKED_UNEXPECTED_TORCHAUDIO"
+        )
+    assert _version_block_status("2.13.0+cpu", "2.11.0+cpu-junk") == (
+        "BLOCKED_UNEXPECTED_TORCHAUDIO"
+    )
+
+    class AlwaysEqual(str):
+        def __eq__(self, other: object) -> bool:
+            return True
+
+    class AlwaysUnequal(str):
+        def __eq__(self, other: object) -> bool:
+            return False
+
+    assert _version_block_status(
+        AlwaysEqual(EXPECTED_TORCH_VERSION), EXPECTED_TORCHAUDIO_VERSION
+    ) is None
+    assert _version_block_status(
+        AlwaysEqual("wrong-torch"), EXPECTED_TORCHAUDIO_VERSION
+    ) == "BLOCKED_UNEXPECTED_TORCH"
+    assert _version_block_status(
+        AlwaysUnequal(EXPECTED_TORCH_VERSION), EXPECTED_TORCHAUDIO_VERSION
+    ) is None
+    assert _version_block_status(
+        EXPECTED_TORCH_VERSION, AlwaysEqual(EXPECTED_TORCHAUDIO_VERSION)
+    ) is None
+    assert _version_block_status(
+        EXPECTED_TORCH_VERSION, AlwaysEqual("wrong-torchaudio")
+    ) == "BLOCKED_UNEXPECTED_TORCHAUDIO"
+    assert _version_block_status(
+        EXPECTED_TORCH_VERSION, AlwaysUnequal(EXPECTED_TORCHAUDIO_VERSION)
+    ) is None
     print("model_free_api_probe.py self-test: PASS")
 
 
@@ -75,11 +162,9 @@ def probe() -> tuple[int, dict[str, Any]]:
     if result["speechbrain"] != EXPECTED_SPEECHBRAIN_VERSION:
         result["status"] = "BLOCKED_UNEXPECTED_SPEECHBRAIN"
         return 2, result
-    if not torch.__version__.startswith(EXPECTED_TORCH_PREFIX):
-        result["status"] = "BLOCKED_UNEXPECTED_TORCH"
-        return 2, result
-    if not torchaudio.__version__.startswith(EXPECTED_TORCHAUDIO_PREFIX):
-        result["status"] = "BLOCKED_UNEXPECTED_TORCHAUDIO"
+    version_status = _version_block_status(torch.__version__, torchaudio.__version__)
+    if version_status is not None:
+        result["status"] = version_status
         return 2, result
 
     try:
