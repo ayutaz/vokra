@@ -8,8 +8,8 @@ from urllib.parse import urlparse
 
 REVISION = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"
 REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
-LOCK_SHA256 = "3aefd135a248a89b642149eac6f163e34d3627d8be9edf4a5f11a86239da22b2"
-PROJECT_SHA256 = "43e9a650d535be221037cefc7fea85eac508270e18980171e7fe04217353dc9c"
+LOCK_SHA256 = "218029a4bbf7676df561747f5ef77115be1dc2729471c2582e6e4ab3951289b1"
+PROJECT_SHA256 = "10fbdce1769a33ff4f61ef8c9f9e50e872457b7d0101eca7dd1486d794d0dd5f"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UNRESOLVED = ("UNRESOLVED", "OWNER_REVIEW_REQUIRED", "PENDING_REVIEW", "REVIEW_REQUIRED")
 PACKAGE_REVIEW_SCHEMA = {"name", "version", "source", "license", "status", "native_bundled_review"}
@@ -21,6 +21,7 @@ PACKAGE_KEYS = {
     frozenset({"dependencies", "name", "sdist", "source", "version", "wheels"}),
     frozenset({"name", "source", "version", "wheels"}),
     frozenset({"dependencies", "name", "source", "version", "wheels"}),
+    frozenset({"name", "optional-dependencies", "source", "version", "wheels"}),
     frozenset({"dependencies", "metadata", "name", "source", "version"}),
 }
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
@@ -51,6 +52,29 @@ def load_json(text: str) -> object:
             result[key] = value
         return result
     return json.loads(text, object_pairs_hook=reject)
+
+
+def dependency_rows_valid(value: object) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(dep, dict)
+        and set(dep) in ({"name", "marker"}, {"extra", "name", "marker"})
+        and isinstance(dep.get("name"), str)
+        and bool(dep["name"])
+        and isinstance(dep.get("marker"), str)
+        and ("extra" not in dep or (isinstance(dep["extra"], list) and all(isinstance(extra, str) and bool(extra) for extra in dep["extra"])))
+        for dep in value
+    )
+
+
+def optional_dependency_rows_valid(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(name, str)
+        and bool(name)
+        and dependency_rows_valid(rows)
+        for name, rows in value.items()
+    )
+
+
 def lock_rows(lock: dict) -> list[dict]:
     if set(lock) != LOCK_KEYS or lock.get("version") != 1 or type(lock.get("version")) is not int or lock.get("revision") != 3 or type(lock.get("revision")) is not int:
         raise ValueError("lock top-level schema drifted")
@@ -69,7 +93,8 @@ def lock_rows(lock: dict) -> list[dict]:
         markers = p.get("resolution-markers", [])
         dependencies = p.get("dependencies", [])
         if not isinstance(markers, list) or any(not isinstance(marker, str) for marker in markers): raise ValueError("malformed lock resolution markers")
-        if not isinstance(dependencies, list) or any(not isinstance(dep, dict) or set(dep) != {"name", "marker"} or not isinstance(dep.get("name"), str) or not dep["name"] or not isinstance(dep["marker"], str) for dep in dependencies): raise ValueError("malformed lock dependency row")
+        if not dependency_rows_valid(dependencies): raise ValueError("malformed lock dependency row")
+        if "optional-dependencies" in p and not optional_dependency_rows_valid(p["optional-dependencies"]): raise ValueError("malformed lock optional dependency row")
         source = p.get("source")
         if not isinstance(source, dict) or len(source) != 1 or set(source) not in ({"registry"}, {"virtual"}): raise ValueError("malformed lock source")
         if "registry" in source and source["registry"] not in REGISTRY_HOSTS: raise ValueError("unsupported lock registry")
@@ -98,6 +123,8 @@ def artifact_error(lock: dict) -> str | None:
             return f"package {package.get('name')!r} has malformed sdist"
         if "wheels" in package and not isinstance(package["wheels"], list):
             return f"package {package.get('name')!r} has malformed wheels"
+        if "optional-dependencies" in package and not optional_dependency_rows_valid(package["optional-dependencies"]):
+            return f"package {package.get('name')!r} has malformed optional dependencies"
         if source == {"virtual": "."}:
             if "sdist" in package or "wheels" in package:
                 return "virtual project source cannot carry resolver artifacts"
@@ -231,6 +258,16 @@ def self_test() -> None:
         for label, mutate in (("extra-artifact-field", lambda value: value["package"][0]["sdist"].update(extra=True)), ("empty-upload-time", lambda value: value["package"][0]["sdist"].update(**{"upload-time": " "})), ("evil-host", lambda value: value["package"][0]["sdist"].update(url="https://evil.example/packages/demo.tar.gz"))):
             candidate = load_json(json.dumps(valid_lock)); mutate(candidate)
             if artifact_error(candidate) is None: raise SystemExit(f"self-test accepted malformed artifact: {label}")
+        optional_lock = load_json(json.dumps(valid_lock))
+        optional_lock["package"][0].pop("sdist")
+        optional_lock["package"][0]["optional-dependencies"] = {"cuda": [{"name": "dep", "marker": "platform_machine == 'x86_64'"}]}
+        if len(lock_rows(optional_lock)) != 2 or artifact_error(optional_lock) is not None:
+            raise SystemExit("self-test rejected a valid optional dependency lock row")
+        for malformed in ({"cuda": [{"name": "dep"}]}, {"cuda": [{"name": "dep", "marker": "m", "unexpected": True}]}):
+            candidate = load_json(json.dumps(optional_lock)); candidate["package"][0]["optional-dependencies"] = malformed
+            try: lock_rows(candidate)
+            except ValueError: continue
+            raise SystemExit("self-test accepted malformed optional dependency lock row")
         rows=lock_rows(valid_lock); reviews=[{"name":"demo","version":"1","source":{"registry":"https://pypi.org/simple"},"license":"MIT","status":"REVIEWED","native_bundled_review":"reviewed"},{"name":"demo","version":"0.1.0","source":{"virtual":"."},"license":"project","status":"REVIEWED","native_bundled_review":"reviewed"}]
         identities={"repo":REPO,"revision":REVISION,**{f"{n}_{suffix}":value for n,(size,h) in FILES.items() for suffix,value in (("bytes",size),("sha256",h))}}
         licenses=[{"id":"source-apache","license":"Apache-2.0","status":"REVIEWED","conclusion":"reviewed","native_bundled_review":"reviewed"},{"id":"weights-apache","license":"Apache-2.0","status":"REVIEWED","conclusion":"reviewed","native_bundled_review":"reviewed"},{"id":"python-closure","license":"MIT","status":"REVIEWED","conclusion":"reviewed","native_bundled_review":"reviewed"}]

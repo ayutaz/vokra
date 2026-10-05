@@ -26,5 +26,5 @@ Windows runner (`cargo build --release -p vokra-capi`) and drop it into
 After placing a library, open the project in Unity once and set the plugin's
 platform import settings (target OS/CPU) in the Inspector, then commit the
 generated `.meta` if you want the settings tracked. iOS static linking
-(`DllImport("__Internal")`, NFR-RL-03) is v0.5 official-plugin scope (FR-API-04),
-not part of this demo.
+(`DllImport("__Internal")`, NFR-RL-03) is provided by the `com.vokra.unity`
+official package (current release `0.3.0`, FR-API-04), not by this v0.1 demo.

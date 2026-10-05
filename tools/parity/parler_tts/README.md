@@ -43,7 +43,8 @@ fail-closed.
 
 The release-to-HF DAC identity proof is generated only on a disposable VAST
 Linux/x86_64 worker by
-`uv run --project tools/parity/parler_tts --frozen python dac_provenance.py`.
+`uv run --project tools/parity/parler_tts --frozen --python 3.12 python
+tools/parity/parler_tts/dac_provenance.py`.
 It takes four existing files (`weights.pth`, `model.safetensors`, the exact
 `config.json`, and the release-tag `LICENSE`) plus an absent output path. The
 generator verifies fixed byte counts and SHA-256 values, loads the PTH only
@@ -67,7 +68,7 @@ never uploaded.
 Example VAST invocation:
 
 ```sh
-VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity/parler_tts --frozen \
+VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity/parler_tts --frozen --python 3.12 \
   python tools/parity/parler_tts/dac_provenance.py \
   --official-weights /root/dac/weights.pth \
   --hf-safetensors /root/dac/model.safetensors \
@@ -79,7 +80,7 @@ VOKRA_PUBLISH_ON_VAST=1 uv run --project tools/parity/parler_tts --frozen \
 The offline synthetic contract test is safe to run locally:
 
 ```sh
-uv run --project tools/parity/parler_tts --frozen \
+uv run --project tools/parity/parler_tts --frozen --python 3.12 \
   python tools/parity/parler_tts/dac_provenance.py --self-test
 ```
 

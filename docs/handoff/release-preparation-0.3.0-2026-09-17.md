@@ -1,5 +1,7 @@
 # Vokra 0.3.0 release-preparation record — 2026-09-17
 
+> **2026-10-04 supersession note:** `v0.3.0` was published on 2026-09-20 with 18 GitHub assets; the five named registry/AAR enable variables below are still `false` on this audit. Current all-pages security counts are 209 open Dependabot alerts (182 patched-version / 27 unpatched) and three open Code Scanning findings. Public metadata remains 194 repositories / 193 GGUF-bearing / 198 GGUF files, CPU/Metal code-artifact full 136 with 58 unresolved rows. These fresh values do not rewrite the dated release-preparation evidence, claim Apple-wide completion or authorize registry/model publication. See the [current index](../README.md).
+
 This record separates the source release from the ongoing public-model and
 Apple-hardware campaign. Version `0.3.0` is a pre-1.0 release with known gaps;
 it is not a declaration that the public model catalog, the six-platform

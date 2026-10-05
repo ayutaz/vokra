@@ -18,7 +18,10 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 ## モデル weight
 
 - **CC-BY-NC / CC-BY-NC-SA / 学習データ権利不明 → 公式 model zoo から除外**。engine 対応のみ・research flag で weight 非配布（例: F5-TTS = CC-BY-NC 4.0、Fish-Speech = CC-BY-NC-SA 4.0、EnCodec weight = CC-BY-NC）。
-- 商用 OK 候補: DAC(MIT) / Mimi(CC-BY 4.0・**attribution 要**) / WavTokenizer(MIT) / X-Codec2(MIT) / Kokoro(Apache 2.0) / piper-plus(MIT・依頼者作)。
+- 商用 OK 候補: DAC(MIT) / Mimi(CC-BY 4.0・**attribution 要**) /
+  WavTokenizer(MIT) / Kokoro(Apache 2.0) / piper-plus(MIT・依頼者作)。
+  X-Codec2 は**コードが MIT でも、監査済み weight は CC-BY-NC-4.0**で
+  あり、§3.1 の T4 Research-only（`--allow-noncommercial` 必須）である。
 - **Piper（OHF-Voice/piper1-gpl）は非対応**（GPL-3.0 + eSpeak-NG 二重汚染）。**eSpeak-NG（GPL-3.0）も core 非対応**。
 - **【2026-07-22 訂正】BigVGAN は MIT**（旧記述「NVIDIA Source Code License-NC → 論文からスクラッチ再実装」の**非商用前提は失効**、reference の直接移植が MIT 帰属表示で可能。根拠は `docs/license-audit.md` の BigVGAN 行と `NOTICE` §1）。旧「scratch reimpl」の `NOTICE` §1 記述は現在更新済。
 

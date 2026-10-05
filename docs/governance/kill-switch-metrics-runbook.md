@@ -1,7 +1,7 @@
 # Kill Switch C / K メトリクス計測 runbook
 
 **文書 ID**: VOKRA-GOV-001
-**最終更新**: 2026-09-09（現行tag/release/review状態を再照合）
+**最終更新**: 2026-10-04（tag/release APIとtracked review recordの現況を再照合）
 **位置付け**: [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) の Kill switch 表
 （NFR-MT-05、四半期手動 Go/No-go review）で
 `C`（v0.1 MVP 公開後 3ヶ月で GitHub star < 500、active user < 20）と
@@ -9,9 +9,10 @@
 **再現可能で機械的なメトリクス収集手順**。判定そのものは依頼者（`ayutaz`）が行う。
 本 runbook は「何を、いつ、どう数えるか」だけを固定する。
 
-**現行状態（2026-09-09）**: `release-cadence.yml` と
-`tools/release/test_cadence.py` は land 済み。ただし **git tag 0 / GitHub
-release 0 / quarterly review record 0** であり、release cadence は未確立。
+**現行状態（2026-10-04）**: `release-cadence.yml` と
+`tools/release/test_cadence.py` は land 済み。all-pages APIは **git tag 1 / GitHub
+release 1**（`v0.3.0`、2026-09-20）を返し、tracked quarterly review record は0。
+単一releaseではrelease cadence は未確立。
 この状態を Kill switch の判定結果とは扱わない。
 
 **対象条件（現行判定表より抜粋）**:
@@ -292,6 +293,10 @@ EOF
 
 **カレンダー登録は依頼者責任**（本 runbook は自動 CI に載せない = 2026-07-04 依頼者決定の
 「kill-switch 自動監視 .yml は廃止 → 手動四半期 Go/No-go review」を尊重）。
+
+**2026-10-04補足:** 表の2026-09-09時点の0件観測は履歴である。現在は
+`v0.3.0`が1件公開されているが、予定上の`v0.1.0` / `v0.5.0`起点との対応は
+owner未確定であり、既存release日を自動でカレンダーに代入しない。
 
 ---
 

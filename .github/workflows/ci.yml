@@ -388,7 +388,7 @@ jobs:
         with:
           command: check licenses advisories bans
       - name: Install cargo-audit
-        uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
         with:
           tool: cargo-audit
       - name: cargo-audit (RustSec advisories)

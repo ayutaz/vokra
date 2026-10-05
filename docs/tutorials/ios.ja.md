@@ -11,8 +11,9 @@ Vokra 呼び出しを動かすまでを扱います。
 - **Xcode 14 以上**（macOS）
 - **iOS 15 以上**の実機または Simulator（iOS 14 以下はスコープ外）
 - 実機配布用の Apple Developer 署名プロファイル
-- Vokra リポジトリ。タグ付きリリース URL は承認済みリリース公開後に
-  利用できます（現時点ではタグ付きリリースはありません）。
+- Vokra リポジトリ、または公開済み `v0.3.0` パッケージ。リリース asset は
+  `Vokra.xcframework.zip` です。使用時は consumer 側の `Package.swift`
+  target に公開 SHA-256 を明示し、未検証の binary に置き換えないでください。
 
 ## 2. XCFramework をビルド
 
@@ -37,16 +38,16 @@ scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
 
 ### 経路 B — リリース DL
 
-承認済みリリース後に、CD は `Vokra.xcframework.zip` と SHA-256 を GitHub
-Release asset として公開できます。現時点でその asset はありません。
-リリースが存在するようになったら `Package.swift` を URL 形式に切り替え
-ます（テンプレートはコメントアウトで既に用意済み）:
+`v0.3.0` GitHub Release は `Vokra.xcframework.zip` と SHA-256 を公開済みです。
+ただし `v0.3.0` tag の `Package.swift` は local path のままなので、clean tag
+checkout では上の local build 経路を使います。release asset を使う consumer は
+次の URL/checksum target を明示的に追加します:
 
 ```swift
 .binaryTarget(
     name: "Vokra",
-    url: "https://github.com/ayutaz/vokra/releases/download/<tag>/Vokra.xcframework.zip",
-    checksum: "<sha256>"
+    url: "https://github.com/ayutaz/vokra/releases/download/v0.3.0/Vokra.xcframework.zip",
+    checksum: "fe74aeb45cc44c7fc2a1875bdd61af7d88c4ae87d2966851c88cfa4e9dcbc5a5"
 )
 ```
 
