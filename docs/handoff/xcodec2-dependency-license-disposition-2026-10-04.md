@@ -381,3 +381,34 @@ binding, followed by project-policy review. No blanket absence of such
 evidence is claimed beyond the inspected sources. No package was installed,
 source recipe executed, VAST worker allocated, signature supplied, exception
 approved or execution/publication gate relaxed by this supplement.
+
+## Transformers-native config identity — 2026-10-06 JST
+
+The new oracle candidate's Hub revision is now fixed to the full commit
+`64bd034d12d441299cdd535b15c33efd6ccdf252` in `HKUSTAudio/xcodec2-hf`.
+Two independent read-only reviews checked only the following small, ordinary
+text files. Each response named that exact `x-repo-commit`; full byte counts,
+content SHA-256 and Git blob headers matched, with no LFS pointer or linked
+weight payload. Nothing was saved, imported or executed.
+
+| Fixed primary metadata | Bytes / Git blob | SHA-256 |
+| --- | --- | --- |
+| [config.json](https://huggingface.co/HKUSTAudio/xcodec2-hf/blob/64bd034d12d441299cdd535b15c33efd6ccdf252/config.json) | 2,923 / `3508ca1c0ab9d77f398e02b44fcc260be8daad55` | `f3082487a22d44095e42f0824825e4ed36f5b464ba8405d64eb20dc440a5756e` |
+| [preprocessor_config.json](https://huggingface.co/HKUSTAudio/xcodec2-hf/blob/64bd034d12d441299cdd535b15c33efd6ccdf252/preprocessor_config.json) | 291 / `95ed01d22ecb63d548ca24731b3e6bf62b58d5d3` | `39d2ebcd4c4b44e9b780721ce3665e44f46c31638e72125653c89e8c61b437de` |
+| [README.md](https://huggingface.co/HKUSTAudio/xcodec2-hf/blob/64bd034d12d441299cdd535b15c33efd6ccdf252/README.md) | 6,234 / `20ed76aad04473886a447368c634325edebb7d9f` | `811bdb9111db6e8e36a87cc3f358708ea609f9105d1925844403474d961c4288` |
+
+The fixed config identifies `model_type=xcodec2`, hidden size 1,024, twelve
+layers, sixteen attention heads and a 16-kHz sampling rate. The preprocessor
+also records 16 kHz. The fixed card retains **CC-BY-NC-4.0** weight terms;
+the Apache-2.0 Transformers source header does not change them.
+
+This closes the short-revision ambiguity for these three metadata files only:
+**CONFIG_IDENTITY_BOUND / WEIGHT_CORRESPONDENCE_UNPROVEN**. It does not
+authenticate any weight, shard or tensor header, establish exact correspondence
+to the legacy 1,153-tensor `generator.*` decoder contract, or approve a new
+oracle. The already inspected mapping source remains the reference for a
+future strict mapping review; full encoding components are not silently added
+to the existing decode-only runtime. Exact payload/name/shape/dtype mapping,
+permitted dependency/native closure, owner decisions and real CPU/Apple parity
+remain outstanding. No source, lock, model manifest, signature, numerical bound
+or execution/publication gate was changed; Draft / blocked / NO_UPLOAD remains.
