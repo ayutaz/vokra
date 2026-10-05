@@ -14,6 +14,23 @@ pyproject.toml  sha256=4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f5
 uv.lock         sha256=06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449
 ```
 
+## 2026-10-05 primary TorchAudio metadata fact (not approval)
+
+The exact official Linux CPU TorchAudio wheel above was read in memory and
+verified against its full SHA-256.  Its distribution-owned
+`torchaudio-2.11.0+cpu.dist-info/METADATA` member is 6,865 bytes with SHA-256
+`e77a84f87ce319a673f35dccb5658112ed7e5c1465e8a10ddc947f0136ed2d7c`.  The
+wheel URL is
+`https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl`,
+and the authenticated wheel identity is 341,338 bytes with SHA-256
+`2354248848d06a9ae1e7a12165f800f0dda7df60ecac9fca892322b722b922c0`.
+The metadata declares `Name: torchaudio`, `Version: 2.11.0+cpu`, and zero
+`Requires-Dist` lines.  This explains the intentionally empty TorchAudio
+dependency edge in the lock; it does not establish Torch 2.13 ABI
+compatibility, reconcile the authenticated Dia source's 2.6.0 pin, establish
+native payload licensing, or provide owner/legal approval.  `PENDING_REVIEW`
+and `NO_UPLOAD` remain unchanged.
+
 This is a security-refresh candidate, not a compatibility or parity result.
 The authenticated Dia source revision `2811af1c5f476b1f49f4744fabf56cf352be21e5`
 declares `torch==2.6.0` and `torchaudio==2.6.0`; it does not declare support
