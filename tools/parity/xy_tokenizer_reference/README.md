@@ -14,7 +14,7 @@ only in `utils/helpers.py`, which is not imported by `xy_tokenizer/model.py`
 or its frontend/encoder/RVQ/Vocos route; it is excluded from this closure.
 
 The exact VAST-generated CPU-only `uv.lock` is tracked at the pinned digest
-`ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049` (57 package
+`40c15929bddce59be93e035ffb52d6bf9f7c4b7828190bd6df3f684ff47beb26` (57 package
 rows). `license_evidence.json` is tracked only as an empty template. VAST must collect
 publisher or locked-sdist license bytes plus native bundled payload evidence.
 When an artifact contains additional component LICENSE/COPYING files, the
