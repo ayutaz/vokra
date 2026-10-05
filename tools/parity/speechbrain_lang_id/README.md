@@ -74,6 +74,11 @@ This is a source-ready candidate only. Real-weight CPU parity, independent
 reference evidence, and subsequent Apple CPU/Metal validation have not been
 run for SpeechBrain 1.1.1; no existing fixture or numeric bound is promoted.
 
+As of 2026-10-05, the scoped urllib3 2.8.0 release from Dependabot PR195 is
+included in this candidate's locked metadata. This records lock and license
+row restamping only; it is not dependency import, API, native, or parity
+proof, and the unresolved owner/license gates remain unchanged.
+
 All real conversion and measurements are VAST-only and no-upload. Numeric
 bounds remain unset; evidence is measurement-only until CPU and Metal results
 are independently reviewed.

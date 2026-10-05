@@ -1,6 +1,6 @@
 {
   "gate_version": 1,
-  "lock_sha256": "3520d6e8d4d10fd74a8eed4b9ce8b65263fc60e9eda31e12f63a1f562575e0e7",
+  "lock_sha256": "e779e47eb5c86cb2a7b8116f85d725c387d8ed3ac731280ae250f8af54f2c1b7",
   "project_sha256": "e686fbd42606513c9e9e705c793a7a157c951890ba7eefcf563329f75bb8dd0c",
   "package_rows": [
     {"name":"anyio","version":"4.14.2","source":{"registry":"https://pypi.org/simple"},"dependencies":[{"name":"idna","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"typing-extensions","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"}]},
@@ -39,10 +39,10 @@
     {"name":"torchaudio","version":"2.11.0+cpu","source":{"registry":"https://download.pytorch.org/whl/cpu"},"dependencies":[]},
     {"name":"tqdm","version":"4.70.0","source":{"registry":"https://pypi.org/simple"},"dependencies":[]},
     {"name":"typing-extensions","version":"4.16.0","source":{"registry":"https://pypi.org/simple"},"dependencies":[]},
-    {"name":"urllib3","version":"2.7.0","source":{"registry":"https://pypi.org/simple"},"dependencies":[]},
+    {"name":"urllib3","version":"2.8.0","source":{"registry":"https://pypi.org/simple"},"dependencies":[]},
     {"name":"vokra-speechbrain-lang-id-parity","version":"0.1.0","source":{"virtual":"."},"dependencies":[{"name":"huggingface-hub","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"hyperpyyaml","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"numpy","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"requests","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"safetensors","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"scipy","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"sentencepiece","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"soundfile","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"speechbrain","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"torch","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"},{"name":"torchaudio","marker":"platform_machine == 'x86_64' and sys_platform == 'linux'"}]}
   ],
-  "package_rows_sha256": "fedb2f4f9abc26862db9a0a2b2fcd5e53f759ed850f1d079d85a5c5e61c6ceb1",
+  "package_rows_sha256": "922748582d5a46bf56e642be06f03bf519141ca10691fdc0c71dcfd6194c2327",
   "package_review_rows": [
     {"name":"anyio","version":"4.14.2","source":{"registry":"https://pypi.org/simple"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
     {"name":"certifi","version":"2026.7.22","source":{"registry":"https://pypi.org/simple"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
@@ -80,10 +80,10 @@
     {"name":"torchaudio","version":"2.11.0+cpu","source":{"registry":"https://download.pytorch.org/whl/cpu"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
     {"name":"tqdm","version":"4.70.0","source":{"registry":"https://pypi.org/simple"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
     {"name":"typing-extensions","version":"4.16.0","source":{"registry":"https://pypi.org/simple"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
-    {"name":"urllib3","version":"2.7.0","source":{"registry":"https://pypi.org/simple"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
+    {"name":"urllib3","version":"2.8.0","source":{"registry":"https://pypi.org/simple"},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
     {"name":"vokra-speechbrain-lang-id-parity","version":"0.1.0","source":{"virtual":"."},"license":"UNRESOLVED","status":"UNRESOLVED","native_bundled_review":"OWNER_REVIEW_REQUIRED"}
   ],
-  "package_review_rows_sha256": "bf69ac6c8ff7a9cfdf73595e61d3515f27b498a7a8bc787539b0027a17e27cbc",
+  "package_review_rows_sha256": "0bee07be0c25fbffbf56705780a7e6d136a6013951af943fc5237b91e31aedf0",
   "license_rows": [
     {"id":"model-apache","license":"Apache-2.0","status":"UNRESOLVED","conclusion":"OWNER_REVIEW_REQUIRED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
     {"id":"source-code","license":"UNRESOLVED","status":"UNRESOLVED","conclusion":"OWNER_REVIEW_REQUIRED","native_bundled_review":"OWNER_REVIEW_REQUIRED"},
