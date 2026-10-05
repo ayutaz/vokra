@@ -38,6 +38,21 @@ if (($# == 0)); then
   exit 64
 fi
 
+# Vast's diagnostic forms can expose credential material outside the
+# supported redaction formats.  Reject the option and its `--option=value`
+# form before starting the CLI or creating a temporary capture directory.
+# Do not include the caller's argument in the refusal so a secret embedded in
+# an option value is never echoed.
+for arg in "$@"; do
+  case "$arg" in
+    --e|--e=*|--ex|--ex=*|--exp|--exp=*|--expl|--expl=*|--expla|--expla=*|--explai|--explai=*|--explain|--explain=*|--c|--c=*|--cu|--cu=*|--cur|--cur=*|--curl|--curl=*)
+      printf '%s\n' \
+        'vastai-safe.sh: refusing credential-printing diagnostic option' >&2
+      exit 64
+      ;;
+  esac
+done
+
 # `vastai destroy instance` is destructive and the CLI asks for an
 # interactive confirmation when `--yes` is omitted.  A lifecycle controller
 # may have no tty, and the CLI can otherwise abort with status 0, leaving the
