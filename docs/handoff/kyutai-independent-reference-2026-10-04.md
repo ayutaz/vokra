@@ -781,3 +781,30 @@ No exclusion, timeout widening, source gate relaxation, catalog promotion or
 workflow rerun is attributed to these diagnoses. Other existing CI handles
 remain tracked. The original official/real-weight responsibility is still
 open; no merge, upload or full goal completion follows from these repairs.
+
+## Evaluator PCM schedule correction — 2026-10-06 JST
+
+The selected PCM oracle is the authenticated DSM evaluator at revision
+`4c4f65e147df056adf3346290d64c7b9649b18c9`, whose retained source identity is
+11,674 bytes, Git blob
+`684fe5cc5512c6d2e7802ecfd6152f9b7dcf6373`, and raw SHA-256
+`2832c048c77aa8ac4baa5535d5b723d17acb3ac91a33f943a3538d4c563d6dcb`. The
+evaluator pads 24 kHz PCM with 24,000 left samples and 72,000 right samples,
+ceils the complete input to 1,920-sample frames, and performs one Mimi encode
+and one LM step per encoded frame, including the first and post-reset frames.
+
+The native crate-private PCM route was corrected to this explicit sample-level
+boundary: right padding is 72,000 samples, frame counts use checked ceiling,
+the final residual is zero-padded rather than discarded, and the first frame
+performs one LM step. Raw text rows 0 through 3 remain retained in the raw
+stream; only the evaluator emission view forwards ids greater than 3. The
+existing broader `emits_text_token` behavior used by other code-boundary
+routes is unchanged.
+
+The pinned `stt_from_file_pytorch.py` receipt remains a distinct official
+caller boundary (input ceiling plus 13 prefix and 32 suffix chunks), and the
+server transport client is also distinct. This correction does not claim
+equivalence between those boundaries, numerical parity, real-weight
+execution, owner/legal approval, or publication readiness. The affected Rust
+tests and exact-head remote verification remain required; no local model
+execution or broad Cargo run was performed for this correction.

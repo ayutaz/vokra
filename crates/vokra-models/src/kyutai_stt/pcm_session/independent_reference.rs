@@ -2886,7 +2886,7 @@ fn kv_checkpoint_positions_cover_eviction_without_accepting_future_rows() {
 }
 
 #[test]
-fn causal_alignment_does_not_shift_first_double_or_reset_tail() {
+fn causal_alignment_rejects_nonzero_call_ordinals_and_keeps_reset_tail() {
     assert_eq!(aligned_reference_frame(false, 0, 0, 0), Some(0));
     assert_eq!(aligned_reference_frame(false, 0, 1, 1), None);
     assert_eq!(aligned_reference_frame(false, 0, 0, 1), None);

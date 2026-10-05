@@ -42,14 +42,16 @@ capture.  The PCM source candidate now exists, but no real PCM capture has
 run; the native PCM tests below are structural borrowed-observer tests, not
 real-weight or numerical proof.
 
-The two schedules must not be silently conflated.  The official evaluator
-boundary represented by `pcm_dump.py` uses one second of left silence, three
-seconds of right silence (`delay + 0.5`), ceiling to a complete frame, and one
-LM call per encoded frame.  The existing native PCM session uses 3.5 seconds
-of right silence (`delay + 1.0`), drains complete hops with a final partial
-hop discarded, and makes the first frame's LM call twice before continuing
-with one call per frame.  This is an explicit schema/scope difference to be
-reported by a future consumer, not a license to shift, drop, or fit calls.
+The two upstream callers must not be silently conflated.  The selected
+evaluator boundary represented by `pcm_dump.py` uses one second of left
+silence, three seconds of right silence (`delay + 0.5`), ceiling to a complete
+frame, and one LM call per encoded frame.  The native PCM session now follows
+that sample-level schedule, including one call for the first and first
+post-reset frames.  The pinned `stt_from_file_pytorch.py` receipt remains a
+distinct chunked caller (input ceiling, 13 prefix chunks, 32 suffix chunks),
+and the server transport client is a third boundary.  No caller boundary is
+silently substituted for another; source, framing, and call counts remain
+explicit in the producer/consumer evidence.
 
 The real CLI, when the separately reviewed closure is non-empty, is:
 
