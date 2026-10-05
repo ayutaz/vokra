@@ -8,6 +8,15 @@ Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small
 
 memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 
+**2026-10-05 credential-diagnostic safety rule:** ローカルの VAST CLI は必ず
+`scripts/publish/vast-ai/vastai-safe.sh` 経由で呼ぶ。read-only 調査でも直接 CLI を
+実行したり、資格情報を出力し得る `--explain` / `--curl`（省略形・値付き形式を含む）
+を使ったりしない。wrapper はこれらの完全形・省略形・値付き形式を CLI 起動前に拒否する。
+API key を引数・出力・記録へ入れず、資格情報を含む生の診断出力を複製しない。
+キーが tool output に出た場合は漏えいとして扱い、そのキーの再利用を止め、
+無効化・ローテーションを完了してから VAST へのアクセスを再開する。
+この運用ルールは過去の instance、検証、公開結果を書き換えるものではない。
+
 ## 0. TL;DR — 自動化 pipeline (Phase B, 2026-07-28)
 
 **判定**: `scripts/publish/check-model-size.sh <hf-repo>` を local で走らせて `LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` の verdict を確認する。この preflight は checkpoint を取得しないメタデータ照会だけに限る。convert / real-weight verify / upload は verdict にかかわらず上記 override に従い vast.ai で行う。
