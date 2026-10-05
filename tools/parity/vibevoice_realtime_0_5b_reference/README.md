@@ -16,6 +16,55 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## 2026-10-06 locked-sdist primary-license supplement
+
+This dated supplement starts from the clean PR #169 source candidate
+`312369da7886f680cd708fea91b14818b4a5eb9d`, which includes main
+`5ccde239ec261cbd8c3b5ac8a23fe2ee32fdddeb`. Its CPU-only lock remains
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e`.
+The earlier installed-environment audit below remains bound to its original
+HEAD and evidence hash. A license found in an sdist does **not** disprove a
+missing bundled-license finding for a different, installed wheel.
+
+Two independent read-only reviews authenticated the following exact lock-listed
+publisher sdists by full size and SHA-256. Regular archive members were read
+in memory with bounded reads; no archive was extracted to disk, dependency
+installed/imported, build script run, model acquired/executed, or token used.
+
+| Publisher sdist | Bytes | SHA-256 |
+| --- | ---: | --- |
+| [safetensors 0.5.3](https://files.pythonhosted.org/packages/71/7e/2d5d6ee7b40c0682315367ec7475693d110f512922d582fef1bd4a63adc3/safetensors-0.5.3.tar.gz) | 67,210 | `b6b0d6ecacec39a4fdd99cc19f4576f5219ce858e6fd8dbe7609df0b8dc56965` |
+| [tokenizers 0.22.2](https://files.pythonhosted.org/packages/73/6f/f80cfef4a312e1fb34baf7d85c72d4411afde10978d4657f8cdd811d3ccc/tokenizers-0.22.2.tar.gz) | 372,115 | `473b83b915e547aa366d1eee11806deaf419e17be16310ac0a14077f1e28f917` |
+| [tqdm 4.67.1](https://files.pythonhosted.org/packages/a8/4b/29b4ef32e036bb34e4ab51796dd745cdba7ed47ad142a9f4a1eb8e0c744d/tqdm-4.67.1.tar.gz) | 169,737 | `f8aef9c52c08c13a65f30ea34f4e5aac3fd1a34959879d7e59e63027286627f2` |
+
+Located primary license members:
+
+- `safetensors-0.5.3/safetensors/LICENSE` and
+  `tokenizers-0.22.2/tokenizers/LICENSE` are each 11,357 bytes, SHA-256
+  `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
+- `tqdm-4.67.1/LICENCE` is 1,985 bytes, SHA-256
+  `dc33252e829015e3b150086fb9b3a40f6ad6fb32c2f4610ce812fa677d35986a`.
+  The spelling is `LICENCE`, not an absent `LICENSE` member.
+
+Each sdist's `PKG-INFO` matches its locked Name and Version. Safetensors and
+tokenizers have Apache license classifiers but no explicit `License` header;
+their respective `PKG-INFO` digests are
+`fe7d581363ed20b204701623da8f90dd8a3b9995e9a9290b616788d80356adbf`
+(3,823 bytes) and
+`15a5ddaf489f592b77e0a934c0eeb46b51130a94064ca129232afdb0a3868efc`
+(7,254 bytes). Both tqdm `PKG-INFO` members are byte-identical:
+57,675 bytes, SHA-256
+`688a1632df525a198fec52dcfefb1246d31eacee9c035aacac2d7eaf8d8ff669`.
+They declare `License: MPL-2.0 AND MIT` and `License-File: LICENCE`;
+this must not be reduced to MIT-only or treated as a blanket MPL approval.
+
+Disposition is **SDIST_PRIMARY_LICENSE_LOCATED / INSTALLED_BINDING_UNPROVEN**.
+Exact selected-wheel/build/installed RECORD and native-library closure,
+compatibility, package/license and operator owner review still need their
+own evidence. Existing `OWNER_REVIEW_REQUIRED` and `NO_UPLOAD` gates are
+unchanged. No real-weight replay, numerical/Apple parity, publication, or
+whole-catalog completion is authorized or established by this supplement.
+
 ## 2026-09-30 PR #167 dependency-security boundary
 
 The security review of the Torch 2.7.1 to 2.13.0 Dependabot update uses the
