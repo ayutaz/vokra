@@ -20,6 +20,21 @@ WeSpeaker loader. The lock is immutable for the staged run:
   torchaudio 341,338 bytes /
   `2354248848d06a9ae1e7a12165f800f0dda7df60ecac9fca892322b722b922c0`.
 
+## 2026-10-05 primary TorchAudio metadata fact (not approval)
+
+The exact official Linux CPU TorchAudio wheel above was read in memory and
+verified against its full SHA-256. Its distribution-owned
+`torchaudio-2.11.0+cpu.dist-info/METADATA` member is 6,865 bytes with SHA-256
+`e77a84f87ce319a673f35dccb5658112ed7e5c1465e8a10ddc947f0136ed2d7c`. It
+is the official artifact at
+`https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl`.
+The wheel declares `Name: torchaudio`, `Version: 2.11.0+cpu`, has no `License:` or
+`License-Expression:` field, carries the BSD license classifier, and has zero
+`Requires-Dist` lines. This explains the intentionally empty TorchAudio
+dependency edge in the lock; it does not prove Torch 2.13 ABI compatibility,
+native payload licensing, or owner/legal approval. `PENDING_REVIEW` and
+`NO_UPLOAD` remain unchanged.
+
 The independent dumper imports official wenet-e2e/wespeaker revision
 45941e7cba2c3ea99e232d02bedf617fc71b0dad, loads only the pinned
 Wespeaker/wespeaker-voxceleb-resnet34-LM avg_model at revision
