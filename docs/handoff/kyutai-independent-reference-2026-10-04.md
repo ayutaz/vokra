@@ -808,3 +808,29 @@ equivalence between those boundaries, numerical parity, real-weight
 execution, owner/legal approval, or publication readiness. The affected Rust
 tests and exact-head remote verification remain required; no local model
 execution or broad Cargo run was performed for this correction.
+
+## Reset-probe boundary correction — 2026-10-06 JST
+
+Read-only comparison of the authenticated `pcm_dump.py` producer and the
+native consumer found a reset-boundary mismatch in the old consumer path. The
+producer resets Mimi and `LMGen`, then captures exactly one 1,920-sample frame
+from the already padded PCM tensor (`warmup=377`, `post_reset=1`, one LM call
+for that frame). A normal native `push_pcm` starts with the session's 24,000
+left-prefix samples and drains them before appending a 1,920-sample input;
+that path therefore performs 12 prefix-frame calls plus one input-frame call.
+Those extra calls were correctly marked unmatched, but they could not provide
+the producer's one-frame reset oracle.
+
+The test-only consumer probe now shares the production `drain_one` callback
+path and requires a fresh reset state. It executes exactly one padded prefix
+frame, invokes the same Mimi encode and LM step/feedback callbacks, preserves
+the remaining 22,080 prefix samples, and fails closed on repeated, non-reset,
+encoder-error, or LM-error use. The regular production `push_pcm`/`finish`/
+`reset` behavior, evaluator padding, token boundary, KV math, alignment
+rejection, `FIXED_ATOL=None`, and `NO_UPLOAD` gates are unchanged. Structural
+tests distinguish normal 1,920-sample push (13 frames) from the reset probe
+(one frame, ordinal zero, first feedback `None`).
+
+This is an orchestration-boundary correction only. It is not a Rust execution,
+official upstream capture, real-weight CPU parity result, Apple CPU/Metal
+result, license approval, or publication approval.

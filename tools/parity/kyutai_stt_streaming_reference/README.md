@@ -46,12 +46,24 @@ The two upstream callers must not be silently conflated.  The selected
 evaluator boundary represented by `pcm_dump.py` uses one second of left
 silence, three seconds of right silence (`delay + 0.5`), ceiling to a complete
 frame, and one LM call per encoded frame.  The native PCM session now follows
-that sample-level schedule, including one call for the first and first
-post-reset frames.  The pinned `stt_from_file_pytorch.py` receipt remains a
+that sample-level schedule for its ordinary complete-input path, with one call
+per encoded frame.  Its normal reset-plus-streaming-prefix path is a distinct
+boundary covered by the reset-probe rule below.  The pinned
+`stt_from_file_pytorch.py` receipt remains a
 distinct chunked caller (input ceiling, 13 prefix chunks, 32 suffix chunks),
 and the server transport client is a third boundary.  No caller boundary is
 silently substituted for another; source, framing, and call counts remain
 explicit in the producer/consumer evidence.
+
+The test-only native reset probe has one additional boundary rule.  After a
+fresh `reset`, it replays exactly the evaluator's first 1,920-sample padded
+silence frame once, retaining the remaining 22,080 prefix samples.  This is
+the only reset path aligned to `pcm_dump.py`'s single post-reset event.  A
+normal native `push_pcm` after reset intentionally drains its 24,000-sample
+streaming prefix first (12 frames, plus a non-empty 1,920-sample push), so it
+is not substituted for this one-frame oracle probe.  The probe is structural
+and test-only; it does not widen the production API or turn the consumer's
+`NOT_PARITY_PASS` result into parity evidence.
 
 The real CLI, when the separately reviewed closure is non-empty, is:
 

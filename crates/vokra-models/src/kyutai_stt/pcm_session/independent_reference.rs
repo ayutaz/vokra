@@ -2545,7 +2545,7 @@ fn authenticate_and_consume_pcm(
     session.reset();
     verify_empty_native_kv(&session)?;
     let mut after_reset = BoundedPcmObserver::new(reference, true);
-    session.push_pcm_with_observer(&samples[..samples.len().min(1_920)], &mut after_reset)?;
+    session.reset_probe_first_padded_frame_with_observer(&mut after_reset)?;
     Ok(PcmDiagnostic {
         status: "NOT_PARITY_PASS",
         frames: warmup.0 + after_reset.frames,
