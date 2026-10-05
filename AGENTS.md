@@ -63,6 +63,12 @@ do not depend on Claude Code settings or hook behavior when working here.
   green VAST run, `VOKRA_SKIP_HOOKS=1` may be used for the corresponding code
   push. A deletion-only ref update still runs the compliance regression, then
   skips Cargo because it transfers no commit.
+- Invoke the VAST CLI only through `scripts/publish/vast-ai/vastai-safe.sh`.
+  Never run credential-printing diagnostic options such as `--explain` or
+  `--curl`, including abbreviated or value-bearing forms, even for a read-only
+  investigation. Do not put keys in arguments, print them, or copy raw
+  credential-bearing diagnostics into reports. If a key reaches tool output,
+  stop reusing it and require revocation/rotation before further VAST access.
 
 ## Skill routing
 
