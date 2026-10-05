@@ -540,3 +540,31 @@ The initial installed inventory and clean source checkout are captured before
 package inspection, then both are revalidated after package and archive
 binding. WHEEL metadata may contain multiple distinct expanded platform tags,
 but duplicate tags or filename/tag disagreement remain blocked.
+
+## 2026-10-06 lock identity enrichment (VAST not run)
+
+The current lock adds bounded artifact identity only. The exact selected
+[`jinja2` wheel](https://download.pytorch.org/whl/jinja2-3.1.6-py3-none-any.whl)
+is 134,899 bytes with SHA-256
+`85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67`; the
+exact selected
+[`markupsafe` wheel](https://download.pytorch.org/whl/markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl)
+is 22,947 bytes with SHA-256
+`d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d`.
+The remaining eleven previously size-less wheel rows have bounded HTTP HEAD
+size metadata recorded in `uv.lock` (mpmath, four NumPy, three Pillow,
+SymPy, Torch, and typing-extensions); their bodies were not re-fetched by this
+change. URLs, versions, markers, dependency edges, and pre-existing hashes
+remain unchanged.
+
+`uv.lock` now hashes to
+`34f58e53b5c79ed96853c2a4b6f9b6b1eaf12066f010cd23ddffae2b816b3797`, and the
+reference status is
+`IDENTITY_ENRICHED_VAST_NOT_RUN_OWNER_REVIEW_REQUIRED`. The compatibility-smoke
+and installed-closure receipts remain historical and are explicitly bound to
+the prior lock SHA
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e`; they are
+not evidence for this enriched lock. Package license, native closure, runtime
+compatibility, owner/legal review, real execution, and `NO_UPLOAD` gates remain
+unresolved/blocked. No dependency was installed or imported and no VAST
+collection was run.

@@ -131,6 +131,13 @@ class CollectorTests(unittest.TestCase):
                 self.manifest, self.root / "manifest.json", "p" * 64, "l" * 64, self.locked
             )
 
+    def test_selected_wheel_missing_lock_size_is_blocked(self) -> None:
+        self.locked["demo"]["wheels"][0].pop("size")
+        with self.assertRaises(AUDIT.AuditError):
+            AUDIT.verify_selected_artifacts(
+                self.manifest, self.root / "manifest.json", "p" * 64, "l" * 64, self.locked
+            )
+
     def test_record_extra_noninstaller_path_is_blocked(self) -> None:
         with self.assertRaises(AUDIT.AuditError):
             AUDIT.bind_installed_record_to_wheel(
@@ -622,9 +629,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(registry_names), 41)
         self.assertIn("torch", registry_names)
         self.assertFalse("triton" in registry_names or any(name.startswith("nvidia-") for name in registry_names))
-        with self.assertRaises(AUDIT.AuditError) as blocked:
-            AUDIT.validate_lock(lock)
-        self.assertIn("artifact hash missing", str(blocked.exception))
+        validated = AUDIT.validate_lock(lock)
+        self.assertEqual(set(validated), registry_names)
+        for row in rows:
+            if "registry" not in row.get("source", {}):
+                continue
+            for wheel in row.get("wheels", []):
+                self.assertRegex(wheel.get("hash", ""), r"^sha256:[0-9a-f]{64}$")
+                self.assertIsInstance(wheel.get("size"), int)
+                self.assertGreater(wheel["size"], 0)
 
 
 if __name__ == "__main__":
