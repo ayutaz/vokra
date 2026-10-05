@@ -172,6 +172,55 @@ run_destroy_confirmation_cases() {
   }
 }
 
+run_diagnostic_option_rejection_cases() {
+  local prefix suffix option actual_status
+  for prefix in e ex exp expl expla explai explain c cu cur curl; do
+    for suffix in '' '=https://example.test/?api_key=should-not-print'; do
+      option="--$prefix$suffix"
+      rm -f -- "$tmp_dir/diagnostic-marker"
+      set +e
+      # shellcheck disable=SC2016
+      # FAKE_MARKER intentionally expands in the child shell.
+      FAKE_MARKER="$tmp_dir/diagnostic-marker" VASTAI_BIN=sh "$wrapper" -c \
+        'printf invoked >"$FAKE_MARKER"' "$option" \
+        >"$stdout_file" 2>"$stderr_file"
+      actual_status=$?
+      set -e
+      [[ "$actual_status" == 64 ]] || {
+        echo "vastai-safe self-test: diagnostic option $option returned $actual_status" >&2
+        return 1
+      }
+      [[ ! -s "$stdout_file" && ! -e "$tmp_dir/diagnostic-marker" ]] || {
+        echo "vastai-safe self-test: rejected diagnostic option reached the CLI" >&2
+        return 1
+      }
+      grep -Fqx -- \
+        'vastai-safe.sh: refusing credential-printing diagnostic option' \
+        "$stderr_file" || {
+        echo 'vastai-safe self-test: diagnostic rejection message mismatch' >&2
+        return 1
+      }
+    done
+  done
+}
+
+run_benign_long_option_cases() {
+  local option actual_status
+  for option in --env --cpu-cores; do
+    set +e
+    env VASTAI_BIN=sh "$wrapper" -c 'printf invoked' "$option" \
+      >"$stdout_file" 2>"$stderr_file"
+    actual_status=$?
+    set -e
+    [[ "$actual_status" == 0 && "$(<"$stdout_file")" == invoked && ! -s "$stderr_file" ]] || {
+      echo "vastai-safe self-test: benign option $option was rejected or altered" >&2
+      return 1
+    }
+  done
+}
+
+run_diagnostic_option_rejection_cases
+run_benign_long_option_cases
 run_destroy_confirmation_cases
 
 echo 'test-vastai-safe.sh: OK (redaction + exit-status + destroy confirmation)'
