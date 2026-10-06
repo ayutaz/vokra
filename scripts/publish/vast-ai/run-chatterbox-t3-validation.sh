@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 PARITY="$ROOT/tools/parity"
 REFERENCE_PROJECT="$PARITY/chatterbox_t3"
-REFERENCE_LOCK_SHA256="2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f"
+REFERENCE_LOCK_SHA256="3c1a295bd6d45e6b83f7a182a4421bbb7cc5904a554f4305b9f7d08d1e92029d"
+REFERENCE_PACKAGE_ROWS_SHA256="a47f8a74ef9d990289002eaccd346d7d5cbbc9d1480d1213596bc01b0ed36c24"
+REFERENCE_TORCH_VERSION="2.13.0"
+REFERENCE_TORCHAUDIO_VERSION="2.11.0"
+REFERENCE_TORCH_DISTRIBUTION="2.13.0+cpu"
+REFERENCE_TORCHAUDIO_DISTRIBUTION="2.11.0+cpu"
 INSPECTOR="$PARITY/chatterbox_family_inspect.py"
 REFERENCE="$PARITY/chatterbox_t3_reference.py"
 VARIANT="${CHATTERBOX_VARIANT:-base}"
@@ -74,12 +79,64 @@ license_audit_preflight(){
   audit_rc=$?
   set -e
   if [[ "$audit_rc" == 2 ]]; then
-    [[ "$audit_output" == *"$REFERENCE_LOCK_SHA256"* ]] || die 'license audit did not report the reviewed lock identity'
+    CHATTERBOX_AUDIT_OUTPUT="$audit_output" UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
+      "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_TORCH_VERSION" \
+      "$REFERENCE_TORCHAUDIO_VERSION" "$REFERENCE_TORCH_DISTRIBUTION" \
+      "$REFERENCE_TORCHAUDIO_DISTRIBUTION" <<'PY' || die 'license audit identity is stale or malformed'
+import json
+import os
+import sys
+
+expected_lock, expected_rows, expected_torch, expected_torchaudio, expected_torch_cpu, expected_torchaudio_cpu = sys.argv[1:]
+expected_core = {
+    "numpy": "1.26.4",
+    "huggingface-hub": "1.27.0",
+    "einops": "0.8.2",
+    "safetensors": "0.5.3",
+    "torch": expected_torch,
+    "torchaudio": expected_torchaudio,
+    "tqdm": "4.67.1",
+    "transformers": "5.10.4",
+}
+expected_cpu = {"torch": expected_torch_cpu, "torchaudio": expected_torchaudio_cpu}
+try:
+    def pairs(items):
+        result = {}
+        for key, item in items:
+            if key in result:
+                raise ValueError(f"duplicate audit key: {key}")
+            result[key] = item
+        return result
+
+    value = json.loads(os.environ["CHATTERBOX_AUDIT_OUTPUT"], object_pairs_hook=pairs)
+    if not isinstance(value, dict) or set(value) != {"reference_environment", "license_audit"}:
+        raise ValueError("audit envelope schema drifted")
+    environment = value["reference_environment"]
+    audit = value["license_audit"]
+    if not isinstance(environment, dict) or not isinstance(audit, dict):
+        raise ValueError("audit sections are malformed")
+    if environment.get("sha256") != expected_lock:
+        raise ValueError("lock SHA-256 drifted")
+    if environment.get("package_rows_sha256") != expected_rows:
+        raise ValueError("package-row SHA-256 drifted")
+    if environment.get("core_versions") != expected_core:
+        raise ValueError("core package versions drifted")
+    if environment.get("cpu_distribution_versions") != expected_cpu:
+        raise ValueError("CPU distribution versions drifted")
+    if environment.get("cpu_index") != "https://download.pytorch.org/whl/cpu":
+        raise ValueError("CPU index drifted")
+    if audit.get("lock_sha256") != expected_lock:
+        raise ValueError("license audit lock identity drifted")
+    if audit.get("status") != "BLOCKED_UNRESOLVED":
+        raise ValueError("license audit is not the current blocked disposition")
+except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    raise SystemExit(str(error))
+PY
     echo "$audit_output" >&2
     return 1
   fi
-  [[ "$audit_rc" == 0 ]] || die 'dependency license audit command failed unexpectedly'
-  return 0
+  [[ "$audit_rc" == 0 ]] && die 'license audit unexpectedly cleared before owner approval'
+  die "dependency license audit command failed unexpectedly (exit $audit_rc)"
 }
 require_absent_path(){
   local target="$1" current
@@ -124,7 +181,7 @@ while (($#)); do
 done
 self_test(){
   local fail=0 token tmp scope scope_sha approval approval_sha
-for token in '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 't3_mtl23ls_v3.safetensors' 'Cangjie5_TC.json' 'mtl_tokenizer.json' 'REFERENCE_EVIDENCE_COMPLETE' 'torch.multinomial' 'NO_UPLOAD' 'BLOCKED_APPROVAL/INSPECTION_ONLY' '--approval-sha256' '--expected-head' 'CARGO_BUILD_JOBS=1' 'CHATTERBOX_T3_REFERENCE_PACKET' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' 'torch==2.6.0' 'mutable optional Perth' 'reference_environment' 'AUTHENTICATED_CPU_INDEX_METADATA_LOCKED' 'BLOCKED_UNRESOLVED' '2.6.0+cpu' 'https://download.pytorch.org/whl/cpu' 'nvidia-*' 'resemble-perth' 'from pathlib import Path' 'chatterbox_t3' 'uv.lock' '2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f' '1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8' 'package_rows' 'license_conclusions' 'inference_turbo(max_gen_len=0)' 'tfmr.wte.' '--import-smoke' '--inspection' '--license-audit'; do
+for token in '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 't3_mtl23ls_v3.safetensors' 'Cangjie5_TC.json' 'mtl_tokenizer.json' 'REFERENCE_EVIDENCE_COMPLETE' 'torch.multinomial' 'NO_UPLOAD' 'BLOCKED_APPROVAL/INSPECTION_ONLY' '--approval-sha256' '--expected-head' 'CARGO_BUILD_JOBS=1' 'CHATTERBOX_T3_REFERENCE_PACKET' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' 'torch==2.6.0' 'mutable optional Perth' 'reference_environment' 'AUTHENTICATED_CPU_INDEX_METADATA_LOCKED' 'BLOCKED_UNRESOLVED' '2.13.0+cpu' '2.11.0+cpu' 'https://download.pytorch.org/whl/cpu' 'nvidia-*' 'resemble-perth' 'from pathlib import Path' 'chatterbox_t3' 'uv.lock' '3c1a295bd6d45e6b83f7a182a4421bbb7cc5904a554f4305b9f7d08d1e92029d' 'a47f8a74ef9d990289002eaccd346d7d5cbbc9d1480d1213596bc01b0ed36c24' 'package_rows' 'license_conclusions' 'inference_turbo(max_gen_len=0)' 'tfmr.wte.' '--import-smoke' '--inspection' '--license-audit'; do
     grep -Fq -- "$token" "$REFERENCE" "$INSPECTOR" "$0" || { echo "missing contract: $token" >&2; fail=1; }
   done
   if grep -En '(^|[;&|][[:space:]]*)git[[:space:]]+push|hf_hub_upload|upload_file|--push' "$0" | grep -v 'grep -En' >/dev/null; then echo 'publication command found' >&2; fail=1; fi
@@ -235,11 +292,11 @@ if any(m.get(k)!=v for k,v in required.items()): raise SystemExit(f"reference ma
 if m.get("multinomial_calls") != 1 or m.get("tokenizer_calls") != 1: raise SystemExit("caller-owned T3 trace contract was not consumed exactly once")
 environment=m.get("reference_environment")
 if not isinstance(environment,dict) or set(environment) != {"path","sha256","python","core_versions","cpu_index","cpu_distribution_versions","package_rows_sha256","package_rows","excluded_packages","package_names","license_audit"}: raise SystemExit("reference environment identity missing")
-expected_core={"numpy":"1.26.4","huggingface-hub":"1.27.0","einops":"0.8.2","safetensors":"0.5.3","torch":"2.6.0","torchaudio":"2.6.0","tqdm":"4.67.1","transformers":"5.10.4"}
+expected_core={"numpy":"1.26.4","huggingface-hub":"1.27.0","einops":"0.8.2","safetensors":"0.5.3","torch":"2.13.0","torchaudio":"2.11.0","tqdm":"4.67.1","transformers":"5.10.4"}
 if environment.get("python") != "==3.12.*" or not isinstance(environment.get("sha256"),str) or re.fullmatch(r"[0-9a-f]{64}",environment["sha256"]) is None or environment.get("core_versions") != expected_core: raise SystemExit("reference environment identity drifted")
-if environment.get("cpu_index") != "https://download.pytorch.org/whl/cpu" or environment.get("cpu_distribution_versions") != {"torch":"2.6.0+cpu","torchaudio":"2.6.0+cpu"}: raise SystemExit("CPU PyTorch routing drifted")
+if environment.get("cpu_index") != "https://download.pytorch.org/whl/cpu" or environment.get("cpu_distribution_versions") != {"torch":"2.13.0+cpu","torchaudio":"2.11.0+cpu"}: raise SystemExit("CPU PyTorch routing drifted")
 lock_path=Path(environment["path"])
-if not lock_path.is_file() or hashlib.sha256(lock_path.read_bytes()).hexdigest() != "2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f": raise SystemExit("dedicated lock SHA drifted")
+if not lock_path.is_file() or hashlib.sha256(lock_path.read_bytes()).hexdigest() != "3c1a295bd6d45e6b83f7a182a4421bbb7cc5904a554f4305b9f7d08d1e92029d": raise SystemExit("dedicated lock SHA drifted")
 lock=tomllib.loads(lock_path.read_text(encoding="utf-8")); expected_rows=[]
 for package in lock.get("package",[]):
     source=package.get("source",{})
@@ -247,7 +304,7 @@ for package in lock.get("package",[]):
     expected_rows.append({"name":package["name"],"version":package["version"],"source":{key:source[key] for key in sorted(source)},"markers":sorted(package.get("resolution-markers",[]))})
 expected_rows.sort(key=lambda row:(row["name"],row["version"],json.dumps(row["source"],sort_keys=True),row["markers"]))
 encoded=json.dumps(expected_rows,sort_keys=True,separators=(",",":")).encode("utf-8")
-if environment.get("package_rows_sha256") != "1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8" or hashlib.sha256(encoded).hexdigest() != environment["package_rows_sha256"] or environment.get("package_rows") != expected_rows: raise SystemExit("versioned lock package rows drifted")
+if environment.get("package_rows_sha256") != "a47f8a74ef9d990289002eaccd346d7d5cbbc9d1480d1213596bc01b0ed36c24" or hashlib.sha256(encoded).hexdigest() != environment["package_rows_sha256"] or environment.get("package_rows") != expected_rows: raise SystemExit("versioned lock package rows drifted")
 if set(environment.get("excluded_packages",[])) != {"diffusers","resemble-perth","s3tokenizer","gradio"}: raise SystemExit("excluded reference packages drifted")
 if not isinstance(environment.get("package_names"),list) or "vokra-chatterbox-t3-reference" not in environment["package_names"]: raise SystemExit("reference package inventory missing")
 audit=environment.get("license_audit")
