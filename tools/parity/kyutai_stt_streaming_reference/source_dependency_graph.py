@@ -56,6 +56,7 @@ GRAPH_STATUS = "SOURCE_DEPENDENCY_GRAPH_ONLY"
 EXECUTION_STATUS = "NOT_EXECUTION_CLOSURE"
 REVIEW_STATUS = "BLOCKED_REVIEW"
 PUBLICATION_STATUS = "NO_UPLOAD"
+PACKAGE_REEXPORT_RESOLUTION = "authenticated-source-symbol-reexport"
 
 # These roots describe the actual producer route.  DSM evaluator scripts are
 # source-contract evidence only and are never treated as runtime roots.
@@ -640,7 +641,145 @@ def _load_packet(packet: Path) -> tuple[dict[str, Any], bytes, dict[str, Any], d
     return manifest, manifest_bytes, receipt, by_name
 
 
-def _edge_target(module: str, edge: dict[str, Any], modules: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
+def _source_tree(row: dict[str, Any], source_trees: dict[str, ast.Module] | None) -> ast.Module | None:
+    if source_trees is not None:
+        module = row.get("module")
+        if isinstance(module, str) and module in source_trees:
+            return source_trees[module]
+    body = row.get("body")
+    path = row.get("path", "authenticated source")
+    if not isinstance(body, bytes):
+        return None
+    try:
+        return ast.parse(body.decode("utf-8"), filename=str(path), mode="exec")
+    except (UnicodeDecodeError, SyntaxError):
+        return None
+
+
+def _imports_package(
+    module: str,
+    tree: ast.Module,
+    package: str,
+    *,
+    modules: dict[str, dict[str, Any]],
+    source_is_package: bool,
+) -> bool:
+    """Reject the one-hop proof if the child directly imports its package."""
+    visitor = _ImportVisitor(module)
+    visitor.visit(tree)
+    for edge in visitor.edges:
+        if edge["kind"] in {"dynamic-import", "dynamic-import-literal"}:
+            return True
+        if edge["kind"] == "import":
+            imported = edge["name"]
+        elif edge["kind"] == "from-import":
+            imported = edge["name"]
+        elif edge["kind"] == "from-import-member":
+            if edge["relative_level"]:
+                resolved_name = _resolve_relative(
+                    module,
+                    edge["name"],
+                    edge["relative_level"],
+                    source_is_package=source_is_package,
+                )
+                resolved_parent = resolved_name.rsplit(".", 1)[0] if "." in resolved_name else ""
+                if resolved_parent == package and resolved_name not in modules:
+                    return True
+            imported = edge["name"].rsplit(".", 1)[0] if "." in edge["name"] else edge["name"]
+        else:
+            continue
+        if edge["relative_level"]:
+            imported = _resolve_relative(
+                module,
+                imported,
+                edge["relative_level"],
+                source_is_package=source_is_package,
+            )
+        if imported == package:
+            return True
+    return False
+
+
+def _package_reexport_binding(
+    package: str,
+    requested: str,
+    modules: dict[str, dict[str, Any]],
+    *,
+    source_trees: dict[str, ast.Module] | None = None,
+) -> dict[str, Any] | None:
+    """Return one explicit, unconditional package re-export proof.
+
+    This intentionally accepts only a simple package ``__init__.py`` made of
+    direct imports.  It does not infer symbols from assignments, aliases,
+    ``__all__``, dynamic ``__getattr__``, control flow, or package chains.
+    """
+    package_row = modules.get(package)
+    if package_row is None or not package_row.get("is_package"):
+        return None
+    package_tree = _source_tree(package_row, source_trees)
+    if package_tree is None:
+        return None
+
+    candidates: list[tuple[ast.ImportFrom, str]] = []
+    for index, node in enumerate(package_tree.body):
+        if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            return None
+        if node.level == 0 and node.module == "__future__":
+            if any(alias.name == "*" or alias.asname is not None for alias in node.names):
+                return None
+            continue
+        if node.level != 1 or not node.module:
+            if any(alias.name == "*" or alias.asname is not None or alias.name == requested for alias in node.names):
+                return None
+            continue
+        for alias in node.names:
+            if alias.name == "*" or alias.asname is not None:
+                return None
+            if alias.name == requested:
+                child = _resolve_relative(package, node.module, node.level, source_is_package=True)
+                candidates.append((node, child))
+    if len(candidates) != 1:
+        return None
+
+    binding, child = candidates[0]
+    child_row = modules.get(child)
+    if child_row is None or child_row.get("is_package"):
+        return None
+    child_tree = _source_tree(child_row, source_trees)
+    if child_tree is None or _imports_package(
+        child,
+        child_tree,
+        package,
+        modules=modules,
+        source_is_package=bool(child_row.get("is_package")),
+    ):
+        return None
+    return {
+        "target": child,
+        "source_only_evidence": {
+            "kind": "AUTHENTICATED_SOURCE_ONLY_PACKAGE_REEXPORT",
+            "package_module": package,
+            "package_path": package_row.get("path"),
+            "package_line": int(getattr(binding, "lineno", 0)),
+            "package_sha256": package_row.get("sha256"),
+            "package_git_blob_sha1": package_row.get("git_blob_sha1"),
+            "child_module": child,
+            "child_path": child_row.get("path"),
+            "child_sha256": child_row.get("sha256"),
+            "child_git_blob_sha1": child_row.get("git_blob_sha1"),
+        },
+    }
+
+
+def _edge_target(
+    module: str,
+    edge: dict[str, Any],
+    modules: dict[str, dict[str, Any]],
+    *,
+    source_trees: dict[str, ast.Module] | None = None,
+) -> tuple[str | None, str]:
     name = edge["name"]
     if edge["kind"] == "dynamic-import-literal":
         if not isinstance(name, str) or not re.fullmatch(
@@ -665,9 +804,19 @@ def _edge_target(module: str, edge: dict[str, Any], modules: dict[str, dict[str,
         if candidate in modules:
             return candidate, "authenticated-source"
         if "." in candidate and candidate.rsplit(".", 1)[0] in modules:
-            parent = modules[candidate.rsplit(".", 1)[0]]
+            parent_name = candidate.rsplit(".", 1)[0]
+            parent = modules[parent_name]
             if not parent.get("is_package"):
-                return candidate.rsplit(".", 1)[0], "authenticated-source-symbol"
+                return parent_name, "authenticated-source-symbol"
+            if edge["kind"] == "from-import-member":
+                binding = _package_reexport_binding(
+                    parent_name,
+                    candidate.rsplit(".", 1)[1],
+                    modules,
+                    source_trees=source_trees,
+                )
+                if binding is not None:
+                    return binding["target"], PACKAGE_REEXPORT_RESOLUTION
             return None, "missing-authenticated-source-or-symbol"
         return candidate, "missing-authenticated-source"
     top = _top_name(name)
@@ -687,6 +836,14 @@ def _edge_target(module: str, edge: dict[str, Any], modules: dict[str, dict[str,
             parent = modules[parent_name]
             if not parent.get("is_package"):
                 return parent_name, "authenticated-source-symbol"
+            binding = _package_reexport_binding(
+                parent_name,
+                name.rsplit(".", 1)[1],
+                modules,
+                source_trees=source_trees,
+            )
+            if binding is not None:
+                return binding["target"], PACKAGE_REEXPORT_RESOLUTION
             return None, "missing-authenticated-source-or-symbol"
     if top in modules:
         return top, "authenticated-source-symbol"
@@ -829,6 +986,7 @@ def build_graph(
         ]
 
     parsed_edges: dict[str, list[dict[str, Any]]] = {}
+    parsed_trees: dict[str, ast.Module] = {}
     module_records: dict[str, dict[str, Any]] = {}
     edge_records: dict[tuple[Any, ...], dict[str, Any]] = {}
     edge_scopes: dict[tuple[Any, ...], set[str]] = {}
@@ -868,6 +1026,7 @@ def build_graph(
                 continue
             visitor = _ImportVisitor(module)
             visitor.visit(tree)
+            parsed_trees[module] = tree
             parsed_edges[module] = visitor.edges
             module_records[module] = {
                 "module": module,
@@ -879,8 +1038,35 @@ def build_graph(
                 "imports": len(visitor.edges),
             }
         for edge in parsed_edges[module]:
-            target, resolution = _edge_target(module, edge, modules)
+            target, resolution = _edge_target(
+                module,
+                edge,
+                modules,
+                source_trees=parsed_trees,
+            )
             record = {"source": module, "target": target, "name": edge["name"], "kind": edge["kind"], "line": edge["line"], "column": edge["column"], "condition": edge["condition"], "resolution": resolution}
+            if resolution == PACKAGE_REEXPORT_RESOLUTION:
+                if edge["relative_level"]:
+                    resolved_name = _resolve_relative(
+                        module,
+                        edge["name"],
+                        edge["relative_level"],
+                        source_is_package=bool(row.get("is_package")),
+                    )
+                else:
+                    resolved_name = edge["name"]
+                if "." not in resolved_name:
+                    raise GraphError("package re-export resolved name is not qualified")
+                package, requested = resolved_name.rsplit(".", 1)
+                binding = _package_reexport_binding(
+                    package,
+                    requested,
+                    modules,
+                    source_trees=parsed_trees,
+                )
+                if binding is None or binding["target"] != target:
+                    raise GraphError("package re-export evidence changed while recording edge")
+                record["source_only_evidence"] = binding["source_only_evidence"]
             record_key = (record["source"], record["target"], record["name"], record["kind"], record["line"], record["column"], record["condition"], record["resolution"])
             edge_records.setdefault(record_key, record)
             edge_scopes.setdefault(record_key, set()).add(scope)

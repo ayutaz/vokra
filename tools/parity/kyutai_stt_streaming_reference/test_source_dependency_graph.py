@@ -25,6 +25,12 @@ def _make_packet(
     dynamic_body: bytes | None = None,
     diamond: bool = False,
     source_body: bytes | None = None,
+    models_init_body: bytes | None = None,
+    models_lm_body: bytes | None = None,
+    models_loaders_body: bytes | None = None,
+    modules_seanet_body: bytes | None = None,
+    package_reexports: bool = False,
+    package_chain: bool = False,
 ) -> Path:
     packet = root / "packet"
     packet.mkdir()
@@ -44,9 +50,9 @@ def _make_packet(
             b"import helper_dependency\nraise RuntimeError('AST-only fixture')\n"
         ),
         "moshi/moshi/__init__.py": b"from . import models\n",
-        "moshi/moshi/models/__init__.py": b"from .lm import LMModel\nfrom . import loaders\n",
-        "moshi/moshi/models/lm.py": b"from ..modules import transformer\n",
-        "moshi/moshi/models/loaders.py": b"from ..modules import streaming\n",
+        "moshi/moshi/models/__init__.py": models_init_body or b"from .lm import LMModel, LMGen\nfrom . import loaders\n",
+        "moshi/moshi/models/lm.py": models_lm_body or b"from ..modules import transformer\n",
+        "moshi/moshi/models/loaders.py": models_loaders_body or b"from ..modules import streaming\n",
         "moshi/moshi/modules/__init__.py": b"",
         "moshi/moshi/modules/transformer.py": b"import math\nfrom . import cycle_a\n",
         "moshi/moshi/modules/streaming.py": b"import io\n",
@@ -54,6 +60,34 @@ def _make_packet(
         "moshi/moshi/modules/cycle_b.py": b"from . import cycle_a\n",
         "scripts/stt_from_file_pytorch.py": b"import moshi.models\n",
     }
+    if package_reexports:
+        source_files.update(
+            {
+                "moshi/moshi/conditioners/__init__.py": (
+                    b"from .base import "
+                    b"ConditionFuser, ConditionProvider, ConditionTensors, BaseConditioner\n"
+                ),
+                "moshi/moshi/conditioners/base.py": b"",
+                "moshi/moshi/modules/__init__.py": (
+                    b"from .seanet import SEANetDecoder, SEANetEncoder\n"
+                ),
+                "moshi/moshi/modules/seanet.py": modules_seanet_body or b"",
+                "moshi/moshi/modules/conv.py": b"",
+                "moshi/moshi/quantization/__init__.py": (
+                    b"from .vq import ResidualVectorQuantizer, SplitResidualVectorQuantizer\n"
+                    b"from .base import BaseQuantizer, QuantizedResult\n"
+                ),
+                "moshi/moshi/quantization/vq.py": b"",
+                "moshi/moshi/quantization/base.py": b"",
+            }
+        )
+    if package_chain:
+        source_files.update(
+            {
+                "moshi/moshi/models/sub/__init__.py": b"from .child import LMGen\n",
+                "moshi/moshi/models/sub/child.py": b"",
+            }
+        )
     if diamond:
         source_files["tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"] = b"import delay\n"
         source_files["tools/parity/kyutai_stt_streaming_reference/delay.py"] = b"import moshi.models\nimport numpy\n"
@@ -170,6 +204,240 @@ class SourceDependencyGraphTests(unittest.TestCase):
         self.assertEqual(report["status"], graph.GRAPH_STATUS)
         self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
         self.assertEqual(report["publication"], graph.PUBLICATION_STATUS)
+
+    def test_relative_authenticated_package_reexports_keep_full_package_evidence(self) -> None:
+        body = (
+            b"from moshi.models import LMGen\n"
+            b"from moshi.models.lm import ConditionFuser, SEANetDecoder, BaseQuantizer\n"
+        )
+        lm_body = (
+            b"from ..conditioners import ConditionFuser\n"
+            b"from ..modules import SEANetDecoder\n"
+            b"from ..quantization import BaseQuantizer\n"
+        )
+        expected = {
+            "conditioners.ConditionFuser": ("moshi.conditioners.base", "moshi.conditioners"),
+            "modules.SEANetDecoder": ("moshi.modules.seanet", "moshi.modules"),
+            "quantization.BaseQuantizer": ("moshi.quantization.base", "moshi.quantization"),
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(
+                    Path(raw),
+                    source_body=body,
+                    models_lm_body=lm_body,
+                    package_reexports=True,
+                ),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        edges = {edge["name"]: edge for edge in report["edges"]}
+        for name, (target, package) in expected.items():
+            with self.subTest(name=name):
+                edge = edges[name]
+                self.assertEqual(edge["target"], target)
+                self.assertEqual(edge["resolution"], graph.PACKAGE_REEXPORT_RESOLUTION)
+                evidence = edge["source_only_evidence"]
+                self.assertEqual(evidence["package_module"], package)
+                self.assertEqual(
+                    evidence["package_path"],
+                    f"moshi/moshi/{package.removeprefix('moshi.')}/__init__.py",
+                )
+                self.assertEqual(evidence["child_module"], target)
+        lm = next(row for row in report["authenticated_modules"] if row["module"] == "moshi.models.lm")
+        self.assertEqual(set(lm["reachability_scopes"]), {"producer"})
+        self.assertEqual(report["status"], graph.GRAPH_STATUS)
+        self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
+
+    def test_bare_relative_authenticated_package_reexport_keeps_full_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(
+                    Path(raw),
+                    models_loaders_body=b"from . import LMGen\n",
+                ),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        edge = next(
+            edge for edge in report["edges"]
+            if edge["source"] == "moshi.models.loaders" and edge["name"] == "LMGen"
+        )
+        self.assertEqual(edge["target"], "moshi.models.lm")
+        self.assertEqual(edge["resolution"], graph.PACKAGE_REEXPORT_RESOLUTION)
+        evidence = edge["source_only_evidence"]
+        self.assertEqual(evidence["package_module"], "moshi.models")
+        self.assertEqual(evidence["package_path"], "moshi/moshi/models/__init__.py")
+        self.assertEqual(evidence["package_line"], 1)
+        self.assertEqual(evidence["child_module"], "moshi.models.lm")
+        package_row = next(row for row in report["authenticated_modules"] if row["module"] == "moshi.models")
+        child_row = next(row for row in report["authenticated_modules"] if row["module"] == "moshi.models.lm")
+        self.assertEqual(evidence["package_sha256"], package_row["sha256"])
+        self.assertEqual(evidence["package_git_blob_sha1"], package_row["git_blob_sha1"])
+        self.assertEqual(evidence["child_sha256"], child_row["sha256"])
+        self.assertEqual(evidence["child_git_blob_sha1"], child_row["git_blob_sha1"])
+        loaders = next(row for row in report["authenticated_modules"] if row["module"] == "moshi.models.loaders")
+        self.assertEqual(set(loaders["reachability_scopes"]), {"producer"})
+        self.assertEqual(report["status"], graph.GRAPH_STATUS)
+        self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
+
+    def test_authenticated_same_parent_module_import_is_not_a_package_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(
+                    Path(raw),
+                    source_body=b"from moshi.modules import SEANetDecoder\n",
+                    modules_seanet_body=b"from . import conv\n",
+                    package_reexports=True,
+                ),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        edge = next(edge for edge in report["edges"] if edge["name"] == "moshi.modules.SEANetDecoder")
+        self.assertEqual(edge["target"], "moshi.modules.seanet")
+        self.assertEqual(edge["resolution"], graph.PACKAGE_REEXPORT_RESOLUTION)
+        self.assertIn("moshi.modules.conv", {row["module"] for row in report["authenticated_modules"]})
+
+    def test_authenticated_package_reexport_is_one_hop_source_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(Path(raw)),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        edge = next(edge for edge in report["edges"] if edge["name"] == "moshi.models.LMGen")
+        self.assertEqual(edge["target"], "moshi.models.lm")
+        self.assertEqual(edge["resolution"], graph.PACKAGE_REEXPORT_RESOLUTION)
+        evidence = edge["source_only_evidence"]
+        self.assertEqual(evidence["kind"], "AUTHENTICATED_SOURCE_ONLY_PACKAGE_REEXPORT")
+        self.assertEqual(evidence["package_module"], "moshi.models")
+        self.assertEqual(evidence["package_path"], "moshi/moshi/models/__init__.py")
+        self.assertEqual(evidence["package_line"], 1)
+        self.assertEqual(evidence["child_module"], "moshi.models.lm")
+        self.assertEqual(evidence["child_path"], "moshi/moshi/models/lm.py")
+        lm = next(row for row in report["authenticated_modules"] if row["module"] == "moshi.models.lm")
+        self.assertEqual(evidence["child_sha256"], lm["sha256"])
+        self.assertEqual(report["status"], graph.GRAPH_STATUS)
+        self.assertEqual(report["execution_status"], graph.EXECUTION_STATUS)
+        self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
+        self.assertEqual(report["publication"], graph.PUBLICATION_STATUS)
+
+    def test_multiple_authenticated_package_reexports_keep_scopes_and_hashes(self) -> None:
+        body = (
+            b"from moshi.models import LMGen\n"
+            b"from moshi.conditioners import ConditionFuser, ConditionProvider, ConditionTensors, BaseConditioner\n"
+            b"from moshi.modules import SEANetDecoder, SEANetEncoder\n"
+            b"from moshi.quantization import BaseQuantizer, QuantizedResult, ResidualVectorQuantizer, SplitResidualVectorQuantizer\n"
+        )
+        expected = {
+            "moshi.models.LMGen": "moshi.models.lm",
+            "moshi.conditioners.ConditionFuser": "moshi.conditioners.base",
+            "moshi.conditioners.ConditionProvider": "moshi.conditioners.base",
+            "moshi.conditioners.ConditionTensors": "moshi.conditioners.base",
+            "moshi.conditioners.BaseConditioner": "moshi.conditioners.base",
+            "moshi.modules.SEANetDecoder": "moshi.modules.seanet",
+            "moshi.modules.SEANetEncoder": "moshi.modules.seanet",
+            "moshi.quantization.BaseQuantizer": "moshi.quantization.base",
+            "moshi.quantization.QuantizedResult": "moshi.quantization.base",
+            "moshi.quantization.ResidualVectorQuantizer": "moshi.quantization.vq",
+            "moshi.quantization.SplitResidualVectorQuantizer": "moshi.quantization.vq",
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(Path(raw), source_body=body, package_reexports=True),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        edges = {edge["name"]: edge for edge in report["edges"]}
+        for name, target in expected.items():
+            with self.subTest(name=name):
+                edge = edges[name]
+                self.assertEqual(edge["target"], target)
+                self.assertEqual(edge["resolution"], graph.PACKAGE_REEXPORT_RESOLUTION)
+                evidence = edge["source_only_evidence"]
+                self.assertEqual(evidence["child_module"], target)
+                self.assertEqual(evidence["package_sha256"], next(
+                    row["sha256"]
+                    for row in report["authenticated_modules"]
+                    if row["module"] == evidence["package_module"]
+                ))
+        lm = next(row for row in report["authenticated_modules"] if row["module"] == "moshi.models.lm")
+        self.assertEqual(set(lm["reachability_scopes"]), {"producer"})
+        self.assertEqual(report["status"], graph.GRAPH_STATUS)
+        self.assertEqual(report["execution_status"], graph.EXECUTION_STATUS)
+        self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
+        self.assertEqual(report["publication"], graph.PUBLICATION_STATUS)
+
+    def test_package_reexport_ambiguous_or_unsafe_shapes_stay_unresolved(self) -> None:
+        cases = (
+            b"from .lm import LMGen as Exported\n",
+            b"from .lm import *\n",
+            b"if FLAG:\n    from .lm import LMGen\n",
+            b"try:\n    from .lm import LMGen\nexcept ImportError:\n    pass\n",
+            b"from .lm import LMGen\nLMGen = None\n",
+            b"from .lm import LMGen\ndel LMGen\n",
+            b"from .lm import LMGen\nmodule.LMGen = None\n",
+            b"from .lm import LMGen\ndef shadow(LMGen):\n    return LMGen\n",
+            b"from .lm import LMGen\nfrom .lm import LMGen\n",
+            b"from .lm import LMGen\nfrom .other import LMGen\n",
+            b"from .sub import LMGen\n",
+            b"from .lm import LMGen\nfrom external import LMGen\n",
+            b"from .lm import LMGen\nfrom ..other import LMGen\n",
+            b"from .lm import LMGen\nfrom . import LMGen\n",
+        )
+        for models_init_body in cases:
+            with self.subTest(models_init_body=models_init_body):
+                with tempfile.TemporaryDirectory() as raw:
+                    report = graph.build_graph(
+                        _make_packet(Path(raw), models_init_body=models_init_body),
+                        ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                        synthetic=True,
+                    )
+                edge = next(edge for edge in report["edges"] if edge["name"] == "moshi.models.LMGen")
+                self.assertIsNone(edge["target"])
+                self.assertEqual(edge["resolution"], "missing-authenticated-source-or-symbol")
+                self.assertNotIn("source_only_evidence", edge)
+                self.assertTrue(any(
+                    row["status"] == "MISSING_AUTHENTICATED_SOURCE_OR_SYMBOL"
+                    and row["name"] == "moshi.models.LMGen"
+                    for row in report["unresolved"]
+                ))
+
+    def test_package_reexport_cycle_stays_unresolved(self) -> None:
+        for lm_body in (
+            b"from ..models import LMGen\n",
+            b"from . import LMGen\n",
+            b"import importlib\nimportlib.import_module('moshi.models')\n",
+        ):
+            with self.subTest(lm_body=lm_body):
+                with tempfile.TemporaryDirectory() as raw:
+                    report = graph.build_graph(
+                        _make_packet(
+                            Path(raw),
+                            models_lm_body=lm_body,
+                        ),
+                        ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                        synthetic=True,
+                    )
+                edge = next(edge for edge in report["edges"] if edge["name"] == "moshi.models.LMGen")
+                self.assertIsNone(edge["target"])
+                self.assertEqual(edge["resolution"], "missing-authenticated-source-or-symbol")
+
+    def test_authenticated_package_chain_stays_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(
+                    Path(raw),
+                    models_init_body=b"from .sub import LMGen\n",
+                    package_chain=True,
+                ),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        edge = next(edge for edge in report["edges"] if edge["name"] == "moshi.models.LMGen")
+        self.assertIsNone(edge["target"])
+        self.assertEqual(edge["resolution"], "missing-authenticated-source-or-symbol")
+        self.assertNotIn("source_only_evidence", edge)
 
     def test_python312_stdlib_names_are_not_external_candidates(self) -> None:
         body = (

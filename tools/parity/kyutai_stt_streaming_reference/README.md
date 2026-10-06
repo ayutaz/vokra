@@ -202,6 +202,16 @@ from the authenticated selected checkout, never from an adjacent unrelated
 cannot claim production authentication; no graph is generated from the
 retained packet by ordinary tests.
 
+An authenticated package `__init__.py` may provide one additional source-only
+edge when it contains exactly one unconditional direct `from .child import
+Name` binding with no alias or star, and the child module is authenticated and
+non-package.  The edge records the package source path/line/hash and child
+source path/hash as `AUTHENTICATED_SOURCE_ONLY_PACKAGE_REEXPORT`; it does not
+assert that the imported symbol is defined, and it does not imply runtime
+importability.  Package chains, aliases, stars, control flow, optional
+imports, assignments, rebinding/deletion, duplicate exports, direct
+child-to-package cycles, and missing children remain unresolved.
+
 The dated
 [`2026-10-04 Kyutai handoff`](../../../docs/handoff/kyutai-independent-reference-2026-10-04.md)
 records the test inventory and receipt for each candidate snapshot.  This
