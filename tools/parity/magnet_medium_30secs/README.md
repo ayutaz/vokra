@@ -46,6 +46,20 @@ Sibling of:
   weight owner gate, runtime-binder decision, or real-weight parity gate.
 - `.python-version` — `3.12`.
 
+## Vendored license hold (2026-10-06)
+
+The locked `setuptools==84.0.0` row is recorded as
+`UNRESOLVED_VENDORED_LGPLV3`, not as a standalone MIT row. The retained
+evidence binds its exact wheel (818,216 bytes,
+`51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670`) and
+the embedded `setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA`, which
+declares `LGPLv3`; the retained primary LICENSE bytes are bound to
+`ade78d04982d69972d444a8e14a94f87a2334dd3855cc80348ea8e240aa0df2d`.
+The LICENSE member path and exact SPDX suffix are not present in the retained
+evidence, so they remain unknown. This is an unresolved factual blocker, not
+a license grant: the gate remains `BLOCKED_LICENSE_REVIEW_VAST_ONLY` and
+`NO_UPLOAD`, with no installation, import, build, or model execution.
+
 ## VAST-only workflow
 
 The aggregate checkpoint exceeds the repository's 2 GB threshold. Do not

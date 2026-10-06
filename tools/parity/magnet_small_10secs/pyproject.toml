@@ -48,7 +48,7 @@ license_records = [
     { name = "mpmath", version = "1.3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/mpmath/1.3.0/json" },
     { name = "networkx", version = "3.6.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json" },
     { name = "safetensors", version = "0.7.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/safetensors/0.7.0/json" },
-    { name = "setuptools", version = "84.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json" },
+    { name = "setuptools", version = "84.0.0", license = "UNRESOLVED_VENDORED_LGPLV3", primary_source = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl" },
     { name = "sympy", version = "1.14.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/sympy/1.14.0/json" },
     { name = "torch", version = "2.13.0+cpu", license = "OWNER_REVIEW_REQUIRED", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" },
     { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json" },
@@ -65,7 +65,8 @@ license_records = [
     { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json" },
     { name = "tqdm", version = "4.70.0", license = "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.70.0/json" },
 ]
+bundled_license_evidence = { package = "setuptools", version = "84.0.0", artifact_url = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl", artifact_sha256 = "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670", artifact_bytes = 818216, metadata_path = "setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA", metadata_declared = "LGPLv3", license_member_path = "UNKNOWN_RETAINED_PRIMARY_EVIDENCE", license_member_path_status = "UNKNOWN", license_sha256 = "ade78d04982d69972d444a8e14a94f87a2334dd3855cc80348ea8e240aa0df2d", spdx_status = "UNKNOWN_LGPLV3_SUFFIX", disposition = "BLOCKED_UNRESOLVED_VENDORED_LICENSE" }
 lock_sha256 = "c98ffa8ce3fee116706f322eb60fa2cb958b2d8a2fdf01260fd20973322c0734"
 package_rows_sha256 = "49f9bfa43c8c69e4df4ef06dfe9bd78c0664b6d725fd2340a8eb24409aded55a"
-approval_scope_sha256 = "cd030d3720aef71994cf2b319584b2f0a9839c5d736ad5669f5a5c4005e60176"
-license_rows_sha256 = "00278b8d16813c0241b904d4f72a4b933258cc8d746d5a0a99fd71635a105722"
+approval_scope_sha256 = "1217887867fbb817e1c05fef759f4881090ccab65ed0f6253850eb9e33aac2fa"
+license_rows_sha256 = "af58ddee8013d595091f6087b2cb9a9124c1437198c0422ed5348caf419095cc"
