@@ -174,61 +174,107 @@ pub enum VibeVoiceRealtimeDiagnosticCall {
 pub enum VibeVoiceRealtimeDiagnosticEvent<'a> {
     /// Hidden output from one LM/TTS call or authenticated preset output.
     Hidden {
+        /// Learned branch that produced this hidden output.
         branch: VibeVoiceRealtimeDiagnosticBranch,
+        /// Source call kind for this hidden output.
         call: VibeVoiceRealtimeDiagnosticCall,
+        /// Official text-window ordinal: `Some` for text calls and `None` for
+        /// speech and authenticated prefill calls.
         text_window_index: Option<usize>,
+        /// Token ordinal within the native text-window call, when applicable.
         text_token_index: Option<usize>,
+        /// Number of tokens represented by the authenticated source window.
         text_window_tokens: usize,
+        /// Global generated speech ordinal; local six-step window positions are not used here.
         speech_step: Option<usize>,
+        /// Borrowed hidden-state output values with the native source layout;
+        /// valid only during the callback and not assumed to be one row.
         values: &'a [f32],
     },
     /// Cache position after a hidden-output call or authenticated prefill.
     CachePosition {
+        /// Learned branch whose cache was observed.
         branch: VibeVoiceRealtimeDiagnosticBranch,
+        /// Source call that advanced or reported the cache.
         call: VibeVoiceRealtimeDiagnosticCall,
+        /// Official text-window ordinal, when applicable.
         text_window_index: Option<usize>,
+        /// Token ordinal within the native text-window call, when applicable.
         text_token_index: Option<usize>,
+        /// Number of tokens represented by the authenticated source window.
         text_window_tokens: usize,
+        /// Global generated speech ordinal; local window positions are not used here.
         speech_step: Option<usize>,
+        /// Cache position after the source call.
         position: usize,
+        /// Number of cache layers represented by the position.
         layers: usize,
     },
     /// Conditional and unconditional prediction arrays for one official CFG step.
     DiffusionPrediction {
+        /// Global generated speech ordinal for the enclosing sample.
         speech_step: usize,
+        /// Official sampler step ordinal, from zero through nineteen.
         diffusion_step: usize,
+        /// Scheduler timestep paired with this prediction.
         timestep: usize,
+        /// Borrowed conditional prediction from the native CFG call.
         conditional: &'a [f32],
+        /// Borrowed unconditional prediction from the native CFG call.
         unconditional: &'a [f32],
     },
     /// Final scaled latent returned by one complete twenty-step CFG sample.
     SampledLatent {
+        /// Global generated speech ordinal for this sample.
         speech_step: usize,
+        /// Borrowed final scaled latent returned by the native sampler.
         values: &'a [f32],
     },
     /// The exact scaled and unscaled latent passed to the causal decoder.
     DecoderInput {
+        /// Global generated speech ordinal for this decoder call.
         speech_step: usize,
+        /// Borrowed scaled latent supplied to the decoder.
         scaled: &'a [f32],
+        /// Borrowed unscaled decoder input produced by the native decoder path.
         unscaled: &'a [f32],
     },
     /// One decoded PCM chunk before any caller-side accumulation.
-    DecoderChunk { speech_step: usize, pcm: &'a [f32] },
+    DecoderChunk {
+        /// Global generated speech ordinal for this decoded chunk.
+        speech_step: usize,
+        /// Borrowed decoded PCM chunk before caller-side accumulation.
+        pcm: &'a [f32],
+    },
     /// Connector input and output from the same native call.
     Connector {
+        /// Global generated speech ordinal for this connector call.
         speech_step: usize,
+        /// Borrowed latent input observed at the connector boundary.
         input: &'a [f32],
+        /// Borrowed connector output observed from the native call.
         output: &'a [f32],
     },
     /// One authenticated EOS-classifier output, retaining call/branch identity.
     Eos {
+        /// Learned branch whose classifier output was observed.
         branch: VibeVoiceRealtimeDiagnosticBranch,
+        /// Source call identity for this classifier output.
         call: VibeVoiceRealtimeDiagnosticCall,
+        /// Official text-window ordinal: `Some` for text calls and `None` for
+        /// speech and authenticated prefill calls.
         text_window_index: Option<usize>,
+        /// Token ordinal within the native text-window call, when applicable.
         text_token_index: Option<usize>,
+        /// Number of tokens represented by the authenticated source window.
         text_window_tokens: usize,
+        /// Global generated speech ordinal; local six-step positions are not used here.
         speech_step: Option<usize>,
+        /// Source classifier pass ordinal: text pass 0, positive-speech pass 0,
+        /// negative-speech pass 0, and positive-stop pass 1. The branch and
+        /// call fields retain the classifier's source identity.
         classifier_pass: usize,
+        /// Finite classifier logit observed from the native call.
         value: f32,
     },
 }
@@ -1867,7 +1913,7 @@ mod tests {
             );
         }
 
-        let mut max_executor = TraceExecutor::with_observer(None);
+        let max_executor = TraceExecutor::with_observer(None);
         let mut max_core = core(&[10], 1, 20, max_executor);
         let _ = max_core
             .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
@@ -2102,12 +2148,21 @@ mod tests {
         assert_eq!(core.executor.events, vec!["text:10", "sample", "reset"]);
         let labels = &core.executor.observer.as_ref().unwrap().labels;
         assert_eq!(labels, &["hidden", "sampled_latent"]);
-        assert!(
-            core.step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
-                .is_err()
+        let poisoned = core
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+            .expect_err("a poisoned session must reject later steps");
+        assert!(matches!(
+            poisoned,
+            VokraError::InvalidArgument(message) if message.contains("poisoned")
+        ));
+        assert_eq!(
+            core.executor.events,
+            vec!["text:10", "sample", "reset", "reset"]
         );
-        assert_eq!(core.executor.events, vec!["text:10", "sample", "reset"]);
-        assert_eq!(core.executor.observer.as_ref().unwrap().labels.len(), 2);
+        assert_eq!(
+            core.executor.observer.as_ref().unwrap().labels,
+            ["hidden", "sampled_latent"]
+        );
     }
 
     #[test]
