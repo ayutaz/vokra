@@ -875,6 +875,57 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn json_string(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len() + 2);
+        escaped.push('"');
+        for character in value.chars() {
+            match character {
+                '"' => escaped.push_str("\\\""),
+                '\\' => escaped.push_str("\\\\"),
+                '\u{08}' => escaped.push_str("\\b"),
+                '\u{0c}' => escaped.push_str("\\f"),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '\t' => escaped.push_str("\\t"),
+                character if character.is_control() => {
+                    escaped.push_str(&format!("\\u{:04x}", character as u32));
+                }
+                character => escaped.push(character),
+            }
+        }
+        escaped.push('"');
+        escaped
+    }
+
+    fn absolute_path_json(root: &Path, leaf: &str) -> String {
+        let path = root.join(leaf);
+        assert!(path.is_absolute(), "fixture path must be platform-absolute");
+        json_string(&path.to_string_lossy())
+    }
+
+    #[test]
+    fn fixture_json_string_roundtrips_native_escape_forms() {
+        let mut value = String::from("quote\" slash\\ ");
+        value.extend(
+            (0..=0x1f)
+                .chain(std::iter::once(0x7f))
+                .map(|code| char::from_u32(code).expect("JSON control code point")),
+        );
+        value.push('Δ');
+        let encoded = json_string(&value);
+        assert_eq!(
+            parse_json(encoded.as_bytes()).unwrap().as_str(),
+            Some(value.as_str())
+        );
+
+        let verbatim_path = r"\\?\C:\fixtures\owner.json";
+        let encoded = json_string(verbatim_path);
+        assert_eq!(
+            parse_json(encoded.as_bytes()).unwrap().as_str(),
+            Some(verbatim_path)
+        );
+    }
+
     #[test]
     fn order_independent_json_preserves_float_kind_and_signed_zero() {
         let left = parse_json(br#"{"a":1,"b":-0.0,"nested":{"x":"\u00e9"}}"#).unwrap();
@@ -1018,9 +1069,11 @@ mod tests {
     #[test]
     fn reference_identity_requires_absolute_path_bytes_and_external_sha() {
         let expected = [7_u8; 32];
+        let temp_root = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let native_path = absolute_path_json(&temp_root, "synthetic/reference.py");
         let valid = parse_json(
             format!(
-                "{{\"bytes\":12,\"path\":\"/synthetic/reference.py\",\"sha256\":\"{}\"}}",
+                "{{\"bytes\":12,\"path\":{native_path},\"sha256\":\"{}\"}}",
                 hex_digest(&expected)
             )
             .as_bytes(),
@@ -1038,13 +1091,29 @@ mod tests {
         assert!(validate_reference_identity(&relative, "identity", &expected).is_err());
         let zero = parse_json(
             format!(
-                "{{\"bytes\":0,\"path\":\"/synthetic/reference.py\",\"sha256\":\"{}\"}}",
+                "{{\"bytes\":0,\"path\":{native_path},\"sha256\":\"{}\"}}",
                 hex_digest(&expected)
             )
             .as_bytes(),
         )
         .unwrap();
         assert!(validate_reference_identity(&zero, "identity", &expected).is_err());
+        #[cfg(windows)]
+        for root_relative in [r"\synthetic\reference.py", r"C:synthetic\reference.py"] {
+            let root_relative = parse_json(
+                format!(
+                    "{{\"bytes\":12,\"path\":{},\"sha256\":\"{}\"}}",
+                    json_string(root_relative),
+                    hex_digest(&expected)
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            assert!(
+                validate_reference_identity(&root_relative, "identity", &expected).is_err(),
+                "root-relative Windows path must not satisfy an absolute identity"
+            );
+        }
     }
 
     #[test]
@@ -1095,6 +1164,14 @@ mod tests {
         let lock = "2".repeat(64);
         let runner = "3".repeat(64);
         let text = hex_digest(&sha256(b"hello"));
+        let reference_script_path =
+            absolute_path_json(root.as_path(), "run_streaming_reference.py");
+        let trusted_runner_path = absolute_path_json(root.as_path(), "trusted_runner.py");
+        let uv_lock_path = absolute_path_json(root.as_path(), "uv.lock");
+        let merges_path = absolute_path_json(root.as_path(), "merges.txt");
+        let tokenizer_json_path = absolute_path_json(root.as_path(), "tokenizer.json");
+        let tokenizer_config_path = absolute_path_json(root.as_path(), "tokenizer_config.json");
+        let vocab_path = absolute_path_json(root.as_path(), "vocab.json");
         let canonical = format!(
             "{{\"approved_at_utc\":\"2026-09-30T00:00:00Z\",\"checkpoint\":{{\"bytes\":{CHECKPOINT_BYTES},\"revision\":\"{CHECKPOINT_REVISION}\",\"sha256\":\"{CHECKPOINT_SHA256}\"}},\"config\":{{\"bytes\":{CONFIG_BYTES},\"sha256\":\"{CONFIG_SHA256}\"}},\"decision\":\"APPROVE_RESEARCH_ONLY_EXECUTION\",\"dependencies\":{{\"evidence_reference\":\"synthetic\",\"evidence_sha256\":\"{runner}\",\"license_audit\":\"APPROVED_FOR_REFERENCE_EXECUTION\",\"security_disposition\":\"APPROVED_FOR_REFERENCE_EXECUTION\",\"use\":\"REFERENCE_ONLY_NO_RUNTIME_REUSE\",\"uv_lock_sha256\":\"{lock}\"}},\"execution\":{{\"audio_generation\":\"APPROVED\",\"benchmark_repeats\":3,\"benchmark_warmups\":1,\"cfg_scale\":3.0,\"ddpm_steps\":20,\"max_new_tokens\":1,\"model_forward\":\"APPROVED\"}},\"input\":{{\"sample_rate\":24000,\"text_sha256\":\"{text}\"}},\"owner\":\"synthetic-model-free-test-owner\",\"preset\":{{\"bytes\":{PRESET_BYTES},\"git_blob_sha1\":\"{PRESET_GIT_BLOB_SHA1}\",\"payload_sha256\":\"{PRESET_PAYLOAD_SHA256}\",\"relative_path\":\"{PRESET_RELATIVE_PATH}\"}},\"publication\":\"NO_UPLOAD\",\"runtime\":{{\"compatibility_route\":\"{COMPATIBILITY_ROUTE}\",\"device_selection_policy\":\"CUDA_IF_FULL_TRACE_GUARD_AND_MEDIAN_FASTER\",\"noise_policy\":\"CONTROLLED_CPU_TAPE\",\"reference_script_sha256\":\"{script}\",\"seed\":1234,\"trusted_runner_sha256\":\"{runner}\",\"uv_lock_sha256\":\"{lock}\",\"vokra_head\":\"{head}\",\"vokra_tree_sha1\":\"{tree}\"}},\"schema\":\"{SCOPE_SCHEMA}\",\"source\":{{\"repository\":\"{SOURCE_REPOSITORY}\",\"revision\":\"{SOURCE_REVISION}\"}},\"tokenizer\":{{\"files\":{{\"merges.txt\":\"599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3\",\"tokenizer.json\":\"c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539\",\"tokenizer_config.json\":\"c91efca15ceff6e9ee9424db58a6f59cd41294e550a86cbd07e3c1fb500b34f9\",\"vocab.json\":\"ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910\"}},\"repository\":\"{TOKENIZER_REPOSITORY}\",\"revision\":\"{TOKENIZER_REVISION}\"}},\"voice\":{{\"consent\":\"PROVED\",\"consent_evidence_reference\":\"synthetic\",\"consent_evidence_sha256\":\"{script}\",\"disclaimer\":\"PRESERVE_UPSTREAM\",\"watermark\":\"DEFERRED_NO_EMBEDDED_CLAIM\"}}}}"
         );
@@ -1105,14 +1182,14 @@ mod tests {
         );
         let scope_sha = hex_digest(&sha256(scope.as_bytes()));
         let reference = format!(
-            "{{\"checkpoint\":{{\"bytes\":{CHECKPOINT_BYTES},\"sha256\":\"{CHECKPOINT_SHA256}\"}},\"config\":{{\"bytes\":{CONFIG_BYTES},\"sha256\":\"{CONFIG_SHA256}\"}},\"format\":\"{FORMAT}\",\"input\":{{\"sample_rate\":24000,\"text_sha256\":\"{text}\"}},\"owner_scope_file_sha256\":\"{scope_sha}\",\"owner_scope_sha256\":\"{canonical_sha}\",\"preset\":{{\"bytes\":{PRESET_BYTES},\"git_blob_sha1\":\"{PRESET_GIT_BLOB_SHA1}\",\"payload_sha256\":\"{PRESET_PAYLOAD_SHA256}\",\"relative_path\":\"{PRESET_RELATIVE_PATH}\"}},\"publication\":\"NO_UPLOAD\",\"runtime\":{{\"reference_script\":{{\"bytes\":1,\"path\":\"/synthetic/run_streaming_reference.py\",\"sha256\":\"{script}\"}},\"trusted_runner\":{{\"bytes\":1,\"path\":\"/synthetic/trusted_runner.py\",\"sha256\":\"{runner}\"}},\"uv_lock\":{{\"bytes\":1,\"path\":\"/synthetic/uv.lock\",\"sha256\":\"{lock}\"}},\"vokra_head\":\"{head}\",\"vokra_tree_sha1\":\"{tree}\"}},\"source\":{{\"origin\":\"{SOURCE_ORIGIN}\",\"repository\":\"{SOURCE_REPOSITORY}\",\"revision\":\"{SOURCE_REVISION}\"}},\"status\":\"{OPEN_STATUS}\",\"tokenizer\":{{\"repository\":\"{TOKENIZER_REPOSITORY}\",\"revision\":\"{TOKENIZER_REVISION}\"}}}}"
+            "{{\"checkpoint\":{{\"bytes\":{CHECKPOINT_BYTES},\"sha256\":\"{CHECKPOINT_SHA256}\"}},\"config\":{{\"bytes\":{CONFIG_BYTES},\"sha256\":\"{CONFIG_SHA256}\"}},\"format\":\"{FORMAT}\",\"input\":{{\"sample_rate\":24000,\"text_sha256\":\"{text}\"}},\"owner_scope_file_sha256\":\"{scope_sha}\",\"owner_scope_sha256\":\"{canonical_sha}\",\"preset\":{{\"bytes\":{PRESET_BYTES},\"git_blob_sha1\":\"{PRESET_GIT_BLOB_SHA1}\",\"payload_sha256\":\"{PRESET_PAYLOAD_SHA256}\",\"relative_path\":\"{PRESET_RELATIVE_PATH}\"}},\"publication\":\"NO_UPLOAD\",\"runtime\":{{\"reference_script\":{{\"bytes\":1,\"path\":{reference_script_path},\"sha256\":\"{script}\"}},\"trusted_runner\":{{\"bytes\":1,\"path\":{trusted_runner_path},\"sha256\":\"{runner}\"}},\"uv_lock\":{{\"bytes\":1,\"path\":{uv_lock_path},\"sha256\":\"{lock}\"}},\"vokra_head\":\"{head}\",\"vokra_tree_sha1\":\"{tree}\"}},\"source\":{{\"origin\":\"{SOURCE_ORIGIN}\",\"repository\":\"{SOURCE_REPOSITORY}\",\"revision\":\"{SOURCE_REVISION}\"}},\"status\":\"{OPEN_STATUS}\",\"tokenizer\":{{\"repository\":\"{TOKENIZER_REPOSITORY}\",\"revision\":\"{TOKENIZER_REVISION}\"}}}}"
         );
         let reference = reference.replace(
             &format!(
                 "\"tokenizer\":{{\"repository\":\"{TOKENIZER_REPOSITORY}\",\"revision\":\"{TOKENIZER_REVISION}\"}}"
             ),
             &format!(
-                "\"tokenizer\":{{\"files\":{{\"merges.txt\":{{\"bytes\":1671839,\"path\":\"/synthetic/merges.txt\",\"sha256\":\"599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3\"}},\"tokenizer.json\":{{\"bytes\":7031645,\"path\":\"/synthetic/tokenizer.json\",\"sha256\":\"c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539\"}},\"tokenizer_config.json\":{{\"bytes\":7228,\"path\":\"/synthetic/tokenizer_config.json\",\"sha256\":\"c91efca15ceff6e9ee9424db58a6f59cd41294e550a86cbd07e3c1fb500b34f9\"}},\"vocab.json\":{{\"bytes\":2776833,\"path\":\"/synthetic/vocab.json\",\"sha256\":\"ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910\"}}}},\"repository\":\"{TOKENIZER_REPOSITORY}\",\"revision\":\"{TOKENIZER_REVISION}\"}}"
+                "\"tokenizer\":{{\"files\":{{\"merges.txt\":{{\"bytes\":1671839,\"path\":{merges_path},\"sha256\":\"599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3\"}},\"tokenizer.json\":{{\"bytes\":7031645,\"path\":{tokenizer_json_path},\"sha256\":\"c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539\"}},\"tokenizer_config.json\":{{\"bytes\":7228,\"path\":{tokenizer_config_path},\"sha256\":\"c91efca15ceff6e9ee9424db58a6f59cd41294e550a86cbd07e3c1fb500b34f9\"}},\"vocab.json\":{{\"bytes\":2776833,\"path\":{vocab_path},\"sha256\":\"ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910\"}}}},\"repository\":\"{TOKENIZER_REPOSITORY}\",\"revision\":\"{TOKENIZER_REVISION}\"}}"
             ),
         );
         let scope_path = root.join("scope.json");
@@ -1146,18 +1223,21 @@ mod tests {
             1
         );
 
-        let malformed_reference = reference.replace(
-            "\"bytes\":7031645,\"path\":\"/synthetic/tokenizer.json\"",
-            "\"bytes\":7031644,\"path\":\"/synthetic/tokenizer.json\"",
-        );
+        let malformed_search = format!("\"bytes\":7031645,\"path\":{tokenizer_json_path}");
+        let malformed_replacement = format!("\"bytes\":7031644,\"path\":{tokenizer_json_path}");
+        assert!(reference.contains(&malformed_search));
+        let malformed_reference = reference.replace(&malformed_search, &malformed_replacement);
+        assert_ne!(malformed_reference, reference);
         let malformed_reference_sha = hex_digest(&sha256(malformed_reference.as_bytes()));
         fs::write(&reference_path, malformed_reference).unwrap();
         assert!(load(&scope_sha, &malformed_reference_sha).is_err());
         fs::write(&reference_path, &reference).unwrap();
-        let relative_identity_reference = reference.replace(
-            "\"path\":\"/synthetic/uv.lock\"",
-            "\"path\":\"synthetic/uv.lock\"",
-        );
+        let relative_search = format!("\"path\":{uv_lock_path}");
+        let relative_replacement = format!("\"path\":{}", json_string("synthetic/uv.lock"));
+        assert!(reference.contains(&relative_search));
+        let relative_identity_reference =
+            reference.replace(&relative_search, &relative_replacement);
+        assert_ne!(relative_identity_reference, reference);
         let relative_identity_sha = hex_digest(&sha256(relative_identity_reference.as_bytes()));
         fs::write(&reference_path, relative_identity_reference).unwrap();
         assert!(load(&scope_sha, &relative_identity_sha).is_err());
