@@ -180,10 +180,15 @@ jobs:
           # and therefore absent from a clean CI checkout. Tennessee's ELVIS
           # Act page resets automated clients; its two citations remain in
           # the docs but are excluded as a single known bot-blocked endpoint.
+          # Bound global and per-host bursts while preserving the same scan
+          # inputs, exclusions, timeout, and fail-closed result.
           args: >-
             --no-progress
             --max-retries 3
-            --retry-wait-time 2
+            --retry-wait-time 5
+            --max-concurrency 32
+            --host-concurrency 2
+            --host-request-interval 1s
             --timeout 20
             --exclude '^file://.*/docs/(system-requirements\.md|adr/(0004-ios-build|M2-03-followup-rtf)\.md)$'
             --exclude '^https://www\.tn\.gov/governor/news/2024/1/10/tennessee-first-in-the-nation-to-address-ai-impact-on-music-industry\.html$'
