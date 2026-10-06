@@ -497,6 +497,15 @@ struct NativeExecutor<'a> {
     observer: Option<&'a mut dyn VibeVoiceRealtimeDiagnosticObserver>,
 }
 
+struct DiagnosticCacheContext {
+    branch: VibeVoiceRealtimeDiagnosticBranch,
+    call: VibeVoiceRealtimeDiagnosticCall,
+    text_window_index: Option<usize>,
+    text_token_index: Option<usize>,
+    text_window_tokens: usize,
+    speech_step: Option<usize>,
+}
+
 fn dispatch_diagnostic_event(
     observer: Option<&mut (dyn VibeVoiceRealtimeDiagnosticObserver + '_)>,
     event: VibeVoiceRealtimeDiagnosticEvent<'_>,
@@ -527,12 +536,14 @@ impl RealtimeExecutor for NativeExecutor<'_> {
             values: &lm.hidden,
         })?;
         self.observe_cache(
-            VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
-            VibeVoiceRealtimeDiagnosticCall::Text,
-            Some(text_window_index),
-            Some(text_token_index),
-            text_window_tokens,
-            None,
+            DiagnosticCacheContext {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(text_window_index),
+                text_token_index: Some(text_token_index),
+                text_window_tokens,
+                speech_step: None,
+            },
             self.runtime.language.cache_positions().0,
             self.runtime.language.text_cache_layers(),
         )?;
@@ -566,12 +577,14 @@ impl RealtimeExecutor for NativeExecutor<'_> {
             values: &tts.hidden,
         })?;
         self.observe_cache(
-            VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
-            VibeVoiceRealtimeDiagnosticCall::Text,
-            Some(text_window_index),
-            Some(text_token_index),
-            text_window_tokens,
-            None,
+            DiagnosticCacheContext {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(text_window_index),
+                text_token_index: Some(text_token_index),
+                text_window_tokens,
+                speech_step: None,
+            },
             self.runtime.language.cache_positions().1,
             self.runtime.language.tts_cache_layers(),
         )?;
@@ -595,7 +608,7 @@ impl RealtimeExecutor for NativeExecutor<'_> {
                 guidance_scale,
             );
         }
-        let mut observer = self.observer.as_mut().map(|observer| &mut **observer);
+        let mut observer = self.observer.as_deref_mut();
         let latent = sample_vibevoice_realtime_cfg_with_observer(
             &self.runtime.diffusion_head,
             positive_condition,
@@ -640,7 +653,7 @@ impl RealtimeExecutor for NativeExecutor<'_> {
             .acoustic_stream
             .get_or_insert_with(|| self.runtime.acoustic_decoder.stream());
         if self.observer.is_some() {
-            let mut observer = self.observer.as_mut().map(|observer| &mut **observer);
+            let mut observer = self.observer.as_deref_mut();
             let pcm =
                 stream.decode_scaled_latent_with_observer(scaled_latent, &mut |observation| {
                     let Some(observer) = observer.as_deref_mut() else {
@@ -739,12 +752,14 @@ impl RealtimeExecutor for NativeExecutor<'_> {
             "positive speech hidden",
         )?;
         self.observe_cache(
-            VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
-            VibeVoiceRealtimeDiagnosticCall::Speech,
-            None,
-            None,
-            0,
-            Some(speech_step),
+            DiagnosticCacheContext {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+            },
             self.runtime.language.cache_positions().1,
             self.runtime.language.tts_cache_layers(),
         )?;
@@ -791,12 +806,14 @@ impl RealtimeExecutor for NativeExecutor<'_> {
             "negative speech hidden",
         )?;
         self.observe_cache(
-            VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
-            VibeVoiceRealtimeDiagnosticCall::Speech,
-            None,
-            None,
-            0,
-            Some(speech_step),
+            DiagnosticCacheContext {
+                branch: VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+            },
             self.negative.cache_positions().1,
             self.negative.tts_cache_layers(),
         )?;
@@ -849,22 +866,17 @@ impl NativeExecutor<'_> {
 
     fn observe_cache(
         &mut self,
-        branch: VibeVoiceRealtimeDiagnosticBranch,
-        call: VibeVoiceRealtimeDiagnosticCall,
-        text_window_index: Option<usize>,
-        text_token_index: Option<usize>,
-        text_window_tokens: usize,
-        speech_step: Option<usize>,
+        context: DiagnosticCacheContext,
         position: usize,
         layers: usize,
     ) -> Result<()> {
         self.observe(VibeVoiceRealtimeDiagnosticEvent::CachePosition {
-            branch,
-            call,
-            text_window_index,
-            text_token_index,
-            text_window_tokens,
-            speech_step,
+            branch: context.branch,
+            call: context.call,
+            text_window_index: context.text_window_index,
+            text_token_index: context.text_token_index,
+            text_window_tokens: context.text_window_tokens,
+            speech_step: context.speech_step,
             position,
             layers,
         })
@@ -900,12 +912,14 @@ impl NativeExecutor<'_> {
                 values: output.hidden(),
             })?;
             self.observe_cache(
-                diagnostic_branch,
-                VibeVoiceRealtimeDiagnosticCall::Prefill,
-                None,
-                None,
-                0,
-                None,
+                DiagnosticCacheContext {
+                    branch: diagnostic_branch,
+                    call: VibeVoiceRealtimeDiagnosticCall::Prefill,
+                    text_window_index: None,
+                    text_token_index: None,
+                    text_window_tokens: 0,
+                    speech_step: None,
+                },
                 output.cache_position(),
                 output.layers().len(),
             )?;

@@ -29,6 +29,9 @@ pub const VIBEVOICE_REALTIME_TRAIN_STEPS: usize = 1_000;
 /// Authenticated scheduler inference-step count.
 pub const VIBEVOICE_REALTIME_INFERENCE_STEPS: usize = 20;
 
+type DiffusionObserver<'observer> =
+    dyn FnMut(usize, usize, &[f32], &[f32]) -> Result<()> + 'observer;
+
 /// Runs the bounded Realtime diffusion CFG loop on an authenticated head.
 ///
 /// `positive_condition` and `negative_condition` are the two 896-wide hidden
@@ -137,7 +140,7 @@ fn sample_with_predictor_optional<P>(
     initial_noise: &[f32],
     guidance_scale: f32,
     mut predict: P,
-    mut observe: Option<&mut dyn FnMut(usize, usize, &[f32], &[f32]) -> Result<()>>,
+    mut observe: Option<&mut DiffusionObserver<'_>>,
 ) -> Result<Vec<f32>>
 where
     P: FnMut(&[f32], &[f32], f32) -> Result<Vec<f32>>,

@@ -26,6 +26,9 @@ pub const REALTIME_ACOUSTIC_LATENT_WIDTH: usize = 64;
 /// Samples emitted for one Realtime acoustic latent frame at 24 kHz.
 pub const REALTIME_ACOUSTIC_CHUNK_SAMPLES: usize = 3_200;
 
+type AcousticObserver<'observer> =
+    dyn for<'a> FnMut(VibeVoiceRealtimeAcousticObservation<'a>) -> Result<()> + 'observer;
+
 /// Realtime acoustic decoder bound to one authenticated GGUF.
 ///
 /// The decoder supports the backends whose complete tokenizer-op registry is
@@ -115,9 +118,7 @@ impl VibeVoiceRealtimeAcousticDecoderStream {
     fn decode_scaled_latent_inner(
         &mut self,
         scaled_latent: &[f32],
-        mut observer: Option<
-            &mut dyn for<'a> FnMut(VibeVoiceRealtimeAcousticObservation<'a>) -> Result<()>,
-        >,
+        mut observer: Option<&mut AcousticObserver<'_>>,
     ) -> Result<Vec<f32>> {
         if scaled_latent.len() != REALTIME_ACOUSTIC_LATENT_WIDTH {
             return Err(VokraError::InvalidArgument(format!(
@@ -144,7 +145,7 @@ impl VibeVoiceRealtimeAcousticDecoderStream {
                 "vibevoice-realtime acoustic decoder emitted non-finite PCM".to_owned(),
             ));
         }
-        if let Some(observer) = observer.as_deref_mut() {
+        if let Some(observer) = observer.as_mut() {
             observer(VibeVoiceRealtimeAcousticObservation::DecoderChunk { pcm: &pcm })?;
         }
         Ok(pcm)
