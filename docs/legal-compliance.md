@@ -17,6 +17,15 @@ EU/Californiaの施行・経過措置を今回の日付で再認証できてい�
 以前のCongress.gov取得ページでのIntroducedというキャッシュ観測も、現在の成立状況の保証としない。
 法務文書の全面的な現行法再確認は未完了であり、owner/legal sign-offを追加・変更していない。
 
+**2026-10-06 EU法令限定再照合:** 2026-08-30の確認記録を保持したまま、公式EU
+ELI/HTMLで、EU AI Act（CELEX: 32024R1689）、Regulation (EU) 2026/1744
+（CELEX: 32026R1744）、GDPR（CELEX: 32016R0679）と、Article 111(4)、Article 4、
+Article 50 / 113、GDPR Article 9 / 83の対応だけを再照合した。Regulation (EU)
+2026/1744はArticle 50全般の適用延期ではなく、2026-08-02より前に市場投入された
+synthetic-content AI systemsに対するArticle 50(2)対応について、Article 111(4)の
+限定的な移行期限を定める。California等の他法令の再確認やowner/legal判断は本追記で
+主張しない。
+
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
 implementation remains fail-closed for unsupported model/license paths;
@@ -83,7 +92,7 @@ consent, disclosure, and model rights before release or deployment.
 ### 罰則リスク
 罰則の対象者・金額・各国実施法は違反類型と事実関係によるため、本書では断定しない。Article 50の適用とVokra provider/deployerの責任分界は要法務確認。
 
-根拠: [EUR-Lex Regulation (EU) 2024/1689（CELEX: 32024R1689、Article 50 / 111 / 113）](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32024R1689) および [Regulation (EU) 2026/1744（CELEX: 32026R1744、Article 4 / Article 111改正）](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32026R1744)（いずれも公式官報、2026-08-30確認）。
+根拠: [EUR-Lex Regulation (EU) 2024/1689（CELEX: 32024R1689、Article 50 / 111 / 113）](https://data.europa.eu/eli/reg/2024/1689/oj) および [Regulation (EU) 2026/1744（CELEX: 32026R1744、Article 4 / Article 111改正）](https://data.europa.eu/eli/reg/2026/1744/oj)（いずれも公式官報、2026-08-30確認）。
 
 ---
 
@@ -265,7 +274,7 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 - 音声・通話録音を扱うことだけでPCI DSSの適用や準拠が決まるわけではない。カード会員データ環境との接続、保存・処理・伝送、事業者の役割と適用版に応じて、deployerが対象範囲と評価を確認する。
 - Vokra providerの責任分界や必要な契約は、実際の構成と法務・セキュリティ評価に依存する。
 
-根拠: [EUR-Lex GDPR（Regulation (EU) 2016/679、Article 9 / 83）](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32016R0679)、[HHS: Covered Entities and Business Associates](https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html)、[HHS: Business Associates](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/business-associates/index.html)、[NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/pdf/EULA.pdf)（2026-08-30確認）。
+根拠: [EUR-Lex GDPR（Regulation (EU) 2016/679、Article 9 / 83）](https://data.europa.eu/eli/reg/2016/679/oj)、[HHS: Covered Entities and Business Associates](https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html)、[HHS: Business Associates](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/business-associates/index.html)、[NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/pdf/EULA.pdf)（2026-08-30確認）。
 
 ---
 
@@ -320,8 +329,8 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 
 ## 13. 参考出典
 
-- [EUR-Lex Regulation (EU) 2024/1689（CELEX: 32024R1689、Article 50 / 111 / 113）](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32024R1689)
-- [EUR-Lex Regulation (EU) 2026/1744（CELEX: 32026R1744、Article 4 / Article 111改正）](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32026R1744)
+- [EUR-Lex Regulation (EU) 2024/1689（CELEX: 32024R1689、Article 50 / 111 / 113）](https://data.europa.eu/eli/reg/2024/1689/oj)
+- [EUR-Lex Regulation (EU) 2026/1744（CELEX: 32026R1744、Article 4 / Article 111改正）](https://data.europa.eu/eli/reg/2026/1744/oj)
 - [California SB 942, Chapter 291 (official bill text)](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)
 - [Tennessee SB 2096 / Public Chapter 588 (official Bill Information)](https://wapp.capitol.tn.gov/apps/BillInfo/Default?BillNumber=SB2096&GA=113)
 - [S.1367 NO FAKES Act of 2025 (Congress.gov / GPO introduced text)](https://www.congress.gov/119/bills/s1367/BILLS-119s1367is.pdf)
