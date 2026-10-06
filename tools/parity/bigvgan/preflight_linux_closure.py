@@ -240,7 +240,7 @@ def self_test() -> None:
             return None
 
         def geturl(self) -> str:
-            return "https://evil.example/torch-2.7.1+cpu-py3-none-any.whl"
+            return "https://evil.example/torch-2.13.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl"
 
         def read(self, _size: int) -> bytes:
             return b""
