@@ -9,7 +9,10 @@ dependencies = [
     "huggingface-hub==0.30.2",
     "numpy==2.2.5",
     "pydantic==2.11.3",
-    "torch==2.6.0",
+    # Security-refresh candidate only.  The authenticated Dia source still
+    # declares torch/torchaudio 2.6.0; no compatibility claim is made here.
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
 ]
 
 [tool.uv]
@@ -19,6 +22,7 @@ package = false
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -35,4 +39,4 @@ explicit = true
 dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"
 lock_schema = "uv-lock-v1-python312"
 use_torch_compile = false
-direct_dependency_versions = { einops = "0.8.2", gguf = "0.19.0", huggingface-hub = "0.30.2", numpy = "2.2.5", pydantic = "2.11.3", torch = "2.6.0" }
+direct_dependency_versions = { einops = "0.8.2", gguf = "0.19.0", huggingface-hub = "0.30.2", numpy = "2.2.5", pydantic = "2.11.3", torch = "2.13.0", torchaudio = "2.11.0" }
