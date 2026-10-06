@@ -69,6 +69,38 @@ remains `BLOCKED` / `NO_UPLOAD`, with no checkpoint acquisition, model
 execution, sign-off or Apple verdict. Both disposable XY VAST workers were
 destroyed after the model-free checks; unrelated instances were untouched.
 
+### 2026-09-29 CLAP and catalog continuation (09:18 UTC)
+
+The live, read-only HF audit again found 194 public repositories, 193 with
+GGUFs and 198 GGUF files: CPU `136 full / 43 partial / 14 no-runtime-binder /
+1 not-artifact`; Metal `136 full / 57 blocked-by-cpu / 1 not-artifact`.
+These are code/artifact reachability classes, not Apple real-weight parity.
+At this readback, the GitHub Dependabot API reported 342 open alerts, 299 with
+a patched version and 43 without one; all five OpenSSF code-scanning findings
+remain open. These values superseded the dated starting-point counts above.
+PR #137 merged at `30ae49231afe9c596d72404d0d72a8a5b91c611c`.
+
+The CLAP reference-only Torch refresh at clean head
+`0ba98c615337b9e1ccc2b4203b36e2fbf9f7f5d9` pins CPU Torch 2.13.0 and
+passed the exact-head disposable VAST model-free worker, full workspace test,
+`cargo fmt --all -- --check`, and workspace Clippy with `-D warnings`.
+The regenerated model-free audit, dependency inventory and summary have
+SHA-256 values `3671fccdda418ef85bccc21d11888527ac9fb6394d725715e8327524474435d0`,
+`9f28e0261ff1958481ff44c3b9e66367dbc0fe1182616bb6cb0110be7f258019`
+and `8610ce0d5f6cf3caf82cd9206f7850cefb4c067b4590fbe570d4beda06861670`.
+The recovered evidence archive at
+`/private/tmp/vokra-clap-mf-evidence-0ba98c61.tar.gz` matched remote SHA-256
+`d60d86e51bcb851deaa7ebeebecffc4d838f56ed69b718210e8f43f1ee9dd39a`.
+Its dependency inventory has 34 locked/installed distributions, zero factual
+collection findings and 28 owner-review flags. Weights were not acquired;
+model load and forward were not performed. The later candidate-binding commit
+`7e05cffb` records this evidence but was not itself VAST-replayed. CLAP remains
+`PENDING_OWNER_REVIEW` / runtime `BLOCKED` / `NO_UPLOAD`, with no real-weight,
+Apple or publication claim. The dedicated VAST instance `53333436` was
+destroyed after evidence recovery; individual API readback returned
+`instances: null`, independent volumes `[]`. Unrelated account instances were
+not modified.
+
 ### 2026-09-29 VibeVoice 1.5B model-free compatibility readback (06:54 UTC)
 
 The unmerged security candidate at clean head
@@ -568,8 +600,9 @@ Neither outcome may be inferred from an empty repository.
 The current detailed security execution record is
 [`security-remediation-2026-09-21.md`](security-remediation-2026-09-21.md).
 Its 261-alert snapshot predates PR #131 and the 258-alert starting API result;
-the later 342-alert readback above supersedes both for current queue sizing.
-Retain the dated observations and add a supersession note when refreshing them.
+the dated 342-alert readback above superseded both at that observation time.
+The 2026-09-30 readback below is newer for queue sizing. Retain the dated
+observations and add a supersession note when refreshing them.
 
 ## Execution order and ownership
 
