@@ -150,6 +150,39 @@ UV_CACHE_DIR=/private/tmp/vokra-kyutai-uv-cache \
   -m unittest discover -s tools/parity/kyutai_stt_streaming_reference -p 'test_*.py'
 ```
 
+## Source dependency graph (evidence only)
+
+`source_dependency_graph.py` parses only authenticated Python bytes.  In a
+production invocation it reuses `contract.require_pcm_source_packet` for the
+fixed DSM/Moshi packet and separately binds the Vokra `pcm_dump.py`, `dump.py`,
+and `contract.py` bytes to the explicit clean Git HEAD.  The graph starts at
+the Vokra PCM producer and follows local imports; fixed Moshi role files are
+reported as source-contract evidence, not silently promoted to a runtime
+closure.  Modules, edges, and candidate names carry separate `producer` versus
+`source-contract-role` reachability scopes; their union is never an
+execution-closure claim.  DSM evaluator scripts are likewise provenance-only.
+Relative and absolute package imports are resolved conservatively with package `__init__`
+context, while conditional and optional imports are retained instead of
+pruned.  Missing packet paths, dynamic imports, malformed source, cycles, path
+escapes, and identity changes remain `BLOCKED_REVIEW`; a third-party name is
+reported only as `CANDIDATE_UNKNOWN` and is never mapped to a distribution,
+version, license, or native payload.
+
+The report status is always `SOURCE_DEPENDENCY_GRAPH_ONLY`,
+`NOT_EXECUTION_CLOSURE`, and `NO_UPLOAD`.  It is not a replacement for a
+selected Linux/CPython 3.12 wheel audit, RECORD/license/native inspection,
+owner/legal disposition, or upstream import/API probe.  The retained packet
+does not contain the first-party Vokra files; production graph generation
+therefore authenticates those files from the fixed Git checkout separately
+and remains blocked if that checkout or the packet does not match.  The CLI
+accepts an explicit `--expected-vokra-head`; its default is the historical
+source-review base `8bcf661f8209830fc110492dce02c10dbf3ec88d`, so a newer
+checkout must pass its exact full commit explicitly.  The validator is loaded
+from the authenticated selected checkout, never from an adjacent unrelated
+`contract.py`.  Local tests use explicitly marked synthetic packets and
+cannot claim production authentication; no graph is generated from the
+retained packet by ordinary tests.
+
 The dated
 [`2026-10-04 Kyutai handoff`](../../../docs/handoff/kyutai-independent-reference-2026-10-04.md)
 records the test inventory and receipt for each candidate snapshot.  This
