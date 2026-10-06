@@ -500,16 +500,19 @@ fn ensure_no_symlink_ancestors(path: &Path, label: &str) -> Result<(), String> {
             .map_err(|error| format!("{label} current directory failed: {error}"))?
             .join(path)
     };
-    let mut current = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(std::path::MAIN_SEPARATOR.to_string()),
-            Component::CurDir => {}
-            Component::ParentDir => current.push(".."),
-            Component::Normal(part) => current.push(part),
+    let mut current = absolute.as_path();
+    loop {
+        // On Windows, Path::parent() eventually yields a bare verbatim/disk
+        // prefix (for example `\\?\\C:`). That is not a filesystem path and
+        // probing it produces ERROR_INVALID_FUNCTION. The drive/UNC root is
+        // still checked below; only the prefix-only sentinel is skipped.
+        if current
+            .components()
+            .all(|component| matches!(component, Component::Prefix(_)))
+        {
+            break;
         }
-        match fs::symlink_metadata(&current) {
+        match fs::symlink_metadata(current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(format!(
                     "{label} has a symlink ancestor: {}",
@@ -525,6 +528,13 @@ fn ensure_no_symlink_ancestors(path: &Path, label: &str) -> Result<(), String> {
                 ));
             }
         }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent;
     }
     Ok(())
 }
@@ -791,11 +801,7 @@ mod tests {
 
     fn fixture_many(packet: &str, files: &[(&str, &[u8])]) -> (PathBuf, String) {
         let temp_root = fs::canonicalize(std::env::temp_dir()).unwrap();
-        let stem = format!(
-            "vokra-realtime-noise-test-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("case")
-        );
+        let stem = format!("vokra-realtime-noise-test-{}", std::process::id());
         let root = (0..32)
             .map(|attempt| temp_root.join(format!("{stem}-{attempt}")))
             .find(|candidate| match fs::create_dir(candidate) {
@@ -815,6 +821,20 @@ mod tests {
 
     fn fixture(packet: &str, npy: &[u8], filename: &str) -> (PathBuf, String) {
         fixture_many(packet, &[(filename, npy)])
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_verbatim_absolute_missing_child_without_prefix_probe() {
+        let temp = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let temp_text = temp.to_string_lossy();
+        let verbatim = if temp_text.starts_with("\\\\?\\") {
+            temp
+        } else {
+            PathBuf::from(format!(r"\\?\{}", temp.display()))
+        };
+        let missing_child = verbatim.join("vokra-noise-prefix-regression-missing");
+        ensure_no_symlink_ancestors(&missing_child, "verbatim noise fixture").unwrap();
     }
 
     #[test]

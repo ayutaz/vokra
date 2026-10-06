@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use vokra_core::Session;
 use vokra_models::vibevoice_streaming::tokenizer::VibeVoiceRealtimeTokenizer;
@@ -440,6 +440,15 @@ fn reject_symlink_ancestors(path: &Path, label: &str) -> Result<(), String> {
     };
     let mut current = absolute.as_path();
     loop {
+        // Do not probe a Windows drive/verbatim prefix such as `\\?\\C:`;
+        // it is a parser component, not a filesystem path. The drive/UNC
+        // root remains a real ancestor and is checked normally.
+        if current
+            .components()
+            .all(|component| matches!(component, Component::Prefix(_)))
+        {
+            break;
+        }
         match fs::symlink_metadata(current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(format!(
@@ -521,6 +530,20 @@ mod tests {
             }
         }
         panic!("unable to allocate unique fixture directory");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_verbatim_absolute_missing_output_without_prefix_probe() {
+        let temp = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let temp_text = temp.to_string_lossy();
+        let verbatim = if temp_text.starts_with("\\\\?\\") {
+            temp
+        } else {
+            PathBuf::from(format!(r"\\?\{}", temp.display()))
+        };
+        let missing_output = verbatim.join("vokra-output-prefix-regression-missing.wav");
+        reject_symlink_ancestors(&missing_output, "verbatim realtime output").unwrap();
     }
 
     fn parsed_realtime_args(root: &Path, gguf_sha256: &str) -> super::super::RunArgs {
