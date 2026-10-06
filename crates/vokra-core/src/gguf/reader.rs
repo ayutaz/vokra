@@ -214,6 +214,18 @@ impl GgufFile {
         &self.tensors
     }
 
+    /// Borrows the complete immutable GGUF file image without copying it.
+    ///
+    /// The slice is the same owned buffer or external mapping used by the
+    /// parser and tensor accessors. Callers can authenticate the exact image
+    /// that was already parsed, without reopening a path (and without a
+    /// path-replacement time-of-check/time-of-use window). The backing source
+    /// remains immutable for the lifetime of `self`, as required by
+    /// [`AsBytes`].
+    pub fn file_bytes(&self) -> &[u8] {
+        self.data()
+    }
+
     /// Looks up a tensor descriptor by name.
     pub fn tensor_info(&self, name: &str) -> Option<&GgufTensorInfo> {
         self.tensor_index.get(name).map(|&i| &self.tensors[i])
@@ -665,6 +677,67 @@ mod tests {
             owned.tensor_f32("d").unwrap(),
             external.tensor_f32("d").unwrap()
         );
+    }
+
+    #[test]
+    fn file_bytes_returns_the_complete_owned_image_without_copying() {
+        let mut builder = GgufBuilder::new();
+        builder.add_u32(chunks::KEY_FRONTEND_N_FFT, 400);
+        builder
+            .add_tensor(
+                "tiny",
+                GgmlType::F32,
+                vec![3],
+                [1.0f32, -2.0, 3.5]
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect(),
+            )
+            .unwrap();
+        let mut bytes = builder.to_bytes().unwrap();
+        bytes.extend_from_slice(&[0, 1, 2, 3, 0xff]);
+        let original_ptr = bytes.as_ptr();
+        let expected = bytes.clone();
+        let file = GgufFile::parse(bytes).unwrap();
+
+        assert_eq!(file.file_bytes(), expected.as_slice());
+        assert_eq!(file.file_bytes().as_ptr(), original_ptr);
+        assert_eq!(
+            file.get(chunks::KEY_FRONTEND_N_FFT),
+            Some(&GgufMetadataValue::U32(400))
+        );
+        assert_eq!(file.tensor_f32("tiny").unwrap(), vec![1.0, -2.0, 3.5]);
+        assert_eq!(file.file_bytes().last(), Some(&0xff));
+    }
+
+    #[test]
+    fn file_bytes_returns_the_complete_external_image_without_copying() {
+        struct InMem(Vec<u8>);
+        impl AsBytes for InMem {
+            fn bytes(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        let mut builder = GgufBuilder::new();
+        builder.add_u32(chunks::KEY_FRONTEND_N_FFT, 512);
+        builder
+            .add_tensor("tiny", GgmlType::I32, vec![2], vec![7, 0, 0, 0, 9, 0, 0, 0])
+            .unwrap();
+        let mut bytes = builder.to_bytes().unwrap();
+        bytes.extend_from_slice(&[9, 8, 7, 6, 5]);
+        let original_ptr = bytes.as_ptr();
+        let expected = bytes.clone();
+        let file = GgufFile::from_external(Box::new(InMem(bytes))).unwrap();
+
+        assert_eq!(file.file_bytes(), expected.as_slice());
+        assert_eq!(file.file_bytes().as_ptr(), original_ptr);
+        assert_eq!(
+            file.get(chunks::KEY_FRONTEND_N_FFT),
+            Some(&GgufMetadataValue::U32(512))
+        );
+        assert_eq!(file.tensor_i32("tiny").unwrap(), vec![7, 9]);
+        assert_eq!(file.file_bytes().last(), Some(&5));
     }
 
     #[test]
