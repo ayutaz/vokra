@@ -38,7 +38,16 @@ VOKRA_SOURCE_PATHS = (
     "tools/parity/kyutai_stt_streaming_reference/pcm_dump.py",
     "tools/parity/kyutai_stt_streaming_reference/dump.py",
     "tools/parity/kyutai_stt_streaming_reference/contract.py",
+    "tools/parity/kyutai_stt_decoder_dump_reference.py",
 )
+VOKRA_DECODER_HELPER_PATH = "tools/parity/kyutai_stt_decoder_dump_reference.py"
+VOKRA_DECODER_HELPER_MODULE = "kyutai_stt_decoder_dump_reference"
+VOKRA_SOURCE_MODULES = {
+    "tools/parity/kyutai_stt_streaming_reference/pcm_dump.py": "pcm_dump",
+    "tools/parity/kyutai_stt_streaming_reference/dump.py": "dump",
+    "tools/parity/kyutai_stt_streaming_reference/contract.py": "contract",
+    VOKRA_DECODER_HELPER_PATH: VOKRA_DECODER_HELPER_MODULE,
+}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -310,6 +319,9 @@ def _safe_rel(value: Any, label: str) -> str:
 
 def _module_from_path(path: str) -> str | None:
     """Map authenticated source paths to import names without guessing dists."""
+    fixed_module = VOKRA_SOURCE_MODULES.get(path)
+    if fixed_module is not None:
+        return fixed_module
     local_prefix = "tools/parity/kyutai_stt_streaming_reference/"
     if path.startswith(local_prefix) and path.endswith(".py"):
         stem = path[len(local_prefix):-3]
@@ -344,6 +356,60 @@ class _ImportVisitor(ast.NodeVisitor):
         self.edges: list[dict[str, Any]] = []
         self._conditions: list[str] = []
         self._try_depth = 0
+        self._literal_importlib_allowed = False
+
+    @staticmethod
+    def _has_unshadowed_importlib(tree: ast.AST) -> bool:
+        imported = False
+        shadowed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    bound_name = alias.asname or alias.name.split(".", 1)[0]
+                    if alias.name == "importlib" and alias.asname in {None, "importlib"}:
+                        imported = True
+                    elif bound_name == "importlib":
+                        shadowed = True
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if (alias.asname or alias.name) == "importlib":
+                        shadowed = True
+            elif isinstance(node, ast.Name) and node.id == "importlib" and isinstance(
+                node.ctx, (ast.Store, ast.Del)
+            ):
+                shadowed = True
+            elif isinstance(node, ast.arg) and node.arg == "importlib":
+                shadowed = True
+            elif isinstance(node, ast.ExceptHandler) and node.name == "importlib":
+                shadowed = True
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "importlib":
+                shadowed = True
+            elif (
+                isinstance(node, ast.Attribute)
+                and node.attr == "import_module"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "importlib"
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            ):
+                shadowed = True
+        return imported and not shadowed
+
+    @staticmethod
+    def _literal_import_module_call(node: ast.Call) -> tuple[bool, str | None]:
+        target = node.func
+        if not (
+            isinstance(target, ast.Attribute)
+            and target.attr == "import_module"
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "importlib"
+        ):
+            return False, None
+        if len(node.args) != 1 or node.keywords:
+            return False, None
+        argument = node.args[0]
+        if not isinstance(argument, ast.Constant) or not isinstance(argument.value, str):
+            return False, None
+        return True, argument.value
 
     def _add(self, name: str, node: ast.AST, kind: str, *, level: int = 0) -> None:
         if len(self.edges) >= MAX_IMPORTS_PER_MODULE:
@@ -381,12 +447,21 @@ class _ImportVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         target = node.func
         dynamic = False
+        literal, literal_name = self._literal_import_module_call(node)
+        if literal and self._literal_importlib_allowed:
+            self._add(literal_name or "", node, "dynamic-import-literal")
+            self.generic_visit(node)
+            return
         if isinstance(target, ast.Name) and target.id in {"__import__", "import_module"}:
             dynamic = True
         if isinstance(target, ast.Attribute) and target.attr == "import_module":
             dynamic = True
         if dynamic:
             self._add("<dynamic-import>", node, "dynamic-import")
+        self.generic_visit(node)
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self._literal_importlib_allowed = self._has_unshadowed_importlib(node)
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:
@@ -567,6 +642,16 @@ def _load_packet(packet: Path) -> tuple[dict[str, Any], bytes, dict[str, Any], d
 
 def _edge_target(module: str, edge: dict[str, Any], modules: dict[str, dict[str, Any]]) -> tuple[str | None, str]:
     name = edge["name"]
+    if edge["kind"] == "dynamic-import-literal":
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", name
+        ):
+            return None, "dynamic-import-literal-unknown"
+        if name == VOKRA_DECODER_HELPER_MODULE:
+            helper = modules.get(name)
+            if helper is not None and helper.get("path") == VOKRA_DECODER_HELPER_PATH:
+                return name, "authenticated-source"
+        return None, "dynamic-import-literal-unknown"
     if name == "<dynamic-import>":
         return None, "dynamic-import-unknown"
     if edge["relative_level"]:
@@ -805,6 +890,23 @@ def build_graph(
                 candidate_name = _top_name(edge["name"])
                 external.setdefault(candidate_name, {"name": candidate_name, "distribution": "UNKNOWN", "status": "CANDIDATE_UNKNOWN", "first_seen": record})
                 external_scopes.setdefault(candidate_name, set()).add(scope)
+            elif edge["kind"] == "dynamic-import-literal":
+                status = (
+                    "DYNAMIC_IMPORT_LITERAL_AUTHENTICATED_SOURCE"
+                    if target is not None
+                    else "DYNAMIC_IMPORT_LITERAL_UNKNOWN"
+                )
+                unresolved_key = (status, module, edge["name"], edge["line"])
+                if unresolved_key not in unresolved_keys:
+                    unresolved_keys.add(unresolved_key)
+                    unresolved.append({
+                        "status": status,
+                        "source": module,
+                        "name": edge["name"],
+                        "target": target,
+                        "line": edge["line"],
+                        "scope": scope,
+                    })
             elif resolution.startswith("dynamic") or resolution.startswith("missing"):
                 unresolved_key = (resolution, module, edge["name"], edge["line"])
                 if unresolved_key not in unresolved_keys:

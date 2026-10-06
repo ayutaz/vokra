@@ -17,16 +17,27 @@ def _blob_sha(body: bytes) -> str:
     return hashlib.sha1(f"blob {len(body)}\0".encode() + body).hexdigest()
 
 
-def _make_packet(root: Path, *, tamper: str | None = None, dynamic: bool = False, diamond: bool = False) -> Path:
+def _make_packet(
+    root: Path,
+    *,
+    tamper: str | None = None,
+    dynamic: bool = False,
+    dynamic_body: bytes | None = None,
+    diamond: bool = False,
+) -> Path:
     packet = root / "packet"
     packet.mkdir()
     source_files = {
         "tools/parity/kyutai_stt_streaming_reference/pcm_dump.py": (
             b"import torch\nfrom moshi.models import LMGen\nfrom .missing import no\n"
             if not dynamic
-            else b"import importlib\nimportlib.import_module('torch')\n"
+            else dynamic_body
+            or b"import importlib\nimportlib.import_module('kyutai_stt_decoder_dump_reference')\n"
         ),
         "tools/parity/kyutai_stt_streaming_reference/contract.py": b"from moshi.models.lm import LMModel\n",
+        "tools/parity/kyutai_stt_decoder_dump_reference.py": (
+            b"import helper_dependency\nraise RuntimeError('AST-only fixture')\n"
+        ),
         "moshi/moshi/__init__.py": b"from . import models\n",
         "moshi/moshi/models/__init__.py": b"from .lm import LMModel\nfrom . import loaders\n",
         "moshi/moshi/models/lm.py": b"from ..modules import transformer\n",
@@ -134,10 +145,78 @@ class SourceDependencyGraphTests(unittest.TestCase):
         self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
         self.assertTrue(any(row["status"] == "MISSING_AUTHENTICATED_SOURCE" for row in report["unresolved"]))
 
-    def test_dynamic_import_is_unresolved(self) -> None:
+    def test_literal_first_party_helper_is_traversed_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             report = graph.build_graph(_make_packet(Path(raw), dynamic=True), ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"], synthetic=True)
-        self.assertTrue(any(row["status"] == "DYNAMIC_IMPORT_UNKNOWN" for row in report["unresolved"]))
+        modules = {row["module"] for row in report["authenticated_modules"]}
+        self.assertIn("kyutai_stt_decoder_dump_reference", modules)
+        helper_edge = next(
+            edge for edge in report["edges"]
+            if edge["name"] == "kyutai_stt_decoder_dump_reference"
+        )
+        self.assertEqual(helper_edge["target"], "kyutai_stt_decoder_dump_reference")
+        self.assertEqual(helper_edge["resolution"], "authenticated-source")
+        self.assertTrue(any(
+            row["status"] == "DYNAMIC_IMPORT_LITERAL_AUTHENTICATED_SOURCE"
+            and row["target"] == "kyutai_stt_decoder_dump_reference"
+            for row in report["unresolved"]
+        ))
+        self.assertIn("helper_dependency", {row["name"] for row in report["external_candidates"]})
+        self.assertEqual(report["status"], graph.GRAPH_STATUS)
+        self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
+        self.assertEqual(report["publication"], graph.PUBLICATION_STATUS)
+
+    def test_dynamic_import_variables_unknown_shapes_and_unmapped_literals_stay_unknown(self) -> None:
+        body = (
+            b"import importlib\n"
+            b"target = 'kyutai_stt_decoder_dump_reference'\n"
+            b"importlib.import_module(target)\n"
+            b"importlib.import_module('not_authenticated')\n"
+            b"importlib.import_module('moshi.models')\n"
+            b"importlib.import_module('.relative')\n"
+            b"importlib.import_module('kyutai_stt_decoder_dump_reference', 'pkg')\n"
+            b"importlib.import_module('kyutai_stt_decoder_dump_reference', package='pkg')\n"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(
+                    Path(raw),
+                    dynamic=True,
+                    dynamic_body=body,
+                ),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+        statuses = {row["status"] for row in report["unresolved"]}
+        self.assertIn("DYNAMIC_IMPORT_UNKNOWN", statuses)
+        self.assertIn("DYNAMIC_IMPORT_LITERAL_UNKNOWN", statuses)
+        self.assertNotIn("DYNAMIC_IMPORT_LITERAL_AUTHENTICATED_SOURCE", statuses)
+        moshi_edge = next(edge for edge in report["edges"] if edge["name"] == "moshi.models")
+        self.assertIsNone(moshi_edge["target"])
+        self.assertEqual(moshi_edge["resolution"], "dynamic-import-literal-unknown")
+        self.assertNotIn(
+            "kyutai_stt_decoder_dump_reference",
+            {row["module"] for row in report["authenticated_modules"]},
+        )
+
+    def test_shadowed_importlib_literal_stays_generic_unknown(self) -> None:
+        for source in (
+            "import importlib\nimportlib = object()\n",
+            "import types as importlib\n",
+            "import importlib\ndef importlib():\n    pass\n",
+            "import importlib\nclass importlib:\n    pass\n",
+            "import importlib\nimportlib.import_module = object()\n",
+        ):
+            tree = ast.parse(
+                source
+                + "importlib.import_module('kyutai_stt_decoder_dump_reference')\n"
+            )
+            visitor = graph._ImportVisitor("fixture")
+            visitor.visit(tree)
+            dynamic = [edge for edge in visitor.edges if edge["kind"] == "dynamic-import"]
+            self.assertEqual(len(dynamic), 1)
+            self.assertEqual(dynamic[0]["name"], "<dynamic-import>")
+            self.assertFalse(any(edge["kind"] == "dynamic-import-literal" for edge in visitor.edges))
 
     def test_relative_edge_and_cycle_are_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -369,11 +448,61 @@ class SourceDependencyGraphTests(unittest.TestCase):
             auth, rows = graph._authenticate_vokra_sources(checkout, head)
             self.assertEqual(auth["status"], "AUTHENTICATED_VOKRA_GIT_SOURCE")
             self.assertEqual(set(rows), set(graph.VOKRA_SOURCE_PATHS))
+            helper = rows["tools/parity/kyutai_stt_decoder_dump_reference.py"]
+            self.assertEqual(helper["module"], "kyutai_stt_decoder_dump_reference")
+            self.assertEqual(helper["bytes"], len(helper["body"]))
+            self.assertEqual(helper["sha256"], hashlib.sha256(helper["body"]).hexdigest())
+            self.assertEqual(helper["git_blob_sha1"], _blob_sha(helper["body"]))
             with self.assertRaises(graph.GraphError):
                 graph._authenticate_vokra_sources(checkout, "0" * 40)
             (checkout / graph.VOKRA_SOURCE_PATHS[0]).write_bytes(b"# changed\n")
             with self.assertRaises(graph.GraphError):
                 graph._authenticate_vokra_sources(checkout, head)
+
+    def test_missing_or_stale_helper_source_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            checkout = Path(raw) / "checkout"
+            for source_path in graph.VOKRA_SOURCE_PATHS[:-1]:
+                path = checkout / source_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((f"# {source_path}\n").encode())
+            commands = [
+                ["git", "init", "-q"],
+                ["git", "config", "user.email", "graph-test@example.invalid"],
+                ["git", "config", "user.name", "graph-test"],
+                ["git", "remote", "add", "origin", graph.VOKRA_REPOSITORY],
+                ["git", "add", *graph.VOKRA_SOURCE_PATHS[:-1]],
+                ["git", "commit", "-qm", "source graph fixture"],
+            ]
+            for command in commands:
+                subprocess.run(command, cwd=checkout, check=True, capture_output=True)
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=checkout, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            with self.assertRaises(graph.GraphError):
+                graph._authenticate_vokra_sources(checkout, head)
+
+            helper = checkout / graph.VOKRA_SOURCE_PATHS[-1]
+            helper.parent.mkdir(parents=True, exist_ok=True)
+            helper.write_bytes(b"# stale uncommitted helper\n")
+            with self.assertRaises(graph.GraphError):
+                graph._authenticate_vokra_sources(checkout, head)
+            subprocess.run(["git", "add", graph.VOKRA_SOURCE_PATHS[-1]], cwd=checkout, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "add helper source"],
+                cwd=checkout,
+                check=True,
+                capture_output=True,
+            )
+            committed_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=checkout, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            auth, rows = graph._authenticate_vokra_sources(checkout, committed_head)
+            self.assertEqual(auth["status"], "AUTHENTICATED_VOKRA_GIT_SOURCE")
+            self.assertEqual(rows[graph.VOKRA_SOURCE_PATHS[-1]]["module"], graph.VOKRA_DECODER_HELPER_MODULE)
+            helper.write_bytes(b"# stale after authenticated commit\n")
+            with self.assertRaises(graph.GraphError):
+                graph._authenticate_vokra_sources(checkout, committed_head)
 
     def test_output_is_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

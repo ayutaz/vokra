@@ -155,7 +155,9 @@ UV_CACHE_DIR=/private/tmp/vokra-kyutai-uv-cache \
 `source_dependency_graph.py` parses only authenticated Python bytes.  In a
 production invocation it reuses `contract.require_pcm_source_packet` for the
 fixed DSM/Moshi packet and separately binds the Vokra `pcm_dump.py`, `dump.py`,
-and `contract.py` bytes to the explicit clean Git HEAD.  The graph starts at
+`contract.py`, and the explicitly mapped
+`tools/parity/kyutai_stt_decoder_dump_reference.py` helper bytes to the explicit
+clean Git HEAD.  The graph starts at
 the Vokra PCM producer and follows local imports; fixed Moshi role files are
 reported as source-contract evidence, not silently promoted to a runtime
 closure.  Modules, edges, and candidate names carry separate `producer` versus
@@ -167,6 +169,18 @@ pruned.  Missing packet paths, dynamic imports, malformed source, cycles, path
 escapes, and identity changes remain `BLOCKED_REVIEW`; a third-party name is
 reported only as `CANDIDATE_UNKNOWN` and is never mapped to a distribution,
 version, license, or native payload.
+
+There is one deliberately narrow dynamic-import observation: an unshadowed,
+syntactically exact `importlib.import_module("literal.name")` call with one
+string positional argument and no keywords may target the fixed authenticated
+Vokra helper mapping.  The helper is then parsed as authenticated static source
+and its AST imports are traversed without importing or executing it.  The graph
+still emits `DYNAMIC_IMPORT_LITERAL_AUTHENTICATED_SOURCE` because the runtime
+origin through dynamic `sys.path`, `__file__`, and `sys.modules` resolution is
+unknown.  Variables, aliases, relative names, unmapped literals, extra
+arguments/keywords, and shadowed `importlib` bindings stay unresolved.  This
+does not infer a distribution/version, license, native payload, execution
+closure, canonical runtime import, or replacement oracle.
 
 The report status is always `SOURCE_DEPENDENCY_GRAPH_ONLY`,
 `NOT_EXECUTION_CLOSURE`, and `NO_UPLOAD`.  It is not a replacement for a
