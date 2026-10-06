@@ -10,6 +10,11 @@ pub(crate) use vibevoice_realtime_noise::{
     VibeVoiceRealtimeNoiseTape, load_vibevoice_realtime_noise_tape,
 };
 
+mod vibevoice_realtime_owner;
+pub(crate) use vibevoice_realtime_owner::{
+    VibeVoiceRealtimeOwnerContract, VibeVoiceRealtimeOwnerInputs,
+};
+
 /// Version marker required as the first line of a CT-Punc token file.
 pub(crate) const CT_PUNC_TSV_V1: &str = "vokra-ct-punc-tsv-v1";
 

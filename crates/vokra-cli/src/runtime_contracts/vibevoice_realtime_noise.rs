@@ -482,7 +482,7 @@ fn ensure_directory(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_regular_file(path: &Path, label: &str) -> Result<(), String> {
+pub(super) fn ensure_regular_file(path: &Path, label: &str) -> Result<(), String> {
     ensure_no_symlink_ancestors(path, label)?;
     let metadata =
         fs::symlink_metadata(path).map_err(|error| format!("{label} metadata failed: {error}"))?;
@@ -529,7 +529,11 @@ fn ensure_no_symlink_ancestors(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_regular_file(path: &Path, label: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+pub(super) fn read_regular_file(
+    path: &Path,
+    label: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
     let mut file = fs::File::open(path).map_err(|error| format!("{label} open failed: {error}"))?;
     let metadata = file
         .metadata()
@@ -581,7 +585,7 @@ fn validate_basename(file: &str, index: usize) -> Result<(), String> {
     }
 }
 
-fn reject_duplicate_keys(value: &JsonValue, path: &str) -> Result<(), String> {
+pub(super) fn reject_duplicate_keys(value: &JsonValue, path: &str) -> Result<(), String> {
     match value {
         JsonValue::Object(entries) => {
             let mut keys = BTreeSet::new();
@@ -686,7 +690,7 @@ fn array_field<'a>(
         .ok_or_else(|| format!("{label}.{name} must be an array"))
 }
 
-fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32], String> {
+pub(super) fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32], String> {
     if value.len() != 64
         || !value
             .bytes()
@@ -704,7 +708,7 @@ fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32], String> {
     Ok(digest)
 }
 
-fn hex_digest(digest: &[u8; 32]) -> String {
+pub(super) fn hex_digest(digest: &[u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(64);
     for byte in digest {
