@@ -13,9 +13,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use vokra_core::Session;
+use vokra_models::vibevoice_streaming::tokenizer::VibeVoiceRealtimeTokenizer;
 use vokra_models::vibevoice_streaming::{
     VIBEVOICE_REALTIME_INFERENCE_STEPS, VibeVoiceRealtimePresetCache, VibeVoiceRealtimeRuntime,
-    VibeVoiceRealtimeSynthesisConfig, VibeVoiceRealtimeSynthesisStep, VibeVoiceRealtimeTokenizer,
+    VibeVoiceRealtimeSynthesisConfig, VibeVoiceRealtimeSynthesisStep,
 };
 
 use crate::runtime_contracts::{
