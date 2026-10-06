@@ -17,8 +17,8 @@ from urllib.parse import urlparse
 
 GATE_VERSION = 1
 # Filled from the committed bytes after the dedicated lock is finalized.
-LOCK_SHA256 = "996f10762498f29a8f6c24d3403ebac4734118f8150137b716ddf5d54e512b6e"
-PYPROJECT_SHA256 = "4d5a2bae9fdd3dff3d1224235c6e125995f32e491e3f42bb2063281d2a9d1850"
+LOCK_SHA256 = "65715f60a9f86aa80792e4a11303bc4eb2067cb4a3cd670b5b6d724d478c9d51"
+PYPROJECT_SHA256 = "88c7416e8a4a0f57a537e4ac832f268d24c6747fe06777aa392981fd9ba98bba"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 DEPENDENCY_KEYS = (
@@ -37,6 +37,12 @@ ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 REGISTRY_URLS = {
     "https://pypi.org/simple": "files.pythonhosted.org",
     "https://download.pytorch.org/whl/cpu": "download-r2.pytorch.org",
+}
+WHEELS_ONLY_PACKAGE_KEYS = frozenset({"name", "version", "source", "wheels"})
+TORCHAUDIO_CPU_IDENTITY = {
+    "name": "torchaudio",
+    "version": "2.11.0+cpu",
+    "source": {"registry": "https://download.pytorch.org/whl/cpu"},
 }
 PLACEHOLDERS = {"", "none", "null", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo"}
 MANIFEST_FIELDS = {"approval_scope_sha256", "component_reviews", "dependency_reviews", "dependency_reviews_sha256", "fixed_identities", "gate_version", "lock_sha256", "no_upload", "operator_approval", "package_rows_sha256", "pyproject_sha256"}
@@ -188,7 +194,14 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
                         or ("index" in requirement and requirement["index"] != "https://download.pytorch.org/whl/cpu")):
                     raise ValueError("uv.lock requires-dist metadata drifted")
         else:
-            if frozenset(package) not in REGISTRY_PACKAGE_KEYS:
+            package_keys = frozenset(package)
+            wheels_only_torchaudio = package_keys == WHEELS_ONLY_PACKAGE_KEYS and {
+                key: package[key] for key in TORCHAUDIO_CPU_IDENTITY
+            } == TORCHAUDIO_CPU_IDENTITY
+            if package_keys == WHEELS_ONLY_PACKAGE_KEYS:
+                if not wheels_only_torchaudio:
+                    raise ValueError("wheels-only registry package is not the reviewed torchaudio CPU row")
+            elif package_keys not in REGISTRY_PACKAGE_KEYS:
                 raise ValueError("uv.lock registry package schema drifted")
             registry = source.get("registry")
             if not isinstance(registry, str) or registry not in REGISTRY_URLS:
@@ -283,7 +296,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
             "name": "vokra-wespeaker-parity", "version": "0.1.0",
             "description": "Pinned independent WeSpeaker ResNet34-LM parity oracle",
             "requires-python": ">=3.12,<3.13",
-            "dependencies": ["numpy==2.3.5", "safetensors==0.7.0", "torch==2.9.1", "torchaudio==2.9.1"],
+            "dependencies": ["numpy==2.3.5", "safetensors==0.7.0", "torch==2.13.0", "torchaudio==2.11.0"],
         }
         if project_metadata != expected_project:
             raise ValueError("pyproject project metadata drifted")
@@ -317,6 +330,21 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     if not _self_test and artifact_blocker(rows):
         return False, artifact_blocker(rows) or "resolver artifact identity is unresolved"
     reviews = manifest.get("dependency_reviews")
+    components = manifest.get("component_reviews")
+    fixed = {"source": SOURCE_IDENTITY, **FIXED_IDENTITIES}
+    if not isinstance(reviews, list) or not isinstance(components, list):
+        return False, "approval scope inputs are malformed"
+    scope = {
+        "lock_sha256": LOCK_SHA256,
+        "pyproject_sha256": PYPROJECT_SHA256,
+        "package_rows_sha256": manifest["package_rows_sha256"],
+        "dependency_reviews": reviews,
+        "component_reviews": components,
+        "fixed_identities": fixed,
+        "no_upload": "NO_UPLOAD",
+    }
+    if manifest.get("approval_scope_sha256") != canonical(scope):
+        return False, "approval scope is not bound to exact closure"
     fields = {"id", "name", "version", "source", "status", "license", "native_review", "bundled_review", "payload_sha256"}
     expected_keys = {(r["name"], r["version"], json.dumps(r["source"], sort_keys=True)) for r in rows}
     seen = set()
@@ -342,25 +370,23 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
             return False, f"dependency review is unresolved: {row.get('id')}"
     if seen != expected_keys:
         return False, "dependency review coverage drifted"
-    components = manifest.get("component_reviews"); expected = expected_components()
+    expected = expected_components()
     if not isinstance(components, list) or len(components) != len(expected):
         return False, "source/checkpoint/replacement component rows are incomplete"
     component_fields = {"id", "identity", "license", "role", "status", "payload_sha256", "signer", "approval_digest"}
-    for actual, fixed in zip(components, expected, strict=True):
-        if not isinstance(actual, dict) or set(actual) != component_fields or actual.get("id") != fixed["id"] or actual.get("identity") != fixed["identity"]:
+    for actual, expected_component in zip(components, expected, strict=True):
+        if not isinstance(actual, dict) or set(actual) != component_fields or actual.get("id") != expected_component["id"] or actual.get("identity") != expected_component["identity"]:
             return False, "fixed component identity drifted"
-        if actual.get("status") != "REVIEWED" or not isinstance(actual.get("license"), str) or unresolved(actual.get("license")) or (fixed["license"] is not None and actual.get("license") != fixed["license"]) or not isinstance(actual.get("payload_sha256"), str) or not HEX64.fullmatch(actual["payload_sha256"]) or not isinstance(actual.get("signer"), str) or unresolved(actual["signer"]):
+        if actual.get("status") != "REVIEWED" or not isinstance(actual.get("license"), str) or unresolved(actual.get("license")) or (expected_component["license"] is not None and actual.get("license") != expected_component["license"]) or not isinstance(actual.get("payload_sha256"), str) or not HEX64.fullmatch(actual["payload_sha256"]) or not isinstance(actual.get("signer"), str) or unresolved(actual["signer"]):
             return False, f"component review is unresolved: {actual.get('id')}"
         if actual.get("approval_digest") != canonical({k: actual[k] for k in ("id", "identity", "license", "status", "payload_sha256")}):
             return False, f"component approval is not bound: {actual.get('id')}"
-    fixed = {"source": SOURCE_IDENTITY, **FIXED_IDENTITIES}
     if manifest.get("fixed_identities") != fixed or manifest.get("no_upload") != "NO_UPLOAD":
         return False, "fixed identity or NO_UPLOAD policy drifted"
     if not _self_test:
         reason = fixed_blocker()
         if reason:
             return False, reason
-    scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": manifest["package_rows_sha256"], "dependency_reviews": reviews, "component_reviews": components, "fixed_identities": fixed, "no_upload": "NO_UPLOAD"}
     scope_sha = canonical(scope)
     if manifest.get("approval_scope_sha256") != scope_sha:
         return False, "approval scope is not bound to exact closure"
@@ -400,6 +426,15 @@ def self_test() -> int:
         pass
     else:
         print("wespeaker preflight gate: duplicate package identity accepted", file=sys.stderr); return 1
+    unrelated_wheels_only = json.loads(json.dumps(lock))
+    unrelated_filelock = next(package for package in unrelated_wheels_only["package"] if package["name"] == "filelock")
+    unrelated_filelock.pop("sdist")
+    try:
+        package_rows(unrelated_wheels_only)
+    except ValueError:
+        pass
+    else:
+        print("wespeaker preflight gate: unrelated wheels-only registry package accepted", file=sys.stderr); return 1
     def reject_lock_tamper(label: str, mutate: Any) -> bool:
         candidate = json.loads(json.dumps(lock))
         mutate(candidate)
@@ -463,6 +498,14 @@ def self_test() -> int:
         test_project.mkdir()
         shutil.copy2(project / "uv.lock", test_project / "uv.lock")
         shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
+        pending_scope = json.loads(manifest.read_text(encoding="utf-8"))
+        pending_scope["approval_scope_sha256"] = "0" * 64
+        pending_scope_path = root / "pending-scope.json"
+        pending_scope_path.write_text(json.dumps(pending_scope), encoding="utf-8")
+        pending_result = validate(test_project, pending_scope_path)
+        if pending_result != (False, "approval scope is not bound to exact closure"):
+            print(f"wespeaker preflight gate: pending scope drift was not checked early: {pending_result}", file=sys.stderr)
+            return 1
         base = json.loads(manifest.read_text(encoding="utf-8"))
         for row in base["dependency_reviews"]:
             row.update(status="REVIEWED", license="SELF_TEST", native_review="SELF_TEST",

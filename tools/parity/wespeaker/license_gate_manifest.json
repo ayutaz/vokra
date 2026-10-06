@@ -1,5 +1,5 @@
 {
-  "approval_scope_sha256": "0133cb13d4869903f89d6bbcaee9e784a69cf158804ae76bf4a52c7a0ca3efd0",
+  "approval_scope_sha256": "77ff8539c507652b7fda4ae4481b2c0fa60dfad4b81eaaa43d0466e127599f22",
   "component_reviews": [
     {
       "approval_digest": null,
@@ -251,7 +251,7 @@
     },
     {
       "bundled_review": null,
-      "id": "torch@2.9.1+cpu",
+      "id": "torch@2.13.0+cpu",
       "license": null,
       "name": "torch",
       "native_review": null,
@@ -260,11 +260,11 @@
         "registry": "https://download.pytorch.org/whl/cpu"
       },
       "status": "PENDING_REVIEW",
-      "version": "2.9.1+cpu"
+      "version": "2.13.0+cpu"
     },
     {
       "bundled_review": null,
-      "id": "torchaudio@2.9.1+cpu",
+      "id": "torchaudio@2.11.0+cpu",
       "license": null,
       "name": "torchaudio",
       "native_review": null,
@@ -273,7 +273,7 @@
         "registry": "https://download.pytorch.org/whl/cpu"
       },
       "status": "PENDING_REVIEW",
-      "version": "2.9.1+cpu"
+      "version": "2.11.0+cpu"
     },
     {
       "bundled_review": null,
@@ -302,7 +302,7 @@
       "version": "0.1.0"
     }
   ],
-  "dependency_reviews_sha256": "31fa43cf8a18f6fef71d600bac73a1d1454180f6dc1b3e7fa962be51a2dddb4f",
+  "dependency_reviews_sha256": "95c9f0c003ae517a2fd26ecc62b0d5a1b0181e2763c03c713be1a24a9d0eceab",
   "fixed_identities": {
     "checkpoint": {
       "bytes": 45053131,
@@ -377,13 +377,13 @@
     }
   },
   "gate_version": 1,
-  "lock_sha256": "996f10762498f29a8f6c24d3403ebac4734118f8150137b716ddf5d54e512b6e",
+  "lock_sha256": "65715f60a9f86aa80792e4a11303bc4eb2067cb4a3cd670b5b6d724d478c9d51",
   "no_upload": "NO_UPLOAD",
   "operator_approval": {
     "decision": "PENDING_REVIEW",
     "digest": null,
     "signer": null
   },
-  "package_rows_sha256": "5475a2836e48fc736446d4ea0deaeb24a0ef1307f34110d5ceea7248a3e04c59",
-  "pyproject_sha256": "4d5a2bae9fdd3dff3d1224235c6e125995f32e491e3f42bb2063281d2a9d1850"
+  "package_rows_sha256": "54cc37db9e9cc97f6d9f44efcd0a606d78bf6e0ebb87b0cc7c44d261ff0a211e",
+  "pyproject_sha256": "88c7416e8a4a0f57a537e4ac832f268d24c6747fe06777aa392981fd9ba98bba"
 }
