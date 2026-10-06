@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use vokra_core::json::{JsonValue, parse as parse_json};
 
@@ -730,6 +730,8 @@ pub(super) fn hex_digest(digest: &[u8; 32]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn npy_bytes(values: &[f32]) -> Vec<u8> {
