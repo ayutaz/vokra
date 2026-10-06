@@ -16,6 +16,38 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## 2026-10-06 PR #169 security-closure integration
+
+This PR #182 preparation integrates the reviewed PR #169 installed-closure
+collector, its focused regression tests, and its CPU-only project lock at
+`b3e9d5c1cd2c75bcc0b2cbe81ce8b115f00e3690`. The lock pins
+`torch==2.13.0+cpu` through the explicit PyTorch CPU index, excludes CUDA and
+`nvidia-*` payload rows, and remains
+`IDENTITY_ENRICHED_VAST_NOT_RUN_OWNER_REVIEW_REQUIRED`. The collector is an
+evidence collector only: it does not install, import, download, execute, or
+publish a model, and unresolved license/native-payload facts remain
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`.
+
+The PR #182 streaming/native reference responsibility is retained. This
+integration does not alter `NATIVE_PARITY.md`, `STREAMING_REFERENCE.md`,
+`export_preset_cache.py`, `probe_dynamic_cache_compat.py`, `run_reference.py`,
+or `run_streaming_reference.py`; the broader streaming and runtime sections
+below remain historical/current contract documentation as previously scoped.
+
+Model-free focused checks (stdlib only; no package sync or model execution):
+
+```text
+uv run --no-project --no-sync --python 3.12 python -B -S \
+  tools/parity/vibevoice_realtime_0_5b_reference/test_audit_installed_closure.py
+uv run --no-project --no-sync --python 3.12 python -B -S \
+  tools/parity/vibevoice_realtime_0_5b_reference/test_lock_contract.py
+```
+
+The first command exercises the 31 collector tests and the second exercises
+the five CPU-lock contract tests. These checks do not establish installed
+closure, license sign-off, real-weight parity, Apple CPU/Metal parity,
+publication eligibility, or authority to run upstream.
+
 ## Fixed Carter preset cache bridge (inspection-only)
 
 `export_preset_cache.py` is a VAST/Linux x86_64-only exporter for the fixed
