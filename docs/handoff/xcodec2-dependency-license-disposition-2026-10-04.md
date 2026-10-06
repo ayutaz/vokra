@@ -262,6 +262,70 @@ this new documentation supplement. No package archive, model or dependency
 was acquired or executed; no approval, execution pin, lock or license gate
 was changed.
 
+## 2026-10-06 archive-to-publisher correspondence supersession
+
+This dated subsection supersedes only the narrower 2026-10-04 uncertainty about
+whether the locked XCodec2 sdist files correspond to the original publisher
+tree. It does **not** supersede the Draft / ARCHIVE_ONLY /
+BLOCKED_OWNER_REVIEW / NO_UPLOAD disposition, the mandatory
+`xcodec2 -> vector-quantize-pytorch==1.17.8 -> einx -> frozendict` path, or any
+owner/legal, dependency, decoder-checkpoint, or parity gate.
+
+The primary PyPI JSON endpoint
+[`pypi.org/pypi/xcodec2/0.1.5/json`](https://pypi.org/pypi/xcodec2/0.1.5/json)
+identifies the sole locked source archive as
+[`xcodec2-0.1.5.tar.gz`](https://files.pythonhosted.org/packages/80/69/5b99cc4de97f861d6b0a9acd20b4a22f44eabcc20051c0991b1cca479138/xcodec2-0.1.5.tar.gz)
+(`22,329` bytes, SHA-256
+`dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b`). The
+archive was bounded at that size and inspected in memory; it was not extracted
+to disk. It had 33 tar members and no `LICENSE` or `COPYING` member. Packaging
+metadata is not used here to infer an SPDX classification or archive-wide
+license coverage.
+
+The pinned original publisher revision is
+[`e5d3b2601146b20da39fc2f7c5a1db1418292138`](https://github.com/zhenye234/X-Codec-2.0/tree/e5d3b2601146b20da39fc2f7c5a1db1418292138).
+Its primary recursive tree returned 64 entries with `truncated=false`. The
+source comparisons below use the corresponding fixed-revision raw publisher
+files from that repository; exact paths are shown in the tables.
+The publisher `LICENSE` remains 1,064 bytes, Git blob
+`ec2d7a448d3294011ea7cab32ec5aa100d1041c0`; that is **MIT located at the
+publisher revision**, not proof that every sdist file is from or covered by
+that file.
+
+Seven sdist files matched the corresponding publisher bytes exactly:
+
+| sdist path | publisher path | Git blob |
+| --- | --- | --- |
+| `xcodec2/vq/alias_free_torch/{__init__.py,act.py,filter.py,resample.py}` | `vq/alias_free_torch/{__init__.py,act.py,filter.py,resample.py}` | `a2318b63198250856809c0cb46210a4147b829bc`; `028debd697dd60458aae75010057df038bd3518a`; `7ad6ea87c1f10ddd94c544037791d7a4634d5ae1`; `750e6c3402cc5ac939c4b9d075246562e0e1d1a7` |
+| `xcodec2/vq/blocks.py` | `vq/blocks.py` | `3996fec146cbf4f3caef4f9da3bbbe04f7729bbb` |
+| `xcodec2/vq/bs_roformer5.py` | `vq/bs_roformer5.py` | `08aa016d731a6a5cae3e4f38514d97187ad7adb4` |
+| `xcodec2/vq/factorized_vector_quantize.py` | `vq/factorized_vector_quantize.py` | `35f0c66736112f771a1933ca7e156b8cd5259e66` |
+
+Five files differed in raw bytes and one differed only by line endings:
+
+| sdist path | sdist bytes / SHA-256 | publisher bytes / SHA-256 | Git blob / bounded finding |
+| --- | --- | --- | --- |
+| `xcodec2/vq/__init__.py` | 0 / `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | 167 / `70611c5dda35cb28253e0dae452c26ff33e866d036850f51f0d851ed039d3ceb` | `2cbe62cea497d49e192848b74898916eb65f1352`; empty sdist file versus publisher exports |
+| `xcodec2/vq/activations.py` | 4,504 / `271117f5479f78598852a2e6a3f88cdda7d7e18fcf597062802530ba9c4dfc41` | 4,504 / `3ba94028aebabfc994bcd746bf9cbe92ecace528434c922c480be6ada182cad6` | `61f2808a5466b3cf4d041059700993af5527dd29`; `bias` fields are `beta` in the sdist |
+| `xcodec2/vq/codec_decoder_vocos.py` | 22,247 / `8a770d35c4d90a3a82b38869b7b39bd6fab6ab7b2079a44915c7740549f19282` | 22,258 / `eae809ff46865c90fe768d4324d9359d86f4ddce11794ca60592e3d260137f3e` | `37de9f13fe916cc3878839e71ac5b26b4120876b`; relative imports were changed to `vq.*` imports |
+| `xcodec2/vq/codec_encoder.py` | 9,969 / `2d93046f15503a1f1732c36abbfc08a0c5538674cd2312256ee0b799abd4aad4` | 7,322 / `3b3896ba27fa1b692d133733c69b840bfef3af7aabe6ac60f8c76b33ce2f8ca7` | `dc76871d95bb185d3b50acfef4ffa8d7943eff18`; imports and encoder-class structure differ substantially |
+| `xcodec2/vq/module.py` | 14,898 / `755a74c767d422529e81beb6b4740e34de321d38840e74a9b9ba13fac49e2a8e` | 14,471 / `00fba429832196f547fa6687bc430534174342c6afdd669ea93e9cb01101a975` | `0c4f69b351abbc3906ced487f4609ed784c29975`; weight-normalization implementation differs |
+| `xcodec2/vq/residual_vq.py` | 1,667 / `2359e5b4ad069f98b09824cd56ab4d8cfb75695dacc65c9d8ea68c0f19560656` | 1,614 / `86f2cd09282caddfe60c93464985d050d75860faf9b649c562978195291d394c` | `4e5e2f7153b7f346a4fb121455e243f198059c4f`; CRLF-normalized sdist bytes equal publisher LF bytes |
+
+The remaining package-only or generated scope is unbound to a path in the
+pinned tree: `xcodec2/configuration_bigcodec.py`,
+`xcodec2/modeling_xcodec2.py`, `xcodec2/test.py`, `xcodec2/vq/codec_decoder.py`,
+`xcodec2/vq/unet.py`, empty `xcodec2/__init__.py` and `xcodec2/module.py`, and the
+`setup.py`, `setup.cfg`, `PKG-INFO`, and `xcodec2.egg-info/*` metadata files.
+These differences establish partial correspondence, not exact archive
+provenance or archive-wide MIT coverage. No SPDX value, owner approval, new
+official-oracle adoption, decoder checkpoint parity, dependency repair, or
+publication permission is inferred. The next action remains obtaining
+publisher packaged-file license/provenance bindings, documenting any needed
+upstream equivalence for the differing/package-only files, and resolving the
+existing LGPL/native conflicts; this comparison is evidence for that work, not
+a replacement for those bindings. The fail-closed gates remain unchanged.
+
 ## Official Transformers-native candidate — 2026-10-04
 
 The publisher's current model card and original repository now explicitly
