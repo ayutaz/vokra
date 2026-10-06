@@ -1100,13 +1100,16 @@ mod runtime_identity_tests {
         scope_head: &str,
         scope_tree: &str,
     ) -> (JsonValue, JsonValue) {
-        let packet = parse_json(&format!(
+        let packet = parse_json(format!(
             r#"{{"runtime":{{"vokra_head":"{packet_head}","vokra_tree_sha1":"{packet_tree}"}}}}"#
-        ))
+        ).as_bytes())
         .expect("packet fixture JSON");
-        let scope = parse_json(&format!(
-            r#"{{"runtime":{{"vokra_head":"{scope_head}","vokra_tree_sha1":"{scope_tree}"}}}}"#
-        ))
+        let scope = parse_json(
+            format!(
+                r#"{{"runtime":{{"vokra_head":"{scope_head}","vokra_tree_sha1":"{scope_tree}"}}}}"#
+            )
+            .as_bytes(),
+        )
         .expect("scope fixture JSON");
         (packet, scope)
     }
@@ -1141,19 +1144,21 @@ mod runtime_identity_tests {
     #[test]
     fn missing_runtime_fields_fail_closed() {
         let packet =
-            parse_json(r#"{"runtime":{"vokra_head":"0123456789abcdef0123456789abcdef01234567"}}"#)
+            parse_json(br#"{"runtime":{"vokra_head":"0123456789abcdef0123456789abcdef01234567"}}"#)
                 .expect("packet fixture JSON");
-        let scope = parse_json(&format!(
-            r#"{{"runtime":{{"vokra_head":"{HEAD}","vokra_tree_sha1":"{TREE}"}}}}"#
-        ))
+        let scope = parse_json(
+            format!(r#"{{"runtime":{{"vokra_head":"{HEAD}","vokra_tree_sha1":"{TREE}"}}}}"#)
+                .as_bytes(),
+        )
         .expect("scope fixture JSON");
         rejects(packet, scope, HEAD);
 
-        let packet = parse_json(&format!(
-            r#"{{"runtime":{{"vokra_head":"{HEAD}","vokra_tree_sha1":"{TREE}"}}}}"#
-        ))
+        let packet = parse_json(
+            format!(r#"{{"runtime":{{"vokra_head":"{HEAD}","vokra_tree_sha1":"{TREE}"}}}}"#)
+                .as_bytes(),
+        )
         .expect("packet fixture JSON");
-        let scope = parse_json(&format!(r#"{{"runtime":{{"vokra_head":"{HEAD}"}}}}"#))
+        let scope = parse_json(format!(r#"{{"runtime":{{"vokra_head":"{HEAD}"}}}}"#).as_bytes())
             .expect("scope fixture JSON");
         rejects(packet, scope, HEAD);
     }
