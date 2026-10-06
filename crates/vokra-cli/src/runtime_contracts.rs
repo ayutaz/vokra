@@ -5,6 +5,11 @@
 //! Mimi needs a portable representation of its time-major RVQ codes. Neither
 //! contract can be represented honestly by printing a Rust debug array.
 
+mod vibevoice_realtime_noise;
+pub(crate) use vibevoice_realtime_noise::{
+    VibeVoiceRealtimeNoiseTape, load_vibevoice_realtime_noise_tape,
+};
+
 /// Version marker required as the first line of a CT-Punc token file.
 pub(crate) const CT_PUNC_TSV_V1: &str = "vokra-ct-punc-tsv-v1";
 
