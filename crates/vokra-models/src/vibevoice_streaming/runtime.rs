@@ -452,7 +452,7 @@ struct NativeExecutor<'a> {
 }
 
 fn dispatch_diagnostic_event(
-    observer: Option<&mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    observer: Option<&mut (dyn VibeVoiceRealtimeDiagnosticObserver + '_)>,
     event: VibeVoiceRealtimeDiagnosticEvent<'_>,
 ) -> Result<()> {
     if let Some(observer) = observer {
@@ -549,7 +549,7 @@ impl RealtimeExecutor for NativeExecutor<'_> {
                 guidance_scale,
             );
         }
-        let observer = &mut self.observer;
+        let mut observer = self.observer.as_mut().map(|observer| &mut **observer);
         let latent = sample_vibevoice_realtime_cfg_with_observer(
             &self.runtime.diffusion_head,
             positive_condition,
@@ -594,7 +594,7 @@ impl RealtimeExecutor for NativeExecutor<'_> {
             .acoustic_stream
             .get_or_insert_with(|| self.runtime.acoustic_decoder.stream());
         if self.observer.is_some() {
-            let observer = &mut self.observer;
+            let mut observer = self.observer.as_mut().map(|observer| &mut **observer);
             let pcm =
                 stream.decode_scaled_latent_with_observer(scaled_latent, &mut |observation| {
                     let Some(observer) = observer.as_deref_mut() else {
@@ -960,7 +960,6 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
             });
         }
         let eos_before_step = self.eos_seen;
-        let speech_step = self.speech_step;
         let diagnostic_speech_step = self.speech_steps;
         // The following order is intentionally source-visible: the connector
         // receives the sampled scaled latent, not the decoder's unscaled copy.
@@ -1211,7 +1210,7 @@ fn validate_hidden_row(hidden: &[f32]) -> Result<()> {
 }
 
 fn dispatch_validated_values(
-    observer: Option<&mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    observer: Option<&mut (dyn VibeVoiceRealtimeDiagnosticObserver + '_)>,
     event: VibeVoiceRealtimeDiagnosticEvent<'_>,
     values: &[f32],
     expected_len: usize,
@@ -1226,7 +1225,7 @@ fn dispatch_validated_values(
 }
 
 fn dispatch_validated_scalar(
-    observer: Option<&mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    observer: Option<&mut (dyn VibeVoiceRealtimeDiagnosticObserver + '_)>,
     event: VibeVoiceRealtimeDiagnosticEvent<'_>,
     value: f32,
     label: &str,
