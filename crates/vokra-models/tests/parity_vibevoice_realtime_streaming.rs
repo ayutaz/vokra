@@ -2277,7 +2277,11 @@ mod diagnostic_parser_tests {
             "tts.negative.prefill.hidden",
             "tts.negative.prefill.cache",
         ];
-        for _ in [6, 1] {
+        // The native fixture contains six then one token events, while the
+        // parser aggregates each authenticated text window into one five-stage
+        // source record. The source then drains that window's speech steps
+        // before consuming the next text window.
+        for (speech_start, speech_end) in [(0usize, 7usize), (7usize, 15usize)] {
             expected.extend([
                 "lm.positive.hidden",
                 "lm.positive.cache",
@@ -2285,26 +2289,26 @@ mod diagnostic_parser_tests {
                 "tts.positive.hidden",
                 "tts.positive.cache",
             ]);
-        }
-        for step in 0..15 {
-            expected.extend(std::iter::repeat("diffusion.prediction").take(INFERENCE_STEPS));
-            expected.extend([
-                "speech.sampled_latent",
-                "acoustic.decode_input_unscaled",
-                "acoustic.decoder_chunk",
-                "acoustic.connector.input",
-                "acoustic.connector",
-            ]);
-            if step < 14 {
+            for step in speech_start..speech_end {
+                expected.extend(std::iter::repeat("diffusion.prediction").take(INFERENCE_STEPS));
                 expected.extend([
-                    "tts.eos",
-                    "tts.positive.hidden",
-                    "tts.positive.cache",
-                    "tts.eos",
-                    "tts.negative.hidden",
-                    "tts.negative.cache",
-                    "tts.eos",
+                    "speech.sampled_latent",
+                    "acoustic.decode_input_unscaled",
+                    "acoustic.decoder_chunk",
+                    "acoustic.connector.input",
+                    "acoustic.connector",
                 ]);
+                if step < 14 {
+                    expected.extend([
+                        "tts.eos",
+                        "tts.positive.hidden",
+                        "tts.positive.cache",
+                        "tts.eos",
+                        "tts.negative.hidden",
+                        "tts.negative.cache",
+                        "tts.eos",
+                    ]);
+                }
             }
         }
         expected
@@ -2366,6 +2370,48 @@ mod diagnostic_parser_tests {
     #[test]
     fn parser_accepts_interleaved_windows_eos_drain_and_terminal_chunk() {
         let native = interleaved_fixture();
+        let text_window_one = native
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    NativeDiagnosticEvent::Hidden {
+                        call: VibeVoiceRealtimeDiagnosticCall::Text,
+                        text_window_index: Some(1),
+                        text_token_index: Some(0),
+                        ..
+                    }
+                )
+            })
+            .expect("second text window in independent fixture");
+        let speech_step_six = native
+            .iter()
+            .rposition(|event| {
+                matches!(
+                    event,
+                    NativeDiagnosticEvent::DiffusionPrediction {
+                        speech_step: 6,
+                        diffusion_step: 19,
+                        ..
+                    }
+                )
+            })
+            .expect("speech step six in independent fixture");
+        let speech_step_seven = native
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    NativeDiagnosticEvent::DiffusionPrediction {
+                        speech_step: 7,
+                        diffusion_step: 0,
+                        ..
+                    }
+                )
+            })
+            .expect("speech step seven in independent fixture");
+        assert!(speech_step_six < text_window_one);
+        assert!(text_window_one < speech_step_seven);
         let records = native_diagnostic_records(&native);
         assert!(records.len() > 14 * INFERENCE_STEPS);
         let actual: Vec<&str> = records
