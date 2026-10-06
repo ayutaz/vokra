@@ -197,16 +197,16 @@ fn preflight(file_bytes: &[u8], args: &RunArgs) -> Result<ValidatedInputs, Strin
     let owner = VibeVoiceRealtimeOwnerContract::load(VibeVoiceRealtimeOwnerInputs {
         owner_scope: &owner_scope,
         canonical_payload: &owner_canonical,
-        expected_owner_scope_sha256: &owner_scope_sha256,
-        expected_canonical_sha256: &owner_canonical_sha256,
+        expected_owner_scope_sha256: owner_scope_sha256,
+        expected_canonical_sha256: owner_canonical_sha256,
         reference_json: &reference_json,
-        expected_reference_sha256: &reference_sha256,
-        expected_vokra_head: &expected_head,
-        expected_vokra_tree_sha1: &expected_tree,
+        expected_reference_sha256: reference_sha256,
+        expected_vokra_head: expected_head,
+        expected_vokra_tree_sha1: expected_tree,
         measured_text_sha256: &text_sha256,
-        expected_reference_script_sha256: &reference_script_sha256,
-        expected_uv_lock_sha256: &uv_lock_sha256,
-        expected_trusted_runner_sha256: &trusted_runner_sha256,
+        expected_reference_script_sha256: reference_script_sha256,
+        expected_uv_lock_sha256: uv_lock_sha256,
+        expected_trusted_runner_sha256: trusted_runner_sha256,
     })?;
 
     let preset_bytes = read_bounded(
@@ -219,16 +219,16 @@ fn preflight(file_bytes: &[u8], args: &RunArgs) -> Result<ValidatedInputs, Strin
         MAX_PRESET_MANIFEST_BYTES,
         "Realtime preset manifest",
     )?;
-    verify_manifest_digest(&manifest_bytes, &preset_manifest_sha256)?;
+    verify_manifest_digest(&manifest_bytes, preset_manifest_sha256)?;
     let preset = VibeVoiceRealtimePresetCache::from_bytes(
         &preset_bytes,
         &manifest_bytes,
-        &preset_manifest_sha256,
+        preset_manifest_sha256,
     )
     .map_err(|error| format!("Realtime preset authentication: {error}"))?;
 
     let tokenizer = load_tokenizer(&tokenizer_dir)?;
-    let noise = load_vibevoice_realtime_noise_tape(&reference_dir, &reference_sha256)?;
+    let noise = load_vibevoice_realtime_noise_tape(&reference_dir, reference_sha256)?;
     if noise.is_empty() {
         return Err("Realtime authenticated noise tape is empty".to_owned());
     }
