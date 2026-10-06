@@ -6,6 +6,8 @@ evidence that a third-party distribution was installed, imported, or approved.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib.util
 import argparse
 import json
@@ -399,6 +401,102 @@ class CollectorTests(unittest.TestCase):
         with mock.patch.object(sys, "argv", argv), mock.patch.object(AUDIT.platform, "system", return_value="Linux"), mock.patch.object(AUDIT.platform, "machine", return_value="x86_64"), mock.patch.dict(AUDIT.os.environ, {"VOKRA_PUBLISH_ON_VAST": "1"}, clear=False):
             self.assertEqual(AUDIT.main(), 2)
         self.assertFalse(output.exists())
+
+    def test_selected_manifest_rejects_duplicate_keys_at_every_object_level(self) -> None:
+        valid = json.dumps(self.manifest, separators=(",", ":"))
+        def inject_duplicate(raw: str, key: str, replacement: object) -> str:
+            encoded_key = json.dumps(key, separators=(",", ":"))
+            marker = encoded_key + ":"
+            key_offset = raw.index(marker)
+            value_offset = key_offset + len(marker)
+            _, value_end = json.JSONDecoder().raw_decode(raw, value_offset)
+            encoded_value = json.dumps(replacement, separators=(",", ":"))
+            return raw[:value_end] + "," + encoded_key + ":" + encoded_value + raw[value_end:]
+
+        def replacement_for(value: object) -> object:
+            if isinstance(value, str):
+                return value + "-different"
+            if isinstance(value, int):
+                return value + 1
+            if isinstance(value, dict):
+                return {**value, "unexpected": True}
+            if isinstance(value, list):
+                return value + [{"unexpected": True}]
+            raise AssertionError(f"unhandled synthetic manifest value: {value!r}")
+
+        cases = (
+            [("top-level", key, self.manifest[key]) for key in ("format", "platform", "project_sha256", "uv_lock_sha256", "artifacts")]
+            + [("platform", key, self.manifest["platform"][key]) for key in ("system", "machine", "python")]
+            + [("artifact", key, self.manifest["artifacts"][0][key]) for key in ("name", "version", "url", "filename", "sha256", "bytes", "path")]
+        )
+        for scope, key, original in cases:
+            for variant, replacement in (("equal", original), ("different", replacement_for(original))):
+                with self.subTest(scope=scope, key=key, variant=variant):
+                    body = inject_duplicate(valid, key, replacement)
+                    self.assertNotEqual(body, valid)
+                    ordinary = json.loads(body)
+                    if variant == "equal":
+                        self.assertEqual(ordinary, self.manifest)
+                    if scope == "top-level":
+                        self.assertEqual(ordinary[key], replacement)
+                    elif scope == "platform":
+                        self.assertEqual(ordinary["platform"][key], replacement)
+                    else:
+                        self.assertEqual(ordinary["artifacts"][0][key], replacement)
+                    with self.assertRaisesRegex(AUDIT.AuditError, "duplicate JSON object key"):
+                        AUDIT.parse_json_bytes(body.encode(), f"{scope} manifest")
+
+        duplicate_path = self.root / "duplicate-read-json.json"
+        duplicate_path.write_bytes(inject_duplicate(valid, "path", self.manifest["artifacts"][0]["path"]).encode())
+        with self.assertRaisesRegex(AUDIT.AuditError, "duplicate JSON object key"):
+            AUDIT.read_json(duplicate_path, AUDIT.MAX_MANIFEST_BYTES, "duplicate read manifest")
+
+    def test_duplicate_manifest_is_rejected_before_report_creation(self) -> None:
+        project = self.root / "project.toml"
+        lock = self.root / "uv.lock"
+        project.write_text("synthetic project\n", encoding="utf-8")
+        lock.write_text("synthetic lock\n", encoding="utf-8")
+        manifest_path = self.root / "duplicate-manifest.json"
+        manifest_path.write_text(
+            json.dumps(self.manifest, separators=(",", ":")).replace(
+                '"name":"demo","version":',
+                '"name":"demo","name":"demo","version":',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        output = self.root / "duplicate-manifest-report.json"
+        argv = [
+            "audit_installed_closure.py",
+            "--project", str(project),
+            "--lock", str(lock),
+            "--site-packages", str(self.site),
+            "--venv-root", str(self.root / "synthetic-venv"),
+            "--scripts-root", str(self.root / "synthetic-venv" / "bin"),
+            "--selected-wheel-manifest", str(manifest_path),
+            "--source-root", str(self.root / "missing-source"),
+            "--output", str(output),
+        ]
+        stderr = io.StringIO()
+        with mock.patch.object(AUDIT.platform, "system", return_value="Linux"), mock.patch.object(AUDIT.platform, "machine", return_value="x86_64"), mock.patch.object(AUDIT, "validate_install_roots", return_value=(self.site, self.root / "synthetic-venv", self.root / "synthetic-venv" / "bin")), mock.patch.object(AUDIT, "validate_venv_layout", return_value={}), mock.patch.object(AUDIT, "parse_toml_bytes", side_effect=[{}, {}]), mock.patch.object(AUDIT, "validate_project"), mock.patch.object(AUDIT, "validate_lock", return_value={}), mock.patch.object(AUDIT, "verify_selected_artifacts") as verify, mock.patch.object(sys, "argv", argv), mock.patch.dict(AUDIT.os.environ, {"VOKRA_PUBLISH_ON_VAST": "1"}, clear=False), contextlib.redirect_stderr(stderr):
+            self.assertEqual(AUDIT.main(), 2)
+        self.assertIn("duplicate JSON object key", stderr.getvalue())
+        verify.assert_not_called()
+        self.assertFalse(output.exists())
+        self.assertFalse(Path(str(output) + ".sha256").exists())
+
+        existing_output = self.root / "duplicate-manifest-existing.json"
+        existing_sidecar = Path(str(existing_output) + ".sha256")
+        existing_output.write_bytes(b"existing report\n")
+        existing_sidecar.write_bytes(b"existing digest\n")
+        argv[-1] = str(existing_output)
+        before_output = existing_output.read_bytes()
+        before_sidecar = existing_sidecar.read_bytes()
+        with mock.patch.object(AUDIT.platform, "system", return_value="Linux"), mock.patch.object(AUDIT.platform, "machine", return_value="x86_64"), mock.patch.object(AUDIT, "validate_install_roots", return_value=(self.site, self.root / "synthetic-venv", self.root / "synthetic-venv" / "bin")), mock.patch.object(AUDIT, "validate_venv_layout", return_value={}), mock.patch.object(AUDIT, "parse_toml_bytes", side_effect=[{}, {}]), mock.patch.object(AUDIT, "validate_project"), mock.patch.object(AUDIT, "validate_lock", return_value={}), mock.patch.object(AUDIT, "verify_selected_artifacts") as verify, mock.patch.object(sys, "argv", argv), mock.patch.dict(AUDIT.os.environ, {"VOKRA_PUBLISH_ON_VAST": "1"}, clear=False), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(AUDIT.main(), 2)
+        verify.assert_not_called()
+        self.assertEqual(existing_output.read_bytes(), before_output)
+        self.assertEqual(existing_sidecar.read_bytes(), before_sidecar)
 
     def test_undeclared_console_wrapper_and_out_of_root_path_are_blocked(self) -> None:
         with self.assertRaises(AUDIT.AuditError):

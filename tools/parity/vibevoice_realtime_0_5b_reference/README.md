@@ -28,6 +28,22 @@ evidence collector only: it does not install, import, download, execute, or
 publish a model, and unresolved license/native-payload facts remain
 `OWNER_REVIEW_REQUIRED_NO_UPLOAD`.
 
+## 2026-10-07 strict JSON hardening supersession
+
+The current collector now has 33 local regression tests covering fail-closed
+duplicate JSON object keys at the top level, in the platform object, and in
+selected artifact identity objects, for both equal and differing values. The
+regressions also cover malformed-manifest stderr, no report or sidecar creation,
+and preservation of pre-existing report/sidecar bytes. This is stdlib-only,
+synthetic-input evidence; it does not establish that the current 41 locked
+distributions were audited or installed.
+
+The earlier 31-test collector originated in PR #169; the V16 actual model-free
+run at exact source HEAD `3f82c214` is a separate historical scope. Neither
+must be combined with this new 33-test local proof. Owner, license, runtime,
+numerical-parity, and Apple CPU/Metal review remain unresolved, and the
+collector remains `OWNER_REVIEW_REQUIRED_NO_UPLOAD`.
+
 The PR #182 streaming/native reference responsibility is retained. This
 integration does not alter `NATIVE_PARITY.md`, `STREAMING_REFERENCE.md`,
 `export_preset_cache.py`, `probe_dynamic_cache_compat.py`, `run_reference.py`,

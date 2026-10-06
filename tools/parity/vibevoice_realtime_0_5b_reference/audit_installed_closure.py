@@ -232,11 +232,25 @@ def file_identity(path: Path, label: str, limit: int = MAX_METADATA_BYTES) -> di
     return {"path": str(path), "bytes": size, "sha256": digest, "dev": before[0], "ino": before[1], "mtime_ns": before[3], "ctime_ns": before[4], "nlink": before[5]}
 
 
-def read_json(path: Path, limit: int, label: str) -> dict[str, Any]:
+def parse_strict_json(body: bytes, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                fail(f"{label} contains duplicate JSON object key")
+            value[key] = item
+        return value
+
     try:
-        value = json.loads(read_bounded(path, limit, label))
+        return json.loads(body, object_pairs_hook=reject_duplicate_keys)
+    except AuditError:
+        raise
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         fail(f"{label} is not bounded UTF-8 JSON: {error}")
+
+
+def read_json(path: Path, limit: int, label: str) -> dict[str, Any]:
+    value = parse_strict_json(read_bounded(path, limit, label), label)
     if not isinstance(value, dict):
         fail(f"{label} must be a JSON object")
     return value
@@ -251,10 +265,7 @@ def read_toml(path: Path, label: str) -> dict[str, Any]:
 
 
 def parse_json_bytes(body: bytes, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        fail(f"{label} is not bounded UTF-8 JSON: {error}")
+    value = parse_strict_json(body, label)
     if not isinstance(value, dict):
         fail(f"{label} must be a JSON object")
     return value
