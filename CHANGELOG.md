@@ -12,6 +12,13 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+### Added
+
+- **Borrowed GGUF full-image access**: `vokra-core::gguf::reader::GgufFile::file_bytes`
+  exposes the complete parsed file image as a borrowed byte slice without copying
+  or reopening the GGUF. This intentional Rust API addition does not change the
+  C ABI or establish hardware/model completion.
+
 ## [0.3.0] — 2026-09-17
 
 ### Changed
