@@ -34,6 +34,8 @@ HTML endpoint（[GDPR](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=
 同一法令の全文レビュー、法的承認、CI成功を意味しない。Californiaの取得保留とowner/legal
 判断は変更しない。
 
+**2026-10-06 California current-code review boundary:** 公式California BPC Chapter 25の現行コードを再照合した。SB 1000（Chapter 861, 2026-09-30）は§22757.1(e)のcovered provider定義、§22757.2のdisclosure verification tool、§22757.3のlatent disclosure、§22757.4/.4.1の罰則、§22757.5の例外を改正している。AB 2713（Chapter 856, 2026-09-30）はGovernor発表とSecretary of State chapter indexでbill identity/dateを確認したが、今回の公式chapter本文取得は未完了であり、AB 2713の改正条文・operative date・役割別義務は推定しない。本追記はCalifornia §2の限定的なcurrent-code確認であり、法務承認やCalifornia法令全体の現行性を保証しない。
+
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
 implementation remains fail-closed for unsupported model/license paths;
@@ -89,7 +91,7 @@ consent, disclosure, and model rights before release or deployment.
 
 - **a. EU対象のdeployer**: deepfake等に該当するかを確認し、該当時はclear and distinguishableなdisclosureを実装する。Vokra coreはUIや地域判定を提供しない。
 - **b. EU対象のprovider**: Article 50(2)のmarkingが自分の役割に適用されるか、技術的手段と検出性能を検証する。Vokraのdefault経路に自動markingはない。
-- **c. California SB 942対象のcovered provider**: §2のdetection tool、manifest/latent disclosure、保存・フィードバック要件を条文に照らして確認する。VokraのAPIを使えば自動的に適合するとはいえない。
+- **c. California AI Transparency Act対象のprovider等**: §2のdisclosure verification tool、latent disclosure、保存・フィードバック要件と役割別operative dateを現行条文に照らして確認する。VokraのAPIを使えば自動的に適合するとはいえない。
 - **d. ELVIS Act / NO FAKES Act**: disclosureだけではvoice rights、consent、配布責任を解消しない。§3/§4の要法務確認を行う。
 - **e. 音声録音 / speaker embedding**: 同意、個人情報・生体情報、撤回、保存期間をdeployerが確認する。
 
@@ -106,19 +108,21 @@ consent, disclosure, and model rights before release or deployment.
 
 ## 2. California SB 942 (California AI Transparency Act)
 
-### 施行・status（2026-08-30のSB 942確認 + 2026-10-06 AB 853再照合）
+### 施行・status（2026-08-30のSB 942確認 + 2026-10-06 current-code再照合）
 - **歴史**: SB 942はChapter 291として2024-09-19に成立し、制定時の§22757.6では **2026-01-01からoperative** とされた。審議中法案ではない。
-- **現行の限定的な再照合**: AB 853（Chapter 674, Statutes of 2025）が§22757.6を改正し、chapterの基本的なoperative日を **2026-08-02** としたため、上記の2026-01-01は制定時の履歴であり、現行日としてはAB 853により supersede される。ただし、AB 853が追加した役割別規定は各条の明示日が優先され、§22757.3.1（large online platform、**2027-01-01**）、§22757.3.2（GenAI hosting platform、**2027-01-01**）、§22757.3.3（capture device manufacturer、**2028-01-01**）である。これは本書§2の限定的な現行再照合であり、他のCalifornia法令や法務判断を更新・保証するものではない。
+- **AB 853の現行日と役割別日**: AB 853（Chapter 674, Statutes of 2025）が§22757.6を改正し、chapterの基本的なoperative日を **2026-08-02** とした。上記の2026-01-01は制定時の履歴であり、現行のchapter operative日ではない。AB 853が追加した役割別規定は各条の明示日が優先され、§22757.3.1（large online platform、**2027-01-01**）、§22757.3.2（GenAI hosting platform、**2027-01-01**）、§22757.3.3（capture device manufacturer、**2028-01-01**）である。
+- **SB 1000の現行改正**: SB 1000（Chapter 861, Statutes of 2026）は **2026-09-30 effective** と現行コードに注記される。§22757.1(e)のcovered providerには従来の月間1,000,000 visitors/usersの閾値がなく、§22757.2はdisclosure verification tool、§22757.3はminor modificationを除くcreated/altered contentへのlatent disclosureを定める。§22757.5にはnon-user-generated videogameと、**2029-01-01より前**のassistive-technology GenAI systemの例外がある。これは§22757.6の2026-08-02 operative日や、AB 853の2027/2028役割別operative日を置き換える記載ではない。
+- **AB 2713の境界**: AB 2713（Chapter 856, Statutes of 2026）はGovernor発表とSecretary of State chapter indexで2026-09-30の成立 identity/dateを確認したが、今回の公式chapter本文は未確認である。AB 2713の改正条文、operative date、役割別義務を本書で推定しない。
 
 ### 対象範囲
-- California内で公衆利用可能で、covered providerが作成・コード化・生産したGenAI systemが **月間1,000,000人を超える visitors または users** を有する場合（現行§22757.1(d)）。「月間100万Californiaユーザー」と固定しない。専らnon-user-generatedのvideo game等には§22757.5の除外がある。
-- covered providerには、無料のAI detection tool、ユーザーが選べるclear/conspicuousなmanifest disclosure、技術的に可能で合理的なlatent disclosure等の要件がある。法文上manifestは人が容易に知覚・理解できるものを指し、AudioSeal/C2PAを使えば自動適合するという意味ではない。
+- 現行§22757.1(e)のcovered providerは、California内で公衆利用可能なGenAI systemを作成・コード化・生産する人である。SB 1000後の現行コードには月間1,000,000 visitors/usersの閾値はない。この定義だけでVokraがcovered providerに該当するとはいえない。
+- covered providerには、無料のdisclosure verification tool（現行§22757.2）と、技術的に可能な範囲でcreated/altered content（minor modificationを除く）へlatent disclosureを含める要件（現行§22757.3）がある。現行コードの§22757.3に旧SB 942の利用者向けmanifest選択を現行要件として記載しない。AudioSeal/C2PAを使えば自動適合するという意味ではない。
 
 ### Vokra 対応
-- Vokra自体または組込みサービスがcovered providerに該当するかは事業形態・月間visitor/user数・公開範囲で判断する。現行Vokraのautomatic watermarkはDeferred、standalone AudioSealは明示APIのみであり、SB 942適合を断定しない。
-- 対象provider/deployerは detection tool、manifest/latent disclosure、個人provenance dataの扱い、フィードバック、第三者ライセンス条件を条文に照らして実装・確認する。具体的適用は要法務確認。
+- Vokra自体または組込みサービスがcovered providerに該当するかは、現行§22757.1(e)の定義、役割、California内での公開範囲、§22757.5の例外等を個別に確認して判断する。現行Vokraのautomatic watermarkはDeferred、standalone AudioSealは明示APIのみであり、SB 942／SB 1000適合を断定しない。
+- 対象provider/deployerは disclosure verification tool、latent disclosure、個人provenance dataの扱い、フィードバック、第三者ライセンス条件を現行条文に照らして実装・確認する。具体的適用は要法務確認。
 
-根拠: [California SB 942 Chapter 291（制定時の章法・条文）](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)（2026-08-30確認）、[California AB 853 official status（Chapter 674）](https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260AB853)、[AB 853 Today's Law As Amended](https://leginfo.legislature.ca.gov/faces/billCompareClient.xhtml?bill_id=202520260AB853&showamends=false)、[California BPC §22757.6](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=BPC&sectionNum=22757.6.)（AB 853/current-codeの限定再照合: 2026-10-06）。
+根拠: [California SB 942 Chapter 291（制定時の章法・条文）](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)（2026-08-30確認）、[California AB 853 official status（Chapter 674）](https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260AB853)、[AB 853 Today's Law As Amended](https://leginfo.legislature.ca.gov/faces/billCompareClient.xhtml?bill_id=202520260AB853&showamends=false)、[California BPC Chapter 25 current code](https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?article=&chapter=25.&division=8.&lawCode=BPC&part=&title=)（SB 1000/AB 853 current-code再照合: 2026-10-06）、[Governor of California 2026-09-30 signing release](https://www.gov.ca.gov/2026/09/30/californias-nation-leading-ai-framework-just-got-stronger-governor-newsom-signs-more-first-in-the-nation-worker-protections-and-more/)、[Secretary of State 2026 Assembly chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2026/assembly-bills.pdf)（AB 2713 Chapter 856のidentity/date確認; SB 1000 Chapter 861/effective dateはcurrent-code注記で確認; AB 2713本文は未確認）。
 
 ---
 
@@ -294,7 +298,7 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 ```
 □ AudioSealはstandalone明示APIとして使うか確認（自動watermark・法令適合を意味しない）
 □ C2PA等のmarkingは別途実装・検出性能・ライセンスを確認
-□ SB 942 / AB 853 (CA): covered provider、月間1,000,000超のvisitor/user、§22757.5除外、detection/manifest/latent要件を確認し、large online platform / GenAI hosting platform（2027-01-01）とcapture device manufacturer（2028-01-01）の役割別規定は本書§2で確認
+□ California AI Transparency Act (SB 942 / AB 853 / SB 1000): 現行§22757.1(e) covered provider（1,000,000 visitor/user閾値なし）、§22757.2 disclosure verification tool、§22757.3 latent disclosure、§22757.5例外を確認し、AB 853のlarge online platform / GenAI hosting platform（2027-01-01）とcapture device manufacturer（2028-01-01）の役割別規定は本書§2で確認。AB 2713 Chapter 856はidentity/date確認済み・本文未確認として別途再確認
 □ EU AI Act: provider/deployerの役割、Article 50(1)-(4)、原則2 August 2026、既存対象へのArticle 111(4)の2 December 2026期限を公式条文で確認
 □ ELVIS Act (TN): voice rights、同意、用途、配布、例外を要法務確認
 □ NO FAKES Act: S.1367は未成立。成立・施行時に再評価
@@ -325,7 +329,7 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 | 制度 | 現行文書で確認できる範囲 |
 |-----|-------|
 | EU AI Act Article 50 | 違反類型・事業者の役割・加盟国実施法に依存。金額を本書で断定しない。 |
-| California SB 942 / AB 853 | 現行BPC §22757.4（SB 942をAB 853が改正）にcivil penalty等の規定。covered provider等の役割別適用と救済は本書§2を参照し、要法務確認。 |
+| California SB 942 / AB 853 / SB 1000 | 現行BPC §22757.4にcovered provider・large online platform・capture device manufacturer等のcivil penalty（$5,000/violation）、§22757.4.1にassistive-technologyの虚偽表示に関する$50,000/violation（2029-01-01まで）の規定がある。役割別適用と救済は本書§2を参照し、要法務確認。AB 2713 Chapter 856の罰則・適用は本文未確認。 |
 | ELVIS Act (TN) | 民事請求・差止め等の条文上の救済。具体的要件は事実関係に依存。 |
 | NO FAKES Act (連邦) | S.1367は未成立の法案であり、現行の罰則・施行日はない。 |
 | Apple App Review Guidelines | Appleの審査・掲載判断はアプリと提出内容に依存。Guideline 5.5はMDM。 |
@@ -344,6 +348,9 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 - [California AB 853, Chapter 674 (official status)](https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260AB853)
 - [California AB 853 (Today's Law As Amended)](https://leginfo.legislature.ca.gov/faces/billCompareClient.xhtml?bill_id=202520260AB853&showamends=false)
 - [California Business and Professions Code §22757.6](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=BPC&sectionNum=22757.6.)
+- [California Business and Professions Code Chapter 25 (current code)](https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?article=&chapter=25.&division=8.&lawCode=BPC&part=&title=)（SB 1000 / AB 853 current-code再照合）
+- [Governor of California 2026-09-30 signing release](https://www.gov.ca.gov/2026/09/30/californias-nation-leading-ai-framework-just-got-stronger-governor-newsom-signs-more-first-in-the-nation-worker-protections-and-more/)
+- [California Secretary of State 2026 Assembly chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2026/assembly-bills.pdf)（AB 2713 Chapter 856のidentity/date確認; 本文未確認）
 - [Tennessee SB 2096 / Public Chapter 588 (official Bill Information)](https://wapp.capitol.tn.gov/apps/BillInfo/Default?BillNumber=SB2096&GA=113)
 - [S.1367 NO FAKES Act of 2025 (Congress.gov / GPO introduced text)](https://www.congress.gov/119/bills/s1367/BILLS-119s1367is.pdf)
 - [Meta AudioSeal](https://github.com/facebookresearch/audioseal)
