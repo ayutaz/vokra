@@ -25,6 +25,8 @@ use crate::runtime_contracts::{
 };
 use crate::wav;
 
+mod vibevoice_realtime;
+
 pub(crate) const USAGE: &str = "\
 vokra-cli run — load a GGUF and run VAD / ASR / TTS / speaker / language ID / watermark
 
@@ -104,6 +106,18 @@ USAGE:
                   [--qwen3-tts-instruction <description>] \
                   [--qwen3-tts-max-new-tokens <N>] [--qwen3-tts-greedy] \
                   [--output <out.wav>]
+    vokra-cli run --model <vibevoice-realtime.gguf> --realtime-text-file <text.txt> \
+                  --realtime-gguf-sha256 <sha256> --realtime-reference-dir <reference-dir> \
+                  --realtime-reference-sha256 <sha256> --realtime-owner-scope <scope.json> \
+                  --realtime-owner-scope-sha256 <sha256> --realtime-owner-canonical <canonical.json> \
+                  --realtime-owner-canonical-sha256 <sha256> \
+                  --realtime-preset-safetensors <cache.safetensors> \
+                  --realtime-preset-manifest <manifest.json> \
+                  --realtime-preset-manifest-sha256 <sha256> \
+                  --realtime-tokenizer-dir <tokenizer-dir> --realtime-vokra-head <git-head> \
+                  --realtime-vokra-tree <git-tree-sha1> \
+                  --realtime-reference-script-sha256 <sha256> --realtime-uv-lock-sha256 <sha256> \
+                  --realtime-trusted-runner-sha256 <sha256> --output <out.wav>
     vokra-cli run --model <zonos.gguf> --input <conditioning.zcp> \
                   --zonos-conditioning-digest <64-hex-content-sha256> --zonos-dac <dac-44khz.gguf> \
                   --zonos-max-steps <N> [--zonos-guidance-scale <f32>] --output <out.wav>
@@ -779,6 +793,40 @@ struct RunArgs {
     watermark_message: Option<[u8; vokra_models::audioseal::NBITS]>,
     /// AudioSeal watermark mixing gain. Absent means 1.0.
     watermark_alpha: Option<f32>,
+    /// Realtime-only externally authenticated derived GGUF digest.
+    realtime_gguf_sha256: Option<String>,
+    /// Realtime-only official reference directory containing reference.json and cpu/.
+    realtime_reference_dir: Option<String>,
+    /// Realtime-only externally authenticated reference.json digest.
+    realtime_reference_sha256: Option<String>,
+    /// Realtime-only owner execution scope.
+    realtime_owner_scope: Option<String>,
+    /// Realtime-only external owner scope file digest.
+    realtime_owner_scope_sha256: Option<String>,
+    /// Realtime-only canonical owner payload.
+    realtime_owner_canonical: Option<String>,
+    /// Realtime-only canonical owner payload digest.
+    realtime_owner_canonical_sha256: Option<String>,
+    /// Realtime-only exported Carter safetensors cache.
+    realtime_preset_safetensors: Option<String>,
+    /// Realtime-only exported Carter preset manifest.
+    realtime_preset_manifest: Option<String>,
+    /// Realtime-only externally authenticated preset manifest digest.
+    realtime_preset_manifest_sha256: Option<String>,
+    /// Realtime-only fixed Qwen tokenizer directory.
+    realtime_tokenizer_dir: Option<String>,
+    /// Realtime-only bounded UTF-8 text file.
+    realtime_text_file: Option<String>,
+    /// Realtime-only expected Vokra source HEAD bound by the owner packet.
+    realtime_vokra_head: Option<String>,
+    /// Realtime-only expected Vokra source tree SHA-1 bound by the owner packet.
+    realtime_vokra_tree: Option<String>,
+    /// Realtime-only reference runner source digest.
+    realtime_reference_script_sha256: Option<String>,
+    /// Realtime-only reference uv.lock digest.
+    realtime_uv_lock_sha256: Option<String>,
+    /// Realtime-only trusted reference runner digest.
+    realtime_trusted_runner_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -908,6 +956,23 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut watermark_variant: Option<vokra_models::audioseal::AudiosealVariant> = None;
     let mut watermark_message: Option<[u8; vokra_models::audioseal::NBITS]> = None;
     let mut watermark_alpha: Option<f32> = None;
+    let mut realtime_gguf_sha256: Option<String> = None;
+    let mut realtime_reference_dir: Option<String> = None;
+    let mut realtime_reference_sha256: Option<String> = None;
+    let mut realtime_owner_scope: Option<String> = None;
+    let mut realtime_owner_scope_sha256: Option<String> = None;
+    let mut realtime_owner_canonical: Option<String> = None;
+    let mut realtime_owner_canonical_sha256: Option<String> = None;
+    let mut realtime_preset_safetensors: Option<String> = None;
+    let mut realtime_preset_manifest: Option<String> = None;
+    let mut realtime_preset_manifest_sha256: Option<String> = None;
+    let mut realtime_tokenizer_dir: Option<String> = None;
+    let mut realtime_text_file: Option<String> = None;
+    let mut realtime_vokra_head: Option<String> = None;
+    let mut realtime_vokra_tree: Option<String> = None;
+    let mut realtime_reference_script_sha256: Option<String> = None;
+    let mut realtime_uv_lock_sha256: Option<String> = None;
+    let mut realtime_trusted_runner_sha256: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -1513,6 +1578,142 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 watermark_alpha = Some(alpha);
                 i += 2;
             }
+            "--realtime-gguf-sha256" => {
+                realtime_gguf_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-gguf-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-reference-dir" => {
+                realtime_reference_dir = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-reference-dir requires a reference directory")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-reference-sha256" => {
+                realtime_reference_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-reference-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-owner-scope" => {
+                realtime_owner_scope = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-owner-scope requires a scope JSON path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-owner-scope-sha256" => {
+                realtime_owner_scope_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-owner-scope-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-owner-canonical" => {
+                realtime_owner_canonical = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-owner-canonical requires a canonical JSON path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-owner-canonical-sha256" => {
+                realtime_owner_canonical_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-owner-canonical-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-preset-safetensors" => {
+                realtime_preset_safetensors = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-preset-safetensors requires a cache path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-preset-manifest" => {
+                realtime_preset_manifest = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-preset-manifest requires a manifest path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-preset-manifest-sha256" => {
+                realtime_preset_manifest_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-preset-manifest-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-tokenizer-dir" => {
+                realtime_tokenizer_dir = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-tokenizer-dir requires a tokenizer directory")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-text-file" => {
+                realtime_text_file = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-text-file requires a UTF-8 text path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-vokra-head" => {
+                realtime_vokra_head = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-vokra-head requires a lowercase Git commit")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-vokra-tree" => {
+                realtime_vokra_tree = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-vokra-tree requires a lowercase Git tree SHA-1")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-reference-script-sha256" => {
+                realtime_reference_script_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-reference-script-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-uv-lock-sha256" => {
+                realtime_uv_lock_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-uv-lock-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--realtime-trusted-runner-sha256" => {
+                realtime_trusted_runner_sha256 = Some(
+                    args.get(i + 1)
+                        .ok_or("--realtime-trusted-runner-sha256 requires a lowercase SHA-256")?
+                        .clone(),
+                );
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -1588,6 +1789,23 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         watermark_variant,
         watermark_message,
         watermark_alpha,
+        realtime_gguf_sha256,
+        realtime_reference_dir,
+        realtime_reference_sha256,
+        realtime_owner_scope,
+        realtime_owner_scope_sha256,
+        realtime_owner_canonical,
+        realtime_owner_canonical_sha256,
+        realtime_preset_safetensors,
+        realtime_preset_manifest,
+        realtime_preset_manifest_sha256,
+        realtime_tokenizer_dir,
+        realtime_text_file,
+        realtime_vokra_head,
+        realtime_vokra_tree,
+        realtime_reference_script_sha256,
+        realtime_uv_lock_sha256,
+        realtime_trusted_runner_sha256,
     })
 }
 
@@ -2309,14 +2527,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             );
         }
         ModelTask::TtsVibeVoiceRealtime => {
-            vokra_models::vibevoice_streaming::VibeVoiceStreamingCheckpoint::from_gguf(
-                session.gguf(),
-            )
-            .map_err(|error| error.to_string())?;
-            return Err(
-                "run (VibeVoice-Realtime-0.5B): INSPECTION_ONLY — strict streaming topology and metadata bind, but authenticated real-weight manifest, streaming prefill/state, CFG diffusion, acoustic decoder, tokenizer policy, and independent CPU parity remain VAST follow-up gates. No CPU fallback or synthetic waveform is permitted"
-                    .to_owned(),
-            );
+            vibevoice_realtime::run(&session, &a)?;
         }
         ModelTask::TtsSpeechT5 => {
             run_speecht5(&session, &a)?;
@@ -8366,6 +8577,65 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn parse_accepts_only_dedicated_realtime_activation_inputs() {
+        let sha_a = "a".repeat(64);
+        let sha_b = "b".repeat(64);
+        let sha_c = "c".repeat(64);
+        let sha_d = "d".repeat(64);
+        let sha_e = "e".repeat(64);
+        let head = "f".repeat(40);
+        let tree = "0".repeat(40);
+        let sha_1 = "1".repeat(64);
+        let sha_2 = "2".repeat(64);
+        let sha_3 = "3".repeat(64);
+        let parsed = parse_args(&args(&[
+            "--model",
+            "vibevoice-realtime.gguf",
+            "--realtime-text-file",
+            "prompt.txt",
+            "--realtime-gguf-sha256",
+            sha_a.as_str(),
+            "--realtime-reference-dir",
+            "reference",
+            "--realtime-reference-sha256",
+            sha_b.as_str(),
+            "--realtime-owner-scope",
+            "scope.json",
+            "--realtime-owner-scope-sha256",
+            sha_c.as_str(),
+            "--realtime-owner-canonical",
+            "canonical.json",
+            "--realtime-owner-canonical-sha256",
+            sha_d.as_str(),
+            "--realtime-preset-safetensors",
+            "carter.safetensors",
+            "--realtime-preset-manifest",
+            "carter.json",
+            "--realtime-preset-manifest-sha256",
+            sha_e.as_str(),
+            "--realtime-tokenizer-dir",
+            "tokenizer",
+            "--realtime-vokra-head",
+            head.as_str(),
+            "--realtime-vokra-tree",
+            tree.as_str(),
+            "--realtime-reference-script-sha256",
+            sha_1.as_str(),
+            "--realtime-uv-lock-sha256",
+            sha_2.as_str(),
+            "--realtime-trusted-runner-sha256",
+            sha_3.as_str(),
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("dedicated Realtime inputs parse");
+        assert_eq!(parsed.realtime_text_file.as_deref(), Some("prompt.txt"));
+        assert_eq!(parsed.realtime_tokenizer_dir.as_deref(), Some("tokenizer"));
+        assert_eq!(parsed.output.as_deref(), Some("speech.wav"));
+        assert!(parsed.tokenizer.is_none());
     }
 
     #[test]
