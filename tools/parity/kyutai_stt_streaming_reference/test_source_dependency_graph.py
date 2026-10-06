@@ -177,6 +177,7 @@ class SourceDependencyGraphTests(unittest.TestCase):
         tree = ast.parse(
             "if FLAG:\n    import one\nelse:\n    import two\n"
             "try:\n    import three\nexcept ImportError:\n    import four\n"
+            "else:\n    import five\nfinally:\n    import six\n"
         )
         visitor = graph._ImportVisitor("fixture")
         visitor.visit(tree)
@@ -185,6 +186,39 @@ class SourceDependencyGraphTests(unittest.TestCase):
         self.assertEqual(labels["two"], "conditional-else")
         self.assertEqual(labels["three"], "optional-import")
         self.assertEqual(labels["four"], "optional-import-handler")
+        self.assertEqual(labels["five"], "try-else")
+        self.assertEqual(labels["six"], "try-finally")
+
+    def test_if_test_dynamic_import_is_unknown_and_keeps_conditional_label(self) -> None:
+        tree = ast.parse(
+            "if importlib.import_module('optional_backend'):\n"
+            "    import branch\n"
+        )
+        visitor = graph._ImportVisitor("fixture")
+        visitor.visit(tree)
+        dynamic = [edge for edge in visitor.edges if edge["name"] == "<dynamic-import>"]
+        self.assertEqual(len(dynamic), 1)
+        self.assertEqual(dynamic[0]["kind"], "dynamic-import")
+        self.assertEqual(dynamic[0]["condition"], "conditional")
+        self.assertEqual(graph._edge_target("fixture", dynamic[0], {}), (None, "dynamic-import-unknown"))
+
+    def test_except_type_dynamic_import_is_unknown_and_keeps_handler_label(self) -> None:
+        tree = ast.parse(
+            "try:\n"
+            "    import body\n"
+            "except importlib.import_module('optional_backend'):\n"
+            "    import handler\n"
+        )
+        visitor = graph._ImportVisitor("fixture")
+        visitor.visit(tree)
+        dynamic = [edge for edge in visitor.edges if edge["name"] == "<dynamic-import>"]
+        self.assertEqual(len(dynamic), 1)
+        self.assertEqual(dynamic[0]["kind"], "dynamic-import")
+        self.assertEqual(dynamic[0]["condition"], "try-block-handler")
+        self.assertEqual(graph._edge_target("fixture", dynamic[0], {}), (None, "dynamic-import-unknown"))
+        labels = {edge["name"]: edge["condition"] for edge in visitor.edges}
+        self.assertEqual(labels["body"], "try-block")
+        self.assertEqual(labels["handler"], "try-block-handler")
 
     def test_scope_fixed_point_unions_role_and_producer_diamond(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

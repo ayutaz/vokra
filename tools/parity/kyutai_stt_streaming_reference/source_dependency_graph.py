@@ -392,6 +392,7 @@ class _ImportVisitor(ast.NodeVisitor):
     def visit_If(self, node: ast.If) -> None:
         marker = "TYPE_CHECKING" if isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING" else "conditional"
         self._conditions.append(marker)
+        self.visit(node.test)
         for child in node.body:
             self.visit(child)
         self._conditions.pop()
@@ -411,6 +412,8 @@ class _ImportVisitor(ast.NodeVisitor):
         self._conditions.pop()
         self._conditions.append(f"{marker}-handler")
         for handler in node.handlers:
+            if handler.type is not None:
+                self.visit(handler.type)
             for child in handler.body:
                 self.visit(child)
         self._conditions.pop()
