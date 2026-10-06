@@ -7,6 +7,19 @@ review-start HEAD `3a3fd82281ae3ef9e995cb212ec794531ed13493`, not only the
 26 public files covered by the example checker. Ignored local planning files
 are not forced into Git. A path assignment is not a completed content review.
 
+**2026-10-07 California legal-source reconciliation boundary:** The legal
+section's 2026-08-30 SB 942 facts and this 2026-10-04 audit remain historical
+records. The [California Secretary of State's 2025 chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2025/Chapter-Number.pdf)
+(p. 27, row 0674) verifies AB0853 / Chapter 674 enactment metadata; the
+[Governor's 2026-09-30 release](https://www.gov.ca.gov/2026/09/30/californias-nation-leading-ai-framework-just-got-stronger-governor-newsom-signs-more-first-in-the-nation-worker-protections-and-more/)
+lists AB 2713 and SB 1000 as signed California AI Transparency Act bills; and
+the [2026-04-21 Senate Judiciary Committee analysis](https://sjud.senate.ca.gov/system/files/2026-04/sb-1050-ashby-sjud-analysis.pdf)
+(p. 2) is only committee analysis, not enacted/current full text. The required
+[official SB 942 bill-text endpoint](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)
+returned 403 for the full body on 2026-10-07. These sources do not establish current
+applicability, timetable, compliance, or owner/legal approval; mirrors are not
+substituted and the pending authoritative reconciliation remains fail-closed.
+
 ## Verified current snapshot
 
 - GitHub main: `97447185361a37af64c1b30fe87e8e2618d96e20`, committed

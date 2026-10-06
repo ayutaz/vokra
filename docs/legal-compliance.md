@@ -29,6 +29,23 @@ consent, disclosure, and model rights before release or deployment.
 - **Vokra provider (依頼者)**: SDK の基本機能提供、ドキュメント整備、default 設定の適切性
 - **Vokra deployer (ゲーム開発者、SaaS 事業者等)**: 具体的なデプロイ環境での compliance 実装、user consent 取得、地域別対応
 
+**2026-10-07 California source-reconciliation boundary:** The SB 942 entry
+below retains the 2026-08-30 historical record; its statement that Chapter 291
+was operative from 2026-01-01 is not an authenticated conclusion about current
+law. The California Secretary of State's [official 2025 chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2025/Chapter-Number.pdf)
+(p. 27, row 0674) confirms enactment metadata for AB0853, Chapter 674,
+approved/filed 2025-10-13. The Governor's [official 2026-09-30 release](https://www.gov.ca.gov/2026/09/30/californias-nation-leading-ai-framework-just-got-stronger-governor-newsom-signs-more-first-in-the-nation-worker-protections-and-more/)
+lists both AB 2713 and SB 1000 as signed California AI Transparency Act bills.
+The [official Senate Judiciary Committee analysis dated 2026-04-21](https://sjud.senate.ca.gov/system/files/2026-04/sb-1050-ashby-sjud-analysis.pdf)
+(p. 2) describes a chapter becoming operative in part on 2026-08-02, but a
+committee analysis is not the enacted/current full text and cannot establish
+the latest law as of 2026-09-30. The required [official SB 942 bill-text
+endpoint](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)
+returned 403 for the full body on 2026-10-07. Secondary mirrors are not substituted.
+Current applicability, operative timetable, compliance conclusion, and
+owner/legal approval therefore remain pending authoritative full-text
+reconciliation; this note adds no legal sign-off.
+
 ---
 
 ## 1. EU AI Act Article 50 (Transparency Obligations)
@@ -88,6 +105,10 @@ consent, disclosure, and model rights before release or deployment.
 ---
 
 ## 2. California SB 942 (California AI Transparency Act)
+
+The status below is retained as the dated 2026-08-30 record and is superseded
+only by the 2026-10-07 source-reconciliation boundary above; it must not be
+read as a current-law or owner-approval conclusion.
 
 ### 施行・status（2026-08-30確認）
 - **Chapter 291として2024-09-19に成立**し、§22757.6により **2026-01-01からoperative**。審議中法案ではない。
