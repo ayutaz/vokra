@@ -1,8 +1,8 @@
 {
   "gate_version": 1,
-  "lock_sha256": "56e14c7e85174b16b22bf33d6cbb4a1c4f21eb3714ebdee854dd3417f4194d45",
-  "project_sha256": "0f9cb64cc8f43a6e1fe8cd793f43909a2f9dbf4957ea963a03d929666c521f78",
-  "package_rows_sha256": "0f9bba61550d1c5325ef154d049f44252b99777dc8c101cb05f673347ea0bfdf",
+  "lock_sha256": "1a98b86cc71bf2ad8c84dae2ad53dc48369878c857fa756bb050260060d6da25",
+  "project_sha256": "f22f9f26ab490b3a3e5a0d545c69530ab2220c97c9170193b8c48b9a2f843b62",
+  "package_rows_sha256": "f6b33b6c58c8110bba2178503468e678a0f8d2af0dced7ee00c9de447bf7d407",
   "required_package_rows": [
     {
       "name": "accelerate",
@@ -58,7 +58,7 @@
     },
     {
       "name": "transformers",
-      "version": "5.5.0",
+      "version": "5.10.4",
       "source": {"registry": "https://pypi.org/simple"},
       "resolution-markers": [],
       "dependencies": [
@@ -105,12 +105,12 @@
     {"name": "torch", "version": "2.13.0", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
     {"name": "torch", "version": "2.13.0+cpu", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
     {"name": "tqdm", "version": "4.70.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
-    {"name": "transformers", "version": "5.5.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "transformers", "version": "5.10.4", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
     {"name": "typer", "version": "0.27.1", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
     {"name": "typing-extensions", "version": "4.16.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
     {"name": "vokra-ultravox-parity", "version": "0.1.0", "source": {"virtual": "."}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"}
   ],
-  "package_review_rows_sha256": "9f2b262a39e7251e5ab23a27fd9535a83c709f12dc4246f5b4456497d0872a9c",
+  "package_review_rows_sha256": "dce0703832fc2cc7d377fa7da4aa829dea31f8d2f193a0f0af758f1cf613839d",
   "forbidden_dependencies": ["librosa", "soxr", "soundfile", "triton", "nvidia-cuda"],
   "identities": {
     "public_repo": "vokra/ultravox-v0-5-llama-3-2-1b",
@@ -152,7 +152,7 @@
     },
     {
       "id": "python-closure",
-      "component": "locked transformers 5.5.0/torch 2.13.0 Python native and bundled closure",
+      "component": "locked transformers 5.10.4/torch 2.13.0 Python native and bundled closure",
       "source": "tools/parity/ultravox/uv.lock",
       "license": "UNRESOLVED",
       "conclusion": "Every locked package and native/bundled notice requires owner review",
@@ -161,16 +161,16 @@
       "required_identity": "lock_sha256/project_sha256/package_rows_sha256"
     }
   ],
-  "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
+  "license_rows_sha256": "62623143095ee2d9dfc422450d54299f95d19ada6f10c9aee82ce41c22911b16",
   "dependency_audit_evidence": {
     "schema": "vokra-ultravox-dependency-audit-compact-v1",
     "path": "dependency_audit_evidence.json",
-    "sha256": "64fde03fcb8e8e770ba8cb51bc9963ab97efd56d530725eea304f0d542c91b03",
-    "full_audit_sha256": "22698a69938a657327a6ef074d4505e060ede67f4e8e3f3ece97d4085a92e6df",
+    "sha256": "9b33428fa4af8da8d603982c5155d3b5aae2dc5ca027fee5a18c6c7a1d4c6bfd",
+    "full_audit_sha256": "77437cfb7fb1838ea791f67f4fc06552f6d64c52b4181ee3012387727e7832b7",
     "status": "PENDING_OWNER_APPROVAL",
-    "approval_scope_sha256": "35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b"
+    "approval_scope_sha256": "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c"
   },
-  "approval_scope_sha256": "35e73acdfdffa729464400a11cdc2f890b216dc59476a79acebd24bfe8ae555b",
+  "approval_scope_sha256": "85885a7756d71c8588f7a90166bab465fa41689b8dcf18f86f203bfa9228a77c",
   "approval": {
     "status": "OWNER_SIGNOFF_REQUIRED",
     "signer": null,
