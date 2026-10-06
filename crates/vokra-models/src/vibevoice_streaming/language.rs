@@ -293,6 +293,11 @@ fn apply_eos_classifier(compute: &Compute, fc1: &Dense, fc2: &Dense, input: &[f3
             "vibevoice realtime EOS classifier did not return one logit".to_owned(),
         ));
     }
+    if !second[0].is_finite() {
+        return Err(VokraError::ModelLoad(
+            "vibevoice realtime EOS classifier returned a non-finite logit".to_owned(),
+        ));
+    }
     Ok(second[0])
 }
 
@@ -378,6 +383,38 @@ impl VibeVoiceRealtimeLanguage {
     pub fn reset(&mut self) {
         self.text_lm.reset();
         self.tts_lm.reset();
+    }
+
+    /// Returns the current text/TTS cache positions for the diagnostic bridge.
+    pub(crate) fn cache_positions(&self) -> (usize, usize) {
+        (self.text_lm.position(), self.tts_lm.position())
+    }
+
+    /// Returns the authenticated text-cache layer count.
+    pub(crate) fn text_cache_layers(&self) -> usize {
+        self.text_lm.config().num_layers
+    }
+
+    /// Returns the authenticated TTS-cache layer count.
+    pub(crate) fn tts_cache_layers(&self) -> usize {
+        self.tts_lm.config().num_layers
+    }
+
+    /// Re-runs the authenticated EOS head on an existing hidden row for the
+    /// official post-forward positive stop-classifier observation.
+    pub(crate) fn classify_eos(&self, hidden: &[f32]) -> Result<f32> {
+        if hidden.len() != HIDDEN || hidden.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime EOS classifier input must be one finite hidden row".to_owned(),
+            ));
+        }
+        let compute = Compute::for_backend(self.backend, VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS)?;
+        apply_eos_classifier(
+            &compute,
+            self.shared.eos_fc1.as_ref(),
+            self.shared.eos_fc2.as_ref(),
+            hidden,
+        )
     }
 
     /// Imports the text and TTS KV snapshots as one atomic operation.

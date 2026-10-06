@@ -97,12 +97,40 @@ impl VibeVoiceRealtimeAcousticDecoderStream {
     /// The official source performs `latent / scaling_factor - bias_factor`
     /// before passing the result to the causal acoustic tokenizer decoder.
     pub fn decode_scaled_latent(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>> {
+        self.decode_scaled_latent_inner(scaled_latent, None)
+    }
+
+    /// Diagnostic-only form sharing the exact decoder computation above.
+    pub(crate) fn decode_scaled_latent_with_observer<F>(
+        &mut self,
+        scaled_latent: &[f32],
+        observer: &mut F,
+    ) -> Result<Vec<f32>>
+    where
+        F: for<'a> FnMut(VibeVoiceRealtimeAcousticObservation<'a>) -> Result<()>,
+    {
+        self.decode_scaled_latent_inner(scaled_latent, Some(observer))
+    }
+
+    fn decode_scaled_latent_inner(
+        &mut self,
+        scaled_latent: &[f32],
+        mut observer: Option<
+            &mut dyn for<'a> FnMut(VibeVoiceRealtimeAcousticObservation<'a>) -> Result<()>,
+        >,
+    ) -> Result<Vec<f32>> {
         if scaled_latent.len() != REALTIME_ACOUSTIC_LATENT_WIDTH {
             return Err(VokraError::InvalidArgument(format!(
                 "vibevoice-realtime acoustic decoder requires one scaled [{REALTIME_ACOUSTIC_LATENT_WIDTH}] latent frame"
             )));
         }
         let unscaled = self.latent_scale.unscale_generated(scaled_latent)?;
+        if let Some(observer) = observer.as_deref_mut() {
+            observer(VibeVoiceRealtimeAcousticObservation::DecoderInput {
+                scaled: scaled_latent,
+                unscaled: &unscaled,
+            })?;
+        }
         let pcm = self.decoder.decode_chunk(&unscaled, 1)?;
         if pcm.len() != REALTIME_ACOUSTIC_CHUNK_SAMPLES {
             return Err(VokraError::ModelLoad(format!(
@@ -111,8 +139,26 @@ impl VibeVoiceRealtimeAcousticDecoderStream {
                 REALTIME_ACOUSTIC_CHUNK_SAMPLES
             )));
         }
+        if pcm.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(
+                "vibevoice-realtime acoustic decoder emitted non-finite PCM".to_owned(),
+            ));
+        }
+        if let Some(observer) = observer.as_deref_mut() {
+            observer(VibeVoiceRealtimeAcousticObservation::DecoderChunk { pcm: &pcm })?;
+        }
         Ok(pcm)
     }
+}
+
+pub(crate) enum VibeVoiceRealtimeAcousticObservation<'a> {
+    DecoderInput {
+        scaled: &'a [f32],
+        unscaled: &'a [f32],
+    },
+    DecoderChunk {
+        pcm: &'a [f32],
+    },
 }
 
 fn require_realtime_acoustic_backend(backend: BackendKind) -> Result<()> {

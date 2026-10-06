@@ -28,12 +28,18 @@
 use vokra_core::backend::BackendKind;
 use vokra_core::{Result, VokraError};
 
-use super::acoustic::{REALTIME_ACOUSTIC_CHUNK_SAMPLES, VibeVoiceRealtimeAcousticDecoderStream};
+use super::acoustic::{
+    REALTIME_ACOUSTIC_CHUNK_SAMPLES, VibeVoiceRealtimeAcousticDecoderStream,
+    VibeVoiceRealtimeAcousticObservation,
+};
 use super::connector::VibeVoiceRealtimeAcousticConnector;
 use super::generation::VibeVoiceRealtimeGenerationStopReason;
 use super::language::VibeVoiceRealtimeLanguage;
 use super::preset::{VibeVoiceRealtimePresetBranch, VibeVoiceRealtimePresetCache};
-use super::sampler::{VIBEVOICE_REALTIME_LATENT_WIDTH, sample_vibevoice_realtime_cfg};
+use super::sampler::{
+    VIBEVOICE_REALTIME_LATENT_WIDTH, sample_vibevoice_realtime_cfg,
+    sample_vibevoice_realtime_cfg_with_observer,
+};
 use super::state::{TTS_SPEECH_WINDOW_SIZE, VibeVoiceStreamingState, VibeVoiceStreamingTextPlan};
 use super::tokenizer::VibeVoiceRealtimeTokenizer;
 use super::{HIDDEN, MAX_POSITIONS, VibeVoiceStreamingCheckpoint, VibeVoiceStreamingDiffusionHead};
@@ -135,6 +141,105 @@ pub enum VibeVoiceRealtimeSynthesisStep {
     },
 }
 
+/// Native language branch associated with one diagnostic observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VibeVoiceRealtimeDiagnosticBranch {
+    /// Positive text language-model branch.
+    PositiveLm,
+    /// Negative text language-model branch.
+    NegativeLm,
+    /// Positive TTS language-model branch.
+    PositiveTts,
+    /// Negative TTS language-model branch.
+    NegativeTts,
+}
+
+/// Whether a hidden/cache observation belongs to a prefill, text, or speech call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VibeVoiceRealtimeDiagnosticCall {
+    /// Authenticated four-output preset prefill.
+    Prefill,
+    /// One native incremental text-token call.
+    Text,
+    /// One native incremental speech-token call.
+    Speech,
+}
+
+/// Borrowed event emitted only when a diagnostic observer is explicitly installed.
+///
+/// Slices are valid only for the duration of the callback. The observer must not
+/// mutate them, and the native path never allocates or copies diagnostic tensors
+/// when no observer is installed.
+#[derive(Debug, Clone, Copy)]
+pub enum VibeVoiceRealtimeDiagnosticEvent<'a> {
+    /// Hidden output from one LM/TTS call or authenticated preset output.
+    Hidden {
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        values: &'a [f32],
+    },
+    /// Cache position after a hidden-output call or authenticated prefill.
+    CachePosition {
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        position: usize,
+        layers: usize,
+    },
+    /// Conditional and unconditional prediction arrays for one official CFG step.
+    DiffusionPrediction {
+        speech_step: usize,
+        diffusion_step: usize,
+        timestep: usize,
+        conditional: &'a [f32],
+        unconditional: &'a [f32],
+    },
+    /// Final scaled latent returned by one complete twenty-step CFG sample.
+    SampledLatent {
+        speech_step: usize,
+        values: &'a [f32],
+    },
+    /// The exact scaled and unscaled latent passed to the causal decoder.
+    DecoderInput {
+        speech_step: usize,
+        scaled: &'a [f32],
+        unscaled: &'a [f32],
+    },
+    /// One decoded PCM chunk before any caller-side accumulation.
+    DecoderChunk { speech_step: usize, pcm: &'a [f32] },
+    /// Connector input and output from the same native call.
+    Connector {
+        speech_step: usize,
+        input: &'a [f32],
+        output: &'a [f32],
+    },
+    /// One authenticated EOS-classifier output, retaining call/branch identity.
+    Eos {
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        classifier_pass: usize,
+        value: f32,
+    },
+}
+
+/// Borrowed diagnostic callback for one explicitly instrumented session.
+pub trait VibeVoiceRealtimeDiagnosticObserver {
+    /// Receives source-ordered observations. Returning an error follows the
+    /// normal session poison/reset path and prevents later events.
+    fn observe(&mut self, event: VibeVoiceRealtimeDiagnosticEvent<'_>) -> Result<()>;
+}
+
 /// Native, authenticated Realtime model components.
 #[derive(Debug, Clone)]
 pub struct VibeVoiceRealtimeRuntime {
@@ -191,6 +296,31 @@ impl VibeVoiceRealtimeRuntime {
         text: &str,
         config: VibeVoiceRealtimeSynthesisConfig,
     ) -> Result<VibeVoiceRealtimeSynthesisSession<'a>> {
+        self.start_session_inner(preset, tokenizer, text, config, None)
+    }
+
+    /// Starts a session with an explicitly borrowed, source-ordered diagnostic
+    /// observer. The observer is scoped to the returned session and is released
+    /// on drop; no global hook or default-path tensor copy is installed.
+    pub fn start_session_with_observer<'a>(
+        &'a mut self,
+        preset: &VibeVoiceRealtimePresetCache,
+        tokenizer: &VibeVoiceRealtimeTokenizer,
+        text: &str,
+        config: VibeVoiceRealtimeSynthesisConfig,
+        observer: &'a mut dyn VibeVoiceRealtimeDiagnosticObserver,
+    ) -> Result<VibeVoiceRealtimeSynthesisSession<'a>> {
+        self.start_session_inner(preset, tokenizer, text, config, Some(observer))
+    }
+
+    fn start_session_inner<'a>(
+        &'a mut self,
+        preset: &VibeVoiceRealtimePresetCache,
+        tokenizer: &VibeVoiceRealtimeTokenizer,
+        text: &str,
+        config: VibeVoiceRealtimeSynthesisConfig,
+        observer: Option<&'a mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    ) -> Result<VibeVoiceRealtimeSynthesisSession<'a>> {
         let positive_tts = preset.output(VibeVoiceRealtimePresetBranch::TtsLm);
         let negative_tts = preset.output(VibeVoiceRealtimePresetBranch::NegTtsLm);
         let positive_condition =
@@ -214,7 +344,15 @@ impl VibeVoiceRealtimeRuntime {
             runtime: self,
             negative,
             acoustic_stream: None,
+            observer,
         };
+        let mut executor = executor;
+        if executor.observer.is_some() {
+            if let Err(error) = executor.emit_prefill(preset) {
+                executor.reset();
+                return Err(error);
+            }
+        }
         Ok(VibeVoiceRealtimeSynthesisSession {
             core: RealtimeCore::new(
                 executor,
@@ -281,19 +419,27 @@ impl VibeVoiceRealtimeSynthesisSession<'_> {
 }
 
 trait RealtimeExecutor {
-    fn process_text_token(&mut self, token: u32) -> Result<Vec<f32>>;
+    fn process_text_token(
+        &mut self,
+        token: u32,
+        text_window_index: usize,
+        text_token_index: usize,
+        text_window_tokens: usize,
+    ) -> Result<Vec<f32>>;
     fn sample(
         &mut self,
         positive_condition: &[f32],
         negative_condition: &[f32],
         initial_noise: &[f32],
         guidance_scale: f32,
+        speech_step: usize,
     ) -> Result<Vec<f32>>;
-    fn decode(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>>;
-    fn connector(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>>;
+    fn decode(&mut self, scaled_latent: &[f32], speech_step: usize) -> Result<Vec<f32>>;
+    fn connector(&mut self, scaled_latent: &[f32], speech_step: usize) -> Result<Vec<f32>>;
     fn process_speech(
         &mut self,
         acoustic_embedding: &[f32],
+        speech_step: usize,
     ) -> Result<(Vec<f32>, Vec<f32>, f32, f32)>;
     fn reset(&mut self);
 }
@@ -302,17 +448,88 @@ struct NativeExecutor<'a> {
     runtime: &'a mut VibeVoiceRealtimeRuntime,
     negative: VibeVoiceRealtimeLanguage,
     acoustic_stream: Option<VibeVoiceRealtimeAcousticDecoderStream>,
+    observer: Option<&'a mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+}
+
+fn dispatch_diagnostic_event(
+    observer: Option<&mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    event: VibeVoiceRealtimeDiagnosticEvent<'_>,
+) -> Result<()> {
+    if let Some(observer) = observer {
+        observer.observe(event)?;
+    }
+    Ok(())
 }
 
 impl RealtimeExecutor for NativeExecutor<'_> {
-    fn process_text_token(&mut self, token: u32) -> Result<Vec<f32>> {
+    fn process_text_token(
+        &mut self,
+        token: u32,
+        text_window_index: usize,
+        text_token_index: usize,
+        text_window_tokens: usize,
+    ) -> Result<Vec<f32>> {
         let lm = self.runtime.language.forward_lm_step(token)?;
         let lm_hidden = last_hidden_row(&lm.hidden, 1)?;
+        self.observe(VibeVoiceRealtimeDiagnosticEvent::Hidden {
+            branch: VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+            call: VibeVoiceRealtimeDiagnosticCall::Text,
+            text_window_index: Some(text_window_index),
+            text_token_index: Some(text_token_index),
+            text_window_tokens,
+            speech_step: None,
+            values: &lm.hidden,
+        })?;
+        self.observe_cache(
+            VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+            VibeVoiceRealtimeDiagnosticCall::Text,
+            Some(text_window_index),
+            Some(text_token_index),
+            text_window_tokens,
+            None,
+            self.runtime.language.cache_positions().0,
+            self.runtime.language.text_cache_layers(),
+        )?;
         let tts = self
             .runtime
             .language
             .forward_tts_lm_step(token, &lm_hidden, true)?;
-        last_hidden_row(&tts.hidden, 1)
+        let tts_hidden = last_hidden_row(&tts.hidden, 1)?;
+        if !tts.eos_logit.is_finite() {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime EOS classifier returned a non-finite logit".to_owned(),
+            ));
+        }
+        self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+            branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+            call: VibeVoiceRealtimeDiagnosticCall::Text,
+            text_window_index: Some(text_window_index),
+            text_token_index: Some(text_token_index),
+            text_window_tokens,
+            speech_step: None,
+            classifier_pass: 0,
+            value: tts.eos_logit,
+        })?;
+        self.observe(VibeVoiceRealtimeDiagnosticEvent::Hidden {
+            branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+            call: VibeVoiceRealtimeDiagnosticCall::Text,
+            text_window_index: Some(text_window_index),
+            text_token_index: Some(text_token_index),
+            text_window_tokens,
+            speech_step: None,
+            values: &tts.hidden,
+        })?;
+        self.observe_cache(
+            VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+            VibeVoiceRealtimeDiagnosticCall::Text,
+            Some(text_window_index),
+            Some(text_token_index),
+            text_window_tokens,
+            None,
+            self.runtime.language.cache_positions().1,
+            self.runtime.language.tts_cache_layers(),
+        )?;
+        Ok(tts_hidden)
     }
 
     fn sample(
@@ -321,41 +538,247 @@ impl RealtimeExecutor for NativeExecutor<'_> {
         negative_condition: &[f32],
         initial_noise: &[f32],
         guidance_scale: f32,
+        speech_step: usize,
     ) -> Result<Vec<f32>> {
-        sample_vibevoice_realtime_cfg(
+        if self.observer.is_none() {
+            return sample_vibevoice_realtime_cfg(
+                &self.runtime.diffusion_head,
+                positive_condition,
+                negative_condition,
+                initial_noise,
+                guidance_scale,
+            );
+        }
+        let observer = &mut self.observer;
+        let latent = sample_vibevoice_realtime_cfg_with_observer(
             &self.runtime.diffusion_head,
             positive_condition,
             negative_condition,
             initial_noise,
             guidance_scale,
-        )
+            |diffusion_step, timestep, conditional, unconditional| {
+                if let Some(observer) = observer.as_deref_mut() {
+                    observer.observe(VibeVoiceRealtimeDiagnosticEvent::DiffusionPrediction {
+                        speech_step,
+                        diffusion_step,
+                        timestep,
+                        conditional,
+                        unconditional,
+                    })?;
+                }
+                Ok(())
+            },
+        )?;
+        if latent.len() != VIBEVOICE_REALTIME_LATENT_WIDTH
+            || latent.iter().any(|value| !value.is_finite())
+        {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime sampler returned an invalid 64-wide latent".to_owned(),
+            ));
+        }
+        dispatch_validated_values(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::SampledLatent {
+                speech_step,
+                values: &latent,
+            },
+            &latent,
+            VIBEVOICE_REALTIME_LATENT_WIDTH,
+            "sampled latent",
+        )?;
+        Ok(latent)
     }
 
-    fn decode(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>> {
+    fn decode(&mut self, scaled_latent: &[f32], speech_step: usize) -> Result<Vec<f32>> {
         let stream = self
             .acoustic_stream
             .get_or_insert_with(|| self.runtime.acoustic_decoder.stream());
-        stream.decode_scaled_latent(scaled_latent)
+        if self.observer.is_some() {
+            let observer = &mut self.observer;
+            let pcm =
+                stream.decode_scaled_latent_with_observer(scaled_latent, &mut |observation| {
+                    let Some(observer) = observer.as_deref_mut() else {
+                        return Ok(());
+                    };
+                    match observation {
+                        VibeVoiceRealtimeAcousticObservation::DecoderInput { scaled, unscaled } => {
+                            observer.observe(VibeVoiceRealtimeDiagnosticEvent::DecoderInput {
+                                speech_step,
+                                scaled,
+                                unscaled,
+                            })
+                        }
+                        VibeVoiceRealtimeAcousticObservation::DecoderChunk { pcm } => {
+                            dispatch_validated_values(
+                                Some(observer),
+                                VibeVoiceRealtimeDiagnosticEvent::DecoderChunk { speech_step, pcm },
+                                pcm,
+                                REALTIME_ACOUSTIC_CHUNK_SAMPLES,
+                                "decoder chunk",
+                            )
+                        }
+                    }
+                })?;
+            Ok(pcm)
+        } else {
+            stream.decode_scaled_latent(scaled_latent)
+        }
     }
 
-    fn connector(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>> {
-        self.runtime.connector.forward(scaled_latent)
+    fn connector(&mut self, scaled_latent: &[f32], speech_step: usize) -> Result<Vec<f32>> {
+        let output = self.runtime.connector.forward(scaled_latent)?;
+        if output.len() != HIDDEN || output.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime acoustic connector returned an invalid hidden row".to_owned(),
+            ));
+        }
+        dispatch_validated_values(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::Connector {
+                speech_step,
+                input: scaled_latent,
+                output: &output,
+            },
+            &output,
+            HIDDEN,
+            "acoustic connector",
+        )?;
+        Ok(output)
     }
 
     fn process_speech(
         &mut self,
         acoustic_embedding: &[f32],
+        speech_step: usize,
     ) -> Result<(Vec<f32>, Vec<f32>, f32, f32)> {
         let positive = self.runtime.language.forward_tts_lm_step(
             SPEECH_TOKEN_ID,
             acoustic_embedding,
             false,
         )?;
+        let positive_hidden = last_hidden_row(&positive.hidden, 1)?;
+        if !positive.eos_logit.is_finite() {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime EOS classifier returned a non-finite logit".to_owned(),
+            ));
+        }
+        dispatch_validated_scalar(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 0,
+                value: positive.eos_logit,
+            },
+            positive.eos_logit,
+            "positive speech EOS",
+        )?;
+        dispatch_validated_values(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                values: &positive.hidden,
+            },
+            &positive.hidden,
+            HIDDEN,
+            "positive speech hidden",
+        )?;
+        self.observe_cache(
+            VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+            VibeVoiceRealtimeDiagnosticCall::Speech,
+            None,
+            None,
+            0,
+            Some(speech_step),
+            self.runtime.language.cache_positions().1,
+            self.runtime.language.tts_cache_layers(),
+        )?;
+
+        // Keep the source branch order: the positive branch is fully validated
+        // and observed before the negative cache can advance.
         let negative =
             self.negative
                 .forward_tts_lm_step(SPEECH_TOKEN_ID, acoustic_embedding, false)?;
-        let positive_hidden = last_hidden_row(&positive.hidden, 1)?;
         let negative_hidden = last_hidden_row(&negative.hidden, 1)?;
+        if !negative.eos_logit.is_finite() {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime EOS classifier returned a non-finite logit".to_owned(),
+            ));
+        }
+        dispatch_validated_scalar(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 0,
+                value: negative.eos_logit,
+            },
+            negative.eos_logit,
+            "negative speech EOS",
+        )?;
+        dispatch_validated_values(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                branch: VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                values: &negative.hidden,
+            },
+            &negative.hidden,
+            HIDDEN,
+            "negative speech hidden",
+        )?;
+        self.observe_cache(
+            VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+            VibeVoiceRealtimeDiagnosticCall::Speech,
+            None,
+            None,
+            0,
+            Some(speech_step),
+            self.negative.cache_positions().1,
+            self.negative.tts_cache_layers(),
+        )?;
+        let positive_stop_logit = if self.observer.is_some() {
+            self.runtime.language.classify_eos(&positive_hidden)?
+        } else {
+            positive.eos_logit
+        };
+        if !positive_stop_logit.is_finite() {
+            return Err(VokraError::ModelLoad(
+                "vibevoice realtime EOS classifier returned a non-finite stop logit".to_owned(),
+            ));
+        }
+        dispatch_validated_scalar(
+            self.observer.as_deref_mut(),
+            VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 1,
+                value: positive_stop_logit,
+            },
+            positive_stop_logit,
+            "positive stop EOS",
+        )?;
         Ok((
             positive_hidden,
             negative_hidden,
@@ -370,6 +793,78 @@ impl RealtimeExecutor for NativeExecutor<'_> {
         if let Some(stream) = self.acoustic_stream.as_mut() {
             stream.reset();
         }
+    }
+}
+
+impl NativeExecutor<'_> {
+    fn observe(&mut self, event: VibeVoiceRealtimeDiagnosticEvent<'_>) -> Result<()> {
+        dispatch_diagnostic_event(self.observer.as_deref_mut(), event)
+    }
+
+    fn observe_cache(
+        &mut self,
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        position: usize,
+        layers: usize,
+    ) -> Result<()> {
+        self.observe(VibeVoiceRealtimeDiagnosticEvent::CachePosition {
+            branch,
+            call,
+            text_window_index,
+            text_token_index,
+            text_window_tokens,
+            speech_step,
+            position,
+            layers,
+        })
+    }
+
+    fn emit_prefill(&mut self, preset: &VibeVoiceRealtimePresetCache) -> Result<()> {
+        for branch in [
+            VibeVoiceRealtimePresetBranch::Lm,
+            VibeVoiceRealtimePresetBranch::NegLm,
+            VibeVoiceRealtimePresetBranch::TtsLm,
+            VibeVoiceRealtimePresetBranch::NegTtsLm,
+        ] {
+            let output = preset.output(branch);
+            let diagnostic_branch = match branch {
+                VibeVoiceRealtimePresetBranch::Lm => VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                VibeVoiceRealtimePresetBranch::NegLm => {
+                    VibeVoiceRealtimeDiagnosticBranch::NegativeLm
+                }
+                VibeVoiceRealtimePresetBranch::TtsLm => {
+                    VibeVoiceRealtimeDiagnosticBranch::PositiveTts
+                }
+                VibeVoiceRealtimePresetBranch::NegTtsLm => {
+                    VibeVoiceRealtimeDiagnosticBranch::NegativeTts
+                }
+            };
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                branch: diagnostic_branch,
+                call: VibeVoiceRealtimeDiagnosticCall::Prefill,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: None,
+                values: output.hidden(),
+            })?;
+            self.observe_cache(
+                diagnostic_branch,
+                VibeVoiceRealtimeDiagnosticCall::Prefill,
+                None,
+                None,
+                0,
+                None,
+                output.cache_position(),
+                output.layers().len(),
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -465,6 +960,8 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
             });
         }
         let eos_before_step = self.eos_seen;
+        let speech_step = self.speech_step;
+        let diagnostic_speech_step = self.speech_steps;
         // The following order is intentionally source-visible: the connector
         // receives the sampled scaled latent, not the decoder's unscaled copy.
         let scaled_latent = self.executor.sample(
@@ -472,6 +969,7 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
             &self.negative_condition,
             initial_noise,
             self.config.guidance_scale,
+            diagnostic_speech_step,
         )?;
         if scaled_latent.len() != VIBEVOICE_REALTIME_LATENT_WIDTH
             || scaled_latent.iter().any(|value| !value.is_finite())
@@ -480,7 +978,9 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
                 "vibevoice realtime sampler returned an invalid 64-wide latent".to_owned(),
             ));
         }
-        let pcm = self.executor.decode(&scaled_latent)?;
+        let pcm = self
+            .executor
+            .decode(&scaled_latent, diagnostic_speech_step)?;
         if pcm.len() != REALTIME_ACOUSTIC_CHUNK_SAMPLES
             || pcm.iter().any(|value| !value.is_finite())
         {
@@ -488,7 +988,9 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
                 "vibevoice realtime acoustic decoder returned invalid PCM".to_owned(),
             ));
         }
-        let acoustic_embedding = self.executor.connector(&scaled_latent)?;
+        let acoustic_embedding = self
+            .executor
+            .connector(&scaled_latent, diagnostic_speech_step)?;
         if acoustic_embedding.len() != HIDDEN
             || acoustic_embedding.iter().any(|value| !value.is_finite())
         {
@@ -521,8 +1023,9 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
                 },
             ));
         }
-        let (positive_hidden, negative_hidden, positive_eos_logit, negative_eos_logit) =
-            self.executor.process_speech(&acoustic_embedding)?;
+        let (positive_hidden, negative_hidden, positive_eos_logit, negative_eos_logit) = self
+            .executor
+            .process_speech(&acoustic_embedding, diagnostic_speech_step)?;
         validate_hidden_row(&positive_hidden)?;
         validate_hidden_row(&negative_hidden)?;
         self.positive_condition = positive_hidden;
@@ -604,8 +1107,13 @@ impl<E: RealtimeExecutor> RealtimeCore<E> {
         // Check the complete window before mutating either cache.  Once the
         // first token is accepted, any operational error poisons the session.
         let mut condition = None;
-        for &token in window.text_ids() {
-            condition = Some(self.executor.process_text_token(token)?);
+        for (text_token_index, &token) in window.text_ids().iter().enumerate() {
+            condition = Some(self.executor.process_text_token(
+                token,
+                window.index(),
+                text_token_index,
+                count,
+            )?);
         }
         let condition = condition.ok_or_else(|| {
             VokraError::ModelLoad(
@@ -702,6 +1210,35 @@ fn validate_hidden_row(hidden: &[f32]) -> Result<()> {
     Ok(())
 }
 
+fn dispatch_validated_values(
+    observer: Option<&mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    event: VibeVoiceRealtimeDiagnosticEvent<'_>,
+    values: &[f32],
+    expected_len: usize,
+    label: &str,
+) -> Result<()> {
+    if values.len() != expected_len || values.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(format!(
+            "{label} diagnostic output has invalid shape or non-finite values"
+        )));
+    }
+    dispatch_diagnostic_event(observer, event)
+}
+
+fn dispatch_validated_scalar(
+    observer: Option<&mut dyn VibeVoiceRealtimeDiagnosticObserver>,
+    event: VibeVoiceRealtimeDiagnosticEvent<'_>,
+    value: f32,
+    label: &str,
+) -> Result<()> {
+    if !value.is_finite() {
+        return Err(VokraError::ModelLoad(format!(
+            "{label} diagnostic output is non-finite"
+        )));
+    }
+    dispatch_diagnostic_event(observer, event)
+}
+
 fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
@@ -712,11 +1249,92 @@ mod tests {
     use std::collections::VecDeque;
 
     #[derive(Debug, Default)]
+    struct DiagnosticRecord {
+        label: &'static str,
+        speech_step: Option<usize>,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        classifier_pass: Option<usize>,
+    }
+
+    #[derive(Debug, Default)]
+    struct DiagnosticRecorder {
+        labels: Vec<&'static str>,
+        records: Vec<DiagnosticRecord>,
+        fail_after: Option<usize>,
+    }
+
+    impl VibeVoiceRealtimeDiagnosticObserver for DiagnosticRecorder {
+        fn observe(&mut self, event: VibeVoiceRealtimeDiagnosticEvent<'_>) -> Result<()> {
+            let label = match event {
+                VibeVoiceRealtimeDiagnosticEvent::Hidden { .. } => "hidden",
+                VibeVoiceRealtimeDiagnosticEvent::CachePosition { .. } => "cache",
+                VibeVoiceRealtimeDiagnosticEvent::DiffusionPrediction { .. } => "diffusion",
+                VibeVoiceRealtimeDiagnosticEvent::SampledLatent { .. } => "sampled_latent",
+                VibeVoiceRealtimeDiagnosticEvent::DecoderInput { .. } => "decoder_input",
+                VibeVoiceRealtimeDiagnosticEvent::DecoderChunk { .. } => "decoder_chunk",
+                VibeVoiceRealtimeDiagnosticEvent::Connector { .. } => "connector",
+                VibeVoiceRealtimeDiagnosticEvent::Eos { .. } => "eos",
+            };
+            let index = self.labels.len();
+            self.labels.push(label);
+            let (speech_step, text_window_index, text_token_index, classifier_pass) = match event {
+                VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                    speech_step,
+                    text_window_index,
+                    text_token_index,
+                    ..
+                }
+                | VibeVoiceRealtimeDiagnosticEvent::CachePosition {
+                    speech_step,
+                    text_window_index,
+                    text_token_index,
+                    ..
+                } => (speech_step, text_window_index, text_token_index, None),
+                VibeVoiceRealtimeDiagnosticEvent::Eos {
+                    speech_step,
+                    text_window_index,
+                    text_token_index,
+                    classifier_pass,
+                    ..
+                } => (
+                    speech_step,
+                    text_window_index,
+                    text_token_index,
+                    Some(classifier_pass),
+                ),
+                VibeVoiceRealtimeDiagnosticEvent::DiffusionPrediction { speech_step, .. }
+                | VibeVoiceRealtimeDiagnosticEvent::SampledLatent { speech_step, .. }
+                | VibeVoiceRealtimeDiagnosticEvent::DecoderInput { speech_step, .. }
+                | VibeVoiceRealtimeDiagnosticEvent::DecoderChunk { speech_step, .. }
+                | VibeVoiceRealtimeDiagnosticEvent::Connector { speech_step, .. } => {
+                    (Some(speech_step), None, None, None)
+                }
+            };
+            self.records.push(DiagnosticRecord {
+                label,
+                speech_step,
+                text_window_index,
+                text_token_index,
+                classifier_pass,
+            });
+            if self.fail_after == Some(index) {
+                return Err(VokraError::ModelLoad(
+                    "synthetic observer failure".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
     struct TraceExecutor {
         events: Vec<String>,
         latent: Vec<f32>,
         eos: VecDeque<f32>,
         fail_at: Option<&'static str>,
+        malformed_at: Option<&'static str>,
+        observer: Option<DiagnosticRecorder>,
     }
 
     impl TraceExecutor {
@@ -728,11 +1346,45 @@ mod tests {
             }
             Ok(())
         }
+
+        fn observe(&mut self, event: VibeVoiceRealtimeDiagnosticEvent<'_>) -> Result<()> {
+            dispatch_diagnostic_event(
+                self.observer
+                    .as_mut()
+                    .map(|observer| observer as &mut dyn VibeVoiceRealtimeDiagnosticObserver),
+                event,
+            )
+        }
+
+        fn with_observer(fail_after: Option<usize>) -> Self {
+            Self {
+                observer: Some(DiagnosticRecorder {
+                    fail_after,
+                    ..DiagnosticRecorder::default()
+                }),
+                ..Self::default()
+            }
+        }
     }
 
     impl RealtimeExecutor for TraceExecutor {
-        fn process_text_token(&mut self, token: u32) -> Result<Vec<f32>> {
+        fn process_text_token(
+            &mut self,
+            token: u32,
+            _text_window_index: usize,
+            _text_token_index: usize,
+            _text_window_tokens: usize,
+        ) -> Result<Vec<f32>> {
             self.maybe_fail("text")?;
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(_text_window_index),
+                text_token_index: Some(_text_token_index),
+                text_window_tokens: _text_window_tokens,
+                speech_step: None,
+                values: &[token as f32; HIDDEN],
+            })?;
             self.events.push(format!("text:{token}"));
             Ok(vec![token as f32; HIDDEN])
         }
@@ -743,34 +1395,97 @@ mod tests {
             _negative_condition: &[f32],
             initial_noise: &[f32],
             _guidance_scale: f32,
+            _speech_step: usize,
         ) -> Result<Vec<f32>> {
             self.maybe_fail("sample")?;
             self.events.push("sample".into());
             self.latent = initial_noise.to_vec();
+            if self.malformed_at == Some("sample") {
+                return Ok(vec![0.0; VIBEVOICE_REALTIME_LATENT_WIDTH - 1]);
+            }
+            let latent = &self.latent;
+            let event = VibeVoiceRealtimeDiagnosticEvent::SampledLatent {
+                speech_step: _speech_step,
+                values: latent,
+            };
+            let observer = self
+                .observer
+                .as_mut()
+                .map(|observer| observer as &mut dyn VibeVoiceRealtimeDiagnosticObserver);
+            dispatch_diagnostic_event(observer, event)?;
             Ok(initial_noise.to_vec())
         }
 
-        fn decode(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>> {
+        fn decode(&mut self, scaled_latent: &[f32], _speech_step: usize) -> Result<Vec<f32>> {
             self.maybe_fail("decode")?;
             assert_eq!(scaled_latent, self.latent.as_slice());
             self.events.push("decode".into());
+            if self.malformed_at == Some("decode") {
+                return Ok(vec![0.0; REALTIME_ACOUSTIC_CHUNK_SAMPLES - 1]);
+            }
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::DecoderChunk {
+                speech_step: _speech_step,
+                pcm: &[0.0; REALTIME_ACOUSTIC_CHUNK_SAMPLES],
+            })?;
             Ok(vec![0.0; REALTIME_ACOUSTIC_CHUNK_SAMPLES])
         }
 
-        fn connector(&mut self, scaled_latent: &[f32]) -> Result<Vec<f32>> {
+        fn connector(&mut self, scaled_latent: &[f32], _speech_step: usize) -> Result<Vec<f32>> {
             self.maybe_fail("connector")?;
             assert_eq!(scaled_latent, self.latent.as_slice());
             self.events.push("connector".into());
+            if self.malformed_at == Some("connector") {
+                return Ok(vec![1.0; HIDDEN - 1]);
+            }
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Connector {
+                speech_step: _speech_step,
+                input: scaled_latent,
+                output: &[1.0; HIDDEN],
+            })?;
             Ok(vec![1.0; HIDDEN])
         }
 
         fn process_speech(
             &mut self,
             _acoustic_embedding: &[f32],
+            _speech_step: usize,
         ) -> Result<(Vec<f32>, Vec<f32>, f32, f32)> {
             self.maybe_fail("speech")?;
             self.events.push("positive_tts".into());
+            if self.malformed_at == Some("speech") {
+                return Ok((vec![2.0; HIDDEN], vec![3.0; HIDDEN], f32::NAN, -100.0));
+            }
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(_speech_step),
+                classifier_pass: 0,
+                value: -100.0,
+            })?;
             self.events.push("negative_tts".into());
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(_speech_step),
+                classifier_pass: 0,
+                value: -100.0,
+            })?;
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(_speech_step),
+                classifier_pass: 1,
+                value: -100.0,
+            })?;
             Ok((
                 vec![2.0; HIDDEN],
                 vec![3.0; HIDDEN],
@@ -781,6 +1496,134 @@ mod tests {
 
         fn reset(&mut self) {
             self.events.push("reset".into());
+        }
+    }
+
+    struct BorrowedTraceExecutor<'a> {
+        inner: TraceExecutor,
+        observer: &'a mut dyn VibeVoiceRealtimeDiagnosticObserver,
+    }
+
+    impl<'a> BorrowedTraceExecutor<'a> {
+        fn new(observer: &'a mut dyn VibeVoiceRealtimeDiagnosticObserver) -> Self {
+            Self {
+                inner: TraceExecutor::default(),
+                observer,
+            }
+        }
+
+        fn observe(&mut self, event: VibeVoiceRealtimeDiagnosticEvent<'_>) -> Result<()> {
+            dispatch_diagnostic_event(Some(self.observer), event)
+        }
+    }
+
+    impl RealtimeExecutor for BorrowedTraceExecutor<'_> {
+        fn process_text_token(
+            &mut self,
+            token: u32,
+            text_window_index: usize,
+            text_token_index: usize,
+            text_window_tokens: usize,
+        ) -> Result<Vec<f32>> {
+            self.inner.maybe_fail("text")?;
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(text_window_index),
+                text_token_index: Some(text_token_index),
+                text_window_tokens,
+                speech_step: None,
+                values: &[token as f32; HIDDEN],
+            })?;
+            self.inner.events.push(format!("text:{token}"));
+            Ok(vec![token as f32; HIDDEN])
+        }
+
+        fn sample(
+            &mut self,
+            _positive_condition: &[f32],
+            _negative_condition: &[f32],
+            initial_noise: &[f32],
+            _guidance_scale: f32,
+            speech_step: usize,
+        ) -> Result<Vec<f32>> {
+            self.inner.maybe_fail("sample")?;
+            self.inner.events.push("sample".into());
+            self.inner.latent = initial_noise.to_vec();
+            let event = VibeVoiceRealtimeDiagnosticEvent::SampledLatent {
+                speech_step,
+                values: &self.inner.latent,
+            };
+            dispatch_diagnostic_event(Some(self.observer), event)?;
+            Ok(initial_noise.to_vec())
+        }
+
+        fn decode(&mut self, scaled_latent: &[f32], speech_step: usize) -> Result<Vec<f32>> {
+            self.inner.maybe_fail("decode")?;
+            assert_eq!(scaled_latent, self.inner.latent.as_slice());
+            self.inner.events.push("decode".into());
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::DecoderChunk {
+                speech_step,
+                pcm: &[0.0; REALTIME_ACOUSTIC_CHUNK_SAMPLES],
+            })?;
+            Ok(vec![0.0; REALTIME_ACOUSTIC_CHUNK_SAMPLES])
+        }
+
+        fn connector(&mut self, scaled_latent: &[f32], speech_step: usize) -> Result<Vec<f32>> {
+            self.inner.maybe_fail("connector")?;
+            assert_eq!(scaled_latent, self.inner.latent.as_slice());
+            self.inner.events.push("connector".into());
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Connector {
+                speech_step,
+                input: scaled_latent,
+                output: &[1.0; HIDDEN],
+            })?;
+            Ok(vec![1.0; HIDDEN])
+        }
+
+        fn process_speech(
+            &mut self,
+            _acoustic_embedding: &[f32],
+            speech_step: usize,
+        ) -> Result<(Vec<f32>, Vec<f32>, f32, f32)> {
+            self.inner.maybe_fail("speech")?;
+            self.inner.events.push("positive_tts".into());
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 0,
+                value: -100.0,
+            })?;
+            self.inner.events.push("negative_tts".into());
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 0,
+                value: -100.0,
+            })?;
+            self.observe(VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 1,
+                value: -100.0,
+            })?;
+            Ok((vec![2.0; HIDDEN], vec![3.0; HIDDEN], -100.0, -100.0))
+        }
+
+        fn reset(&mut self) {
+            self.inner.reset();
         }
     }
 
@@ -797,6 +1640,25 @@ mod tests {
     ) -> RealtimeCore<TraceExecutor> {
         RealtimeCore::new(
             executor,
+            plan(tokens),
+            vec![0.0; HIDDEN],
+            vec![0.0; HIDDEN],
+            VibeVoiceRealtimeSynthesisConfig {
+                max_new_tokens,
+                max_speech_steps,
+                guidance_scale: 3.0,
+            },
+        )
+    }
+
+    fn borrowed_core<'a>(
+        tokens: &[u32],
+        max_new_tokens: usize,
+        max_speech_steps: usize,
+        observer: &'a mut dyn VibeVoiceRealtimeDiagnosticObserver,
+    ) -> RealtimeCore<BorrowedTraceExecutor<'a>> {
+        RealtimeCore::new(
+            BorrowedTraceExecutor::new(observer),
             plan(tokens),
             vec![0.0; HIDDEN],
             vec![0.0; HIDDEN],
@@ -854,9 +1716,10 @@ mod tests {
 
     #[test]
     fn invalid_noise_is_rejected_before_executor_and_poisons_session() {
-        let mut core = core(&[10], 20, 20, TraceExecutor::default());
+        let mut core = core(&[10], 20, 20, TraceExecutor::with_observer(None));
         assert!(core.step(&[0.0; 63], false).is_err());
         assert_eq!(core.executor.events, vec!["reset"]);
+        assert!(core.executor.observer.as_ref().unwrap().labels.is_empty());
         assert!(core.step(&[0.0; 64], false).is_err());
     }
 
@@ -966,6 +1829,207 @@ mod tests {
     }
 
     #[test]
+    fn observer_order_covers_eos_drain_and_uncached_max_length() {
+        let mut executor = TraceExecutor::with_observer(None);
+        executor.eos.push_back(100.0);
+        let mut eos_core = core(&[10], 20, 20, executor);
+        let _ = eos_core
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+            .unwrap();
+        for _ in 0..5 {
+            let _ = eos_core
+                .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .unwrap();
+        }
+        let labels = &eos_core.executor.observer.as_ref().unwrap().labels;
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| **label == "sampled_latent")
+                .count(),
+            6
+        );
+        assert_eq!(labels.iter().filter(|label| **label == "eos").count(), 18);
+        for sample in labels
+            .iter()
+            .enumerate()
+            .filter_map(|(index, label)| (*label == "sampled_latent").then_some(index))
+        {
+            assert_eq!(
+                &labels[sample..sample + 6],
+                [
+                    "sampled_latent",
+                    "decoder_chunk",
+                    "connector",
+                    "eos",
+                    "eos",
+                    "eos"
+                ]
+            );
+        }
+
+        let mut max_executor = TraceExecutor::with_observer(None);
+        let mut max_core = core(&[10], 1, 20, max_executor);
+        let _ = max_core
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+            .unwrap();
+        let max_labels = &max_core.executor.observer.as_ref().unwrap().labels;
+        assert_eq!(
+            max_labels,
+            &["hidden", "sampled_latent", "decoder_chunk", "connector"]
+        );
+        assert!(!max_labels.contains(&"eos"));
+    }
+
+    #[test]
+    fn disabled_observer_preserves_default_step_and_executor_result() {
+        let mut plain = core(&[10], 20, 20, TraceExecutor::default());
+        let mut observed = core(&[10], 20, 20, TraceExecutor::with_observer(None));
+        let plain_step = plain
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+            .unwrap();
+        let observed_step = observed
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+            .unwrap();
+        assert_eq!(plain_step, observed_step);
+        assert_eq!(plain.executor.events, observed.executor.events);
+    }
+
+    #[test]
+    fn validated_dispatch_rejects_malformed_borrowed_values_before_callback() {
+        let mut recorder = DiagnosticRecorder::default();
+        let short_latent = [0.0_f32; VIBEVOICE_REALTIME_LATENT_WIDTH - 1];
+        assert!(
+            dispatch_validated_values(
+                Some(&mut recorder),
+                VibeVoiceRealtimeDiagnosticEvent::SampledLatent {
+                    speech_step: 0,
+                    values: &short_latent,
+                },
+                &short_latent,
+                VIBEVOICE_REALTIME_LATENT_WIDTH,
+                "sampled latent",
+            )
+            .is_err()
+        );
+        let mut nonfinite_pcm = [0.0_f32; REALTIME_ACOUSTIC_CHUNK_SAMPLES];
+        nonfinite_pcm[17] = f32::NAN;
+        assert!(
+            dispatch_validated_values(
+                Some(&mut recorder),
+                VibeVoiceRealtimeDiagnosticEvent::DecoderChunk {
+                    speech_step: 0,
+                    pcm: &nonfinite_pcm,
+                },
+                &nonfinite_pcm,
+                REALTIME_ACOUSTIC_CHUNK_SAMPLES,
+                "decoder chunk",
+            )
+            .is_err()
+        );
+        let hidden = [0.0_f32; HIDDEN - 1];
+        assert!(
+            dispatch_validated_values(
+                Some(&mut recorder),
+                VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                    branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                    call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                    text_window_index: None,
+                    text_token_index: None,
+                    text_window_tokens: 0,
+                    speech_step: Some(0),
+                    values: &hidden,
+                },
+                &hidden,
+                HIDDEN,
+                "hidden",
+            )
+            .is_err()
+        );
+        assert!(
+            dispatch_validated_scalar(
+                Some(&mut recorder),
+                VibeVoiceRealtimeDiagnosticEvent::Eos {
+                    branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                    call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                    text_window_index: None,
+                    text_token_index: None,
+                    text_window_tokens: 0,
+                    speech_step: Some(0),
+                    classifier_pass: 1,
+                    value: f32::NAN,
+                },
+                f32::NAN,
+                "EOS",
+            )
+            .is_err()
+        );
+        assert!(recorder.labels.is_empty());
+    }
+
+    #[test]
+    fn production_dispatch_records_global_speech_ordinals_across_windows() {
+        let mut core = core(
+            &(10_u32..20).collect::<Vec<_>>(),
+            40,
+            15,
+            TraceExecutor::with_observer(None),
+        );
+        for _ in 0..15 {
+            let result = core
+                .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .unwrap();
+            assert!(!matches!(
+                result,
+                VibeVoiceRealtimeSynthesisStep::Finished { .. }
+            ));
+        }
+        let recorder = core.executor.observer.as_ref().unwrap();
+        let sampled: Vec<usize> = recorder
+            .records
+            .iter()
+            .filter(|record| record.label == "sampled_latent")
+            .map(|record| record.speech_step.expect("sampled speech ordinal"))
+            .collect();
+        assert_eq!(sampled, (0..15).collect::<Vec<_>>());
+        let mut windows = Vec::new();
+        for record in &recorder.records {
+            if record.label == "hidden"
+                && record.text_token_index == Some(0)
+                && !windows.contains(&record.text_window_index)
+            {
+                windows.push(record.text_window_index);
+            }
+        }
+        assert!(
+            windows.len() >= 2,
+            "fixture must cross a text-window boundary"
+        );
+        assert_eq!(windows[0], Some(0));
+        assert_eq!(windows[1], Some(1));
+        let mut eos_per_step = [0_usize; 15];
+        for record in &recorder.records {
+            if record.label == "eos" {
+                if let Some(step) = record.speech_step {
+                    eos_per_step[step] += 1;
+                }
+            }
+        }
+        assert!(eos_per_step.iter().all(|count| *count == 3));
+        let speech_eos_passes: Vec<usize> = recorder
+            .records
+            .iter()
+            .filter(|record| record.label == "eos" && record.speech_step.is_some())
+            .map(|record| record.classifier_pass.expect("speech EOS pass"))
+            .collect();
+        assert!(
+            speech_eos_passes
+                .chunks_exact(3)
+                .all(|passes| passes == [0, 0, 1])
+        );
+    }
+
+    #[test]
     fn explicit_stop_and_control_budget_override_incomplete_eos_drain() {
         let mut executor = TraceExecutor::default();
         executor.eos.push_back(100.0);
@@ -1025,6 +2089,128 @@ mod tests {
             core.step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn observer_failure_poisons_core_resets_and_stops_later_events() {
+        let executor = TraceExecutor::with_observer(Some(1));
+        let mut core = core(&[10], 20, 20, executor);
+        assert!(
+            core.step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .is_err()
+        );
+        assert!(core.failed);
+        assert_eq!(core.executor.events, vec!["text:10", "sample", "reset"]);
+        let labels = &core.executor.observer.as_ref().unwrap().labels;
+        assert_eq!(labels, &["hidden", "sampled_latent"]);
+        assert!(
+            core.step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .is_err()
+        );
+        assert_eq!(core.executor.events, vec!["text:10", "sample", "reset"]);
+        assert_eq!(core.executor.observer.as_ref().unwrap().labels.len(), 2);
+    }
+
+    #[test]
+    fn positive_observer_failure_prevents_negative_branch_advance() {
+        let executor = TraceExecutor::with_observer(Some(4));
+        let mut core = core(&[10], 20, 20, executor);
+        assert!(
+            core.step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .is_err()
+        );
+        assert!(core.failed);
+        assert_eq!(
+            core.executor.events,
+            vec![
+                "text:10",
+                "sample",
+                "decode",
+                "connector",
+                "positive_tts",
+                "reset"
+            ]
+        );
+        assert!(
+            !core
+                .executor
+                .events
+                .iter()
+                .any(|event| event == "negative_tts")
+        );
+    }
+
+    #[test]
+    fn malformed_outputs_fail_before_follow_on_observations() {
+        for (stage, forbidden) in [
+            ("sample", "sampled_latent"),
+            ("decode", "decoder_chunk"),
+            ("connector", "connector"),
+            ("speech", "eos"),
+        ] {
+            let mut executor = TraceExecutor::with_observer(None);
+            executor.malformed_at = Some(stage);
+            let mut core = core(&[10], 20, 20, executor);
+            assert!(
+                core.step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                    .is_err(),
+                "malformed {stage} must fail"
+            );
+            assert!(core.failed);
+            let labels = &core.executor.observer.as_ref().unwrap().labels;
+            assert!(
+                !labels.contains(&forbidden),
+                "malformed {stage} emitted follow-on {forbidden} observation"
+            );
+            assert_eq!(core.executor.events.last(), Some(&"reset".to_owned()));
+        }
+    }
+
+    #[test]
+    fn observer_is_owned_by_one_core_and_does_not_linger_on_reuse() {
+        let mut borrowed_observer = DiagnosticRecorder::default();
+        {
+            let mut first = borrowed_core(&[10], 20, 20, &mut borrowed_observer);
+            let _ = first
+                .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .unwrap();
+        }
+        let first_sample_count = borrowed_observer
+            .labels
+            .iter()
+            .filter(|label| **label == "sampled_latent")
+            .count();
+        assert_eq!(first_sample_count, 1);
+        {
+            let mut second = borrowed_core(&[10], 20, 20, &mut borrowed_observer);
+            let _ = second
+                .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], false)
+                .unwrap();
+        }
+        assert_eq!(
+            borrowed_observer
+                .labels
+                .iter()
+                .filter(|label| **label == "sampled_latent")
+                .count(),
+            2
+        );
+
+        let observed = TraceExecutor::with_observer(None);
+        let mut first = core(&[10], 20, 20, observed);
+        let _ = first
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], true)
+            .unwrap();
+        assert!(first.executor.observer.is_some());
+        drop(first);
+
+        let plain = TraceExecutor::default();
+        assert!(plain.observer.is_none());
+        let mut second = core(&[10], 20, 20, plain);
+        let _ = second
+            .step(&[0.0; VIBEVOICE_REALTIME_LATENT_WIDTH], true)
+            .unwrap();
+        assert!(second.executor.observer.is_none());
     }
 
     #[test]

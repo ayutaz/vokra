@@ -14,6 +14,10 @@ use std::process::{Command, Stdio};
 
 use vokra_core::backend::BackendKind;
 use vokra_core::json::{JsonValue, parse as parse_json};
+use vokra_models::vibevoice_streaming::runtime::{
+    VibeVoiceRealtimeDiagnosticBranch, VibeVoiceRealtimeDiagnosticCall,
+    VibeVoiceRealtimeDiagnosticEvent, VibeVoiceRealtimeDiagnosticObserver,
+};
 use vokra_models::vibevoice_streaming::tokenizer::VibeVoiceRealtimeTokenizer;
 use vokra_models::vibevoice_streaming::{
     VibeVoiceRealtimeGenerationStopReason, VibeVoiceRealtimePresetBranch,
@@ -273,7 +277,7 @@ struct TensorRecord {
     sha256: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TraceEvent {
     stage: String,
     ordinal: usize,
@@ -281,6 +285,176 @@ struct TraceEvent {
     tensor_values: Option<Vec<f32>>,
     cache_layers: Option<usize>,
     cache_lengths: Option<Vec<usize>>,
+}
+
+#[derive(Debug, Clone)]
+enum NativeDiagnosticEvent {
+    Hidden {
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        values: Vec<f32>,
+    },
+    CachePosition {
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        position: usize,
+        layers: usize,
+    },
+    DiffusionPrediction {
+        speech_step: usize,
+        diffusion_step: usize,
+        timestep: usize,
+        conditional: Vec<f32>,
+        unconditional: Vec<f32>,
+    },
+    SampledLatent {
+        speech_step: usize,
+        values: Vec<f32>,
+    },
+    DecoderInput {
+        speech_step: usize,
+        scaled: Vec<f32>,
+        unscaled: Vec<f32>,
+    },
+    DecoderChunk {
+        speech_step: usize,
+        pcm: Vec<f32>,
+    },
+    Connector {
+        speech_step: usize,
+        input: Vec<f32>,
+        output: Vec<f32>,
+    },
+    Eos {
+        branch: VibeVoiceRealtimeDiagnosticBranch,
+        call: VibeVoiceRealtimeDiagnosticCall,
+        text_window_index: Option<usize>,
+        text_token_index: Option<usize>,
+        text_window_tokens: usize,
+        speech_step: Option<usize>,
+        classifier_pass: usize,
+        value: f32,
+    },
+}
+
+#[derive(Default)]
+struct NativeDiagnosticTrace {
+    events: Vec<NativeDiagnosticEvent>,
+}
+
+impl VibeVoiceRealtimeDiagnosticObserver for NativeDiagnosticTrace {
+    fn observe(&mut self, event: VibeVoiceRealtimeDiagnosticEvent<'_>) -> vokra_core::Result<()> {
+        self.events.push(match event {
+            VibeVoiceRealtimeDiagnosticEvent::Hidden {
+                branch,
+                call,
+                text_window_index,
+                text_token_index,
+                text_window_tokens,
+                speech_step,
+                values,
+            } => NativeDiagnosticEvent::Hidden {
+                branch,
+                call,
+                text_window_index,
+                text_token_index,
+                text_window_tokens,
+                speech_step,
+                values: values.to_vec(),
+            },
+            VibeVoiceRealtimeDiagnosticEvent::CachePosition {
+                branch,
+                call,
+                text_window_index,
+                text_token_index,
+                text_window_tokens,
+                speech_step,
+                position,
+                layers,
+            } => NativeDiagnosticEvent::CachePosition {
+                branch,
+                call,
+                text_window_index,
+                text_token_index,
+                text_window_tokens,
+                speech_step,
+                position,
+                layers,
+            },
+            VibeVoiceRealtimeDiagnosticEvent::DiffusionPrediction {
+                speech_step,
+                diffusion_step,
+                timestep,
+                conditional,
+                unconditional,
+            } => NativeDiagnosticEvent::DiffusionPrediction {
+                speech_step,
+                diffusion_step,
+                timestep,
+                conditional: conditional.to_vec(),
+                unconditional: unconditional.to_vec(),
+            },
+            VibeVoiceRealtimeDiagnosticEvent::SampledLatent {
+                speech_step,
+                values,
+            } => NativeDiagnosticEvent::SampledLatent {
+                speech_step,
+                values: values.to_vec(),
+            },
+            VibeVoiceRealtimeDiagnosticEvent::DecoderInput {
+                speech_step,
+                scaled,
+                unscaled,
+            } => NativeDiagnosticEvent::DecoderInput {
+                speech_step,
+                scaled: scaled.to_vec(),
+                unscaled: unscaled.to_vec(),
+            },
+            VibeVoiceRealtimeDiagnosticEvent::DecoderChunk { speech_step, pcm } => {
+                NativeDiagnosticEvent::DecoderChunk {
+                    speech_step,
+                    pcm: pcm.to_vec(),
+                }
+            }
+            VibeVoiceRealtimeDiagnosticEvent::Connector {
+                speech_step,
+                input,
+                output,
+            } => NativeDiagnosticEvent::Connector {
+                speech_step,
+                input: input.to_vec(),
+                output: output.to_vec(),
+            },
+            VibeVoiceRealtimeDiagnosticEvent::Eos {
+                branch,
+                call,
+                text_window_index,
+                text_token_index,
+                text_window_tokens,
+                speech_step,
+                classifier_pass,
+                value,
+            } => NativeDiagnosticEvent::Eos {
+                branch,
+                call,
+                text_window_index,
+                text_token_index,
+                text_window_tokens,
+                speech_step,
+                classifier_pass,
+                value,
+            },
+        });
+        Ok(())
+    }
 }
 
 fn tensor_record(value: &JsonValue, label: &str) -> TensorRecord {
@@ -624,7 +798,17 @@ fn assert_required_stage_contract(
     ] {
         assert_eq!(count_stage(events, stage), 1, "prefill stage {stage}");
     }
-    let tts_update_count = count_stage(events, "tts.eos");
+    let observed_text_windows = count_stage(events, "lm.positive.hidden");
+    assert!(
+        observed_text_windows > 0 && observed_text_windows <= requested_text_windows,
+        "unsupported official packet: observed text windows must be a non-empty prefix of the authenticated input plan"
+    );
+    let positive_tts_count = count_stage(events, "tts.positive.hidden");
+    assert!(
+        positive_tts_count >= observed_text_windows,
+        "unsupported official packet: positive TTS hidden rows must include each text window"
+    );
+    let tts_update_count = positive_tts_count - observed_text_windows;
     assert!(
         tts_update_count == speech_count || tts_update_count + 1 == speech_count,
         "unsupported official packet: TTS update count must equal sampled speech count or be one terminal max-length chunk short"
@@ -636,10 +820,10 @@ fn assert_required_stage_contract(
             "unsupported official packet: terminal max-length chunk requires a positive max_new_tokens"
         );
     }
-    let observed_text_windows = count_stage(events, "lm.positive.hidden");
-    assert!(
-        observed_text_windows > 0 && observed_text_windows <= requested_text_windows,
-        "unsupported official packet: observed text windows must be a non-empty prefix of the authenticated input plan"
+    assert_eq!(
+        count_stage(events, "tts.eos"),
+        observed_text_windows + 3 * tts_update_count,
+        "official EOS classifier calls must include text windows and positive/negative/stop speech calls"
     );
     for (stage, expected) in [
         ("lm.positive.hidden", observed_text_windows),
@@ -659,7 +843,7 @@ fn assert_required_stage_contract(
         ("acoustic.decoder_chunk", speech_count),
         ("acoustic.connector.input", speech_count),
         ("acoustic.connector", speech_count),
-        ("tts.eos", tts_update_count),
+        ("tts.eos", observed_text_windows + 3 * tts_update_count),
         ("diffusion.prediction", speech_count * INFERENCE_STEPS),
     ] {
         assert_eq!(count_stage(events, stage), expected, "stage count {stage}");
@@ -745,6 +929,758 @@ fn negative_tts_cache_positions(events: &[TraceEvent], initial: usize, count: us
             cache_position(cache, "tts.negative.cache", 20),
             initial + ordinal + 1
         );
+    }
+}
+
+#[derive(Debug)]
+enum NativeDiagnosticRecord {
+    Tensor {
+        stage: &'static str,
+        values: Vec<f32>,
+    },
+    Cache {
+        stage: &'static str,
+        position: usize,
+        layers: usize,
+    },
+}
+
+fn diagnostic_hidden(
+    events: &[NativeDiagnosticEvent],
+    index: &mut usize,
+    branch: VibeVoiceRealtimeDiagnosticBranch,
+    call: VibeVoiceRealtimeDiagnosticCall,
+    text_window_index: Option<usize>,
+    text_token_index: Option<usize>,
+    text_window_tokens: usize,
+    speech_step: Option<usize>,
+) -> Vec<f32> {
+    let event = events
+        .get(*index)
+        .unwrap_or_else(|| panic!("native diagnostic ended before hidden event"));
+    let values = match event {
+        NativeDiagnosticEvent::Hidden {
+            branch: actual_branch,
+            call: actual_call,
+            text_window_index: actual_window,
+            text_token_index: actual_token,
+            text_window_tokens: actual_tokens,
+            speech_step: actual_speech,
+            values,
+        } => {
+            assert_eq!(*actual_branch, branch, "native hidden branch ordering");
+            assert_eq!(*actual_call, call, "native hidden call ordering");
+            assert_eq!(
+                *actual_window, text_window_index,
+                "native hidden window metadata"
+            );
+            assert_eq!(
+                *actual_token, text_token_index,
+                "native hidden token metadata"
+            );
+            assert_eq!(
+                *actual_tokens, text_window_tokens,
+                "native hidden window size"
+            );
+            assert_eq!(*actual_speech, speech_step, "native hidden speech metadata");
+            assert!(values.iter().all(|value| value.is_finite()));
+            assert_eq!(values.len() % 896, 0, "native hidden width");
+            values.clone()
+        }
+        other => panic!("expected native hidden event, got {other:?}"),
+    };
+    *index += 1;
+    values
+}
+
+fn diagnostic_cache(
+    events: &[NativeDiagnosticEvent],
+    index: &mut usize,
+    branch: VibeVoiceRealtimeDiagnosticBranch,
+    call: VibeVoiceRealtimeDiagnosticCall,
+    text_window_index: Option<usize>,
+    text_token_index: Option<usize>,
+    text_window_tokens: usize,
+    speech_step: Option<usize>,
+) -> (usize, usize) {
+    let event = events
+        .get(*index)
+        .unwrap_or_else(|| panic!("native diagnostic ended before cache event"));
+    let result = match event {
+        NativeDiagnosticEvent::CachePosition {
+            branch: actual_branch,
+            call: actual_call,
+            text_window_index: actual_window,
+            text_token_index: actual_token,
+            text_window_tokens: actual_tokens,
+            speech_step: actual_speech,
+            position,
+            layers,
+        } => {
+            assert_eq!(*actual_branch, branch, "native cache branch ordering");
+            assert_eq!(*actual_call, call, "native cache call ordering");
+            assert_eq!(
+                *actual_window, text_window_index,
+                "native cache window metadata"
+            );
+            assert_eq!(
+                *actual_token, text_token_index,
+                "native cache token metadata"
+            );
+            assert_eq!(
+                *actual_tokens, text_window_tokens,
+                "native cache window size"
+            );
+            assert_eq!(*actual_speech, speech_step, "native cache speech metadata");
+            assert!(*layers > 0, "native cache must expose layers");
+            (*position, *layers)
+        }
+        other => panic!("expected native cache event, got {other:?}"),
+    };
+    *index += 1;
+    result
+}
+
+fn diagnostic_eos(
+    events: &[NativeDiagnosticEvent],
+    index: &mut usize,
+    branch: VibeVoiceRealtimeDiagnosticBranch,
+    call: VibeVoiceRealtimeDiagnosticCall,
+    text_window_index: Option<usize>,
+    text_token_index: Option<usize>,
+    text_window_tokens: usize,
+    speech_step: Option<usize>,
+    classifier_pass: usize,
+) -> f32 {
+    let event = events
+        .get(*index)
+        .unwrap_or_else(|| panic!("native diagnostic ended before EOS event"));
+    let value = match event {
+        NativeDiagnosticEvent::Eos {
+            branch: actual_branch,
+            call: actual_call,
+            text_window_index: actual_window,
+            text_token_index: actual_token,
+            text_window_tokens: actual_tokens,
+            speech_step: actual_speech,
+            classifier_pass: actual_pass,
+            value,
+        } => {
+            assert_eq!(*actual_branch, branch, "native EOS branch ordering");
+            assert_eq!(*actual_call, call, "native EOS call ordering");
+            assert_eq!(
+                *actual_window, text_window_index,
+                "native EOS window metadata"
+            );
+            assert_eq!(*actual_token, text_token_index, "native EOS token metadata");
+            assert_eq!(*actual_tokens, text_window_tokens, "native EOS window size");
+            assert_eq!(*actual_speech, speech_step, "native EOS speech metadata");
+            assert_eq!(*actual_pass, classifier_pass, "native EOS classifier pass");
+            assert!(value.is_finite(), "native EOS must be finite");
+            *value
+        }
+        other => panic!("expected native EOS event, got {other:?}"),
+    };
+    *index += 1;
+    value
+}
+
+fn native_diagnostic_records(events: &[NativeDiagnosticEvent]) -> Vec<NativeDiagnosticRecord> {
+    let mut index = 0;
+    let mut records = Vec::new();
+    for (branch, hidden_stage, cache_stage) in [
+        (
+            VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+            "lm.positive.prefill.hidden",
+            "lm.positive.prefill.cache",
+        ),
+        (
+            VibeVoiceRealtimeDiagnosticBranch::NegativeLm,
+            "lm.negative.prefill.hidden",
+            "lm.negative.prefill.cache",
+        ),
+        (
+            VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+            "tts.positive.prefill.hidden",
+            "tts.positive.prefill.cache",
+        ),
+        (
+            VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+            "tts.negative.prefill.hidden",
+            "tts.negative.prefill.cache",
+        ),
+    ] {
+        records.push(NativeDiagnosticRecord::Tensor {
+            stage: hidden_stage,
+            values: diagnostic_hidden(
+                events,
+                &mut index,
+                branch,
+                VibeVoiceRealtimeDiagnosticCall::Prefill,
+                None,
+                None,
+                0,
+                None,
+            ),
+        });
+        let (position, layers) = diagnostic_cache(
+            events,
+            &mut index,
+            branch,
+            VibeVoiceRealtimeDiagnosticCall::Prefill,
+            None,
+            None,
+            0,
+            None,
+        );
+        records.push(NativeDiagnosticRecord::Cache {
+            stage: cache_stage,
+            position,
+            layers,
+        });
+    }
+
+    let mut expected_window = 0;
+    let mut speech_step = 0;
+    loop {
+        if matches!(
+            events.get(index),
+            Some(NativeDiagnosticEvent::Hidden {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                ..
+            })
+        ) {
+            let (window, window_tokens) = match &events[index] {
+                NativeDiagnosticEvent::Hidden {
+                    text_window_index: Some(window),
+                    text_token_index: Some(0),
+                    text_window_tokens,
+                    ..
+                } => (*window, *text_window_tokens),
+                event => panic!("invalid first text-window event {event:?}"),
+            };
+            assert_eq!(window, expected_window, "native text window ordering");
+            assert!(window_tokens > 0, "native text window must not be empty");
+            let mut lm_values = Vec::new();
+            let mut tts_values = Vec::new();
+            let mut lm_position = None;
+            let mut tts_position = None;
+            let mut lm_layers = None;
+            let mut tts_layers = None;
+            let mut text_eos_values = Vec::new();
+            for token in 0..window_tokens {
+                lm_values.extend(diagnostic_hidden(
+                    events,
+                    &mut index,
+                    VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                    VibeVoiceRealtimeDiagnosticCall::Text,
+                    Some(window),
+                    Some(token),
+                    window_tokens,
+                    None,
+                ));
+                let (position, layers) = diagnostic_cache(
+                    events,
+                    &mut index,
+                    VibeVoiceRealtimeDiagnosticBranch::PositiveLm,
+                    VibeVoiceRealtimeDiagnosticCall::Text,
+                    Some(window),
+                    Some(token),
+                    window_tokens,
+                    None,
+                );
+                if let Some(previous) = lm_position {
+                    assert_eq!(position, previous + 1, "native text cache progression");
+                }
+                lm_position = Some(position);
+                lm_layers = Some(layers);
+                text_eos_values.push(diagnostic_eos(
+                    events,
+                    &mut index,
+                    VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                    VibeVoiceRealtimeDiagnosticCall::Text,
+                    Some(window),
+                    Some(token),
+                    window_tokens,
+                    None,
+                    0,
+                ));
+                tts_values.extend(diagnostic_hidden(
+                    events,
+                    &mut index,
+                    VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                    VibeVoiceRealtimeDiagnosticCall::Text,
+                    Some(window),
+                    Some(token),
+                    window_tokens,
+                    None,
+                ));
+                let (position, layers) = diagnostic_cache(
+                    events,
+                    &mut index,
+                    VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                    VibeVoiceRealtimeDiagnosticCall::Text,
+                    Some(window),
+                    Some(token),
+                    window_tokens,
+                    None,
+                );
+                if let Some(previous) = tts_position {
+                    assert_eq!(position, previous + 1, "native TTS text cache progression");
+                }
+                tts_position = Some(position);
+                tts_layers = Some(layers);
+            }
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "lm.positive.hidden",
+                values: lm_values,
+            });
+            records.push(NativeDiagnosticRecord::Cache {
+                stage: "lm.positive.cache",
+                position: lm_position.unwrap(),
+                layers: lm_layers.unwrap(),
+            });
+            // Native token steps run the EOS head once per token; the official
+            // window call records only its final-row classifier output. Retain and
+            // validate every native call above, then map the final call explicitly
+            // to the authenticated official window record.
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.eos",
+                values: vec![*text_eos_values.last().unwrap()],
+            });
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.positive.hidden",
+                values: tts_values,
+            });
+            records.push(NativeDiagnosticRecord::Cache {
+                stage: "tts.positive.cache",
+                position: tts_position.unwrap(),
+                layers: tts_layers.unwrap(),
+            });
+            expected_window += 1;
+        }
+        if !matches!(
+            events.get(index),
+            Some(NativeDiagnosticEvent::DiffusionPrediction { .. })
+        ) {
+            break;
+        }
+        let mut previous_timestep = None;
+        for diffusion_step in 0..INFERENCE_STEPS {
+            let event = events
+                .get(index)
+                .unwrap_or_else(|| panic!("native diffusion trace ended early"));
+            let (actual_speech, actual_step, timestep, conditional, unconditional) = match event {
+                NativeDiagnosticEvent::DiffusionPrediction {
+                    speech_step,
+                    diffusion_step,
+                    timestep,
+                    conditional,
+                    unconditional,
+                } => (
+                    *speech_step,
+                    *diffusion_step,
+                    *timestep,
+                    conditional,
+                    unconditional,
+                ),
+                other => panic!("expected diffusion event, got {other:?}"),
+            };
+            assert_eq!(actual_speech, speech_step);
+            assert_eq!(actual_step, diffusion_step);
+            assert!(conditional.iter().all(|value| value.is_finite()));
+            assert!(unconditional.iter().all(|value| value.is_finite()));
+            assert_eq!(
+                conditional.len(),
+                LATENT_WIDTH,
+                "native conditional prediction width"
+            );
+            assert_eq!(
+                unconditional.len(),
+                LATENT_WIDTH,
+                "native unconditional prediction width"
+            );
+            if let Some(previous) = previous_timestep {
+                assert!(
+                    timestep < previous,
+                    "native diffusion timesteps must descend"
+                );
+            }
+            previous_timestep = Some(timestep);
+            let mut values = conditional.clone();
+            values.extend(unconditional);
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "diffusion.prediction",
+                values,
+            });
+            index += 1;
+        }
+        let event = events
+            .get(index)
+            .unwrap_or_else(|| panic!("native diffusion trace has no sampled latent"));
+        match event {
+            NativeDiagnosticEvent::SampledLatent {
+                speech_step: actual_speech,
+                values,
+            } => {
+                assert_eq!(*actual_speech, speech_step);
+                assert_eq!(values.len(), LATENT_WIDTH, "native sampled latent width");
+                records.push(NativeDiagnosticRecord::Tensor {
+                    stage: "speech.sampled_latent",
+                    values: values.clone(),
+                });
+            }
+            other => panic!("expected sampled latent event, got {other:?}"),
+        }
+        index += 1;
+        let event = events
+            .get(index)
+            .unwrap_or_else(|| panic!("native trace has no decoder input"));
+        match event {
+            NativeDiagnosticEvent::DecoderInput {
+                speech_step: actual_speech,
+                scaled,
+                unscaled,
+            } => {
+                assert_eq!(*actual_speech, speech_step);
+                assert_eq!(scaled.len(), LATENT_WIDTH, "native scaled latent width");
+                assert_eq!(unscaled.len(), LATENT_WIDTH, "native unscaled latent width");
+                records.push(NativeDiagnosticRecord::Tensor {
+                    stage: "acoustic.decode_input_unscaled",
+                    values: unscaled.clone(),
+                });
+            }
+            other => panic!("expected decoder input event, got {other:?}"),
+        }
+        index += 1;
+        let event = events
+            .get(index)
+            .unwrap_or_else(|| panic!("native trace has no decoder chunk"));
+        match event {
+            NativeDiagnosticEvent::DecoderChunk {
+                speech_step: actual_speech,
+                pcm,
+            } => {
+                assert_eq!(*actual_speech, speech_step);
+                assert_eq!(pcm.len(), AUDIO_CHUNK_SAMPLES, "native decoder chunk size");
+                records.push(NativeDiagnosticRecord::Tensor {
+                    stage: "acoustic.decoder_chunk",
+                    values: pcm.clone(),
+                });
+            }
+            other => panic!("expected decoder chunk event, got {other:?}"),
+        }
+        index += 1;
+        let event = events
+            .get(index)
+            .unwrap_or_else(|| panic!("native trace has no connector event"));
+        match event {
+            NativeDiagnosticEvent::Connector {
+                speech_step: actual_speech,
+                input,
+                output,
+            } => {
+                assert_eq!(*actual_speech, speech_step);
+                assert_eq!(input.len(), LATENT_WIDTH, "native connector input width");
+                assert_eq!(output.len(), 896, "native connector output width");
+                records.push(NativeDiagnosticRecord::Tensor {
+                    stage: "acoustic.connector.input",
+                    values: input.clone(),
+                });
+                records.push(NativeDiagnosticRecord::Tensor {
+                    stage: "acoustic.connector",
+                    values: output.clone(),
+                });
+            }
+            other => panic!("expected connector event, got {other:?}"),
+        }
+        index += 1;
+        if matches!(
+            events.get(index),
+            Some(NativeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                ..
+            })
+        ) {
+            let positive_eos = diagnostic_eos(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+                0,
+            );
+            let positive = diagnostic_hidden(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+            );
+            let (positive_position, positive_layers) = diagnostic_cache(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+            );
+            let negative_eos = diagnostic_eos(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+                0,
+            );
+            let negative = diagnostic_hidden(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+            );
+            let (negative_position, negative_layers) = diagnostic_cache(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+            );
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.eos",
+                values: vec![positive_eos],
+            });
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.positive.hidden",
+                values: positive,
+            });
+            records.push(NativeDiagnosticRecord::Cache {
+                stage: "tts.positive.cache",
+                position: positive_position,
+                layers: positive_layers,
+            });
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.eos",
+                values: vec![negative_eos],
+            });
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.negative.hidden",
+                values: negative,
+            });
+            records.push(NativeDiagnosticRecord::Cache {
+                stage: "tts.negative.cache",
+                position: negative_position,
+                layers: negative_layers,
+            });
+            let stop_eos = diagnostic_eos(
+                events,
+                &mut index,
+                VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                VibeVoiceRealtimeDiagnosticCall::Speech,
+                None,
+                None,
+                0,
+                Some(speech_step),
+                1,
+            );
+            records.push(NativeDiagnosticRecord::Tensor {
+                stage: "tts.eos",
+                values: vec![stop_eos],
+            });
+        }
+        speech_step += 1;
+    }
+    assert_eq!(
+        index,
+        events.len(),
+        "native diagnostic has unconsumed events"
+    );
+    records
+}
+
+fn diagnostic_metric_bin(expected: &[f32], native: &[f32]) -> (usize, f32, f64, usize, f32, f32) {
+    assert_eq!(expected.len(), native.len(), "diagnostic metric lengths");
+    let mut max_error = 0.0_f32;
+    let mut squared = 0.0_f64;
+    let mut max_index = 0;
+    let mut max_reference = 0.0;
+    let mut max_native = 0.0;
+    for (index, (&reference, &actual)) in expected.iter().zip(native).enumerate() {
+        let error = (reference - actual).abs();
+        squared += f64::from(error) * f64::from(error);
+        if error > max_error {
+            max_error = error;
+            max_index = index;
+            max_reference = reference;
+            max_native = actual;
+        }
+    }
+    (
+        expected.len(),
+        max_error,
+        squared,
+        max_index,
+        max_reference,
+        max_native,
+    )
+}
+
+fn compare_diagnostic_trace(reference: &[TraceEvent], native: &[NativeDiagnosticEvent]) {
+    let records = native_diagnostic_records(native);
+    assert_eq!(records.len(), reference.len(), "trace record count/order");
+    let mut max_abs = 0.0_f32;
+    let mut squared = 0.0_f64;
+    let mut count = 0usize;
+    let mut stage_metrics =
+        BTreeMap::<String, (usize, f32, f64, usize, f32, f32, Vec<usize>)>::new();
+    for (index, (expected, actual)) in reference.iter().zip(records.iter()).enumerate() {
+        match actual {
+            NativeDiagnosticRecord::Tensor { stage, values } => {
+                assert_eq!(expected.stage, *stage, "trace stage ordering at {index}");
+                let tensor = expected.tensor.as_ref().expect("expected tensor record");
+                let expected_values = expected.tensor_values.as_ref().unwrap();
+                let elements = tensor.shape.iter().product::<usize>();
+                assert_eq!(elements, expected_values.len(), "reference shape product");
+                assert_eq!(
+                    tensor.shape,
+                    native_stage_shape(stage, values.len()),
+                    "trace tensor rank/layout {stage}"
+                );
+                assert_eq!(
+                    expected_values.len(),
+                    values.len(),
+                    "trace tensor shape {stage}"
+                );
+                assert!(values.iter().all(|value| value.is_finite()));
+                let (
+                    stage_count,
+                    stage_max,
+                    stage_squared,
+                    stage_max_index,
+                    stage_reference,
+                    stage_native,
+                ) = diagnostic_metric_bin(expected_values, values);
+                max_abs = max_abs.max(stage_max);
+                squared += stage_squared;
+                count += stage_count;
+                stage_metrics.insert(
+                    format!("{stage}/{}", expected.ordinal),
+                    (
+                        stage_count,
+                        stage_max,
+                        stage_squared,
+                        stage_max_index,
+                        stage_reference,
+                        stage_native,
+                        tensor.shape.clone(),
+                    ),
+                );
+            }
+            NativeDiagnosticRecord::Cache {
+                stage,
+                position,
+                layers,
+            } => {
+                assert_eq!(expected.stage, *stage, "trace stage ordering at {index}");
+                assert!(expected.tensor.is_none(), "cache stage must not be tensor");
+                assert_eq!(
+                    expected.cache_layers,
+                    Some(*layers),
+                    "cache layer count {stage}"
+                );
+                let lengths = expected.cache_lengths.as_ref().expect("cache lengths");
+                assert_eq!(lengths.len(), *layers, "cache layer vector {stage}");
+                assert!(lengths.iter().all(|length| length == position));
+            }
+        }
+    }
+    assert!(count > 0, "diagnostic trace must contain measured values");
+    println!(
+        "VIBEVOICE_REALTIME_STAGE_VALUES_OPEN elements={} max_abs={max_abs:.9e} rmse={:.9e} status=MEASURED_NOT_GATED",
+        count,
+        (squared / count as f64).sqrt()
+    );
+    for (
+        stage,
+        (
+            stage_count,
+            stage_max,
+            stage_squared,
+            stage_max_index,
+            stage_reference,
+            stage_native,
+            stage_shape,
+        ),
+    ) in stage_metrics
+    {
+        println!(
+            "VIBEVOICE_REALTIME_STAGE_VALUE stage={stage} shape={stage_shape:?} elements={stage_count} max_abs={stage_max:.9e} max_index={stage_max_index} reference={stage_reference:.9e} native={stage_native:.9e} rmse={:.9e} status=MEASURED_NOT_GATED",
+            (stage_squared / stage_count as f64).sqrt()
+        );
+    }
+}
+
+fn native_stage_shape(stage: &str, elements: usize) -> Vec<usize> {
+    // The authenticated source/config contract is batch=1, decoder channels=1,
+    // VAE width=64, hidden width=896.  The native observer retains the
+    // sampler's rank-2 output and rank-3 decoder/connector arrays; it does not
+    // squeeze same-numel tensors.
+    match stage {
+        "lm.positive.prefill.hidden"
+        | "lm.negative.prefill.hidden"
+        | "tts.positive.prefill.hidden"
+        | "tts.negative.prefill.hidden"
+        | "lm.positive.hidden"
+        | "tts.positive.hidden"
+        | "tts.negative.hidden" => {
+            assert_eq!(elements % 896, 0, "native hidden width {stage}");
+            vec![1, elements / 896, 896]
+        }
+        "diffusion.prediction" => {
+            assert_eq!(elements, 2 * LATENT_WIDTH, "native diffusion shape");
+            vec![2, LATENT_WIDTH]
+        }
+        "speech.sampled_latent" => {
+            assert_eq!(elements, LATENT_WIDTH, "native latent shape {stage}");
+            vec![1, LATENT_WIDTH]
+        }
+        "acoustic.decode_input_unscaled" | "acoustic.connector.input" => {
+            assert_eq!(elements, LATENT_WIDTH, "native latent shape {stage}");
+            vec![1, 1, LATENT_WIDTH]
+        }
+        "acoustic.decoder_chunk" => {
+            assert_eq!(elements, AUDIO_CHUNK_SAMPLES, "native PCM shape");
+            vec![1, 1, AUDIO_CHUNK_SAMPLES]
+        }
+        "acoustic.connector" => {
+            assert_eq!(elements, 896, "native connector shape");
+            vec![1, 1, 896]
+        }
+        "tts.eos" => {
+            assert_eq!(elements, 1, "native EOS shape");
+            vec![1, 1]
+        }
+        other => panic!("unsupported native diagnostic tensor stage {other}"),
     }
 }
 
@@ -914,7 +1850,7 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
     );
     assert_eq!(
         official_pcm.shape[1] / AUDIO_CHUNK_SAMPLES,
-        speech_count - eos_drained_count(&events),
+        speech_count - eos_drained_count(&events, terminal_max_length_chunk),
         "official PCM/audio-stage count"
     );
 
@@ -926,8 +1862,9 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
         max_speech_steps,
         guidance_scale,
     };
+    let mut native_trace = NativeDiagnosticTrace::default();
     let mut session = runtime
-        .start_session(&preset, &tokenizer, &text, config)
+        .start_session_with_observer(&preset, &tokenizer, &text, config, &mut native_trace)
         .expect("start native session from authenticated same input");
     let mut native_pcm = Vec::new();
     let mut native_positions = Vec::new();
@@ -965,7 +1902,9 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
         VibeVoiceRealtimeSynthesisStep::Finished { reason } => reason,
         other => panic!("native consumed the reference tape but did not finish: {other:?}"),
     };
-    let reference_eos = eos_steps(&events);
+    drop(session);
+    compare_diagnostic_trace(&events, &native_trace.events);
+    let reference_eos = eos_steps(&events, terminal_max_length_chunk);
     if let Some(eos_step) = reference_eos.first().copied() {
         assert_eq!(
             native_reason,
@@ -993,7 +1932,7 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
         preset
             .output(VibeVoiceRealtimePresetBranch::NegTtsLm)
             .cache_position(),
-        count_stage(&events, "tts.eos"),
+        count_stage(&events, "tts.negative.hidden"),
     );
     let relative_positive_positions: Vec<usize> = positive_positions
         .iter()
@@ -1029,7 +1968,7 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
     );
     assert_eq!(
         native_draining,
-        eos_drained_count(&events),
+        eos_drained_count(&events, terminal_max_length_chunk),
         "native/reference EOS drain count"
     );
     assert_eq!(
@@ -1049,21 +1988,68 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
     );
 }
 
-fn eos_steps(events: &[TraceEvent]) -> Vec<usize> {
-    events
-        .iter()
-        .filter(|event| event.stage == "tts.eos")
-        .enumerate()
-        .filter_map(|(index, event)| {
-            let values = event.tensor_values.as_ref().expect("EOS tensor");
-            assert_eq!(values.len(), 1, "EOS tensor must be scalar");
-            (values[0] > 0.0).then_some(index)
-        })
-        .collect()
+fn eos_steps(events: &[TraceEvent], terminal_max_length_chunk: bool) -> Vec<usize> {
+    // A speech call has three ordered classifier observations: positive
+    // forward, negative forward, then the positive stop-classifier fan-out.
+    // Text-window EOS records are the only EOS calls outside that state
+    // machine and must immediately follow the LM cache record.
+    let mut speech_step = None;
+    let mut phase = 0_u8;
+    let mut result = Vec::new();
+    for (index, event) in events.iter().enumerate() {
+        match (phase, event.stage.as_str()) {
+            (0, "speech.sampled_latent") => {
+                speech_step = Some(speech_step.map_or(0, |step| step + 1));
+                phase = 1;
+            }
+            (1, "acoustic.connector") => phase = 2,
+            (1, "tts.eos") => panic!("speech EOS appeared before acoustic connector"),
+            (1, "speech.sampled_latent") => panic!("speech step restarted before EOS drain"),
+            (1, _) => {}
+            (2, "tts.eos") => phase = 3,
+            (3, "tts.positive.hidden") => phase = 4,
+            (4, "tts.positive.cache") => phase = 5,
+            (5, "tts.eos") => phase = 6,
+            (6, "tts.negative.hidden") => phase = 7,
+            (7, "tts.negative.cache") => phase = 8,
+            (8, "tts.eos") => {
+                let values = event.tensor_values.as_ref().expect("EOS tensor");
+                assert_eq!(values.len(), 1, "EOS tensor must be scalar");
+                if values[0] > 0.0 {
+                    result.push(speech_step.expect("speech EOS without speech step"));
+                }
+                phase = 0;
+            }
+            (0, "tts.eos") => {
+                assert_eq!(
+                    events
+                        .get(index.wrapping_sub(1))
+                        .map(|event| event.stage.as_str()),
+                    Some("lm.positive.cache"),
+                    "text EOS must follow its positive LM cache"
+                );
+                let values = event.tensor_values.as_ref().expect("EOS tensor");
+                assert_eq!(values.len(), 1, "EOS tensor must be scalar");
+            }
+            (0, _) => {}
+            _ => panic!(
+                "malformed ordered EOS tape at stage {} in phase {phase}",
+                event.stage
+            ),
+        }
+    }
+    assert!(
+        phase == 0 || (terminal_max_length_chunk && phase == 2),
+        "EOS tape ended before the stop classifier call"
+    );
+    result
 }
 
-fn eos_drained_count(events: &[TraceEvent]) -> usize {
-    let Some(first) = eos_steps(events).first().copied() else {
+fn eos_drained_count(events: &[TraceEvent], terminal_max_length_chunk: bool) -> usize {
+    let Some(first) = eos_steps(events, terminal_max_length_chunk)
+        .first()
+        .copied()
+    else {
         return 0;
     };
     count_stage(events, "speech.sampled_latent").saturating_sub(first + 1)
@@ -1083,6 +2069,530 @@ fn pcm_error(native: &[f32], official: &[f32]) -> (f32, f32) {
 
 fn hex_digest(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod diagnostic_parser_tests {
+    use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    fn prefill(events: &mut Vec<NativeDiagnosticEvent>) {
+        for (branch, layers) in [
+            (VibeVoiceRealtimeDiagnosticBranch::PositiveLm, 4),
+            (VibeVoiceRealtimeDiagnosticBranch::NegativeLm, 4),
+            (VibeVoiceRealtimeDiagnosticBranch::PositiveTts, 20),
+            (VibeVoiceRealtimeDiagnosticBranch::NegativeTts, 20),
+        ] {
+            events.push(NativeDiagnosticEvent::Hidden {
+                branch,
+                call: VibeVoiceRealtimeDiagnosticCall::Prefill,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: None,
+                values: vec![0.0; 896],
+            });
+            events.push(NativeDiagnosticEvent::CachePosition {
+                branch,
+                call: VibeVoiceRealtimeDiagnosticCall::Prefill,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: None,
+                position: 1,
+                layers,
+            });
+        }
+    }
+
+    fn text_window(events: &mut Vec<NativeDiagnosticEvent>, window: usize, tokens: usize) {
+        for token in 0..tokens {
+            for (branch, position) in [(VibeVoiceRealtimeDiagnosticBranch::PositiveLm, token + 1)] {
+                events.push(NativeDiagnosticEvent::Hidden {
+                    branch,
+                    call: VibeVoiceRealtimeDiagnosticCall::Text,
+                    text_window_index: Some(window),
+                    text_token_index: Some(token),
+                    text_window_tokens: tokens,
+                    speech_step: None,
+                    values: vec![token as f32; 896],
+                });
+                events.push(NativeDiagnosticEvent::CachePosition {
+                    branch,
+                    call: VibeVoiceRealtimeDiagnosticCall::Text,
+                    text_window_index: Some(window),
+                    text_token_index: Some(token),
+                    text_window_tokens: tokens,
+                    speech_step: None,
+                    position,
+                    layers: if branch == VibeVoiceRealtimeDiagnosticBranch::PositiveLm {
+                        4
+                    } else {
+                        20
+                    },
+                });
+            }
+            events.push(NativeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(window),
+                text_token_index: Some(token),
+                text_window_tokens: tokens,
+                speech_step: None,
+                classifier_pass: 0,
+                value: -1.0,
+            });
+            events.push(NativeDiagnosticEvent::Hidden {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(window),
+                text_token_index: Some(token),
+                text_window_tokens: tokens,
+                speech_step: None,
+                values: vec![token as f32; 896],
+            });
+            events.push(NativeDiagnosticEvent::CachePosition {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_window_index: Some(window),
+                text_token_index: Some(token),
+                text_window_tokens: tokens,
+                speech_step: None,
+                position: token + 1,
+                layers: 20,
+            });
+        }
+    }
+
+    fn speech(events: &mut Vec<NativeDiagnosticEvent>, speech_step: usize, update_tts: bool) {
+        for diffusion_step in 0..INFERENCE_STEPS {
+            events.push(NativeDiagnosticEvent::DiffusionPrediction {
+                speech_step,
+                diffusion_step,
+                timestep: 999 - diffusion_step * 50,
+                conditional: vec![0.0; LATENT_WIDTH],
+                unconditional: vec![0.0; LATENT_WIDTH],
+            });
+        }
+        events.push(NativeDiagnosticEvent::SampledLatent {
+            speech_step,
+            values: vec![0.0; LATENT_WIDTH],
+        });
+        events.push(NativeDiagnosticEvent::DecoderInput {
+            speech_step,
+            scaled: vec![0.0; LATENT_WIDTH],
+            unscaled: vec![0.0; LATENT_WIDTH],
+        });
+        events.push(NativeDiagnosticEvent::DecoderChunk {
+            speech_step,
+            pcm: vec![0.0; AUDIO_CHUNK_SAMPLES],
+        });
+        events.push(NativeDiagnosticEvent::Connector {
+            speech_step,
+            input: vec![0.0; LATENT_WIDTH],
+            output: vec![0.0; 896],
+        });
+        if update_tts {
+            events.push(NativeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 0,
+                value: -1.0,
+            });
+            for branch in [
+                VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+            ] {
+                events.push(NativeDiagnosticEvent::Hidden {
+                    branch,
+                    call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                    text_window_index: None,
+                    text_token_index: None,
+                    text_window_tokens: 0,
+                    speech_step: Some(speech_step),
+                    values: vec![0.0; 896],
+                });
+                events.push(NativeDiagnosticEvent::CachePosition {
+                    branch,
+                    call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                    text_window_index: None,
+                    text_token_index: None,
+                    text_window_tokens: 0,
+                    speech_step: Some(speech_step),
+                    position: speech_step + 1,
+                    layers: 20,
+                });
+                if branch == VibeVoiceRealtimeDiagnosticBranch::PositiveTts {
+                    events.push(NativeDiagnosticEvent::Eos {
+                        branch: VibeVoiceRealtimeDiagnosticBranch::NegativeTts,
+                        call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                        text_window_index: None,
+                        text_token_index: None,
+                        text_window_tokens: 0,
+                        speech_step: Some(speech_step),
+                        classifier_pass: 0,
+                        value: -1.0,
+                    });
+                }
+            }
+            events.push(NativeDiagnosticEvent::Eos {
+                branch: VibeVoiceRealtimeDiagnosticBranch::PositiveTts,
+                call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                text_window_index: None,
+                text_token_index: None,
+                text_window_tokens: 0,
+                speech_step: Some(speech_step),
+                classifier_pass: 1,
+                value: -1.0,
+            });
+        }
+    }
+
+    fn interleaved_fixture() -> Vec<NativeDiagnosticEvent> {
+        let mut events = Vec::new();
+        prefill(&mut events);
+        text_window(&mut events, 0, 6);
+        for step in 0..7 {
+            speech(&mut events, step, true);
+        }
+        text_window(&mut events, 1, 1);
+        for step in 7..15 {
+            speech(&mut events, step, step < 14);
+        }
+        events
+    }
+
+    fn expected_source_stage_names() -> Vec<&'static str> {
+        let mut expected = vec![
+            "lm.positive.prefill.hidden",
+            "lm.positive.prefill.cache",
+            "lm.negative.prefill.hidden",
+            "lm.negative.prefill.cache",
+            "tts.positive.prefill.hidden",
+            "tts.positive.prefill.cache",
+            "tts.negative.prefill.hidden",
+            "tts.negative.prefill.cache",
+        ];
+        for _ in [6, 1] {
+            expected.extend([
+                "lm.positive.hidden",
+                "lm.positive.cache",
+                "tts.eos",
+                "tts.positive.hidden",
+                "tts.positive.cache",
+            ]);
+        }
+        for step in 0..15 {
+            expected.extend(std::iter::repeat("diffusion.prediction").take(INFERENCE_STEPS));
+            expected.extend([
+                "speech.sampled_latent",
+                "acoustic.decode_input_unscaled",
+                "acoustic.decoder_chunk",
+                "acoustic.connector.input",
+                "acoustic.connector",
+            ]);
+            if step < 14 {
+                expected.extend([
+                    "tts.eos",
+                    "tts.positive.hidden",
+                    "tts.positive.cache",
+                    "tts.eos",
+                    "tts.negative.hidden",
+                    "tts.negative.cache",
+                    "tts.eos",
+                ]);
+            }
+        }
+        expected
+    }
+
+    fn independent_shape_reference() -> Vec<TraceEvent> {
+        let mut ordinals = BTreeMap::<String, usize>::new();
+        expected_source_stage_names()
+            .into_iter()
+            .map(|stage| {
+                let ordinal = ordinals.entry(stage.to_owned()).or_default();
+                let result = if stage.ends_with(".cache") {
+                    let layers = if stage.starts_with("lm.") { 4 } else { 20 };
+                    TraceEvent {
+                        stage: stage.to_owned(),
+                        ordinal: *ordinal,
+                        tensor: None,
+                        tensor_values: None,
+                        cache_layers: Some(layers),
+                        cache_lengths: Some(vec![1; layers]),
+                    }
+                } else {
+                    let elements = match stage {
+                        "diffusion.prediction" => 2 * LATENT_WIDTH,
+                        "speech.sampled_latent"
+                        | "acoustic.decode_input_unscaled"
+                        | "acoustic.connector.input" => LATENT_WIDTH,
+                        "acoustic.decoder_chunk" => AUDIO_CHUNK_SAMPLES,
+                        "acoustic.connector"
+                        | "lm.positive.prefill.hidden"
+                        | "lm.negative.prefill.hidden"
+                        | "tts.positive.prefill.hidden"
+                        | "tts.negative.prefill.hidden"
+                        | "lm.positive.hidden"
+                        | "tts.positive.hidden"
+                        | "tts.negative.hidden" => 896,
+                        "tts.eos" => 1,
+                        other => panic!("unmapped independent stage {other}"),
+                    };
+                    TraceEvent {
+                        stage: stage.to_owned(),
+                        ordinal: *ordinal,
+                        tensor: Some(TensorRecord {
+                            file: format!("{stage}-{ordinal}.npy"),
+                            shape: native_stage_shape(stage, elements),
+                            sha256: "0".repeat(64),
+                        }),
+                        tensor_values: Some(vec![0.0; elements]),
+                        cache_layers: None,
+                        cache_lengths: None,
+                    }
+                };
+                *ordinal += 1;
+                result
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parser_accepts_interleaved_windows_eos_drain_and_terminal_chunk() {
+        let native = interleaved_fixture();
+        let records = native_diagnostic_records(&native);
+        assert!(records.len() > 14 * INFERENCE_STEPS);
+        let actual: Vec<&str> = records
+            .iter()
+            .map(|record| match record {
+                NativeDiagnosticRecord::Tensor { stage, .. }
+                | NativeDiagnosticRecord::Cache { stage, .. } => *stage,
+            })
+            .collect();
+        let expected = expected_source_stage_names();
+        assert_eq!(actual, expected, "source-ordered official diagnostic tape");
+    }
+
+    #[test]
+    fn parser_rejects_missing_reordered_and_local_reset_events() {
+        let native = interleaved_fixture();
+        for mutate in [0usize, 1usize] {
+            let mut malformed = native.clone();
+            if mutate == 0 {
+                malformed.remove(16);
+            } else {
+                malformed.swap(8, 9);
+            }
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| native_diagnostic_records(&malformed))).is_err()
+            );
+        }
+        let mut local_reset = native;
+        for event in &mut local_reset {
+            if let NativeDiagnosticEvent::DiffusionPrediction { speech_step, .. } = event {
+                if *speech_step == 7 {
+                    *speech_step = 0;
+                    break;
+                }
+            }
+        }
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| native_diagnostic_records(&local_reset))).is_err()
+        );
+
+        let mut missing_stop = interleaved_fixture();
+        let stop_index = missing_stop
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    NativeDiagnosticEvent::Eos {
+                        call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                        classifier_pass: 1,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        missing_stop.remove(stop_index);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| native_diagnostic_records(
+                &missing_stop
+            )))
+            .is_err()
+        );
+
+        let mut reordered_stop = interleaved_fixture();
+        let stop_index = reordered_stop
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    NativeDiagnosticEvent::Eos {
+                        call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                        classifier_pass: 1,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        reordered_stop.swap(stop_index - 1, stop_index);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| native_diagnostic_records(
+                &reordered_stop
+            )))
+            .is_err()
+        );
+
+        let mut extra_stop = interleaved_fixture();
+        let stop_index = extra_stop
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    NativeDiagnosticEvent::Eos {
+                        call: VibeVoiceRealtimeDiagnosticCall::Speech,
+                        classifier_pass: 1,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let duplicate = extra_stop[stop_index].clone();
+        extra_stop.insert(stop_index, duplicate);
+        assert!(catch_unwind(AssertUnwindSafe(|| native_diagnostic_records(&extra_stop))).is_err());
+    }
+
+    #[test]
+    fn parser_rejects_token_aggregation_and_same_numel_shape_mismatch() {
+        let native = interleaved_fixture();
+        let mut token_mismatch = native.clone();
+        for event in &mut token_mismatch {
+            if let NativeDiagnosticEvent::Hidden {
+                call: VibeVoiceRealtimeDiagnosticCall::Text,
+                text_token_index: Some(token),
+                ..
+            } = event
+            {
+                if *token == 1 {
+                    *token = 0;
+                    break;
+                }
+            }
+        }
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| native_diagnostic_records(
+                &token_mismatch
+            )))
+            .is_err()
+        );
+
+        let mut reference = independent_shape_reference();
+        let first_tensor = reference
+            .iter_mut()
+            .find(|event| event.tensor.is_some())
+            .unwrap();
+        let elements = first_tensor.tensor_values.as_ref().unwrap().len();
+        first_tensor.tensor.as_mut().unwrap().shape = vec![elements];
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                compare_diagnostic_trace(&reference, &native)
+            }))
+            .is_err()
+        );
+    }
+
+    fn speech_eos_tape(positive: f32, negative: f32, stop: f32) -> Vec<TraceEvent> {
+        let tensor = |stage: &str, values: Vec<f32>| TraceEvent {
+            stage: stage.to_owned(),
+            ordinal: 0,
+            tensor: None,
+            tensor_values: Some(values),
+            cache_layers: None,
+            cache_lengths: None,
+        };
+        vec![
+            tensor("speech.sampled_latent", vec![0.0]),
+            tensor("acoustic.decoder_chunk", vec![0.0]),
+            tensor("acoustic.connector", vec![0.0]),
+            tensor("tts.eos", vec![positive]),
+            tensor("tts.positive.hidden", vec![0.0]),
+            tensor("tts.positive.cache", vec![]),
+            tensor("tts.eos", vec![negative]),
+            tensor("tts.negative.hidden", vec![0.0]),
+            tensor("tts.negative.cache", vec![]),
+            tensor("tts.eos", vec![stop]),
+        ]
+    }
+
+    #[test]
+    fn eos_stop_selection_uses_third_ordered_classifier_call() {
+        assert_eq!(eos_steps(&speech_eos_tape(-1.0, 7.0, 2.0), false), vec![0]);
+        assert!(eos_steps(&speech_eos_tape(2.0, -7.0, -2.0), false).is_empty());
+    }
+
+    #[test]
+    fn eos_order_rejects_missing_reordered_and_extra_calls() {
+        let tape = speech_eos_tape(-1.0, 7.0, 2.0);
+        let mut missing = tape.clone();
+        missing.pop();
+        assert!(catch_unwind(AssertUnwindSafe(|| eos_steps(&missing, false))).is_err());
+
+        let mut reordered = tape.clone();
+        reordered.swap(3, 4);
+        assert!(catch_unwind(AssertUnwindSafe(|| eos_steps(&reordered, false))).is_err());
+
+        let mut extra = tape.clone();
+        let duplicate = extra[9].clone();
+        extra.insert(9, duplicate);
+        assert!(catch_unwind(AssertUnwindSafe(|| eos_steps(&extra, false))).is_err());
+
+        let mut terminal = speech_eos_tape(-1.0, 7.0, 2.0);
+        terminal.truncate(3);
+        assert!(eos_steps(&terminal, true).is_empty());
+        assert!(catch_unwind(AssertUnwindSafe(|| eos_steps(&terminal, false))).is_err());
+    }
+
+    #[test]
+    fn diagnostic_metric_reports_nonzero_worst_bin_and_values() {
+        let metric = diagnostic_metric_bin(&[0.0, 4.0, 2.0], &[0.0, 1.0, 2.0]);
+        assert_eq!(metric.0, 3);
+        assert_eq!(metric.1, 3.0);
+        assert_eq!(metric.3, 1);
+        assert_eq!(metric.4, 4.0);
+        assert_eq!(metric.5, 1.0);
+    }
+
+    #[test]
+    fn source_shapes_retain_sampler_and_decoder_layouts() {
+        assert_eq!(
+            native_stage_shape("speech.sampled_latent", LATENT_WIDTH),
+            vec![1, LATENT_WIDTH]
+        );
+        assert_eq!(
+            native_stage_shape("acoustic.decode_input_unscaled", LATENT_WIDTH),
+            vec![1, 1, LATENT_WIDTH]
+        );
+        assert_eq!(
+            native_stage_shape("acoustic.connector.input", LATENT_WIDTH),
+            vec![1, 1, LATENT_WIDTH]
+        );
+        assert_eq!(
+            native_stage_shape("acoustic.connector", 896),
+            vec![1, 1, 896]
+        );
+        assert_eq!(
+            native_stage_shape("acoustic.decoder_chunk", AUDIO_CHUNK_SAMPLES),
+            vec![1, 1, AUDIO_CHUNK_SAMPLES]
+        );
+        assert_eq!(native_stage_shape("tts.eos", 1), vec![1, 1]);
+    }
 }
 
 #[cfg(test)]

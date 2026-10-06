@@ -46,6 +46,34 @@ VibeVoiceRealtimeTokenizer, and verifies the input text hash against the
 packet. The official source, checkpoint, Carter payload, and Vokra HEAD must
 match the fixed/external identities; publication remains NO_UPLOAD.
 
+## 2026-10-07 diagnostic observer status
+
+The native runtime now has an explicitly opt-in, borrowed, source-ordered
+diagnostic observer. The default synthesis/session path installs no observer
+and does not copy diagnostic tensors. The observer reuses the single
+production sampler and causal decoder computations, and records the actual
+LM/TTS hidden outputs, cache positions, diffusion conditional/unconditional
+predictions, sampled latent, decoder input/chunk, connector input/output, and
+EOS classifier calls. It is session-scoped; observer errors use the existing
+poison/reset path, and dropping a session releases the borrowed observer.
+
+The EOS trace preserves text-window calls followed by the positive TTS,
+negative TTS, and positive stop-classifier calls for each cached speech step.
+Therefore, with `S` sampled speech steps, `U` in `{0,1}` uncached terminal
+max-length chunks, and `W` observed text windows, the ordered EOS call count is
+`W + 3 * (S - U)`. The sampler output is `[1, 64]`; decoder/connector inputs
+are `[1, 1, 64]`, connector output is `[1, 1, 896]`, decoder chunks are
+`[1, 1, 3200]`, and EOS output is `[1, 1]`. These layouts are authenticated
+source/config contracts and are rejected when a same-numel rank/layout differs.
+
+The consumer now prints per-stage/ordinal worst-bin index, reference/native
+values, shape, and aggregate error as `MEASURED_NOT_GATED`; PCM remains
+`MEASURED_NOT_GATED`. The added source/model-free tests cover observer ordering,
+validation, reset/poison behavior, cache/EOS drain ordering, and borrowed
+observer reuse. They do not run real weights, CPU numerical parity, or Apple
+CPU/Metal validation. Those remain `NOT_RUN` pending the separately authorized
+VAST and Scaleway evidence.
+
 The current run_streaming_reference.py packet schema records the owner-scope
 digest but does not copy cfg_scale, max_new_tokens, or ddpm_steps into
 reference.json. The consumer therefore requires the same authenticated
@@ -62,11 +90,10 @@ is not required to equal `speech_count`: EOS may stop generation early, and
 consumer does not claim that this native control has been recorded by the
 official runner.
 
-The native VibeVoiceRealtimeRuntime::step API exposes PCM chunks, generated
-positions, draining events, and the terminal reason, but it does not expose
-intermediate hidden states, sampled latents, connector outputs, EOS logits, or
-cache snapshots. The consumer therefore performs the strongest honest
-comparison available without changing the runtime API:
+The native VibeVoiceRealtimeRuntime::step API still exposes PCM chunks,
+generated positions, draining events, and the terminal reason to ordinary
+callers. The separately opt-in observer exposes the intermediate values to the
+diagnostic consumer without changing default synthesis behavior:
 
 - stage names, ordinals, counts, inference-step count, and all cache-layer
   lengths are checked against the official trace. The observed LM text-window
@@ -74,8 +101,9 @@ comparison available without changing the runtime API:
   official run reaches EOS or max length; a non-prefix or empty observation is
   rejected as an unsupported packet. With `S` sampled speech steps, `U` in
   `{0,1}` uncached max-length terminal chunks, and `W` observed text windows,
-  the expected positive TTS counts are `W + S - U`, while negative TTS and EOS
-  counts are `S - U`;
+  the expected positive TTS counts are `W + S - U`, negative TTS counts are
+  `S - U`, and ordered EOS classifier calls are `W + 3 * (S - U)` (text,
+  positive speech, negative speech, then positive stop-classifier calls);
 - native `session.generated_positions()` values are checked against the
   official positive TTS cache positions after subtracting the authenticated
   preset's initial position, negative cache progression, noise-tape
@@ -84,7 +112,9 @@ comparison available without changing the runtime API:
   official implementation decodes/connects it without appending a TTS cache
   row.
 - native PCM length and finiteness are checked, and max-absolute/RMSE waveform
-  differences are printed as MEASURED_NOT_GATED.
+  differences are printed as MEASURED_NOT_GATED. Intermediate stage/ordinal
+  values and worst-bin locations are likewise diagnostic-only and remain
+  MEASURED_NOT_GATED.
 
 No full-waveform bound is registered here. The result must not be described as
 numerical PCM parity, production synthesis completion, voice-consent approval,

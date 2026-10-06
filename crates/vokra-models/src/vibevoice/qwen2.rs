@@ -484,6 +484,11 @@ impl Qwen2Runtime {
         self.weights.config
     }
 
+    /// Returns the current number of committed KV-cache positions.
+    pub(crate) const fn position(&self) -> usize {
+        self.position
+    }
+
     /// Clears the KV cache and starts a new sequence at position zero.
     pub fn reset(&mut self) {
         for layer in &mut self.cache {
@@ -1298,7 +1303,7 @@ impl Qwen2Runtime {
 
     /// Exposes only the cache position for model-free composite tests.
     pub(crate) fn test_position(&self) -> usize {
-        self.position
+        self.position()
     }
 }
 
