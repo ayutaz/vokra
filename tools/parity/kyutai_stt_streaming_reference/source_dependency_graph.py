@@ -77,9 +77,9 @@ UPSTREAM_ROLE_ROOTS = (
 
 STDLIB_TOP_LEVEL = frozenset(
     {
-        "__future__", "abc", "argparse", "array", "asyncio", "base64", "bisect",
+        "__future__", "abc", "argparse", "array", "ast", "asyncio", "base64", "bisect",
         "calendar", "collections", "contextlib", "copy", "dataclasses", "datetime",
-        "enum", "functools", "gc", "glob", "gzip", "hashlib", "heapq", "io", "itertools",
+        "enum", "functools", "gc", "glob", "gzip", "hashlib", "heapq", "inspect", "io", "itertools",
         "json", "logging", "math", "numbers", "operator", "os", "pathlib", "platform",
         "queue", "random", "re", "secrets", "shutil", "socket", "struct", "subprocess",
         "sys", "tempfile", "textwrap", "threading", "time", "traceback", "types", "typing",

@@ -24,15 +24,20 @@ def _make_packet(
     dynamic: bool = False,
     dynamic_body: bytes | None = None,
     diamond: bool = False,
+    source_body: bytes | None = None,
 ) -> Path:
     packet = root / "packet"
     packet.mkdir()
     source_files = {
         "tools/parity/kyutai_stt_streaming_reference/pcm_dump.py": (
-            b"import torch\nfrom moshi.models import LMGen\nfrom .missing import no\n"
-            if not dynamic
-            else dynamic_body
-            or b"import importlib\nimportlib.import_module('kyutai_stt_decoder_dump_reference')\n"
+            source_body
+            if source_body is not None
+            else (
+                b"import torch\nfrom moshi.models import LMGen\nfrom .missing import no\n"
+                if not dynamic
+                else dynamic_body
+                or b"import importlib\nimportlib.import_module('kyutai_stt_decoder_dump_reference')\n"
+            )
         ),
         "tools/parity/kyutai_stt_streaming_reference/contract.py": b"from moshi.models.lm import LMModel\n",
         "tools/parity/kyutai_stt_decoder_dump_reference.py": (
@@ -165,6 +170,63 @@ class SourceDependencyGraphTests(unittest.TestCase):
         self.assertEqual(report["status"], graph.GRAPH_STATUS)
         self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
         self.assertEqual(report["publication"], graph.PUBLICATION_STATUS)
+
+    def test_python312_stdlib_names_are_not_external_candidates(self) -> None:
+        body = (
+            b"import ast\n"
+            b"import inspect\n"
+            b"import bitsandbytes\n"
+            b"import einops\n"
+            b"import huggingface_hub\n"
+            b"import numpy\n"
+            b"import safetensors.torch\n"
+            b"import sentencepiece\n"
+            b"import torch\n"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            report = graph.build_graph(
+                _make_packet(
+                    Path(raw),
+                    source_body=body,
+                ),
+                ["pcm=tools/parity/kyutai_stt_streaming_reference/pcm_dump.py"],
+                synthetic=True,
+            )
+
+        candidates = {row["name"]: row for row in report["external_candidates"]}
+        self.assertEqual(
+            set(candidates),
+            {
+                "bitsandbytes",
+                "einops",
+                "huggingface_hub",
+                "numpy",
+                "safetensors",
+                "sentencepiece",
+                "torch",
+            },
+        )
+        self.assertTrue(
+            all(row["status"] == "CANDIDATE_UNKNOWN" for row in candidates.values())
+        )
+        edges = {
+            edge["name"]: edge
+            for edge in report["edges"]
+            if edge["name"] in {"ast", "inspect"}
+        }
+        self.assertEqual(edges["ast"]["resolution"], "stdlib")
+        self.assertEqual(edges["inspect"]["resolution"], "stdlib")
+        self.assertEqual(report["status"], graph.GRAPH_STATUS)
+        self.assertEqual(report["execution_status"], graph.EXECUTION_STATUS)
+        self.assertEqual(report["closure_status"], graph.REVIEW_STATUS)
+        self.assertEqual(report["license_status"], "UNKNOWN_DEPENDENCY_LICENSES")
+        self.assertEqual(report["native_status"], "UNKNOWN_NATIVE_PAYLOADS")
+        self.assertEqual(report["publication"], graph.PUBLICATION_STATUS)
+        self.assertEqual(
+            report["claim_boundary"],
+            "AST source graph only; no distribution/version/license/native/API/runtime/parity approval",
+        )
+        self.assertNotIn("APPROVED", json.dumps(report))
 
     def test_dynamic_import_variables_unknown_shapes_and_unmapped_literals_stay_unknown(self) -> None:
         body = (

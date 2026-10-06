@@ -182,6 +182,11 @@ arguments/keywords, and shadowed `importlib` bindings stay unresolved.  This
 does not infer a distribution/version, license, native payload, execution
 closure, canonical runtime import, or replacement oracle.
 
+The explicit Python 3.12 stdlib allowlist includes `ast` and `inspect`; other
+unmapped names such as `torch` and `numpy` remain `CANDIDATE_UNKNOWN`.  This is
+only source-graph classification and does not change the source-only,
+execution, legal, native-payload, or `NO_UPLOAD` boundaries.
+
 The report status is always `SOURCE_DEPENDENCY_GRAPH_ONLY`,
 `NOT_EXECUTION_CLOSURE`, and `NO_UPLOAD`.  It is not a replacement for a
 selected Linux/CPython 3.12 wheel audit, RECORD/license/native inspection,
