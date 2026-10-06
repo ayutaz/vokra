@@ -1,5 +1,37 @@
 # X-Codec2 official parity oracle
 
+## Current PR review boundary — 2026-10-06
+
+The latest local integration reviewed for PR #152 is
+`19e807c6f5d262e5cd8196d24c2bfbfbc3b07972`, including `main` at
+`d100d93778191ccab77bd1c37fe3552e3d889758`. The remote PR head at this
+readback is `05c5f996481102eb14002b815343a6adc4e9c7b2`; the local candidate
+has not yet been pushed. These are review baselines, not a test receipt for
+any subsequent documentation commit.
+
+The current scope is **source-only audit/tooling preparation**, with no Rust
+runtime change. The dependency audit, documents-only guard, locked-sdist
+inspector, derived-sdist builder, and dependency collector self-tests pass
+using Python 3.12 standard-library-only execution. No third-party package
+installation/import, checkpoint acquisition, model execution, or numerical
+parity was performed in this review. Fresh exact-head remote verification
+and CI are still required before merge readiness.
+
+The committed contract remains **`BLOCKED_PENDING_PRIMARY_BYTES / NO_UPLOAD`**.
+The 62 external distributions still require the applicable primary-license,
+native/build identity, compatibility, and owner/legal decisions. The separate
+fixed-source candidate remains **`WEIGHT_CORRESPONDENCE_UNPROVEN`**; source
+configuration inspection is not proof of correspondence to the public GGUF
+or approval of a new oracle. The commands below do not authorize dependency
+installation or model execution while those gates are blocked.
+
+The dated A7 archive receipt and earlier import replay below retain their
+original heads, lock digests, measurements, and limitations. They do not
+verify the current integrated candidate. Where an older section says primary
+license bytes were unaudited, the 2026-10-04 archive-only findings supersede
+that collection status only; installed/native closure and execution approval
+remain unresolved.
+
 > **Publication boundary (2026-10-04): `NO_UPLOAD`.** The primary-source
 > license/build decisions and production-gate packet required for a replacement
 > artifact are still pending in open draft PR #152. The archive-only audit
@@ -47,7 +79,7 @@ historical runs retain their own exact heads. The execution gate manifest
 still deliberately refuses the unapproved closure. This documentation update
 does not relabel the A7 test receipt as a test of a later documentation commit.
 
-## 2026-10-04 existing-PR refresh boundary
+## Historical 2026-10-04 existing-PR refresh boundary
 
 PR #152 is being refreshed in its existing branch, rather than replaced by
 another PR. Its previous head was
@@ -266,13 +298,14 @@ the collector, locked-sdist inspector, derived-sdist builder, and
 The output is an audit packet only. It must not be uploaded or used as a
 publication/sign-off record without separate owner/legal review.
 
-## VAST model-free replay
+## Historical VAST model-free replay
 
 This is historical evidence from the VAST run at the earlier clean HEAD
-`e3e90572a5125e585b0a6f9f681f5606fc38a7a4`; it is not a verification of the
-current integrated candidate `696238a45f493a7a9cf4c9449810f5bc83218294`. The
-current candidate has only passed the local static documents-only guard. A
-fresh VAST replay is still pending.
+`e3e90572a5125e585b0a6f9f681f5606fc38a7a4`; it was not a verification of the
+then-integrated candidate `696238a45f493a7a9cf4c9449810f5bc83218294`, nor of
+the later review baseline identified above. At that historical readback the
+then-current candidate had only passed the local static documents-only guard.
+Fresh exact-head verification remains separate from this receipt.
 
 On 2026-09-30, disposable VAST instance `53434693` verified the exact clean
 HEAD `e3e90572a5125e585b0a6f9f681f5606fc38a7a4`. The frozen lock had SHA-256
