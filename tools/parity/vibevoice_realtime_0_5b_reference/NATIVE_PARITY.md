@@ -162,3 +162,108 @@ CPU runtime on real weights and remains subject to the VAST lifecycle,
 license/owner gates, and final instance destruction. No model download,
 publication, waveform promotion, or consent claim follows from a green
 structural run.
+
+## 2026-10-07 GuardedRealtimeCLI route
+
+The dedicated `vibevoice-realtime` CLI route is source-, reference-, and
+owner-bound. Its preflight completes before `VibeVoiceRealtimeRuntime::from_gguf`
+is called, so the native binder does not get a chance to substitute an
+unbound artifact or a generic tokenizer path. The route rejects generic
+`--text` and `--tokenizer`; callers must use the dedicated text file and
+tokenizer directory.
+
+The preflight binds all of these inputs independently:
+
+- the mapped/derived GGUF bytes and their externally supplied
+  `--realtime-gguf-sha256`; this is deliberately separate from the raw
+  Microsoft checkpoint/source `.pt` identity;
+- `reference.json` and its CPU trace/noise records through
+  `--realtime-reference-dir` and `--realtime-reference-sha256`;
+- the owner scope and canonical owner payload, each with its own externally
+  supplied digest. The scope supplies the source owner/reference decisions,
+  execution limits, Vokra HEAD/tree binding, text digest, and the no-upload
+  disposition; this CLI does not invent or self-attest those facts;
+- the derived Carter preset cache (`--realtime-preset-safetensors`) and its
+  manifest plus external `--realtime-preset-manifest-sha256`. The source
+  `.pt` identity and this derived safetensors cache are distinct artifacts and
+  must not be conflated;
+- exactly the four fixed tokenizer files (`vocab.json`, `merges.txt`,
+  `tokenizer_config.json`, and `tokenizer.json`) under
+  `--realtime-tokenizer-dir`, with their source-authenticated sizes and
+  digests;
+- the bounded UTF-8 text file, whose measured digest is compared with the
+  owner scope; and
+- the externally supplied `--realtime-vokra-head` and
+  `--realtime-vokra-tree`, reference-runner, `uv.lock`, and trusted-runner
+  digests. These expected HEAD/tree values are bindings from the external
+  packet, not binary self-attestation.
+
+The complete authenticated noise tape is loaded from the reference directory
+before the native bind. An empty tape, a tape longer than the owner limit, or
+an owner `ddpm_steps` value different from the native inference-step contract
+fails preflight. The route then creates the output with an exclusive
+create-new operation, consumes finite PCM at 24,000 Hz, and explicitly drains
+the terminal `Finished` event. It does not overwrite an existing output, make
+a synthetic waveform, or fall back to another runtime when the sequence is
+invalid.
+
+The current generation session is CPU-only: its `require_cpu` check rejects a
+Metal selection with an explicit backend error. The surrounding acoustic and
+runtime checks also reject unavailable backends explicitly; no Metal-to-CPU
+fallback is permitted. This is a support/error contract, not a claim that
+Metal parity is complete.
+
+The following is the complete CLI invocation template from the dedicated
+`run.rs` usage. It is a VAST-only template: every value below is an external,
+reviewed placeholder, not an invented source owner, SHA-256, or provenance
+receipt. The actual command must remain behind the existing source, owner,
+license, and no-upload gates.
+
+```sh
+# VAST-only; do not run this template on the maintainer Mac.
+: "${VOKRA_VIBEVOICE_REALTIME_GGUF:?set externally reviewed mapped GGUF path}"
+: "${VOKRA_VIBEVOICE_REALTIME_GGUF_SHA256:?set externally reviewed GGUF SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_REFERENCE_DIR:?set externally reviewed reference packet}"
+: "${VOKRA_VIBEVOICE_REALTIME_REFERENCE_SHA256:?set externally reviewed reference SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE:?set externally reviewed owner scope JSON}"
+: "${VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE_SHA256:?set externally reviewed owner-scope SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_OWNER_CANONICAL:?set externally reviewed canonical owner JSON}"
+: "${VOKRA_VIBEVOICE_REALTIME_OWNER_CANONICAL_SHA256:?set externally reviewed canonical SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_PRESET_SAFETENSORS:?set externally reviewed derived preset cache}"
+: "${VOKRA_VIBEVOICE_REALTIME_PRESET_MANIFEST:?set externally reviewed preset manifest}"
+: "${VOKRA_VIBEVOICE_REALTIME_PRESET_MANIFEST_SHA256:?set externally reviewed manifest SHA-256}"
+: "${VOKRA_VIBEVOICE_TOKENIZER_DIR:?set externally reviewed four-file tokenizer directory}"
+: "${VOKRA_VIBEVOICE_REALTIME_INPUT_TEXT_FILE:?set externally reviewed text file}"
+: "${VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_HEAD:?set external packet HEAD binding}"
+: "${VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_TREE:?set external packet tree binding}"
+: "${VOKRA_VIBEVOICE_REALTIME_REFERENCE_SCRIPT_SHA256:?set external runner SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_UV_LOCK_SHA256:?set external uv.lock SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_TRUSTED_RUNNER_SHA256:?set external trusted-runner SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_OUTPUT:?set fresh output path}"
+
+vokra-cli run --model "$VOKRA_VIBEVOICE_REALTIME_GGUF" --backend cpu \
+  --realtime-text-file "$VOKRA_VIBEVOICE_REALTIME_INPUT_TEXT_FILE" \
+  --realtime-gguf-sha256 "$VOKRA_VIBEVOICE_REALTIME_GGUF_SHA256" \
+  --realtime-reference-dir "$VOKRA_VIBEVOICE_REALTIME_REFERENCE_DIR" \
+  --realtime-reference-sha256 "$VOKRA_VIBEVOICE_REALTIME_REFERENCE_SHA256" \
+  --realtime-owner-scope "$VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE" \
+  --realtime-owner-scope-sha256 "$VOKRA_VIBEVOICE_REALTIME_OWNER_SCOPE_SHA256" \
+  --realtime-owner-canonical "$VOKRA_VIBEVOICE_REALTIME_OWNER_CANONICAL" \
+  --realtime-owner-canonical-sha256 "$VOKRA_VIBEVOICE_REALTIME_OWNER_CANONICAL_SHA256" \
+  --realtime-preset-safetensors "$VOKRA_VIBEVOICE_REALTIME_PRESET_SAFETENSORS" \
+  --realtime-preset-manifest "$VOKRA_VIBEVOICE_REALTIME_PRESET_MANIFEST" \
+  --realtime-preset-manifest-sha256 "$VOKRA_VIBEVOICE_REALTIME_PRESET_MANIFEST_SHA256" \
+  --realtime-tokenizer-dir "$VOKRA_VIBEVOICE_TOKENIZER_DIR" \
+  --realtime-vokra-head "$VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_HEAD" \
+  --realtime-vokra-tree "$VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_TREE" \
+  --realtime-reference-script-sha256 "$VOKRA_VIBEVOICE_REALTIME_REFERENCE_SCRIPT_SHA256" \
+  --realtime-uv-lock-sha256 "$VOKRA_VIBEVOICE_REALTIME_UV_LOCK_SHA256" \
+  --realtime-trusted-runner-sha256 "$VOKRA_VIBEVOICE_REALTIME_TRUSTED_RUNNER_SHA256" \
+  --output "$VOKRA_VIBEVOICE_REALTIME_OUTPUT"
+```
+
+This documentation adds no numerical parity, completion, consent, owner
+approval, publication, or model-upload claim. The combined HEAD's new Rust
+tests and Clippy checks were not run in this documentation refresh; they
+remain pending a new combined-head remote proof. No local model download,
+native execution, or real-weight CLI invocation was performed.
