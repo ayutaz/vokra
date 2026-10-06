@@ -163,7 +163,34 @@ license/owner gates, and final instance destruction. No model download,
 publication, waveform promotion, or consent claim follows from a green
 structural run.
 
+The separate Apple Silicon diagnostic is also ignored by default and requires
+an authorized macOS/aarch64 worker with the `metal` feature and
+`VOKRA_VIBEVOICE_REALTIME_APPLE_AUTHORIZED=1`:
+
+    CARGO_BUILD_JOBS=1 cargo test -p vokra-models --features metal \
+      --test parity_vibevoice_realtime_streaming \
+      -- --ignored --nocapture \
+      vibevoice_realtime_native_cpu_metal_structural_diagnostic
+
+It reuses the same authenticated packet, owner scope, GGUF, preset, tokenizer,
+text, and noise tape for sequential CPU and Metal sessions. It requires backend
+identity, event order/layout, cache/EOS/drain, terminal reason, and PCM-length
+agreement, while printing CPU/Metal value differences only as
+`MEASURED_NOT_GATED` and `STRUCTURAL_ONLY`. It is source preparation, not
+evidence that the Apple run has occurred.
+
 ## 2026-10-07 GuardedRealtimeCLI route
+
+### 2026-10-07 source capability correction
+
+The production `VibeVoiceRealtimeRuntime` route is distinct from the legacy
+model-free `VibeVoiceRealtimeGenerationSession`. The production runtime,
+sampler, acoustic connector, and causal decoder select `BackendKind::Cpu` or
+`BackendKind::Metal` through the first-party `Compute` registry and reject
+uncovered backends before binding; they do not silently fall back to CPU. The
+legacy generation control plane remains CPU-only. This source capability does
+not constitute Apple hardware execution, CPU/Metal numerical parity, or a
+completion/publication decision; those remain separately authorized gates.
 
 The dedicated `vibevoice-realtime` CLI route is source-, reference-, and
 owner-bound. Its preflight completes before `VibeVoiceRealtimeRuntime::from_gguf`
@@ -207,11 +234,12 @@ the terminal `Finished` event. It does not overwrite an existing output, make
 a synthetic waveform, or fall back to another runtime when the sequence is
 invalid.
 
-The current generation session is CPU-only: its `require_cpu` check rejects a
-Metal selection with an explicit backend error. The surrounding acoustic and
-runtime checks also reject unavailable backends explicitly; no Metal-to-CPU
-fallback is permitted. This is a support/error contract, not a claim that
-Metal parity is complete.
+The current generation control-plane session is CPU-only: its `require_cpu`
+check rejects a Metal selection with an explicit backend error. The production
+Realtime composite route is separately source-capable on CPU and Metal as
+described above; unavailable backends still fail explicitly and never fall
+back to CPU. This is a support/error contract, not a claim that Metal parity
+is complete.
 
 The following is the complete CLI invocation template from the dedicated
 `run.rs` usage. It is a VAST-only template: every value below is an external,

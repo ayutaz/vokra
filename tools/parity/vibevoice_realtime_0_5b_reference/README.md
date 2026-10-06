@@ -447,7 +447,24 @@ staged model execution, EOS/diffusion/acoustic decoding, and output numerical
 parity are not implemented by this gate. The state module must not be read as
 evidence that synthesis or real-weight parity is complete.
 
-## Native prediction-head boundary
+## 2026-10-07 source capability supersession
+
+At the current source, the production Realtime composite, sampler, acoustic
+connector, and causal decoder select CPU or Metal through the first-party
+`Compute` registry and reject uncovered backends before binding. The legacy
+model-free generation control plane remains CPU-only. The learned head and
+decoder stages use the selected backend; the DPM scheduler remains explicit
+host control and is not described as a GPU kernel. This source capability is
+not Apple hardware execution or CPU/Metal numerical parity; those remain
+separate authorized gates.
+
+## Native prediction-head boundary (historical 6a baseline wording)
+
+The CPU-only wording preserved in this section is historical documentation
+from exact source HEAD `6a937b7782a5bd0b0d4aa3f28298c7942578a048`; it is stale
+relative to that same HEAD's production CPU/Metal dispatch and must not be read
+as a claim that the source lacked Metal support. The current source capability
+and host-controlled scheduler distinction are recorded above.
 
 The native `vibevoice_streaming::diffusion` module implements one
 source-derived prediction-head forward step on an explicitly selected
@@ -540,8 +557,9 @@ poisons the session so a partial cache cannot be reused.
 
 The composite is currently CPU-only because its sampler and causal acoustic
 decoder do not have a GPU implementation. Unsupported Metal/CUDA requests are
-rejected before weight binding; there is no silent CPU fallback. This section
-records source-ordered native composition and model-free sequencing tests only.
+rejected before weight binding; there is no silent CPU fallback. This historical
+6a baseline section records source-ordered native composition and model-free
+sequencing tests only; the current source capability is recorded above.
 Independent real-weight CPU parity, an independent waveform reference, a
 caller noise packet, Apple CPU/Metal parity, voice rights/consent and other
 owner/legal decisions remain open. The CLI and public model status must not be

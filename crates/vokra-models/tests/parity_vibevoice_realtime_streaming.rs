@@ -46,33 +46,48 @@ fn required_string(name: &str) -> String {
 }
 
 fn sha256_file(path: &Path) -> String {
-    let output = Command::new("sha256sum")
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("shasum");
+        command.args(["-a", "256"]);
+        command
+    } else {
+        Command::new("sha256sum")
+    };
+    let output = command
         .arg(path)
         .output()
-        .unwrap_or_else(|error| panic!("sha256sum {}: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("SHA-256 tool {}: {error}", path.display()));
     assert!(
         output.status.success(),
-        "sha256sum {} failed: {}",
+        "SHA-256 tool {} failed: {}",
         path.display(),
         String::from_utf8_lossy(&output.stderr)
     );
     let hash = String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("sha256sum output is not UTF-8: {error}"))
+        .unwrap_or_else(|error| panic!("SHA-256 output is not UTF-8: {error}"))
         .split_whitespace()
         .next()
-        .unwrap_or_else(|| panic!("sha256sum returned no digest for {}", path.display()))
+        .unwrap_or_else(|| panic!("SHA-256 tool returned no digest for {}", path.display()))
         .to_owned();
     assert!(
         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "sha256sum returned a malformed digest for {}",
+        "SHA-256 tool returned a malformed digest for {}",
         path.display()
     );
     hash
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut child = Command::new("sha256sum")
-        .arg("-")
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("shasum");
+        command.args(["-a", "256", "-"]);
+        command
+    } else {
+        let mut command = Command::new("sha256sum");
+        command.arg("-");
+        command
+    };
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -1468,7 +1483,11 @@ fn diagnostic_metric_bin(expected: &[f32], native: &[f32]) -> (usize, f32, f64, 
     )
 }
 
-fn compare_diagnostic_trace(reference: &[TraceEvent], native: &[NativeDiagnosticEvent]) {
+fn compare_diagnostic_trace(
+    reference: &[TraceEvent],
+    native: &[NativeDiagnosticEvent],
+    backend_label: &str,
+) {
     let records = native_diagnostic_records(native);
     assert_eq!(records.len(), reference.len(), "trace record count/order");
     let mut max_abs = 0.0_f32;
@@ -1557,9 +1576,83 @@ fn compare_diagnostic_trace(reference: &[TraceEvent], native: &[NativeDiagnostic
     ) in stage_metrics
     {
         println!(
-            "VIBEVOICE_REALTIME_STAGE_VALUE stage={stage} shape={stage_shape:?} elements={stage_count} max_abs={stage_max:.9e} max_index={stage_max_index} reference={stage_reference:.9e} native={stage_native:.9e} rmse={:.9e} status=MEASURED_NOT_GATED",
+            "VIBEVOICE_REALTIME_STAGE_VALUE backend={backend_label} stage={stage} shape={stage_shape:?} elements={stage_count} max_abs={stage_max:.9e} max_index={stage_max_index} reference={stage_reference:.9e} native={stage_native:.9e} rmse={:.9e} status=MEASURED_NOT_GATED",
             (stage_squared / stage_count as f64).sqrt()
         );
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NativeStructureEntry {
+    stage: String,
+    shape: Vec<usize>,
+    position: Option<usize>,
+    layers: Option<usize>,
+}
+
+fn native_structure(events: &[NativeDiagnosticEvent]) -> Vec<NativeStructureEntry> {
+    native_diagnostic_records(events)
+        .into_iter()
+        .map(|record| match record {
+            NativeDiagnosticRecord::Tensor { stage, values } => NativeStructureEntry {
+                stage: stage.to_owned(),
+                shape: native_stage_shape(stage, values.len()),
+                position: None,
+                layers: None,
+            },
+            NativeDiagnosticRecord::Cache {
+                stage,
+                position,
+                layers,
+            } => NativeStructureEntry {
+                stage: stage.to_owned(),
+                shape: Vec::new(),
+                position: Some(position),
+                layers: Some(layers),
+            },
+        })
+        .collect()
+}
+
+fn native_value_records(events: &[NativeDiagnosticEvent]) -> Vec<(String, Vec<f32>)> {
+    native_diagnostic_records(events)
+        .into_iter()
+        .filter_map(|record| match record {
+            NativeDiagnosticRecord::Tensor { stage, values } => Some((stage.to_owned(), values)),
+            NativeDiagnosticRecord::Cache { .. } => None,
+        })
+        .collect()
+}
+
+fn apple_diagnostic_environment_error(
+    os: &str,
+    arch: &str,
+    metal_feature: bool,
+    authorized: bool,
+) -> Option<&'static str> {
+    if os != "macos" {
+        return Some("Apple diagnostic requires macOS");
+    }
+    if arch != "aarch64" {
+        return Some("Apple diagnostic requires Apple Silicon");
+    }
+    if !metal_feature {
+        return Some("Apple diagnostic requires the vokra-models metal feature");
+    }
+    if !authorized {
+        return Some("Apple diagnostic requires explicit remote authorization");
+    }
+    None
+}
+
+fn require_apple_diagnostic_environment() {
+    if let Some(error) = apple_diagnostic_environment_error(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(feature = "metal"),
+        std::env::var("VOKRA_VIBEVOICE_REALTIME_APPLE_AUTHORIZED").as_deref() == Ok("1"),
+    ) {
+        panic!("{error}");
     }
 }
 
@@ -1607,13 +1700,74 @@ fn native_stage_shape(stage: &str, elements: usize) -> Vec<usize> {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct NativeReplayResult {
+    structure: Vec<NativeStructureEntry>,
+    values: Vec<(String, Vec<f32>)>,
+    pcm: Vec<f32>,
+    positions: Vec<usize>,
+    terminal: Vec<Option<VibeVoiceRealtimeGenerationStopReason>>,
+    draining: usize,
+    reason: VibeVoiceRealtimeGenerationStopReason,
+}
+
 #[test]
 #[ignore = "requires authenticated VAST Realtime GGUF, Carter cache, Qwen sidecars, input text, and official packet"]
 fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagnostic() {
     assert_eq!(std::env::var("VOKRA_PUBLISH_ON_VAST").as_deref(), Ok("1"));
     assert_eq!(std::env::consts::OS, "linux");
     assert_eq!(std::env::consts::ARCH, "x86_64");
+    let _ = run_authenticated_native_diagnostic(BackendKind::Cpu, "CPU");
+}
 
+#[test]
+#[ignore = "requires authenticated Apple Silicon remote run, Metal feature, owner authorization, and official packet"]
+fn vibevoice_realtime_native_cpu_metal_structural_diagnostic() {
+    require_apple_diagnostic_environment();
+
+    let cpu = run_authenticated_native_diagnostic(BackendKind::Cpu, "APPLE_CPU");
+    let metal = run_authenticated_native_diagnostic(BackendKind::Metal, "APPLE_METAL");
+    assert_eq!(cpu.structure, metal.structure, "CPU/Metal event structure");
+    assert_eq!(cpu.positions, metal.positions, "CPU/Metal cache positions");
+    assert_eq!(
+        cpu.terminal, metal.terminal,
+        "CPU/Metal EOS terminal events"
+    );
+    assert_eq!(cpu.draining, metal.draining, "CPU/Metal EOS drain count");
+    assert_eq!(cpu.reason, metal.reason, "CPU/Metal terminal reason");
+    assert_eq!(cpu.pcm.len(), metal.pcm.len(), "CPU/Metal PCM length");
+    assert!(metal.pcm.iter().all(|value| value.is_finite()));
+    assert_eq!(
+        cpu.values.len(),
+        metal.values.len(),
+        "CPU/Metal value stages"
+    );
+    for ((cpu_stage, cpu_values), (metal_stage, metal_values)) in
+        cpu.values.iter().zip(&metal.values)
+    {
+        assert_eq!(cpu_stage, metal_stage, "CPU/Metal stage order");
+        let (count, max_abs, squared, max_index, reference, native) =
+            diagnostic_metric_bin(cpu_values, metal_values);
+        println!(
+            "VIBEVOICE_REALTIME_APPLE_CPU_METAL_STAGE_VALUE stage={cpu_stage} elements={count} max_abs={max_abs:.9e} max_index={max_index} cpu={reference:.9e} metal={native:.9e} rmse={:.9e} status=MEASURED_NOT_GATED",
+            (squared / count as f64).sqrt()
+        );
+    }
+    let (max_abs, rmse) = pcm_error(&cpu.pcm, &metal.pcm);
+    println!(
+        "VIBEVOICE_REALTIME_APPLE_CPU_METAL_PCM_OPEN samples={} max_abs={max_abs:.9e} rmse={rmse:.9e} status=MEASURED_NOT_GATED",
+        cpu.pcm.len()
+    );
+    println!(
+        "VIBEVOICE_REALTIME_APPLE_CPU_METAL_STRUCTURE_PASS stages={} status=STRUCTURAL_ONLY",
+        cpu.structure.len()
+    );
+}
+
+fn run_authenticated_native_diagnostic(
+    backend: BackendKind,
+    backend_label: &str,
+) -> NativeReplayResult {
     let gguf_path = required_path("VOKRA_VIBEVOICE_REALTIME_GGUF");
     let gguf_sha = parse_hex32(
         &required_string("VOKRA_VIBEVOICE_REALTIME_GGUF_SHA256"),
@@ -1778,8 +1932,9 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
     );
 
     let gguf = vokra_core::gguf::GgufFile::open(&gguf_path).expect("open authenticated GGUF");
-    let mut runtime = VibeVoiceRealtimeRuntime::from_gguf(&gguf, BackendKind::Cpu)
+    let mut runtime = VibeVoiceRealtimeRuntime::from_gguf(&gguf, backend)
         .expect("bind authenticated Realtime native composition");
+    assert_eq!(runtime.backend(), backend, "native backend selection");
     let config = VibeVoiceRealtimeSynthesisConfig {
         max_new_tokens,
         max_speech_steps,
@@ -1826,7 +1981,7 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
         other => panic!("native consumed the reference tape but did not finish: {other:?}"),
     };
     drop(session);
-    compare_diagnostic_trace(&events, &native_trace.events);
+    compare_diagnostic_trace(&events, &native_trace.events, backend_label);
     let reference_eos = eos_steps(&events, terminal_max_length_chunk);
     if let Some(eos_step) = reference_eos.first().copied() {
         assert_eq!(
@@ -1901,14 +2056,23 @@ fn vibevoice_realtime_native_matches_official_streaming_structure_and_pcm_diagno
     );
     let (max_abs, rmse) = pcm_error(&native_pcm, &official_pcm.values);
     println!(
-        "VIBEVOICE_REALTIME_CPU_PCM_OPEN samples={} max_abs={max_abs:.9e} rmse={rmse:.9e} status=MEASURED_NOT_GATED",
+        "VIBEVOICE_REALTIME_{backend_label}_PCM_OPEN samples={} max_abs={max_abs:.9e} rmse={rmse:.9e} status=MEASURED_NOT_GATED",
         native_pcm.len()
     );
     println!(
-        "VIBEVOICE_REALTIME_CPU_STAGE_CACHE_EOS_PASS speech_steps={} eos_steps={} status=STRUCTURAL_PASS",
+        "VIBEVOICE_REALTIME_{backend_label}_STAGE_CACHE_EOS_PASS speech_steps={} eos_steps={} status=STRUCTURAL_PASS",
         speech_count,
         reference_eos.len()
     );
+    NativeReplayResult {
+        structure: native_structure(&native_trace.events),
+        values: native_value_records(&native_trace.events),
+        pcm: native_pcm,
+        positions: native_positions,
+        terminal: native_terminal,
+        draining: native_draining,
+        reason: native_reason,
+    }
 }
 
 fn eos_steps(events: &[TraceEvent], terminal_max_length_chunk: bool) -> Vec<usize> {
@@ -1992,6 +2156,51 @@ fn pcm_error(native: &[f32], official: &[f32]) -> (f32, f32) {
 
 fn hex_digest(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod apple_diagnostic_contract_tests {
+    use super::apple_diagnostic_environment_error;
+
+    #[test]
+    fn rejects_linux_before_artifact_access() {
+        assert_eq!(
+            apple_diagnostic_environment_error("linux", "x86_64", true, true),
+            Some("Apple diagnostic requires macOS")
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_architecture_before_artifact_access() {
+        assert_eq!(
+            apple_diagnostic_environment_error("macos", "x86_64", true, true),
+            Some("Apple diagnostic requires Apple Silicon")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_metal_feature_before_artifact_access() {
+        assert_eq!(
+            apple_diagnostic_environment_error("macos", "aarch64", false, true),
+            Some("Apple diagnostic requires the vokra-models metal feature")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_remote_authorization_before_artifact_access() {
+        assert_eq!(
+            apple_diagnostic_environment_error("macos", "aarch64", true, false),
+            Some("Apple diagnostic requires explicit remote authorization")
+        );
+    }
+
+    #[test]
+    fn accepts_only_authorized_apple_metal_environment() {
+        assert_eq!(
+            apple_diagnostic_environment_error("macos", "aarch64", true, true),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2467,7 +2676,7 @@ mod diagnostic_parser_tests {
         first_tensor.tensor.as_mut().unwrap().shape = vec![elements];
         assert!(
             catch_unwind(AssertUnwindSafe(|| {
-                compare_diagnostic_trace(&reference, &native)
+                compare_diagnostic_trace(&reference, &native, "TEST")
             }))
             .is_err()
         );
