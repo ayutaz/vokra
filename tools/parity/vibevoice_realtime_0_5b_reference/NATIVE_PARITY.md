@@ -1,5 +1,18 @@
 # Native Realtime parity consumer
 
+## 2026-10-06 runtime identity binding
+
+Before preset/native model execution, the consumer now binds
+`reference.json.runtime.vokra_head` and the canonical lowercase
+40-character `reference.json.runtime.vokra_tree_sha1` to the corresponding
+`runtime` identities in the authenticated owner scope. Both the packet and the
+owner scope HEAD must also equal the externally supplied
+`VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_HEAD`; a missing, malformed,
+uppercase, truncated, or single-field-mutated identity fails closed. These are
+source/packet identity checks only. They do not establish numerical parity,
+real-weight completion, or Apple CPU/Metal support; those gates remain
+`NOT_RUN` until the separately authorized VAST and Scaleway runs.
+
 crates/vokra-models/tests/parity_vibevoice_realtime_streaming.rs is the
 VAST-only consumer for a real packet emitted by
 run_streaming_reference.py. It is ignored by default and has no committed

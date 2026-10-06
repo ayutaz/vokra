@@ -380,6 +380,57 @@ fn parse_hex32(value: &str, label: &str) -> String {
     value.to_ascii_lowercase()
 }
 
+fn parse_git_hex40(value: &str, label: &str) -> String {
+    assert!(
+        value.len() == 40
+            && value
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "{label} must be a 40-character hexadecimal Git identity"
+    );
+    value.to_owned()
+}
+
+/// Bind the packet's runtime identity to the authenticated owner scope.
+///
+/// The reference producer records both values in `runtime`; checking only one
+/// field would leave packet/owner-scope identity disagreement undetected. This
+/// helper is deliberately model-free so it can be exercised without loading
+/// any native artifact.
+fn validate_runtime_identity(packet: &JsonValue, scope: &JsonValue, expected_head: &str) {
+    let expected_head = parse_git_hex40(expected_head, "expected Vokra HEAD");
+    let packet_runtime = field(packet, "runtime");
+    let scope_runtime = field(scope, "runtime");
+    let packet_head = parse_git_hex40(
+        &string_field(packet_runtime, "vokra_head"),
+        "reference packet runtime.vokra_head",
+    );
+    let packet_tree = parse_git_hex40(
+        &string_field(packet_runtime, "vokra_tree_sha1"),
+        "reference packet runtime.vokra_tree_sha1",
+    );
+    let scope_head = parse_git_hex40(
+        &string_field(scope_runtime, "vokra_head"),
+        "owner scope runtime.vokra_head",
+    );
+    let scope_tree = parse_git_hex40(
+        &string_field(scope_runtime, "vokra_tree_sha1"),
+        "owner scope runtime.vokra_tree_sha1",
+    );
+    assert_eq!(
+        packet_head, expected_head,
+        "reference packet runtime HEAD differs from externally expected HEAD"
+    );
+    assert_eq!(
+        scope_head, expected_head,
+        "owner scope runtime HEAD differs from externally expected HEAD"
+    );
+    assert_eq!(
+        packet_tree, scope_tree,
+        "reference packet and owner scope runtime tree identities differ"
+    );
+}
+
 fn validate_packet_identity<'a>(
     reference_dir: &Path,
     packet: &'a JsonValue,
@@ -466,6 +517,11 @@ fn execution_contract(
         string_field(packet, "owner_scope_file_sha256"),
         expected_file_sha,
         "reference packet owner scope file binding"
+    );
+    validate_runtime_identity(
+        packet,
+        &scope,
+        &required_string("VOKRA_VIBEVOICE_REALTIME_EXPECTED_VOKRA_HEAD"),
     );
     assert_eq!(
         string_field(&scope, "publication"),
@@ -1027,4 +1083,103 @@ fn pcm_error(native: &[f32], official: &[f32]) -> (f32, f32) {
 
 fn hex_digest(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod runtime_identity_tests {
+    use super::{JsonValue, parse_json, validate_runtime_identity};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+    const TREE: &str = "89abcdef0123456789abcdef0123456789abcdef";
+    const OTHER_TREE: &str = "abcdef0123456789abcdef0123456789abcdef01";
+
+    fn identities(
+        packet_head: &str,
+        packet_tree: &str,
+        scope_head: &str,
+        scope_tree: &str,
+    ) -> (JsonValue, JsonValue) {
+        let packet = parse_json(&format!(
+            r#"{{"runtime":{{"vokra_head":"{packet_head}","vokra_tree_sha1":"{packet_tree}"}}}}"#
+        ))
+        .expect("packet fixture JSON");
+        let scope = parse_json(&format!(
+            r#"{{"runtime":{{"vokra_head":"{scope_head}","vokra_tree_sha1":"{scope_tree}"}}}}"#
+        ))
+        .expect("scope fixture JSON");
+        (packet, scope)
+    }
+
+    fn rejects(packet: JsonValue, scope: JsonValue, expected_head: &str) {
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                validate_runtime_identity(&packet, &scope, expected_head)
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn matching_packet_and_owner_runtime_identity_passes() {
+        let (packet, scope) = identities(HEAD, TREE, HEAD, TREE);
+        validate_runtime_identity(&packet, &scope, HEAD);
+    }
+
+    #[test]
+    fn changed_packet_tree_fails_even_when_head_is_unchanged() {
+        let (packet, scope) = identities(HEAD, OTHER_TREE, HEAD, TREE);
+        rejects(packet, scope, HEAD);
+    }
+
+    #[test]
+    fn changed_owner_tree_fails() {
+        let (packet, scope) = identities(HEAD, TREE, HEAD, OTHER_TREE);
+        rejects(packet, scope, HEAD);
+    }
+
+    #[test]
+    fn missing_runtime_fields_fail_closed() {
+        let packet =
+            parse_json(r#"{"runtime":{"vokra_head":"0123456789abcdef0123456789abcdef01234567"}}"#)
+                .expect("packet fixture JSON");
+        let scope = parse_json(&format!(
+            r#"{{"runtime":{{"vokra_head":"{HEAD}","vokra_tree_sha1":"{TREE}"}}}}"#
+        ))
+        .expect("scope fixture JSON");
+        rejects(packet, scope, HEAD);
+
+        let packet = parse_json(&format!(
+            r#"{{"runtime":{{"vokra_head":"{HEAD}","vokra_tree_sha1":"{TREE}"}}}}"#
+        ))
+        .expect("packet fixture JSON");
+        let scope = parse_json(&format!(r#"{{"runtime":{{"vokra_head":"{HEAD}"}}}}"#))
+            .expect("scope fixture JSON");
+        rejects(packet, scope, HEAD);
+    }
+
+    #[test]
+    fn malformed_uppercase_and_truncated_identities_fail() {
+        let (uppercase, scope) = identities(&HEAD.to_ascii_uppercase(), TREE, HEAD, TREE);
+        rejects(uppercase, scope.clone(), HEAD);
+        let (uppercase_tree, scope) = identities(HEAD, &TREE.to_ascii_uppercase(), HEAD, TREE);
+        rejects(uppercase_tree, scope, HEAD);
+        let non_hex = "0123456789abcdef0123456789abcdef0123456g";
+        let (non_hex_tree, scope) = identities(HEAD, non_hex, HEAD, TREE);
+        rejects(non_hex_tree, scope, HEAD);
+        let truncated = &TREE[..39];
+        let (packet, scope) = identities(HEAD, truncated, HEAD, TREE);
+        rejects(packet, scope, HEAD);
+    }
+
+    #[test]
+    fn head_mismatch_fails_for_packet_owner_or_external_expectation() {
+        let other_head = "fedcba9876543210fedcba9876543210fedcba98";
+        let (packet, scope) = identities(other_head, TREE, HEAD, TREE);
+        rejects(packet, scope, HEAD);
+        let (packet, scope) = identities(HEAD, TREE, other_head, TREE);
+        rejects(packet, scope, HEAD);
+        let (packet, scope) = identities(HEAD, TREE, HEAD, TREE);
+        rejects(packet, scope, other_head);
+    }
 }
