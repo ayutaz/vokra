@@ -505,11 +505,13 @@ UV_NO_SYNC=1 UV_OFFLINE=1 uv run --no-project --no-sync --offline --python 3.12 
 
 Real collection additionally requires explicit `--venv-root` and
 `--scripts-root` paths inside that same trusted environment; no implicit host
-path discovery is permitted. The current family lock statically contains 41
-registry rows and the reviewed CPU Torch row, but this collector intentionally
-blocks before collection when any locked artifact hash is absent (the current
-snapshot includes such a row, e.g. `jinja2`); no lock row is repaired or
-re-signed by this preparation.
+path discovery is permitted. During the initial collector preparation, the
+pre-2026-10-06 lock had missing artifact hashes (for example `jinja2`). This
+historical condition is superseded for the current lock by the dated identity
+enrichment below: the selected lock artifact hashes and sizes are now recorded
+there, while no historical receipt is re-signed. The collector still blocks
+any run with a missing selected artifact identity; current collection remains
+VAST-not-run and owner/native/source/license/NO_UPLOAD gates remain unchanged.
 
 The collector's Metadata-Version 2.4+ `License-File` resolution follows
 PEP 639 exactly: a header value is relative to the wheel's
