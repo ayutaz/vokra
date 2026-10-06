@@ -106,18 +106,19 @@ consent, disclosure, and model rights before release or deployment.
 
 ## 2. California SB 942 (California AI Transparency Act)
 
-### 施行・status（2026-08-30確認）
-- **Chapter 291として2024-09-19に成立**し、§22757.6により **2026-01-01からoperative**。審議中法案ではない。
+### 施行・status（2026-08-30のSB 942確認 + 2026-10-06 AB 853再照合）
+- **歴史**: SB 942はChapter 291として2024-09-19に成立し、制定時の§22757.6では **2026-01-01からoperative** とされた。審議中法案ではない。
+- **現行の限定的な再照合**: AB 853（Chapter 674, Statutes of 2025）が§22757.6を改正し、chapterの基本的なoperative日を **2026-08-02** としたため、上記の2026-01-01は制定時の履歴であり、現行日としてはAB 853により supersede される。ただし、AB 853が追加した役割別規定は各条の明示日が優先され、§22757.3.1（large online platform、**2027-01-01**）、§22757.3.2（GenAI hosting platform、**2027-01-01**）、§22757.3.3（capture device manufacturer、**2028-01-01**）である。これは本書§2の限定的な現行再照合であり、他のCalifornia法令や法務判断を更新・保証するものではない。
 
 ### 対象範囲
-- California内で公衆利用可能で、covered providerが作成・コード化・生産したGenAI systemが **月間1,000,000人を超える visitors または users** を有する場合（§22757.1(b)）。「月間100万Californiaユーザー」と固定しない。専らnon-user-generatedのvideo game等には§22757.5の除外がある。
+- California内で公衆利用可能で、covered providerが作成・コード化・生産したGenAI systemが **月間1,000,000人を超える visitors または users** を有する場合（現行§22757.1(d)）。「月間100万Californiaユーザー」と固定しない。専らnon-user-generatedのvideo game等には§22757.5の除外がある。
 - covered providerには、無料のAI detection tool、ユーザーが選べるclear/conspicuousなmanifest disclosure、技術的に可能で合理的なlatent disclosure等の要件がある。法文上manifestは人が容易に知覚・理解できるものを指し、AudioSeal/C2PAを使えば自動適合するという意味ではない。
 
 ### Vokra 対応
 - Vokra自体または組込みサービスがcovered providerに該当するかは事業形態・月間visitor/user数・公開範囲で判断する。現行Vokraのautomatic watermarkはDeferred、standalone AudioSealは明示APIのみであり、SB 942適合を断定しない。
 - 対象provider/deployerは detection tool、manifest/latent disclosure、個人provenance dataの扱い、フィードバック、第三者ライセンス条件を条文に照らして実装・確認する。具体的適用は要法務確認。
 
-根拠: [California SB 942 Chapter 291（章法・条文）](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)（2026-08-30確認）。
+根拠: [California SB 942 Chapter 291（制定時の章法・条文）](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)（2026-08-30確認）、[California AB 853 official status（Chapter 674）](https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260AB853)、[AB 853 Today's Law As Amended](https://leginfo.legislature.ca.gov/faces/billCompareClient.xhtml?bill_id=202520260AB853&showamends=false)、[California BPC §22757.6](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=BPC&sectionNum=22757.6.)（AB 853/current-codeの限定再照合: 2026-10-06）。
 
 ---
 
@@ -293,7 +294,7 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 ```
 □ AudioSealはstandalone明示APIとして使うか確認（自動watermark・法令適合を意味しない）
 □ C2PA等のmarkingは別途実装・検出性能・ライセンスを確認
-□ SB 942 (CA): covered provider、月間1,000,000超のvisitor/user、§22757.5除外、detection/manifest/latent要件を確認
+□ SB 942 / AB 853 (CA): covered provider、月間1,000,000超のvisitor/user、§22757.5除外、detection/manifest/latent要件を確認し、large online platform / GenAI hosting platform（2027-01-01）とcapture device manufacturer（2028-01-01）の役割別規定は本書§2で確認
 □ EU AI Act: provider/deployerの役割、Article 50(1)-(4)、原則2 August 2026、既存対象へのArticle 111(4)の2 December 2026期限を公式条文で確認
 □ ELVIS Act (TN): voice rights、同意、用途、配布、例外を要法務確認
 □ NO FAKES Act: S.1367は未成立。成立・施行時に再評価
@@ -324,7 +325,7 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 | 制度 | 現行文書で確認できる範囲 |
 |-----|-------|
 | EU AI Act Article 50 | 違反類型・事業者の役割・加盟国実施法に依存。金額を本書で断定しない。 |
-| California SB 942 | Chapter 291 §22757.4にcivil penalty等の規定。covered provider該当性と救済は要確認。 |
+| California SB 942 / AB 853 | 現行BPC §22757.4（SB 942をAB 853が改正）にcivil penalty等の規定。covered provider等の役割別適用と救済は本書§2を参照し、要法務確認。 |
 | ELVIS Act (TN) | 民事請求・差止め等の条文上の救済。具体的要件は事実関係に依存。 |
 | NO FAKES Act (連邦) | S.1367は未成立の法案であり、現行の罰則・施行日はない。 |
 | Apple App Review Guidelines | Appleの審査・掲載判断はアプリと提出内容に依存。Guideline 5.5はMDM。 |
@@ -340,6 +341,9 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 - [EUR-Lex Regulation (EU) 2024/1689（CELEX: 32024R1689、Article 50 / 111 / 113）](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX%3A32024R1689)
 - [EUR-Lex Regulation (EU) 2026/1744（CELEX: 32026R1744、Article 4 / Article 111改正）](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX%3A32026R1744)
 - [California SB 942, Chapter 291 (official bill text)](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)
+- [California AB 853, Chapter 674 (official status)](https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260AB853)
+- [California AB 853 (Today's Law As Amended)](https://leginfo.legislature.ca.gov/faces/billCompareClient.xhtml?bill_id=202520260AB853&showamends=false)
+- [California Business and Professions Code §22757.6](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=BPC&sectionNum=22757.6.)
 - [Tennessee SB 2096 / Public Chapter 588 (official Bill Information)](https://wapp.capitol.tn.gov/apps/BillInfo/Default?BillNumber=SB2096&GA=113)
 - [S.1367 NO FAKES Act of 2025 (Congress.gov / GPO introduced text)](https://www.congress.gov/119/bills/s1367/BILLS-119s1367is.pdf)
 - [Meta AudioSeal](https://github.com/facebookresearch/audioseal)
