@@ -199,24 +199,76 @@ uv run --frozen --python 3.12 --project tools/parity/vibevoice_realtime_0_5b_ref
   --output /root/realtime-reference
 ```
 
-After `uv sync` on the disposable Linux x86_64 VAST instance, collect the
-installed-closure evidence before any new official reference replay:
+#### 2026-10-07 current-lock supersession
+
+The preceding 56-package receipt is historical evidence for the earlier VAST
+tree and lock (`7e11e027` and the superseded lock identity); it is not proof for
+the current lock. The current source records lock SHA-256
+`34f58e53b5c79ed96853c2a4b6f9b6b1eaf12066f010cd23ddffae2b816b3797`, with 42
+package rows: one repository-root virtual row and 41 registry rows. The lock
+contains 63 candidate wheel artifacts across the approved PyPI and explicit
+PyTorch CPU indexes. A fresh selected-wheel manifest must choose exactly one
+Linux x86_64 / CPython 3.12 wheel for each of the 41 registry rows and bind its
+absolute archive path, filename, byte count, and SHA-256 to the current lock.
+Manifest preparation is a separate mechanical archive step; this collector
+does not download, install, import, or select wheels.
+
+On a disposable Linux x86_64 VAST worker, first provide an already existing
+CPython 3.12 venv and the separately prepared selected-wheel manifest. Do not
+let this command create a venv, synchronize a project, resolve dependencies,
+or acquire packages. Bind every path explicitly before running the stdlib-only
+collector:
 
 ```text
-VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --project \
-  tools/parity/vibevoice_realtime_0_5b_reference python \
-  tools/parity/vibevoice_realtime_0_5b_reference/audit_installed_closure.py \
-  --source-root /root/VibeVoice \
-  --output /root/realtime-reference-dependency-audit.json
+REFERENCE_VENV=/root/realtime-reference-venv
+REFERENCE_PY="$REFERENCE_VENV/bin/python"
+REFERENCE_PROJECT=/root/vokra-reference-source/tools/parity/vibevoice_realtime_0_5b_reference/pyproject.toml
+REFERENCE_LOCK=/root/vokra-reference-source/tools/parity/vibevoice_realtime_0_5b_reference/uv.lock
+REFERENCE_COLLECTOR=/root/vokra-reference-source/tools/parity/vibevoice_realtime_0_5b_reference/audit_installed_closure.py
+REFERENCE_SITE="$REFERENCE_VENV/lib/python3.12/site-packages"
+REFERENCE_SCRIPTS="$REFERENCE_VENV/bin"
+REFERENCE_MANIFEST=/root/realtime-selected-wheel-manifest.json
+REFERENCE_SOURCE=/root/VibeVoice
+REFERENCE_OUTPUT=/root/realtime-reference-dependency-audit.json
+REFERENCE_BOOTSTRAP_DIR=/root/approved-clean-uv-bootstrap
+UV_BOOTSTRAP_PY=/absolute/path/to/approved-clean-uv-managed-cpython312
+
+cd "$REFERENCE_BOOTSTRAP_DIR"
+env -u VIRTUAL_ENV -u CONDA_PREFIX -u PYTHONHOME -u PYTHONPATH \
+  -u PYTHONSTARTUP VOKRA_PUBLISH_ON_VAST=1 uv run --offline --no-project --no-sync \
+  --python "$UV_BOOTSTRAP_PY" "$REFERENCE_PY" -B -S "$REFERENCE_COLLECTOR" \
+  --project "$REFERENCE_PROJECT" \
+  --lock "$REFERENCE_LOCK" \
+  --site-packages "$REFERENCE_SITE" \
+  --venv-root "$REFERENCE_VENV" \
+  --scripts-root "$REFERENCE_SCRIPTS" \
+  --selected-wheel-manifest "$REFERENCE_MANIFEST" \
+  --source-root "$REFERENCE_SOURCE" \
+  --output "$REFERENCE_OUTPUT"
 ```
 
-The audit records the exact locked distribution Name/Version/source, project
-and lockfile identities, official VibeVoice Git revision and clean-tree state,
-metadata/license files, and native payload inventory/hashes where the bounded
-hash policy permits. It performs no model download or model execution. Its
-result intentionally remains `OWNER_REVIEW_REQUIRED` and `NO_UPLOAD`; an
-independent primary-source license/native-payload review and owner decision are
-required before replay evidence can be treated as execution-authorizing.
+The `UV_BOOTSTRAP_PY` value must be an approved clean UV-managed CPython 3.12
+interpreter, not the target venv interpreter, and `REFERENCE_BOOTSTRAP_DIR` must
+be outside the target venv/project (with no implicit `.venv` selected). The
+environment is scrubbed before invoking UV so inherited virtualenv/conda and
+Python path/startup hooks cannot redirect interpreter discovery. UV initializes
+the interpreter used for `--python` discovery before launching the requested
+command, so the target venv must be passed only as the explicit command with
+`-B -S`; otherwise an unreviewed `.pth` can execute before the collector. This
+behavior is visible in the pinned UV interpreter path (see
+<https://raw.githubusercontent.com/astral-sh/uv/0.12.5/crates/uv-python/src/interpreter.rs>).
+
+The collector requires Linux x86_64 CPython 3.12, checks that the explicitly
+invoked interpreter is the venv interpreter, and consumes only the pre-existing
+selected wheel archives and installed files. It records exact locked
+distribution Name/Version/source, project and lock identities, official
+VibeVoice Git revision and clean-tree state, metadata/license files, and native
+payload inventory/hashes where the bounded hash policy permits. It performs no
+third-party import, dependency acquisition, model download, or model
+execution. Its result intentionally remains `OWNER_REVIEW_REQUIRED_NO_UPLOAD`,
+not an approval; independent primary-source license/native-payload review and
+owner decision remain required before replay evidence can be treated as
+execution-authorizing.
 
 The command is intentionally not a local verification command. The full
 checkpoint is larger than the 2 GB VAST threshold and must never be downloaded
