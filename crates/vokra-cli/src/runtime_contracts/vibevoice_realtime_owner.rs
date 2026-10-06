@@ -1061,10 +1061,9 @@ mod tests {
             .expect("unique owner guard fixture root");
         let oversized = root.join("oversized.json");
         fs::write(&oversized, vec![b'x'; MAX_SCOPE_BYTES as usize + 1]).unwrap();
-        assert!(
-            read_checked(&oversized, "oversized scope", MAX_SCOPE_BYTES, &[0; 32])
-                .unwrap_err()
-                .contains("maximum")
+        assert_eq!(
+            read_checked(&oversized, "oversized scope", MAX_SCOPE_BYTES, &[0; 32]).unwrap_err(),
+            format!("oversized scope exceeds the {MAX_SCOPE_BYTES}-byte resource limit")
         );
         let directory = root.join("directory");
         fs::create_dir(&directory).unwrap();
