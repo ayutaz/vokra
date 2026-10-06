@@ -34,7 +34,7 @@ HTML endpoint（[GDPR](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=
 同一法令の全文レビュー、法的承認、CI成功を意味しない。Californiaの取得保留とowner/legal
 判断は変更しない。
 
-**2026-10-06 California current-code review boundary:** 公式California BPC Chapter 25の現行コードを再照合した。SB 1000（Chapter 861, 2026-09-30）は§22757.1(e)のcovered provider定義、§22757.2のdisclosure verification tool、§22757.3のlatent disclosure、§22757.4/.4.1の罰則、§22757.5の例外を改正している。AB 2713（Chapter 856, 2026-09-30）はGovernor発表とSecretary of State chapter indexでbill identity/dateを確認したが、今回の公式chapter本文取得は未完了であり、AB 2713の改正条文・operative date・役割別義務は推定しない。本追記はCalifornia §2の限定的なcurrent-code確認であり、法務承認やCalifornia法令全体の現行性を保証しない。
+**2026-10-06 California current-code review boundary:** 公式California BPC Chapter 25の現行コードを再照合した。SB 1000（Chapter 861, 2026-09-30）は§22757.1(e)のcovered provider定義、§22757.2のdisclosure verification tool、§22757.3のlatent disclosure、§22757.4/.4.1の罰則、§22757.5の例外を改正している。AB 2713（Chapter 856, 2026-09-30）は、公式California Legislative Information billNavのsource extractionで、Section 1によるBPC §22757.3.1改正、承認・提出日、および同条(e)の2027-01-01 operativeを確認した。AB 2713の全文legal review、適用・罰則、owner判断は未確認であり、直接HTTP GET 403のlink gateも未解決である。本追記はCalifornia §2の限定的なcurrent-code確認であり、法務承認やCalifornia法令全体の現行性を保証しない。
 
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
@@ -298,7 +298,7 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 ```
 □ AudioSealはstandalone明示APIとして使うか確認（自動watermark・法令適合を意味しない）
 □ C2PA等のmarkingは別途実装・検出性能・ライセンスを確認
-□ California AI Transparency Act (SB 942 / AB 853 / SB 1000): 現行§22757.1(e) covered provider（1,000,000 visitor/user閾値なし）、§22757.2 disclosure verification tool、§22757.3 latent disclosure、§22757.5例外を確認し、AB 853のlarge online platform / GenAI hosting platform（2027-01-01）とcapture device manufacturer（2028-01-01）の役割別規定は本書§2で確認。AB 2713 Chapter 856はidentity/date確認済み・本文未確認として別途再確認
+□ California AI Transparency Act (SB 942 / AB 853 / SB 1000): 現行§22757.1(e) covered provider（1,000,000 visitor/user閾値なし）、§22757.2 disclosure verification tool、§22757.3 latent disclosure、§22757.5例外を確認し、AB 853のlarge online platform / GenAI hosting platform（2027-01-01）とcapture device manufacturer（2028-01-01）の役割別規定は本書§2で確認。AB 2713 Chapter 856はSection 1の§22757.3.1改正と同条(e)の2027-01-01 operativeをsource extractionで確認済みだが、全文legal review・適用・罰則・owner判断は未確認で、直接HTTP GET 403のlink gateも未解決
 □ EU AI Act: provider/deployerの役割、Article 50(1)-(4)、原則2 August 2026、既存対象へのArticle 111(4)の2 December 2026期限を公式条文で確認
 □ ELVIS Act (TN): voice rights、同意、用途、配布、例外を要法務確認
 □ NO FAKES Act: S.1367は未成立。成立・施行時に再評価
@@ -329,7 +329,7 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 | 制度 | 現行文書で確認できる範囲 |
 |-----|-------|
 | EU AI Act Article 50 | 違反類型・事業者の役割・加盟国実施法に依存。金額を本書で断定しない。 |
-| California SB 942 / AB 853 / SB 1000 | 現行BPC §22757.4にcovered provider・large online platform・capture device manufacturer等のcivil penalty（$5,000/violation）、§22757.4.1にassistive-technologyの虚偽表示に関する$50,000/violation（2029-01-01まで）の規定がある。役割別適用と救済は本書§2を参照し、要法務確認。AB 2713 Chapter 856の罰則・適用は本文未確認。 |
+| California SB 942 / AB 853 / SB 1000 | 現行BPC §22757.4にcovered provider・large online platform・capture device manufacturer等のcivil penalty（$5,000/violation）、§22757.4.1にassistive-technologyの虚偽表示に関する$50,000/violation（2029-01-01まで）の規定がある。役割別適用と救済は本書§2を参照し、要法務確認。AB 2713のSection 1による§22757.3.1改正と同条(e)の2027-01-01 operativeはsource extractionで確認済みだが、罰則・適用・全文legal review・owner判断は未確認で、直接HTTP GET 403のlink gateも未解決。 |
 | ELVIS Act (TN) | 民事請求・差止め等の条文上の救済。具体的要件は事実関係に依存。 |
 | NO FAKES Act (連邦) | S.1367は未成立の法案であり、現行の罰則・施行日はない。 |
 | Apple App Review Guidelines | Appleの審査・掲載判断はアプリと提出内容に依存。Guideline 5.5はMDM。 |
