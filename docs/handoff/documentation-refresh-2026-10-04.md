@@ -22,7 +22,28 @@ applicability, timetable, compliance, or owner/legal approval. The [official
 says implementation began on August 1 and describes later January 1/2028 phases,
 which differs from the April analysis; neither replaces the chaptered statutory
 body or current AB 2713 / SB 1000 text. Mirrors are not substituted and the
-pending authoritative reconciliation remains fail-closed.
+pending authoritative reconciliation remains fail-closed. The 2026-10-07
+normal-browser read supersedes the earlier retrieval-pending statement only
+for the AB 2713 chaptered body, the SB 1000 chaptered body, and the current BPC
+Chapter 25 display. The historical SB 942 403 observation remains unchanged;
+applicability, compliance, CI gates, and owner/legal decisions remain pending.
+
+**2026-10-07 official chaptered-text browser read:** A normal Chrome rendering
+also exposed the official chaptered text for [AB 2713](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2713#93CHP)
+(`09/30/26 - Chaptered`, Chapter 856, approved/filed 2026-09-30; BPC
+§22757.3.1 subdivision (e) operative 2027-01-01), [SB 1000](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260SB1000#94CHP)
+(`09/30/26 - Chaptered`, Chapter 861, approved/filed 2026-09-30; SEC. 8
+urgency/immediate effect), and the [current BPC Chapter 25 display](https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?article=&chapter=25.&division=8.&lawCode=BPC&part=&title=).
+The rendered text supplies current version and section boundaries, including
+the SB 1000 changes to §§22757.1, 22757.2, 22757.3, 22757.4, 22757.4.1, and
+22757.5 (including deletion of the old one-million threshold and old manifest
+option obligation) and the current display's Stats 2026 Ch. 861 effective
+2026-09-30 / §22757.6 operative 2026-08-02 markers. The same
+code display shows §22757.3.1 as AB 0853 / Stats 2025 Ch. 674, operative
+2027-01-01; that code view must not be conflated with the AB 2713 chaptered
+bill text. This normal browser read does not erase the dated HTTP 403 record,
+waive any CI gate, or establish Vokra applicability, compliance, or
+owner/legal approval; the authoritative legal reconciliation remains pending.
 
 ## Verified current snapshot
 

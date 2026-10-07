@@ -50,7 +50,11 @@ statutory body or the current AB 2713 / SB 1000 text, so neither determines the
 latest operative date or applicability.
 Current applicability, operative timetable, compliance conclusion, and
 owner/legal approval therefore remain pending authoritative full-text
-reconciliation; this note adds no legal sign-off.
+reconciliation; this note adds no legal sign-off. The 2026-10-07 normal-browser
+read below supersedes the earlier retrieval-pending statement only for the
+AB 2713 chaptered body, the SB 1000 chaptered body, and the current BPC Chapter
+25 display. The historical SB 942 403 observation remains unchanged, and
+applicability, compliance, CI gates, and owner/legal decisions remain pending.
 
 ---
 
@@ -95,7 +99,7 @@ reconciliation; this note adds no legal sign-off.
 
 - **a. EU対象のdeployer**: deepfake等に該当するかを確認し、該当時はclear and distinguishableなdisclosureを実装する。Vokra coreはUIや地域判定を提供しない。
 - **b. EU対象のprovider**: Article 50(2)のmarkingが自分の役割に適用されるか、技術的手段と検出性能を検証する。Vokraのdefault経路に自動markingはない。
-- **c. California SB 942対象のcovered provider**: §2のdetection tool、manifest/latent disclosure、保存・フィードバック要件を条文に照らして確認する。VokraのAPIを使えば自動的に適合するとはいえない。
+- **c. California AI Transparency Act対象のcovered provider**: 現在の§22757.1、§22757.2、§22757.3、§22757.4、§22757.4.1、§22757.5にあるdetection/verification、latent disclosure、個人情報、licensee、例外の要件と、§22757.6および各節のoperative条項を公式条文に照らして確認する。旧SB 942のmanifest要件や月間100万人閾値を現行要件として扱わない。VokraのAPIを使えば自動的に適合するとはいえない。
 - **d. ELVIS Act / NO FAKES Act**: disclosureだけではvoice rights、consent、配布責任を解消しない。§3/§4の要法務確認を行う。
 - **e. 音声録音 / speaker embedding**: 同意、個人情報・生体情報、撤回、保存期間をdeployerが確認する。
 
@@ -112,9 +116,24 @@ reconciliation; this note adds no legal sign-off.
 
 ## 2. California SB 942 (California AI Transparency Act)
 
-The status below is retained as the dated 2026-08-30 record and is superseded
-only by the 2026-10-07 source-reconciliation boundary above; it must not be
-read as a current-law or owner-approval conclusion.
+The status below is retained as the dated 2026-08-30 record. The 2026-10-07
+normal-browser read supersedes the earlier retrieval-pending statement only
+for the AB 2713 chaptered body, the SB 1000 chaptered body, and the current BPC
+Chapter 25 display; it does not rewrite this historical record or decide
+applicability, compliance, CI gates, or owner/legal approval.
+
+### 2026-10-07 公式本文の通常ブラウザ読解（現行適用判断前）
+2026-10-07、公式ページを通常のChrome表示で再読できた。これは同日記録の
+HTTP取得403や、2026-08-03の上院プレス声明を取り消すものではなく、CIゲートを
+変更する根拠でもない。
+
+- [AB 2713 chaptered本文](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2713#93CHP) は `09/30/26 - Chaptered`、Chapter 856、2026-09-30 approved/filed と表示され、BPC §22757.3.1を改正し、subdivision (e) を2027-01-01 operative とする。
+- [SB 1000 chaptered本文](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260SB1000#94CHP) は `09/30/26 - Chaptered`、Chapter 861、2026-09-30 approved/filed と表示され、SEC. 8のurgencyにより直ちに効力を生じる。表示本文は§22757.1、§22757.2、§22757.3、§22757.4、§22757.4.1、§22757.5を改正し、covered providerの旧100万人閾値と旧manifest option義務を削除し、verification tool、latent disclosure、minor modification、assistive technologyの経過的例外を含む条文境界を示す。
+- [現行BPC Chapter 25](https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?article=&chapter=25.&division=8.&lawCode=BPC&part=&title=) は§22757.1、§22757.2、§22757.3、§22757.4、§22757.4.1、§22757.5をStats 2026 Ch. 861（2026-09-30 effective）の改正として表示し、§22757.6を2026-08-02 operative と表示する。一方、同ページの§22757.3.1はAB 0853 / Stats 2025 Ch. 674の本文として2027-01-01 operative と表示されるため、AB 2713のchaptered本文と現行コード表示を混同しない。
+
+これらは本文・版・章・日付の境界を確認するための一次資料読解であり、Vokraへの
+適用、compliance、covered provider該当性、owner/legal承認を決めるものではない。
+最終的な適用範囲と法務確認は引き続き保留する。
 
 ### 施行・status（2026-08-30確認）
 - **Chapter 291として2024-09-19に成立**し、§22757.6により **2026-01-01からoperative**。審議中法案ではない。
