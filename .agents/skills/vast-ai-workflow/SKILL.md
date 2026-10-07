@@ -26,7 +26,7 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 - H100 / A100 が必要な bakeoff（FA v3 Hopper、CoreML/ANE は別 = 実機 Mac / iPhone）
 
 **M1 iMac で OK**:
-- 軽い crate 単体: `-p vokra-convert` / `-cli` / `-eval` / `-core` / `-ops`（`CARGO_BUILD_JOBS=1` 併用）
+- 既知の軽量 crate 単体（`CARGO_BUILD_JOBS=1`）。package 名だけで安全と判断せず、依存・dev-dependency が `vokra-models` をコンパイルする scope は VAST に送る。`vokra-cli` などモデルを依存に持つ package を無条件のローカル安全例にしない。
 - シェルゲート全般（`scripts/check-*.sh`）、`cargo fmt`、`cargo metadata`
 - **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）。**tensor を触らず provenance だけ差し替えるなら 2 GB 閾値の例外**
 
