@@ -30,6 +30,29 @@ lineage, weight rights, and publication decision remain separate authenticated
 records. If the conversion metadata or external packet is absent, construction
 fails closed.
 
+## Supplemental dependency declaration evidence
+
+The authenticated Moshi `moshi/pyproject.toml` blob
+(`0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61`, 1305 bytes) directly declares the
+seven source-graph candidate distributions: `bitsandbytes`, `einops`,
+`huggingface-hub` (the distribution spelling for the `huggingface_hub` import),
+`numpy`, `safetensors`, `sentencepiece`, and `torch`. The supplemental metadata
+auditor records these as deterministic `SOURCE_DECLARATIONS_ONLY` rows after
+authenticating the commit, complete tree, and blob bytes. This is source
+evidence only: it is not an installed dependency closure, wheel/RECORD or
+native-payload audit, version selection, license approval, or runtime import
+result. The existing `CANDIDATE_UNKNOWN` statuses, empty reviewed closure,
+owner/legal gates, and `NO_UPLOAD` boundary remain unchanged. In particular,
+the Linux `bitsandbytes` marker and the conflicting `sphn` declarations in
+`pyproject.toml` versus `requirements.txt` remain raw facts requiring a
+separately authorized environment decision.
+
+The eight packaging paths outside the CPU `moshi/` subtree (MLX, development,
+script, and Rust/PyO3/server metadata) remain explicitly unassessed. They are
+not silently treated as part of this Python CPU PCM declaration evidence and
+must be revisited if the execution design switches to an MLX or Rust/server
+transport path.
+
 > **2026-10-07 source-schedule supersession:** relative to source baseline
 > `2043fc7c2aa8f6aca4557478e2344d997b65f1bc`, the current source contract is
 > recorded by

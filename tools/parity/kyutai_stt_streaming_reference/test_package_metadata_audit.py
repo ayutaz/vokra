@@ -69,8 +69,11 @@ def _commit(revision: str, tree: str) -> dict[str, Any]:
     return {"sha": revision, "commit": {"tree": {"sha": tree}}}
 
 
-def _fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    pyproject = b'''[project]\nrequires-python = ">= 3.10,<3.15"\ndependencies = [\n  "torch >= 2.2.0, < 2.10",\n  "bitsandbytes >= 0.45, < 0.50.0; sys_platform == \'linux\'",\n  "sphn >= 0.2.0, < 0.3.0",\n]\n'''
+def _fixture(
+    pyproject: bytes | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if pyproject is None:
+        pyproject = b'''[project]\nrequires-python = ">= 3.10,<3.15"\ndependencies = [\n  "numpy >= 1.26, < 2.3",\n  "safetensors >= 0.4.0, < 0.8.0",\n  "huggingface-hub >= 0.24, < 1.0.0",\n  "bitsandbytes >= 0.45, < 0.50.0; sys_platform == \'linux\'",\n  "einops >= 0.7, < 0.9",\n  "sentencepiece >= 0.2.0, < 0.3",\n  "torch >= 2.2.0, < 2.10",\n  "sphn >= 0.2.0, < 0.3.0",\n]\n'''
     requirements = b"torch==2.2\nsphn==0.1.4\n"
     setup_cfg = b"[metadata]\nname = moshi\n"
     files = {
@@ -112,6 +115,26 @@ class PackageMetadataAuditTests(unittest.TestCase):
         self.assertFalse(receipt["owner_review"])
         self.assertEqual(receipt["reviewed_dependency_closure_sha256"], "")
         self.assertEqual(receipt["packaging"]["conflicts"][0]["status"], "PACKAGING_CONSTRAINT_CONFLICT")
+        self.assertEqual(receipt["direct_declarations"]["status"], "SOURCE_DECLARATIONS_ONLY")
+        self.assertEqual(
+            [(row["import_name"], row["distribution_name"]) for row in receipt["direct_declarations"]["rows"]],
+            [
+                ("bitsandbytes", "bitsandbytes"),
+                ("einops", "einops"),
+                ("huggingface_hub", "huggingface-hub"),
+                ("numpy", "numpy"),
+                ("safetensors", "safetensors"),
+                ("sentencepiece", "sentencepiece"),
+                ("torch", "torch"),
+            ],
+        )
+        self.assertEqual(receipt["direct_declarations"]["source"]["path"], "moshi/pyproject.toml")
+        self.assertEqual(
+            receipt["direct_declarations"]["source"]["bytes"],
+            len(base64.b64decode(blobs["moshi/pyproject.toml"]["content"])),
+        )
+        self.assertEqual(receipt["direct_declarations"]["source"]["git_blob_sha1"], specs["moshi"]["files"]["moshi/pyproject.toml"]["git_blob_sha1"])
+        self.assertIn("not an installed dependency closure", receipt["direct_declarations"]["claim_boundary"])
         self.assertEqual(receipt["source_graph_preserved"]["candidate_status"], "CANDIDATE_UNKNOWN")
         self.assertEqual(
             receipt["source_graph_preserved"]["third_party_candidates"],
@@ -128,6 +151,59 @@ class PackageMetadataAuditTests(unittest.TestCase):
         self.assertEqual(receipt["runtime_origin"], "UNKNOWN")
         self.assertEqual(receipt["license_status"], "UNKNOWN_DEPENDENCY_LICENSES")
         self.assertEqual(receipt["native_payload_status"], "UNKNOWN_NATIVE_PAYLOADS")
+
+    def test_direct_declaration_malformed_duplicate_missing_and_optional_cases_fail_closed(self) -> None:
+        complete = [
+            '"numpy >= 1.26, < 2.3"',
+            '"safetensors >= 0.4.0, < 0.8.0"',
+            '"huggingface-hub >= 0.24, < 1.0.0"',
+            '"bitsandbytes >= 0.45, < 0.50.0; sys_platform == \'linux\'"',
+            '"einops >= 0.7, < 0.9"',
+            '"sentencepiece >= 0.2.0, < 0.3"',
+            '"torch >= 2.2.0, < 2.10"',
+            '"sphn >= 0.2.0, < 0.3.0"',
+        ]
+
+        def audit_dependencies(entries: list[Any], suffix: str = "") -> None:
+            pyproject = (
+                '[project]\nrequires-python = ">= 3.10,<3.15"\n'
+                "dependencies = [\n  "
+                + ",\n  ".join(str(entry) for entry in entries)
+                + ",\n]\n"
+                + suffix
+            ).encode()
+            mc, mt, blobs, dc, dt, specs = _fixture(pyproject)
+            audit._audit_captures_from_specs(mc, mt, blobs, dc, dt, moshi_spec=specs["moshi"], dsm_spec=specs["dsm"])
+
+        with self.subTest(case="duplicate"):
+            with self.assertRaisesRegex(audit.CaptureError, "duplicate direct declaration"):
+                audit_dependencies(complete + ['"torch >= 2.2.0, < 2.10"'])
+        with self.subTest(case="normalized_alias_duplicate"):
+            with self.assertRaisesRegex(audit.CaptureError, "duplicate direct declaration"):
+                audit_dependencies(complete + ['"huggingface_hub >= 0.24, < 1.0.0"'])
+        with self.subTest(case="missing"):
+            with self.assertRaisesRegex(audit.CaptureError, "missing direct declaration: torch"):
+                audit_dependencies([entry for entry in complete if not entry.startswith('"torch ')])
+        with self.subTest(case="optional_only"):
+            without_torch = [entry for entry in complete if not entry.startswith('"torch ')]
+            with self.assertRaisesRegex(audit.CaptureError, "missing direct declaration: torch"):
+                audit_dependencies(without_torch, '[project.optional-dependencies]\ndev = ["torch >= 2.2.0, < 2.10"]\n')
+        with self.subTest(case="comment_only"):
+            without_torch = [entry for entry in complete if not entry.startswith('"torch ')]
+            with self.assertRaisesRegex(audit.CaptureError, "missing direct declaration: torch"):
+                audit_dependencies(without_torch, "# torch >= 2.2.0, < 2.10\n")
+        with self.subTest(case="malformed"):
+            with self.assertRaisesRegex(audit.CaptureError, "malformed entry"):
+                audit_dependencies(complete[:-1] + ['"@invalid"'])
+        with self.subTest(case="unsupported_suffix"):
+            with self.assertRaisesRegex(audit.CaptureError, "unsupported or malformed suffix"):
+                audit_dependencies(complete[:-1] + ['"sphn arbitrary prose"'])
+        with self.subTest(case="non_target_alphabetic_version"):
+            with self.assertRaisesRegex(audit.CaptureError, "unsupported or malformed suffix"):
+                audit_dependencies(complete[:-1] + ['"sounddevice == bananas"'])
+        with self.subTest(case="non_string_entry"):
+            with self.assertRaisesRegex(audit.CaptureError, "malformed entry"):
+                audit_dependencies(complete[:-1] + [7])
 
     def test_public_fixed_audit_rejects_synthetic_spec_overrides(self) -> None:
         mc, mt, blobs, dc, dt, specs = _fixture()
@@ -297,6 +373,40 @@ class PackageMetadataAuditTests(unittest.TestCase):
                 "rust/moshi-server/uv.lock",
                 "scripts/setup.cfg",
             ],
+        )
+        self.assertEqual(
+            [(row["import_name"], row["distribution_name"]) for row in receipt["direct_declarations"]["rows"]],
+            [
+                ("bitsandbytes", "bitsandbytes"),
+                ("einops", "einops"),
+                ("huggingface_hub", "huggingface-hub"),
+                ("numpy", "numpy"),
+                ("safetensors", "safetensors"),
+                ("sentencepiece", "sentencepiece"),
+                ("torch", "torch"),
+            ],
+        )
+        self.assertEqual(
+            [row["raw_requirement"] for row in receipt["direct_declarations"]["rows"]],
+            [
+                "bitsandbytes >= 0.45, < 0.50.0; sys_platform == 'linux'",
+                "einops >= 0.7, < 0.9",
+                "huggingface-hub >= 0.24, < 1.0.0",
+                "numpy >= 1.26, < 2.3",
+                "safetensors >= 0.4.0, < 0.8.0",
+                "sentencepiece >= 0.2.0, < 0.3",
+                "torch >= 2.2.0, < 2.10",
+            ],
+        )
+        self.assertEqual(
+            receipt["direct_declarations"]["source"],
+            {
+                "path": "moshi/pyproject.toml",
+                "bytes": 1305,
+                "git_blob_sha1": "0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61",
+                "sha256": "ae98e527d44b74ee91f00880c1058ebeedbf84eacbce5d8278039b1823750258",
+                "api_sha": "0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61",
+            },
         )
 
 

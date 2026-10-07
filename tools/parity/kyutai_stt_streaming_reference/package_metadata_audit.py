@@ -62,6 +62,18 @@ THIRD_PARTY_CANDIDATES = (
     "sentencepiece",
     "torch",
 )
+# These are source-declaration facts, not a PEP 508 resolver.  The import name
+# is intentionally kept separate from the distribution spelling because
+# ``huggingface_hub`` is published as ``huggingface-hub``.
+DIRECT_DECLARATION_SPECS = (
+    ("bitsandbytes", "bitsandbytes", "bitsandbytes>=0.45,<0.50.0;sys_platform==linux"),
+    ("einops", "einops", "einops>=0.7,<0.9"),
+    ("huggingface_hub", "huggingface-hub", "huggingface-hub>=0.24,<1.0.0"),
+    ("numpy", "numpy", "numpy>=1.26,<2.3"),
+    ("safetensors", "safetensors", "safetensors>=0.4.0,<0.8.0"),
+    ("sentencepiece", "sentencepiece", "sentencepiece>=0.2.0,<0.3"),
+    ("torch", "torch", "torch>=2.2.0,<2.10"),
+)
 DYNAMIC_IMPORT_UNRESOLVED = {
     "name": "kyutai_stt_decoder_dump_reference",
     "status": "DYNAMIC_IMPORT_LITERAL_AUTHENTICATED_SOURCE",
@@ -72,6 +84,13 @@ PACKAGING_NAME = re.compile(
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_DEPENDENCY_SUFFIX = re.compile(
+    r"""^\s*(?:\[[A-Za-z0-9._,-]+\])?\s*
+    (?:(?:===|==|!=|~=|>=|<=|>|<)\s*\d+(?:\.\d+)*
+    (?:\s*,\s*(?:===|==|!=|~=|>=|<=|>|<)\s*\d+(?:\.\d+)*)*)?
+    \s*(?:;\s*sys_platform\s*==\s*['\"]linux['\"]\s*)?$""",
+    re.VERBOSE,
+)
 
 
 class CaptureError(ValueError):
@@ -271,7 +290,83 @@ def _constraint_lines(text: str) -> list[str]:
     return result
 
 
-def _require_constraints(files: Mapping[str, bytes]) -> dict[str, Any]:
+def _parse_dependency_entry(value: Any) -> tuple[str, str]:
+    if not isinstance(value, str) or not value.strip():
+        raise CaptureError("pyproject project.dependencies contains a malformed entry")
+    match = re.fullmatch(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)(.*)", value, re.DOTALL)
+    if match is None:
+        raise CaptureError("pyproject project.dependencies contains a malformed entry")
+    distribution = match.group(1)
+    suffix = match.group(2)
+    if not _DEPENDENCY_SUFFIX.fullmatch(suffix):
+        raise CaptureError(
+            f"pyproject project.dependencies entry has an unsupported or malformed suffix: {value!r}"
+        )
+    return distribution, value
+
+
+def _normalized_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def _direct_declarations(
+    project: Mapping[str, Any],
+    source_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    dependencies = project.get("dependencies")
+    if not isinstance(dependencies, list):
+        raise CaptureError("pyproject project.dependencies must be a list")
+
+    targets = {
+        _normalized_distribution_name(distribution): (import_name, distribution, expected)
+        for import_name, distribution, expected in DIRECT_DECLARATION_SPECS
+    }
+    found: dict[str, tuple[str, str]] = {}
+    for value in dependencies:
+        distribution, raw_requirement = _parse_dependency_entry(value)
+        canonical = _normalized_distribution_name(distribution)
+        if canonical not in targets:
+            continue
+        if canonical in found:
+            raise CaptureError(f"duplicate direct declaration: {distribution}")
+        found[canonical] = (distribution, raw_requirement)
+
+    rows: list[dict[str, str]] = []
+    for import_name, distribution, expected in DIRECT_DECLARATION_SPECS:
+        canonical = _normalized_distribution_name(distribution)
+        found_entry = found.get(canonical)
+        if found_entry is None:
+            raise CaptureError(f"missing direct declaration: {distribution}")
+        observed_distribution, raw_requirement = found_entry
+        if _compact(raw_requirement) != expected:
+            raise CaptureError(
+                f"direct declaration constraint mismatch: {observed_distribution}"
+            )
+        rows.append(
+            {
+                "import_name": import_name,
+                "distribution_name": observed_distribution,
+                "raw_requirement": raw_requirement,
+            }
+        )
+
+    return {
+        "status": "SOURCE_DECLARATIONS_ONLY",
+        "source": {
+            "path": "moshi/pyproject.toml",
+            "bytes": source_identity["bytes"],
+            "git_blob_sha1": source_identity["git_blob_sha1"],
+            "sha256": source_identity["sha256"],
+            "api_sha": source_identity["api_sha"],
+        },
+        "rows": rows,
+        "claim_boundary": "direct project.dependencies declarations only; not an installed dependency closure",
+    }
+
+
+def _require_constraints(
+    files: Mapping[str, bytes], *, pyproject_identity: Mapping[str, Any]
+) -> dict[str, Any]:
     try:
         pyproject = files["moshi/pyproject.toml"].decode("utf-8")
         requirements = files["moshi/requirements.txt"].decode("utf-8")
@@ -285,9 +380,15 @@ def _require_constraints(files: Mapping[str, bytes]) -> dict[str, Any]:
         dependencies = project["dependencies"]
         if type(python_constraint) is not str or not isinstance(dependencies, list):
             raise ValueError("invalid project metadata")
-        dependency_lines = [value for value in dependencies if isinstance(value, str)]
+        dependency_lines = []
+        for value in dependencies:
+            _parse_dependency_entry(value)
+            dependency_lines.append(value)
+    except CaptureError:
+        raise
     except (KeyError, TypeError, tomllib.TOMLDecodeError, ValueError) as exc:
         raise CaptureError("pyproject packaging metadata is not valid TOML") from exc
+    direct_declarations = _direct_declarations(project, pyproject_identity)
     compact_dependencies = {_compact(value) for value in dependency_lines}
     required = {
         "python": _compact(python_constraint) == ">=3.10,<3.15",
@@ -299,6 +400,7 @@ def _require_constraints(files: Mapping[str, bytes]) -> dict[str, Any]:
     if not all(required.values()):
         raise CaptureError("required raw packaging constraint or conflict is absent")
     return {
+        "direct_declarations": direct_declarations,
         "raw_constraint_lines": {
             "moshi/pyproject.toml": _constraint_lines(pyproject),
             "moshi/requirements.txt": _constraint_lines(requirements),
@@ -368,7 +470,19 @@ def _audit_captures_from_specs(
         body = _blob_body(moshi_blobs[path], path, expected, row)
         bodies[path] = body
         file_records.append(_file_record(path, body, moshi_blobs[path]))
-    packaging = _require_constraints(bodies)
+    pyproject_record = next(
+        record for record in file_records if record["path"] == "moshi/pyproject.toml"
+    )
+    packaging = _require_constraints(
+        bodies,
+        pyproject_identity={
+            "bytes": pyproject_record["bytes"],
+            "git_blob_sha1": pyproject_record["git_blob_sha1"],
+            "sha256": pyproject_record["sha256"],
+            "api_sha": pyproject_record["api_sha"],
+        },
+    )
+    direct_declarations = packaging.pop("direct_declarations")
     matched_dsm = sorted(path for path in dsm_rows if PACKAGING_NAME.search(path))
     if matched_dsm:
         raise CaptureError(f"DSM packaging metadata unexpectedly present: {matched_dsm}")
@@ -412,6 +526,7 @@ def _audit_captures_from_specs(
             },
         ],
         "files": file_records,
+        "direct_declarations": direct_declarations,
         "packaging": packaging,
         "source_graph_preserved": {
             "third_party_candidates": list(THIRD_PARTY_CANDIDATES),
