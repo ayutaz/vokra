@@ -1,15 +1,17 @@
 # Vokra documentation
 
-**Current-state review:** 2026-10-04 JST
+**Current-state review:** 2026-10-08 JST
 
 **Read-only external baseline:** GitHub `main` at
-`97447185361a37af64c1b30fe87e8e2618d96e20` (committed 2026-09-30;
-API read on 2026-10-04). The local documentation review started at
-`3a3fd82281ae3ef9e995cb212ec794531ed13493`; its authenticated Kyutai
-source-only correction is not claimed to be merged into `main`. PR #152
-remains an open draft at `b0add994b4d0350c338e60cb29b8165d8145fe32`, with
-76 successful and three skipped checks in this readback. Its remaining
-package/license and real-weight gates are not closed by green model-free CI.
+`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08).
+The documentation branch starts at that exact checkout. There are 16 open PRs,
+15 of them drafts; their unmerged code is not part of this baseline.
+PR #152 remains an open draft, now at
+`e22913d9aaf6e9fc26659e55637dce5e6458f978`. Its remaining package/license
+and real-weight gates are not closed by model-free CI. The 76 successful
+and three skipped checks at its former `b0add994` head were a 2026-10-04
+observation, not evidence for the new head. Desktop-release PR #199 is also
+unmerged; its proposed package completeness must not be described as shipped.
 The 2026-09-21 reviewed baseline was
 `0df21558c0a8f699a4b2b11c108f413ee21fc8c2`; the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
@@ -34,8 +36,8 @@ publication approval on 2026-09-12 subsequently replaced the reviewed
 ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
 artifacts through the gated publisher; the exact revisions and hashes are in
 the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
-The 2026-10-04 read-only metadata audit, evaluated with
-`tools/audit/hf_mac_coverage.py` at the local review baseline, reports
+The 2026-10-08 read-only metadata/card audit, evaluated with
+`tools/audit/hf_mac_coverage.py` at the exact `main` baseline above, reports
 194 public repositories, 193 repositories with GGUFs, and 198 GGUF files. CPU
 code status is 136 full, 43 partial, 14 without a runtime binder, and 1
 non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1
@@ -59,9 +61,13 @@ variants plus the shared 12 Hz decoder, passed independent real-weight CPU
 parity 4/4, and closed 38/38 recovered packet checksums. Apple CPU/reference,
 Metal/reference and Metal/CPU no-fallback verification remain pending, and no
 public artifact was replaced. This evidence therefore does not change the
-58-row denominator. The same day's all-pages GitHub read reports 209 open
-Dependabot alerts (182 with a patched version, 27 without) and three open
-Scorecard findings. See the [security readback](handoff/security-remediation-2026-09-21.md)
+58-row denominator. The 2026-10-08 all-pages GitHub read reports 283 open
+Dependabot alerts (254 with a patched version, 29 without), with severity
+counts of 3 critical, 81 high, 106 medium and 93 low, and four open Scorecard
+findings: `CIIBestPracticesID`, `CodeReviewID`, `SASTID` and
+`VulnerabilitiesID`. The protected branch still requires 16 check contexts
+with `strict=true`; no protection or alert setting was changed. See the
+[security readback](handoff/security-remediation-2026-09-21.md)
 for the boundary between an API snapshot and actual remediation.
 
 This directory contains public guides, generated-surface pointers, design
@@ -90,7 +96,7 @@ environment they name.
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 | Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
-| Whole-document refresh coverage and limitations | [2026-10-04 documentation audit](handoff/documentation-refresh-2026-10-04.md) |
+| Whole-document refresh coverage and limitations | [2026-10-08 documentation audit](handoff/documentation-refresh-2026-10-08.md); the [2026-10-04 audit](handoff/documentation-refresh-2026-10-04.md) preserves the previous review |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

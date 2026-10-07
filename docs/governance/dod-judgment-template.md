@@ -1,6 +1,7 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
-> **Current state (2026-10-04):** `release-cadence.yml` and
+> **Current state (2026-10-08):** exact GitHub `main` is
+> `d100d93778191ccab77bd1c37fe3552e3d889758`. `release-cadence.yml` and
 > `tools/release/test_cadence.py` are landed. The all-pages API reports **one
 > tag and one GitHub release** (`v0.3.0`, 2026-09-20); there are zero tracked
 > quarterly review records. A single release does not establish the cadence item.
