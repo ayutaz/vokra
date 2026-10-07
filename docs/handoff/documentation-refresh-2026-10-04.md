@@ -17,8 +17,12 @@ the [2026-04-21 Senate Judiciary Committee analysis](https://sjud.senate.ca.gov/
 (p. 2) is only committee analysis, not enacted/current full text. The required
 [official SB 942 bill-text endpoint](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)
 returned 403 for the full body on 2026-10-07. These sources do not establish current
-applicability, timetable, compliance, or owner/legal approval; mirrors are not
-substituted and the pending authoritative reconciliation remains fail-closed.
+applicability, timetable, compliance, or owner/legal approval. The [official
+2026-08-03 Senate press statement](https://sd13.senate.ca.gov/news/press-release/august-3-2026/californias-landmark-ai-transparency-law-took-effect-august-1)
+says implementation began on August 1 and describes later January 1/2028 phases,
+which differs from the April analysis; neither replaces the chaptered statutory
+body or current AB 2713 / SB 1000 text. Mirrors are not substituted and the
+pending authoritative reconciliation remains fail-closed.
 
 ## Verified current snapshot
 
