@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-08 current-readback boundary:** the root-owned
+> [documentation refresh](documentation-refresh-2026-10-08.md) records the
+> latest exact metadata/security/PR readback at `main`
+> `d100d93778191ccab77bd1c37fe3552e3d889758`: 194 repositories, 193
+> GGUF-bearing repositories, 198 GGUF files, and the unchanged metadata-only
+> 136 CPU/Metal code-artifact-full / 58 unresolved split. It records no new
+> real-weight CPU, Apple, owner/legal or publication decision; PR #199 remains
+> unmerged. The 63-row/hash-bound decision ledger and all dated evidence below
+> are preserved, and no row count is changed by this readback.
+
 > **2026-10-04 JST actual source-authentication acceptance:** the corrected
 > fail-closed leaf passes five tests and the real fixed raw/API/receipt audit
 > on VAST, with all process exits zero. Root verifies all four recovered

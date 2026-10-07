@@ -2,7 +2,7 @@
 
 Filled instance of [`docs/m2-cuda-rtf-variance-template.md`](m2-cuda-rtf-variance-template.md). Attachments (raw JSONL + analyzer output) live under [`docs/bench-baselines/`](bench-baselines/).
 
-**Position**: reference measurement, **not** the formal `RTF < 0.10` always-on gate. That always-on decision belongs to **M2-14** (owner self-hosted CUDA runner) + **M3-01** (5% regression gate) per [`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) §D6.
+**Position**: reference measurement, **not** the formal `RTF < 0.10` always-on gate. That always-on decision belongs to **M2-14** (owner self-hosted CUDA runner) + **M3-01** (5% regression gate) per the local-only `docs/adr/M2-03-followup-rtf.md` (§D6; `gitignore-local`). The tracked template and owner checklist in Meta are the public pointers for this contract.
 
 ---
 
@@ -15,7 +15,7 @@ Filled instance of [`docs/m2-cuda-rtf-variance-template.md`](m2-cuda-rtf-varianc
 | Vokra commit          | `dd05724` (feature branch `feat/m2-items-234-ci`, ancestor of PR #3) |
 | Toolchain             | `rustc 1.86.0 (05f9846f8 2025-03-31)` |
 | Harness version       | `tools/parity/cuda_rtf_variance.sh` @ `5d3f292` (initial land in PR #3) |
-| Related ADR           | [`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) |
+| Related ADR           | `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`) |
 | Related checklist row | [`docs/m2-owner-verification-checklist.md`](m2-owner-verification-checklist.md) §2 |
 | Baseline JSON updated | [`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`](bench-baselines/whisper_large_v3_cuda_rtf.json) — **no** (single-shot baseline stays as-is; this report is added as a separate variance-analysis attachment because the host is a different vast.ai offer) |
 
@@ -172,7 +172,7 @@ The 2.5–2.8× slowdown vs baseline is therefore **not a code regression** — 
 
 **Rationale** (free-form):
 
-The purpose of the variance harness (per [`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) §D6) is to distinguish **noise** from **regressions** and give the owner enough data to make the promote / defer / investigate call. This run does exactly that:
+The purpose of the variance harness (per the local-only `docs/adr/M2-03-followup-rtf.md` §D6; `gitignore-local`) is to distinguish **noise** from **regressions** and give the owner enough data to make the promote / defer / investigate call. This run does exactly that:
 
 1. **Noise ruled out**: CV `0.06` and `0.09` on N=10 are inside the "measurement is meaningful" band. The mean/median are not statistical artifacts.
 2. **Regression ruled out**: no code changes to the CUDA path since baseline (git log range spans only Kokoro + a FA v2 wrapper re-land whose gate is unreachable for decoder-step inference).
@@ -202,7 +202,7 @@ This is *exactly* why the ADR §D6 red-line reserves the formal `<0.10` decision
 
 ## References
 
-- ADR: [`docs/adr/M2-03-followup-rtf.md`](adr/M2-03-followup-rtf.md) (§D6, §D7, §D8)
+- ADR: `docs/adr/M2-03-followup-rtf.md` (`gitignore-local`; §D6, §D7, §D8)
 - Checklist row: [`docs/m2-owner-verification-checklist.md`](m2-owner-verification-checklist.md) §2
 - Existing sanity test: [`crates/vokra-backend-cuda/tests/whisper_cuda_large_v3_rtf.rs`](../crates/vokra-backend-cuda/tests/whisper_cuda_large_v3_rtf.rs)
 - Baseline JSON: [`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`](bench-baselines/whisper_large_v3_cuda_rtf.json)

@@ -5,6 +5,18 @@ OpenSSF Scorecard findings after the `v0.3.0` GitHub release. It records the
 current routing boundary; it is not evidence that an alert is fixed, and it
 does not authorize model publication or a weaker numerical oracle.
 
+## 2026-10-08 current-readback boundary
+
+The root-owned [2026-10-08 documentation refresh](documentation-refresh-2026-10-08.md)
+supersedes the 2026-10-04 queue-size snapshot for current routing. At `main`
+`d100d93778191ccab77bd1c37fe3552e3d889758`, the readback reports 283 open
+Dependabot alerts: 254 name a patched version and 29 do not. Four open
+Scorecard findings remain: `CIIBestPracticesID`, `CodeReviewID`, `SASTID` and
+`VulnerabilitiesID`. No alert dismissal, remediation acceptance, model or
+hardware verification, publication decision, or PR #199 merge is inferred by
+this documentation boundary. The 209-alert and three-finding values below
+remain dated 2026-10-04 evidence.
+
 ## 2026-10-04 JST read-only refresh
 
 An all-pages GitHub API re-read returns the same 209 open Dependabot alerts:

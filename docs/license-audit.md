@@ -1,5 +1,14 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-08 source-validation boundary:** at `main`
+> `d100d93778191ccab77bd1c37fe3552e3d889758`, the current metadata-only
+> inventory remains 136 CPU/Metal code-artifact-full and 58 unresolved across
+> 194 public repositories. No full-catalog Apple result, new license sign-off,
+> publication authorization, or owner/legal decision is inferred. The dated
+> license rows, hashes, dependency findings and historical Apple evidence below
+> remain unchanged; use the [documentation refresh](handoff/documentation-refresh-2026-10-08.md) for current
+> routing and do not treat this boundary as a fresh primary-source license audit.
+
 > **2026-10-04 reading/supersession boundary:** retain the dated license
 > rows, hashes and owner decisions below; this documentation refresh does not
 > grant a new license, execution scope or upload permission. The bounded

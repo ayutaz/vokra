@@ -1,9 +1,10 @@
 # Qualcomm AI Engine Direct (QNN) — EULA / distribution compliance record
 
-**Status**: normative for the `vokra-backend-qnn` crate and any distribution
-that enables QNN (Qualcomm Hexagon NPU). **Scope**: this file records *how Vokra
-stays compliant with Qualcomm's license terms for the Qualcomm AI Engine Direct
-SDK*; it is **separate** from Vokra's own Apache-2.0 license (Vokra bundles no
+**Status**: implementation/design boundary for the `vokra-backend-qnn` crate;
+it is not a legal-compliance certification or a claim that a functional QNN
+artifact or critical-safe SKU has shipped. **Scope**: this file records *how
+Vokra is intended to remain within Qualcomm's license terms for the Qualcomm AI
+Engine Direct SDK*; it is **separate** from Vokra's own Apache-2.0 license (Vokra bundles no
 Qualcomm code, so no Qualcomm license text is vendored here). It is the
 authoritative reference for the `vokra-backend-qnn` crate, modelled on
 `third_party/NVIDIA-EULA.md` (the CUDA install-model precedent). The `NOTICE`
@@ -11,6 +12,13 @@ and `docs/license-audit.md` distribution entries land when the QNN backend ships
 a functional artifact (the SDK-gated re-issue wave), mirroring how the NVIDIA
 NOTICE entry landed with M2-03 substance rather than at scaffold time — this
 scaffold ships no functional QNN artifact.
+
+> **2026-10-08 implementation boundary:** current source review confirms the
+> SDK-free, feature/target-gated raw-loader scaffold and explicit
+> `BackendUnavailable`/`UnsupportedOp` errors. No Qualcomm SDK is installed or
+> authenticated in this checkout; graph construction, device identity and
+> Hexagon execution remain pending the owner-gated SDK re-issue wave. This note
+> does not establish current Qualcomm EULA compliance or authorize distribution.
 
 > Requirement source IDs: FR-BE-06, NFR-PF-12, NFR-DS-02, NFR-PT-01, NFR-LG-04,
 > FR-EX-08, `docs/milestones.md` §9 M5-02, `AGENTS.md` backend/zero-dependency
@@ -70,14 +78,15 @@ and version at implementation / release time from the SDK you actually install:
    recorded here (self-referential point 5), and `NOTICE` / `docs/license-audit.md`
    point to it.
 
-## Critical-application posture (critical-safe SKU, FR-BE-09 / M5-08)
+## Planned critical-application posture (critical-safe SKU, FR-BE-09 / M5-08)
 
-The critical-safe (medical / automotive / military) SKU is **CPU + Vulkan-only**
-and **excludes QNN** — the `qnn` feature being off by default is exactly what
-makes that exclusion automatic (the same way the CPU + Vulkan-only build target
-excludes metal / cuda). Whether a Qualcomm SDK term additionally disclaims
-critical-application suitability is owner-confirmed at ship time; either way QNN
-is out of the critical-safe SKU.
+The candidate critical-safe (medical / automotive / military) SKU is planned as
+**CPU + Vulkan-only** and **excludes QNN** — the `qnn` feature being off by
+default makes that exclusion automatic (the same way the CPU + Vulkan-only
+build target excludes metal / cuda). This is a future product boundary, not a
+shipped SKU or completion claim. Whether a Qualcomm SDK term additionally
+disclaims critical-application suitability is owner-confirmed at ship time;
+either way QNN is not part of the planned critical-safe SKU.
 
 ## Binding-crate note
 

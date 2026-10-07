@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-08 current-readback boundary:** the root-owned
+> [documentation refresh](documentation-refresh-2026-10-08.md) is the current
+> metadata/security/PR source at `main`
+> `d100d93778191ccab77bd1c37fe3552e3d889758`. The metadata-only inventory is
+> unchanged at 194 repositories / 193 GGUF-bearing / 198 files and 136
+> code-artifact-full / 58 unresolved; no new owner/legal, real-weight CPU,
+> Apple, publication or PR #199 merge evidence is claimed. Preserve the
+> frozen 63-row decision scope and the dated execution evidence below.
+
 > **2026-10-04 JST source-only gate closed:** the corrected leaf actually
 > authenticates the fixed raw/API/receipt on VAST after five passing tests.
 > Root verifies four bounded recovered hashes and leaf/self-test/audit exits

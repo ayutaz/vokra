@@ -1,5 +1,15 @@
 # Vokra ABI Changelog (historical prerelease buckets; current line: v0.3.0)
 
+> **2026-10-08 source-validation boundary:** at `main`
+> `d100d93778191ccab77bd1c37fe3552e3d889758`, the metadata-only catalog
+> remains 136 CPU/Metal code-artifact-full and 58 unresolved across 194 public
+> repositories. The static ABI gate confirms all changed C symbols and 124
+> converter-stamped GGUF prefixes have ledger entries; the active historical
+> anchor remains v1.0-rc. This is not full-catalog Apple evidence and does not rotate the
+> ABI anchor, promote the advisory gate, freeze the ABI, or change any historical
+> entry. `v0.3.0` remains the GitHub-only pre-1.0 release; current routing is in
+> the [documentation refresh](handoff/documentation-refresh-2026-10-08.md).
+
 > **2026-10-04 read-only refresh:** the GitHub API reports one published
 > tag/release, `v0.3.0` (2026-09-20). The local ABI changelog checker passes:
 > all changed C symbols and 124 converter-stamped GGUF prefixes are covered.
