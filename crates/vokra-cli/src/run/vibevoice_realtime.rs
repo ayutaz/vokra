@@ -74,11 +74,7 @@ pub(super) fn run(session: &Session, args: &RunArgs) -> Result<(), String> {
             VibeVoiceRealtimeRuntime::from_gguf(session.gguf(), args.backend)
                 .map_err(|error| format!("Realtime native bind: {error}"))
         })?;
-    let config = VibeVoiceRealtimeSynthesisConfig {
-        max_new_tokens: validated.owner.execution.max_new_tokens,
-        max_speech_steps: validated.owner.execution.max_new_tokens,
-        guidance_scale: validated.owner.execution.cfg_scale,
-    };
+    let config = validated.config;
     let mut synthesis = runtime
         .start_session(
             &validated.preset,
@@ -128,16 +124,20 @@ pub(super) fn run(session: &Session, args: &RunArgs) -> Result<(), String> {
 struct ValidatedInputs {
     text: String,
     output: PathBuf,
-    owner: VibeVoiceRealtimeOwnerContract,
     preset: VibeVoiceRealtimePresetCache,
     tokenizer: VibeVoiceRealtimeTokenizer,
     noise: VibeVoiceRealtimeNoiseTape,
+    config: VibeVoiceRealtimeSynthesisConfig,
 }
 
 /// Authenticates every external activation input before the native binder is
 /// callable. The parsed GGUF bytes are passed directly from the mapped session;
 /// this function never reopens or executes the model.
 fn preflight(file_bytes: &[u8], args: &RunArgs) -> Result<ValidatedInputs, String> {
+    let max_speech_steps = required_positive(
+        &args.realtime_max_speech_steps,
+        "--realtime-max-speech-steps",
+    )?;
     let gguf_sha256 = required(&args.realtime_gguf_sha256, "--realtime-gguf-sha256")?;
     let reference_dir = required_path(&args.realtime_reference_dir, "--realtime-reference-dir")?;
     let reference_sha256 = required(
@@ -232,13 +232,12 @@ fn preflight(file_bytes: &[u8], args: &RunArgs) -> Result<ValidatedInputs, Strin
     if noise.is_empty() {
         return Err("Realtime authenticated noise tape is empty".to_owned());
     }
-    if noise.len() > owner.execution.max_new_tokens {
-        return Err(format!(
-            "Realtime noise tape has {} draws, exceeding owner max_new_tokens {}",
-            noise.len(),
-            owner.execution.max_new_tokens
-        ));
-    }
+    let config = synthesis_config(
+        &noise,
+        owner.execution.max_new_tokens,
+        max_speech_steps,
+        owner.execution.cfg_scale,
+    )?;
     if owner.execution.ddpm_steps != VIBEVOICE_REALTIME_INFERENCE_STEPS {
         return Err(format!(
             "Realtime owner ddpm_steps {} differs from native {}",
@@ -249,11 +248,39 @@ fn preflight(file_bytes: &[u8], args: &RunArgs) -> Result<ValidatedInputs, Strin
     Ok(ValidatedInputs {
         text,
         output,
-        owner,
         preset,
         tokenizer,
         noise,
+        config,
     })
+}
+
+fn synthesis_config(
+    noise: &VibeVoiceRealtimeNoiseTape,
+    max_new_tokens: usize,
+    max_speech_steps: usize,
+    guidance_scale: f32,
+) -> Result<VibeVoiceRealtimeSynthesisConfig, String> {
+    validate_noise_tape_budget(noise, max_speech_steps)?;
+    Ok(VibeVoiceRealtimeSynthesisConfig {
+        max_new_tokens,
+        max_speech_steps,
+        guidance_scale,
+    })
+}
+
+fn validate_noise_tape_budget(
+    noise: &VibeVoiceRealtimeNoiseTape,
+    max_speech_steps: usize,
+) -> Result<(), String> {
+    if noise.len() > max_speech_steps {
+        return Err(format!(
+            "Realtime noise tape has {} draws, exceeding caller max_speech_steps {}",
+            noise.len(),
+            max_speech_steps
+        ));
+    }
+    Ok(())
 }
 
 fn consume_step(step: VibeVoiceRealtimeSynthesisStep, pcm: &mut Vec<f32>) -> Result<bool, String> {
@@ -310,10 +337,10 @@ fn verify_gguf_digest(file_bytes: &[u8], expected: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn preflight_and_bind<T>(
-    preflight: Result<ValidatedInputs, String>,
-    binder: impl FnOnce(&ValidatedInputs) -> Result<T, String>,
-) -> Result<(ValidatedInputs, T), String> {
+fn preflight_and_bind<I, T>(
+    preflight: Result<I, String>,
+    binder: impl FnOnce(&I) -> Result<T, String>,
+) -> Result<(I, T), String> {
     let validated = preflight?;
     let bound = binder(&validated)?;
     Ok((validated, bound))
@@ -366,6 +393,16 @@ fn required<'a>(value: &'a Option<String>, flag: &str) -> Result<&'a str, String
 
 fn required_path(value: &Option<String>, flag: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(required(value, flag)?))
+}
+
+fn required_positive(value: &Option<usize>, flag: &str) -> Result<usize, String> {
+    match value {
+        Some(value) if *value > 0 => Ok(*value),
+        Some(_) => Err(format!("run (VibeVoice-Realtime): {flag} must be positive")),
+        None => Err(format!(
+            "run (VibeVoice-Realtime): {flag} is required for authenticated activation"
+        )),
+    }
 }
 
 fn read_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
@@ -579,6 +616,8 @@ mod tests {
             sha.clone(),
             "--realtime-tokenizer-dir".to_owned(),
             root.join("tokenizer").display().to_string(),
+            "--realtime-max-speech-steps".to_owned(),
+            "3".to_owned(),
             "--realtime-vokra-head".to_owned(),
             head,
             "--realtime-vokra-tree".to_owned(),
@@ -733,6 +772,84 @@ mod tests {
         ));
         assert!(!reference_bound);
         fs::remove_dir_all(&reference_root).expect("remove owned fixture directory");
+    }
+
+    #[test]
+    fn preflight_requires_speech_budget_before_file_io_or_native_binding() {
+        let root = unique_fixture_dir("missing-speech-budget");
+        let correct_sha = hex_digest(&sha256(b"model-free GGUF fixture"));
+        let mut args = parsed_realtime_args(&root, &correct_sha);
+        args.realtime_max_speech_steps = None;
+        let mut bound = false;
+        let result =
+            preflight_and_bind(preflight(b"model-free GGUF fixture", &args), |_validated| {
+                bound = true;
+                Ok::<(), String>(())
+            });
+        assert!(matches!(
+            result.as_ref(),
+            Err(error) if error.contains("--realtime-max-speech-steps is required")
+        ));
+        assert!(!bound);
+        fs::remove_dir_all(&root).expect("remove owned fixture directory");
+    }
+
+    #[test]
+    fn preflight_rejects_zero_speech_budget_before_file_io_or_native_binding() {
+        let root = unique_fixture_dir("zero-speech-budget");
+        let correct_sha = hex_digest(&sha256(b"model-free GGUF fixture"));
+        let mut args = parsed_realtime_args(&root, &correct_sha);
+        args.realtime_max_speech_steps = Some(0);
+        let mut bound = false;
+        let result =
+            preflight_and_bind(preflight(b"model-free GGUF fixture", &args), |_validated| {
+                bound = true;
+                Ok::<(), String>(())
+            });
+        assert!(matches!(
+            result.as_ref(),
+            Err(error) if error.contains("--realtime-max-speech-steps must be positive")
+        ));
+        assert!(!bound);
+        fs::remove_dir_all(&root).expect("remove owned fixture directory");
+    }
+
+    #[test]
+    fn post_auth_noise_budget_to_config_rejects_before_native_binding() {
+        // This isolates the production seam immediately after the authenticated
+        // loader. The full positive preflight cannot be built here because its
+        // fixed tokenizer digests are intentionally not recreated in a fixture.
+        let noise = VibeVoiceRealtimeNoiseTape {
+            draws: vec![Vec::new(), Vec::new()],
+        };
+        let mut bound = false;
+        let result = preflight_and_bind(synthesis_config(&noise, 64, 1, 3.0), |_config| {
+            bound = true;
+            Ok::<(), String>(())
+        });
+        assert!(matches!(
+            result.as_ref(),
+            Err(error) if error.contains("caller max_speech_steps 1")
+        ));
+        assert!(!bound);
+    }
+
+    #[test]
+    fn explicit_speech_budget_builds_distinct_runtime_config() {
+        let noise = VibeVoiceRealtimeNoiseTape {
+            draws: vec![Vec::new(), Vec::new()],
+        };
+        let mut bound = false;
+        let (config, ()) = preflight_and_bind(synthesis_config(&noise, 64, 3, 3.0), |_config| {
+            bound = true;
+            Ok::<(), String>(())
+        })
+        .expect("caller speech budget covers tape-to-config seam");
+
+        assert_eq!(config.max_new_tokens, 64);
+        assert_eq!(config.max_speech_steps, 3);
+        assert_ne!(config.max_new_tokens, config.max_speech_steps);
+        assert!(bound);
     }
 
     #[test]

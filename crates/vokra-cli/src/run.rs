@@ -117,7 +117,8 @@ USAGE:
                   --realtime-tokenizer-dir <tokenizer-dir> --realtime-vokra-head <git-head> \
                   --realtime-vokra-tree <git-tree-sha1> \
                   --realtime-reference-script-sha256 <sha256> --realtime-uv-lock-sha256 <sha256> \
-                  --realtime-trusted-runner-sha256 <sha256> --output <out.wav>
+                  --realtime-trusted-runner-sha256 <sha256> \
+                  --realtime-max-speech-steps <N> --output <out.wav>
     vokra-cli run --model <zonos.gguf> --input <conditioning.zcp> \
                   --zonos-conditioning-digest <64-hex-content-sha256> --zonos-dac <dac-44khz.gguf> \
                   --zonos-max-steps <N> [--zonos-guidance-scale <f32>] --output <out.wav>
@@ -817,6 +818,9 @@ struct RunArgs {
     realtime_tokenizer_dir: Option<String>,
     /// Realtime-only bounded UTF-8 text file.
     realtime_text_file: Option<String>,
+    /// Realtime-only caller-supplied native speech-step cap, independent of
+    /// the owner scope's logical text-plus-speech token budget.
+    realtime_max_speech_steps: Option<usize>,
     /// Realtime-only expected Vokra source HEAD bound by the owner packet.
     realtime_vokra_head: Option<String>,
     /// Realtime-only expected Vokra source tree SHA-1 bound by the owner packet.
@@ -968,6 +972,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut realtime_preset_manifest_sha256: Option<String> = None;
     let mut realtime_tokenizer_dir: Option<String> = None;
     let mut realtime_text_file: Option<String> = None;
+    let mut realtime_max_speech_steps: Option<usize> = None;
     let mut realtime_vokra_head: Option<String> = None;
     let mut realtime_vokra_tree: Option<String> = None;
     let mut realtime_reference_script_sha256: Option<String> = None;
@@ -1674,6 +1679,19 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 );
                 i += 2;
             }
+            "--realtime-max-speech-steps" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--realtime-max-speech-steps requires a positive integer")?;
+                let steps = value.parse::<usize>().map_err(|error| {
+                    format!("--realtime-max-speech-steps must be an integer: {error}")
+                })?;
+                if steps == 0 {
+                    return Err("--realtime-max-speech-steps must be positive".to_owned());
+                }
+                realtime_max_speech_steps = Some(steps);
+                i += 2;
+            }
             "--realtime-vokra-head" => {
                 realtime_vokra_head = Some(
                     args.get(i + 1)
@@ -1801,6 +1819,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         realtime_preset_manifest_sha256,
         realtime_tokenizer_dir,
         realtime_text_file,
+        realtime_max_speech_steps,
         realtime_vokra_head,
         realtime_vokra_tree,
         realtime_reference_script_sha256,
@@ -1934,6 +1953,19 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
     }
 }
 
+fn validate_realtime_max_speech_steps_route(
+    task: ModelTask,
+    max_speech_steps: Option<usize>,
+) -> Result<(), String> {
+    if max_speech_steps.is_some() && task != ModelTask::TtsVibeVoiceRealtime {
+        return Err(
+            "run: --realtime-max-speech-steps is only supported for the vibevoice-realtime arch"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 /// Entry point for `vokra-cli run`.
 pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -1946,6 +1978,8 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         .then_some(engine::TaskHint::CsmFixtureTokenizer);
     let (session, task) =
         engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
+
+    validate_realtime_max_speech_steps_route(task, a.realtime_max_speech_steps)?;
 
     if task == ModelTask::Bicodec {
         validate_bicodec_args(&a)?;
@@ -8618,6 +8652,8 @@ mod tests {
             sha_e.as_str(),
             "--realtime-tokenizer-dir",
             "tokenizer",
+            "--realtime-max-speech-steps",
+            "7",
             "--realtime-vokra-head",
             head.as_str(),
             "--realtime-vokra-tree",
@@ -8634,8 +8670,59 @@ mod tests {
         .expect("dedicated Realtime inputs parse");
         assert_eq!(parsed.realtime_text_file.as_deref(), Some("prompt.txt"));
         assert_eq!(parsed.realtime_tokenizer_dir.as_deref(), Some("tokenizer"));
+        assert_eq!(parsed.realtime_max_speech_steps, Some(7));
         assert_eq!(parsed.output.as_deref(), Some("speech.wav"));
         assert!(parsed.tokenizer.is_none());
+    }
+
+    #[test]
+    fn realtime_max_speech_steps_rejects_missing_noninteger_zero_and_overflow() {
+        let missing = parse_args(&args(&[
+            "--model",
+            "vibevoice-realtime.gguf",
+            "--realtime-max-speech-steps",
+        ]))
+        .expect_err("missing speech-step cap value must be rejected");
+        assert!(missing.contains("--realtime-max-speech-steps requires a positive integer"));
+
+        let noninteger = parse_args(&args(&[
+            "--model",
+            "vibevoice-realtime.gguf",
+            "--realtime-max-speech-steps",
+            "not-a-number",
+        ]))
+        .expect_err("non-integer speech-step cap must be rejected");
+        assert!(noninteger.contains("--realtime-max-speech-steps must be an integer"));
+
+        let zero = parse_args(&args(&[
+            "--model",
+            "vibevoice-realtime.gguf",
+            "--realtime-max-speech-steps",
+            "0",
+        ]))
+        .expect_err("zero speech-step cap must be rejected");
+        assert!(zero.contains("--realtime-max-speech-steps must be positive"));
+
+        let overflow = format!("{}0", usize::MAX);
+        let overflow_error = parse_args(&args(&[
+            "--model",
+            "vibevoice-realtime.gguf",
+            "--realtime-max-speech-steps",
+            overflow.as_str(),
+        ]))
+        .expect_err("speech-step cap overflow must be rejected");
+        assert!(overflow_error.contains("--realtime-max-speech-steps must be an integer"));
+    }
+
+    #[test]
+    fn realtime_max_speech_steps_is_rejected_off_route_only_for_new_flag() {
+        let error = validate_realtime_max_speech_steps_route(ModelTask::Tts, Some(1))
+            .expect_err("speech-step cap must not be silently ignored off route");
+        assert!(error.contains("--realtime-max-speech-steps"));
+        validate_realtime_max_speech_steps_route(ModelTask::TtsVibeVoiceRealtime, Some(1))
+            .expect("speech-step cap is valid on Realtime route");
+        validate_realtime_max_speech_steps_route(ModelTask::Tts, None)
+            .expect("absent Realtime cap does not affect other routes");
     }
 
     #[test]

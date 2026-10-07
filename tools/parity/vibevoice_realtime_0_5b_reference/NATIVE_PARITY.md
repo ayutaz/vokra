@@ -88,7 +88,9 @@ budget, not an official VibeVoice setting. It must cover the observed tape but
 is not required to equal `speech_count`: EOS may stop generation early, and
 `speech_count` is not evidence from which a caller budget may be inferred. The
 consumer does not claim that this native control has been recorded by the
-official runner.
+official runner. The CLI receives this value explicitly through the required
+`--realtime-max-speech-steps <N>` flag; it is not copied from the owner scope's
+logical `max_new_tokens` budget.
 
 The native VibeVoiceRealtimeRuntime::step API still exposes PCM chunks,
 generated positions, draining events, and the terminal reason to ordinary
@@ -267,6 +269,7 @@ license, and no-upload gates.
 : "${VOKRA_VIBEVOICE_REALTIME_REFERENCE_SCRIPT_SHA256:?set external runner SHA-256}"
 : "${VOKRA_VIBEVOICE_REALTIME_UV_LOCK_SHA256:?set external uv.lock SHA-256}"
 : "${VOKRA_VIBEVOICE_REALTIME_TRUSTED_RUNNER_SHA256:?set external trusted-runner SHA-256}"
+: "${VOKRA_VIBEVOICE_REALTIME_MAX_SPEECH_STEPS:?set caller-supplied positive native speech budget}"
 : "${VOKRA_VIBEVOICE_REALTIME_OUTPUT:?set fresh output path}"
 
 vokra-cli run --model "$VOKRA_VIBEVOICE_REALTIME_GGUF" --backend cpu \
@@ -287,6 +290,7 @@ vokra-cli run --model "$VOKRA_VIBEVOICE_REALTIME_GGUF" --backend cpu \
   --realtime-reference-script-sha256 "$VOKRA_VIBEVOICE_REALTIME_REFERENCE_SCRIPT_SHA256" \
   --realtime-uv-lock-sha256 "$VOKRA_VIBEVOICE_REALTIME_UV_LOCK_SHA256" \
   --realtime-trusted-runner-sha256 "$VOKRA_VIBEVOICE_REALTIME_TRUSTED_RUNNER_SHA256" \
+  --realtime-max-speech-steps "$VOKRA_VIBEVOICE_REALTIME_MAX_SPEECH_STEPS" \
   --output "$VOKRA_VIBEVOICE_REALTIME_OUTPUT"
 ```
 
