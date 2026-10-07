@@ -398,14 +398,15 @@ class PackageMetadataAuditTests(unittest.TestCase):
                 "torch >= 2.2.0, < 2.10",
             ],
         )
+        expected_git_blob_sha1 = "0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61"
         self.assertEqual(
             receipt["direct_declarations"]["source"],
             {
                 "path": "moshi/pyproject.toml",
                 "bytes": 1305,
-                "git_blob_sha1": "0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61",
+                "git_blob_sha1": expected_git_blob_sha1,
                 "sha256": "ae98e527d44b74ee91f00880c1058ebeedbf84eacbce5d8278039b1823750258",
-                "api_sha": "0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61",
+                "api_sha": expected_git_blob_sha1,
             },
         )
 
