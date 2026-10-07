@@ -42,6 +42,13 @@ completion. Bounded Apple results and later source-only/real-weight probes
 are recorded in [the current documentation index](../../docs/README.md).
 No CI rerun or model execution was performed for this readback.
 
+**2026-10-07 desktop workflow inventory note:** the 2026-10-04 inventory above
+is retained as historical evidence. The checkout now contains 48 workflow files;
+the new `.github/workflows/desktop-release-completeness.yml` is a
+PR/manual route with no Release or registry publication that calls the reusable desktop producer,
+assembles the same-run Linux/macOS/Windows payload, generates both native SBOMs,
+and runs the complete manifest, C ABI, CLI help, and release-handoff checks.
+
 ---
 
 ## 1. Required checks (main branch protection)
@@ -237,7 +244,8 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 |---|---|---|
 | push tag `v*` / workflow_dispatch | .github/workflows/release.yml | validate-tag → release-notes → ios / Unity / Python / Godot / npm / desktop / Android release assets。crates-io-dry-run は並列、crates-io-publish は release-notes + dry-run 後 |
 | reusable workflow call / workflow_dispatch | .github/workflows/python-wheels.yml | 4 native Python wheels の version normalize、native build、repair、archive/architecture/RECORD検証。`release.yml` から同一runでcall |
-| reusable workflow call / workflow_dispatch | .github/workflows/release-desktop-preflight.yml | macOS/Windows CPU-only C ABI release artifactを同一release run内でbuild・検証・upload |
+| reusable workflow call / workflow_dispatch | .github/workflows/release-desktop-preflight.yml | Linux (glibc/musl) / macOS arm64 / Windows x86_64 の CPU-only C ABI + CLI を同一run内でbuild・identity/loader/help検証・upload。既存の `vokra-capi-macos` / `vokra-capi-windows` artifact member は維持 |
+| pull_request / workflow_dispatch | .github/workflows/desktop-release-completeness.yml | 上記 producer の same-run handoff を Release/registryへ公開せず組立。Windows `vokra-cli.exe` ZIP、2件のSBOM、決定的manifest/sha256、assembled Linux `--help`、desktop release regression を検証 |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。

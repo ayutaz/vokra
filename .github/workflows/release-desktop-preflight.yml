@@ -1,10 +1,6 @@
-# Same-run desktop C ABI artifact producer for release.yml.
-#
-# A tag workflow cannot safely discover a separate ci.yml run by branch name:
-# tag refs do not trigger ci.yml, and a main-branch run at the same SHA has a
-# different head ref. Calling this workflow from release.yml makes the macOS
-# and Windows artifacts part of the same workflow run, so download-artifact is
-# fail-loud and race-free.
+# Same-run desktop artifact producer for release.yml and the non-publishing PR
+# completeness workflow. C ABI artifact names and member filenames are kept
+# stable because Unity consumes vokra-capi-macos / vokra-capi-windows directly.
 
 name: Release desktop preflight
 
@@ -16,42 +12,149 @@ permissions:
   contents: read
 
 jobs:
-  build-desktop-capi:
-    name: build-desktop-capi (${{ matrix.os }})
+  build-desktop-native:
+    name: build-desktop-native (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
+          # macos-latest is required to prove the native arm64 artifact. The
+          # host and Mach-O headers are checked below; a future label change
+          # fails closed instead of producing a falsely named x86 asset.
           - os: macos-latest
-            artifact: vokra-capi-macos
-            path: target/release/libvokra.dylib
+            target: aarch64-apple-darwin
+            capi_artifact: vokra-capi-macos
+            capi_path: target/aarch64-apple-darwin/release/libvokra.dylib
+            cli_artifact: vokra-cli-macos-aarch64
+            cli_path: target/aarch64-apple-darwin/release/vokra-cli
+            identity: macos-arm64
           - os: windows-latest
-            artifact: vokra-capi-windows
-            path: target/release/vokra.dll
+            target: x86_64-pc-windows-msvc
+            capi_artifact: vokra-capi-windows
+            capi_path: target/x86_64-pc-windows-msvc/release/vokra.dll
+            cli_artifact: vokra-cli-windows-x86_64
+            cli_path: target/x86_64-pc-windows-msvc/release/vokra-cli.exe
+            identity: windows-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           lookup-only: true
       - name: Build CPU-only release C ABI
-        run: cargo build --locked --release -p vokra-capi --no-default-features --features cpu
-      - name: Verify expected native artifact
+        run: cargo build --locked --release -p vokra-capi --target ${{ matrix.target }} --no-default-features --features cpu
+      - name: Build CPU-only release CLI (no optional features)
+        run: cargo build --locked --release -p vokra-cli --target ${{ matrix.target }} --no-default-features
+      - name: Verify native identity and model-free CLI help
         shell: bash
         env:
-          ARTIFACT_PATH: ${{ matrix.path }}
+          CAPI_PATH: ${{ matrix.capi_path }}
+          CLI_PATH: ${{ matrix.cli_path }}
+          IDENTITY: ${{ matrix.identity }}
         run: |
           set -euo pipefail
-          test -f "$ARTIFACT_PATH"
-          ls -la "$ARTIFACT_PATH"
+          if [ "$IDENTITY" = macos-arm64 ]; then
+            test "$(uname -m)" = arm64
+          else
+            rustc -vV | grep -F 'host: x86_64-pc-windows-msvc'
+          fi
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify-binary "$CAPI_PATH" --target "$IDENTITY"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify-binary "$CLI_PATH" --target "$IDENTITY"
+          EXPECTED_VERSION="$(uv run --no-project --python 3.12 python tools/release/version_contract.py \
+            --github-ref "$GITHUB_REF" --dispatch-version "")"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            native-smoke "$CAPI_PATH" --expected-version "$EXPECTED_VERSION"
+          "$CLI_PATH" --help >/tmp/vokra-cli-help.txt
+          test -s /tmp/vokra-cli-help.txt
       - name: Upload desktop C ABI artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.path }}
+          name: ${{ matrix.capi_artifact }}
+          path: ${{ matrix.capi_path }}
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload desktop CLI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ matrix.cli_artifact }}
+          path: ${{ matrix.cli_path }}
+          retention-days: 7
+          if-no-files-found: error
+
+  build-desktop-linux:
+    name: build-desktop-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          lookup-only: true
+      - name: Build CPU-only Linux C ABI
+        run: cargo build --locked --release -p vokra-capi --no-default-features --features cpu
+      - name: Build CPU-only Linux CLI (glibc, no optional features)
+        run: cargo build --locked --release -p vokra-cli --no-default-features
+      - name: Build CPU-only Linux CLI (musl, no optional features)
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --release -p vokra-cli --target x86_64-unknown-linux-musl --no-default-features
+      - name: Verify Linux identities, static musl and model-free help
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify-binary target/release/libvokra.so --target linux-x86_64
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify-binary target/release/vokra-cli --target linux-x86_64
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify-binary target/x86_64-unknown-linux-musl/release/vokra-cli --target linux-x86_64-musl
+          EXPECTED_VERSION="$(uv run --no-project --python 3.12 python tools/release/version_contract.py \
+            --github-ref "$GITHUB_REF" --dispatch-version "")"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            native-smoke target/release/libvokra.so --expected-version "$EXPECTED_VERSION"
+          musl_file="$(file target/x86_64-unknown-linux-musl/release/vokra-cli)"
+          printf '%s\n' "$musl_file"
+          case "$musl_file" in
+            *static*|*statically\ linked*) ;;
+            *) echo "musl CLI is not reported as statically linked" >&2; exit 1 ;;
+          esac
+          target/release/vokra-cli --help >/tmp/vokra-cli-help-glibc.txt
+          target/x86_64-unknown-linux-musl/release/vokra-cli --help >/tmp/vokra-cli-help-musl.txt
+          test -s /tmp/vokra-cli-help-glibc.txt
+          test -s /tmp/vokra-cli-help-musl.txt
+      - name: Upload Linux C ABI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vokra-capi-linux
+          path: target/release/libvokra.so
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload Linux glibc CLI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vokra-cli-linux-x86_64
+          path: target/release/vokra-cli
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload Linux musl CLI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vokra-cli-linux-musl-x86_64
+          path: target/x86_64-unknown-linux-musl/release/vokra-cli
           retention-days: 7
           if-no-files-found: error

@@ -1,0 +1,126 @@
+# Non-publishing exercise of the exact desktop producer/assembly handoff used
+# by release.yml.  It intentionally does not consult DESKTOP_AAR_ENABLED and
+# has no contents:write, release, attestation, or registry permissions.
+
+name: Desktop release completeness
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-desktop-preflight.yml"
+      - ".github/workflows/desktop-release-completeness.yml"
+      - "tools/release/desktop_release.py"
+      - "tools/release/test_desktop_release.py"
+      - "tools/release/test_release_artifact_handoff.py"
+      - "tools/release/version_contract.py"
+      - "scripts/sbom/generate_spdx.py"
+      - ".github/workflows/release.yml"
+      - "crates/vokra-cli/**"
+      - "crates/vokra-capi/**"
+      - "crates/vokra-*/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "include/vokra.h"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-producers:
+    uses: ./.github/workflows/release-desktop-preflight.yml
+
+  assemble-and-verify:
+    name: assemble-and-verify
+    needs: desktop-producers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+      - name: Download same-run Linux C ABI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-linux
+          path: reuse/linux-capi
+      - name: Download same-run macOS C ABI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-macos
+          path: reuse/macos-capi
+      - name: Download same-run Windows C ABI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-windows
+          path: reuse/windows-capi
+      - name: Download same-run Linux glibc CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-linux-x86_64
+          path: reuse/linux-cli
+      - name: Download same-run Linux musl CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-linux-musl-x86_64
+          path: reuse/linux-musl-cli
+      - name: Download same-run macOS CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-macos-aarch64
+          path: reuse/macos-cli
+      - name: Download same-run Windows CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-windows-x86_64
+          path: reuse/windows-cli
+      - name: Assemble and verify complete model-free desktop payload
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py assemble \
+            --version 0.0.0-ci \
+            --out-dir dist/desktop \
+            --header include/vokra.h \
+            --capi-linux reuse/linux-capi/libvokra.so \
+            --capi-macos reuse/macos-capi/libvokra.dylib \
+            --capi-windows reuse/windows-capi/vokra.dll \
+            --cli-linux reuse/linux-cli/vokra-cli \
+            --cli-linux-musl reuse/linux-musl-cli/vokra-cli \
+            --cli-macos reuse/macos-cli/vokra-cli \
+            --cli-windows reuse/windows-cli/vokra-cli.exe
+          test -f dist/desktop/vokra-cli-0.0.0-ci-x86_64-windows.zip
+          unzip -Z1 dist/desktop/vokra-cli-0.0.0-ci-x86_64-windows.zip | grep -Fx vokra-cli.exe
+          EXPECTED_VERSION="$(uv run --no-project --python 3.12 python tools/release/version_contract.py \
+            --github-ref "$GITHUB_REF" --dispatch-version "")"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            native-smoke dist/desktop/libvokra-0.0.0-ci-x86_64-linux.so \
+            --expected-version "$EXPECTED_VERSION"
+          dist/desktop/vokra-cli-0.0.0-ci-x86_64-linux --help >/tmp/vokra-assembled-glibc-help.txt
+          dist/desktop/vokra-cli-0.0.0-ci-x86_64-linux-musl --help >/tmp/vokra-assembled-musl-help.txt
+          test -s /tmp/vokra-assembled-glibc-help.txt
+          test -s /tmp/vokra-assembled-musl-help.txt
+      - name: Generate real C ABI and CLI SBOMs, manifest, and complete verify
+        env:
+          SOURCE_DATE_EPOCH: "1700000000"
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
+            --package vokra-capi --no-default-features --features cpu \
+            --doc-name vokra-desktop-capi \
+            --output dist/desktop/vokra-desktop-capi.spdx.json
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
+            --package vokra-cli --no-default-features \
+            --doc-name vokra-desktop-cli \
+            --output dist/desktop/vokra-desktop-cli.spdx.json
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            manifest --version 0.0.0-ci --dist-dir dist/desktop
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version 0.0.0-ci --dist-dir dist/desktop
+      - name: Run desktop release unit and handoff regressions
+        run: |
+          uv run --no-project --python 3.12 python tools/release/test_desktop_release.py
+          uv run --no-project --python 3.12 python tools/release/test_release_artifact_handoff.py
