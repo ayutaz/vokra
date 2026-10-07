@@ -130,7 +130,7 @@ jobs:
           musl_file="$(file target/x86_64-unknown-linux-musl/release/vokra-cli)"
           printf '%s\n' "$musl_file"
           case "$musl_file" in
-            *static*|*statically\ linked*) ;;
+            *static*) ;;
             *) echo "musl CLI is not reported as statically linked" >&2; exit 1 ;;
           esac
           target/release/vokra-cli --help >/tmp/vokra-cli-help-glibc.txt

@@ -4,8 +4,9 @@
 
 This follow-up starts from `main` at
 `d100d93778191ccab77bd1c37fe3552e3d889758`. It addresses the independent
-desktop distribution gap in [deliverables §3.2](../deliverables.md) and
-[the platform support matrix §5.1](../platform-support/v1.0-rc-support-matrix.md).
+desktop distribution gap recorded in
+[the platform support matrix §5.1](../platform-support/v1.0-rc-support-matrix.md),
+which cites deliverables §3.2 as its package-shape requirement.
 It does not retry or waive external model-package, legal, or upstream waits.
 
 The bounded implementation scope is same-run CPU-only C ABI and CLI artifact
