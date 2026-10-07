@@ -8682,7 +8682,8 @@ mod tests {
             "vibevoice-realtime.gguf",
             "--realtime-max-speech-steps",
         ]))
-        .expect_err("missing speech-step cap value must be rejected");
+        .err()
+        .expect("missing speech-step cap value must be rejected");
         assert!(missing.contains("--realtime-max-speech-steps requires a positive integer"));
 
         let noninteger = parse_args(&args(&[
@@ -8691,7 +8692,8 @@ mod tests {
             "--realtime-max-speech-steps",
             "not-a-number",
         ]))
-        .expect_err("non-integer speech-step cap must be rejected");
+        .err()
+        .expect("non-integer speech-step cap must be rejected");
         assert!(noninteger.contains("--realtime-max-speech-steps must be an integer"));
 
         let zero = parse_args(&args(&[
@@ -8700,7 +8702,8 @@ mod tests {
             "--realtime-max-speech-steps",
             "0",
         ]))
-        .expect_err("zero speech-step cap must be rejected");
+        .err()
+        .expect("zero speech-step cap must be rejected");
         assert!(zero.contains("--realtime-max-speech-steps must be positive"));
 
         let overflow = format!("{}0", usize::MAX);
@@ -8710,7 +8713,8 @@ mod tests {
             "--realtime-max-speech-steps",
             overflow.as_str(),
         ]))
-        .expect_err("speech-step cap overflow must be rejected");
+        .err()
+        .expect("speech-step cap overflow must be rejected");
         assert!(overflow_error.contains("--realtime-max-speech-steps must be an integer"));
     }
 
