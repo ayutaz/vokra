@@ -228,7 +228,8 @@ The preflight binds all of these inputs independently:
   packet, not binary self-attestation.
 
 The complete authenticated noise tape is loaded from the reference directory
-before the native bind. An empty tape, a tape longer than the owner limit, or
+before the native bind. An empty tape, a tape longer than the caller-supplied
+`--realtime-max-speech-steps` limit, or
 an owner `ddpm_steps` value different from the native inference-step contract
 fails preflight. The route then creates the output with an exclusive
 create-new operation, consumes finite PCM at 24,000 Hz, and explicitly drains
