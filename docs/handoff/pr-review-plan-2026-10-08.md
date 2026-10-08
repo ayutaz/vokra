@@ -889,6 +889,18 @@ real-weight, owner, Apple or publication PASS. #195 remains open until the
 reviewed replacement is actually incorporated into main and this scoped
 responsibility proof is repeated against the then-current live heads.
 
+### Published #195 bounded-review evidence
+
+The accepted narrow audit is recorded in [#195's review comment](https://github.com/ayutaz/vokra/pull/195#issuecomment-6058697186)
+at 2026-10-08 11:18:16 UTC. Manager independently compares the API's actual
+JSON body with the reviewed 2,071-character local document: exact match.
+An initial CLI-display diff shows only its extra printed newline; it is not
+used to claim exact equality. Fresh PR readback proves the original Dependabot
+body and `bf54a6c2` head are unchanged, and #195 remains OPEN/Draft. The comment
+retains the strict scoped-change failure, no-runtime/no-owner/no-publication
+boundary and actual-main-before-closure condition. No PR is merged or closed
+by posting this review evidence.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
