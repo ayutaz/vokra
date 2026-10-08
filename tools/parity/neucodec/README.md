@@ -21,6 +21,11 @@ uv run --python 3.12 --project tools/parity/neucodec --frozen \
   python tools/parity/neucodec/dump_reference.py \
   --source /path/to/neuphonic-neucodec \
   --gguf /path/to/model.gguf \
-  --codes crates/vokra-models/tests/fixtures/neucodec/codes.u32le \
+  --codes crates/vokra-models/tests/fixtures/neucodec/base/codes.u32le \
   --output /tmp/neucodec-reference
 ```
+
+The command above uses the shared four-code base fixture. To regenerate the
+distill reference, run the same command with
+`crates/vokra-models/tests/fixtures/neucodec/distill/codes.u32le` and the
+audited distill GGUF; the dumper selects the variant from the GGUF digest.

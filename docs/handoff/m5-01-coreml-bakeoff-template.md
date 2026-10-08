@@ -1,23 +1,22 @@
 # M5-01 CoreML/ANE bakeoff report — template
 
-**Owner-fillable template**. Copy this to a dated sibling (e.g.
-`docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`) and populate every
-`TBD` field from a real run of `tools/parity/npu_rtf_variance.sh
---backend coreml`. Do NOT edit this template in-place with real numbers
-— the template is the fresh sheet for the *next* bakeoff.
+**Owner-fillable template.** Copy this to a dated sibling (for example
+`docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`) and populate every `TBD`
+from a real owner-side run. Do not edit this template in place. The shared
+rules, including the distinction between the exact encoder gate and the
+legacy all-model RTF harness, are in
+[`npu-bakeoff-protocol.md`](npu-bakeoff-protocol.md); their outputs must not
+be combined as one experiment.
 
-**Position in the plan** — this feeds `docs/m5-owner-verification-checklist.md`
-§1.5 (NPU bakeoff runbook) which in turn feeds `docs/handoff/m5-13.md`
-§(c) T19 (C-ABI freeze GO/NO-GO for the NPU delegate selector). The 2×
-verdict recorded here is the input to that owner decision, not a
-release-gate on its own.
+**Position in the plan** — this feeds
+`docs/m5-owner-verification-checklist.md` §1.5, which in turn feeds
+`docs/handoff/m5-13.md` §(c) T19 (C-ABI freeze GO/NO-GO). The recorded 2×
+verdict is input to that owner decision, not a release gate on its own.
 
-**NFR-PF-12 protocol** (2026-08-09 codification): the CPU baseline for
-the 2× ratio is **M5-14-post CPU** (SIMD hot-path optimised,
-libm-route). An NPU RTF captured without a matched CPU baseline
-collected on the same host in the same session **cannot** feed the 2×
-verdict. Silent-CPU-fallback (placement < 90 %) **disqualifies** the
-run — this is the FR-EX-08 hazard clause, not a soft warning.
+The command examples in §2 and §3 show the legacy product-RTF path using
+`tools/parity/npu_rtf_variance.sh`. For the current exact Whisper encoder
+gate, use `vokra-cli npu-bakeoff` as specified in the shared protocol and
+record its parity/speed output separately from these all-model RTF rows.
 
 ---
 
@@ -43,12 +42,13 @@ Notes on device selection (owner records why this rig was chosen):
 
 ## 2. Baseline (M5-14-post CPU RTF)
 
-Captured on the **same host in the same session** with `--backend cpu`
-so the 2× ratio compares apples to apples (thermal state / background
-load / macOS version are held constant).
+For the legacy RTF lane, capture the M5-14-post CPU leg on the same host and
+in the same session as §3. Hold thermal state, OS, and background load
+constant. Use the shared protocol for the exact encoder gate's in-process
+CPU leg and do not merge the two lanes.
 
 ```bash
-./tools/parity/npu_rtf_variance.sh \
+uv run --no-project --python 3.12 bash ./tools/parity/npu_rtf_variance.sh \
     --gguf   /path/to/whisper-large-v3.gguf \
     --audio  /path/to/jfk-30s.wav \
     --backend cpu \
@@ -57,7 +57,7 @@ load / macOS version are held constant).
     --label  m5-14-post-cpu-baseline \
     --output rtf-cpu-baseline.jsonl
 
-./tools/parity/npu_rtf_analyze.py rtf-cpu-baseline.jsonl \
+uv run --no-project --python 3.12 python -B ./tools/parity/npu_rtf_analyze.py rtf-cpu-baseline.jsonl \
     --output rtf-cpu-baseline.report.md
 ```
 
@@ -65,27 +65,21 @@ load / macOS version are held constant).
 |---|---|
 | GGUF | TBD (SHA256 recommended, e.g. `whisper-large-v3.gguf, sha256 2ebfc46a…`) |
 | Audio fixture | TBD (e.g. `jfk-30s.wav 16 kHz mono PCM16`) |
-| N (iters) | TBD (default 10, extend if CV > 0.20) |
-| mean RTF | TBD |
-| median RTF | TBD |
-| CV | TBD (must be ≤ 0.20 to record the mean without WARN) |
-| p95 RTF | TBD |
-| p99 RTF | TBD |
-| Analyzer CV verdict | TBD (`OK` / `WARN`) |
-| JSONL artifact | TBD (path in `docs/bench-baselines/…`) |
-| Report artifact | TBD (path in `docs/bench-baselines/…`) |
+
+In the dated copy, add the shared CPU/delegate RTF metric block from
+[`npu-bakeoff-protocol.md` §4](npu-bakeoff-protocol.md#4-shared-rtf-metric-block-and-decision-inputs)
+and link both raw JSONL and analyzer report artifacts.
 
 ## 3. CoreML/ANE run
 
-Owner must wire up an ANE placement probe before running — Xcode
-Instruments `MLModel` trace is the reference; see the Apple developer
-docs on `MLModel` Metrics for the JSON export path. The probe should
-emit `{"ane_frac": <0..1>, "gpu_frac": <0..1>, "cpu_frac": <0..1>}` to
-stdout on each invocation; `npu_rtf_variance.sh` folds that JSON into
-the per-iteration line.
+Wire and validate an ANE placement probe before timing. The owner supplies
+the CoreML `MLComputePlan`/Instruments evidence; the legacy harness probe must
+emit `{"ane_frac": <0..1>, "gpu_frac": <0..1>, "cpu_frac": <0..1>}` on
+each invocation. A missing or invalid probe is `INSUFFICIENT DATA`, not an
+inferred 100% ANE result.
 
 ```bash
-./tools/parity/npu_rtf_variance.sh \
+uv run --no-project --python 3.12 bash ./tools/parity/npu_rtf_variance.sh \
     --gguf   /path/to/whisper-large-v3.gguf \
     --audio  /path/to/jfk-30s.wav \
     --backend coreml \
@@ -95,43 +89,24 @@ the per-iteration line.
     --label  m5-01-coreml-ane \
     --output rtf-coreml.jsonl
 
-./tools/parity/npu_rtf_analyze.py rtf-coreml.jsonl \
+uv run --no-project --python 3.12 python -B ./tools/parity/npu_rtf_analyze.py rtf-coreml.jsonl \
     --output rtf-coreml.report.md
 ```
 
 | field | value |
 |---|---|
-| N (iters) | TBD |
-| mean RTF | TBD |
-| median RTF | TBD |
-| CV | TBD |
-| p95 RTF | TBD |
-| p99 RTF | TBD |
-| Analyzer CV verdict | TBD (`OK` / `WARN`) |
-| **NPU fraction (mean, ANE)** | TBD (must be ≥ 0.90 to record the mean) |
+| **NPU fraction (mean, ANE)** | TBD (must be ≥ 0.90) |
 | NPU fraction (min, ANE) | TBD |
 | Placement probe used | TBD (path to the shell wrapper around Xcode Instruments) |
 | Analyzer placement verdict | TBD (`OK` / `WARN`) |
-| JSONL artifact | TBD |
-| Report artifact | TBD |
-
-If the placement probe is not yet wired up:
-
-> **STOP**. Per FR-EX-08 an NPU bakeoff without a placement probe is
-> not a bakeoff — you are measuring `ANE || CPU-fallback` vs pure CPU,
-> which is not the same experiment. Wire the probe up (or record the
-> bakeoff as "insufficient tooling, deferred") before proceeding.
 
 ## 4. NFR-PF-12 verdict
 
-Only fill this section if:
-- (a) both §2 and §3 have `Analyzer CV verdict = OK` (or the owner has
-  chosen to accept high-CV numbers with an explicit note explaining why
-  a WARN is not fatal for this run), AND
-- (b) §3 has `Analyzer placement verdict = OK` (≥ 90 % ANE placement).
-
-If either condition fails, the verdict is **INSUFFICIENT DATA**; record
-the reason and re-run.
+Apply the shared protocol's acceptance and decision rules. For this CoreML
+legacy lane, a numeric 2× record requires both §2 and §3 to have acceptable CV
+evidence and §3 to have `Analyzer placement verdict = OK` (≥ 90% ANE). A
+missing probe, placement failure, or unresolved noisy run is
+**INSUFFICIENT DATA**.
 
 | field | value |
 |---|---|
@@ -141,35 +116,41 @@ the reason and re-run.
 | NFR-PF-12 threshold | 2.0 |
 | **Verdict** | TBD (`PASS` / `FAIL` / `INSUFFICIENT DATA`) |
 | Reason (if FAIL / INSUFFICIENT) | TBD |
-| Feeds M5-13 T19 GO/NO-GO | TBD (`GO` = expose the delegate selector as a frozen C symbol; `NO-GO` = keep Rust-only per handoff m5-13.md §(c) T19) |
+| Feeds M5-13 T19 GO/NO-GO | TBD (`GO` = expose the delegate selector as a frozen C symbol; `NO-GO` = keep Rust-only per `m5-13.md` §(c) T19) |
+
+The exact encoder gate additionally requires its fixed CPU-oracle parity bound
+and reports a separate p50 speed verdict; record that output as its own
+evidence lane, never as an all-model RTF result.
 
 ## 5. Rerun / defer conditions
 
+Apply the shared protocol's rerun/defer matrix. CoreML-specific follow-up:
+
 | symptom | action |
 |---|---|
-| `Analyzer CV verdict = WARN` on both §2 and §3 | Re-run with `--iters 20` on a cooled-down box, plugged in, other workloads killed. If still WARN, defer with a note. |
-| `placement < 0.90` on §3 | The delegate is silently falling back — inspect the Xcode Instruments MLModel trace to see which op(s). Report the op + shape to CC as an M5-01 follow-up ticket. Verdict: `INSUFFICIENT DATA`. |
-| `Speedup < 2.0` cleanly | Verdict: `FAIL`. Feeds `NO-GO` for the M5-13 T19 C-ABI symbol call. NO-GO is recoverable post-GA via an additive MINOR bump (handoff m5-13.md §(c) T19), so this is not a v1.0 blocker — just a signal that the delegate is not ready for a frozen selector. |
-| ANE not reachable / CoreML load fails | Bakeoff cannot fire. Record the failure (macOS version, CoreML SDK version, ONNX / mlmodel bundle path if any) and hand back to CC. |
+| `placement < 0.90` on §3 | Inspect the Xcode Instruments/MLComputePlan trace, report the failing operation and shape, and record `INSUFFICIENT DATA` as an M5-01 follow-up. |
+| ANE not reachable / CoreML load fails | Record the macOS version, CoreML SDK version, model/compiled-tree path, and exact failure; the bakeoff is `INSUFFICIENT DATA`. |
 
 ## 6. Artifacts to commit
 
-After the verdict is recorded:
+Follow the shared evidence boundary and retain the CoreML-specific rows:
 
 - [ ] `rtf-cpu-baseline.jsonl` → `docs/bench-baselines/m5-01-coreml-bakeoff-YYYY-MM-DD/`
 - [ ] `rtf-coreml.jsonl` → same directory
 - [ ] `rtf-cpu-baseline.report.md` → same directory
 - [ ] `rtf-coreml.report.md` → same directory
+- [ ] CoreML placement export/probe evidence → same dated evidence set
 - [ ] filled-out copy of this template → `docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`
 - [ ] `docs/m5-owner-verification-checklist.md` §1.5 checkbox tick
 
 ## 7. Cross-references
 
+- Shared protocol: `docs/handoff/npu-bakeoff-protocol.md`
 - Runbook: `docs/m5-owner-verification-checklist.md` §1.5
 - Sister template: `docs/handoff/m5-02-qnn-bakeoff-template.md`
 - Harness: `tools/parity/npu_rtf_variance.sh`
 - Analyzer: `tools/parity/npu_rtf_analyze.py`
+- Exact encoder gate: `vokra-cli npu-bakeoff` / `crates/vokra-cli/src/npu_bakeoff.rs`
 - Feeds: `docs/handoff/m5-13.md` §(c) T19 (C-ABI freeze GO/NO-GO)
-- NFR-PF-12 protocol: `docs/system-requirements.md` (gitignored-local) /
-  public glossary `docs/requirement-ids.md` NFR-PF-12
+- NFR-PF-12: public glossary `docs/requirement-ids.md`
 - Handoff sibling: `docs/handoff/m5-02.md` §"NFR-PF-12 baseline"

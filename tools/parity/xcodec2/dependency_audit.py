@@ -77,7 +77,7 @@ EXPECTED_LINUX_CLOSURE = frozenset({
     ("frozendict", "2.4.7"), ("fsspec", "2026.6.0"), ("gguf", "0.19.0"), ("h11", "0.16.0"),
     ("hf-xet", "1.6.0"), ("httpcore", "1.0.9"), ("httpx", "0.28.1"), ("huggingface-hub", "1.33.0"),
     ("idna", "3.19"), ("jinja2", "3.1.6"), ("lxml", "6.1.2"), ("markupsafe", "3.0.3"),
-    ("mpmath", "1.3.0"), ("multidict", "6.7.1"), ("multiprocess", "0.70.19"), ("networkx", "3.6.1"),
+    ("mpmath", "1.3.0"), ("multidict", "6.9.1"), ("multiprocess", "0.70.19"), ("networkx", "3.6.1"),
     ("numpy", "2.0.2"), ("omegaconf", "2.3.1"), ("packaging", "26.3"), ("pandas", "3.0.5"),
     ("pillow", "12.3.0"), ("propcache", "0.5.2"), ("psutil", "7.2.2"), ("pyarrow", "25.0.1"),
     ("pycryptodomex", "3.23.0"), ("python-dateutil", "2.9.0.post0"), ("pyyaml", "6.0.3"), ("regex", "2026.7.19"),

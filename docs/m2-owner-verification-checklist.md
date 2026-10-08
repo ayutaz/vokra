@@ -475,7 +475,7 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 - 環境: M1 iMac + Docker Desktop 24.0.6 + `homeassistant/home-assistant:stable`（sha256 `f73512ba...`）。詳細手順は `integrations/vokra-server/tests/wyoming-ha-smoke.md`。
 - **wire-level reachability**（`c3f0fce`）: HA container が `vokra-server` を host:10300 経由で `host.docker.internal` (2.6 ms) と LAN IP の両方から reach できることを確認。
 - **event loop fix**（`d076b8f`）: `wyoming_accept_loop` を `run_with_config` に配線、`signal.wait().await` を `block_on` の戻り前に挟むことで tokio runtime drop を防止。従来の smoke で発見された「Wyoming info reply が返らない」問題を解消。
-- **unit-level hard-assert**（`0bb73bb`、workflow `wf_b891d85d-2f3`）: `crates/vokra-server/tests/wyoming_info_reply.rs`（350 行）で 3 tests 追加 — (1) describe → info reply の well-formed JSONL 一致を 5s deadline 内で hard-assert、(2) 3 fresh TCP 接続それぞれで info reply、(3) unknown event 後の explicit error を hard-assert（FR-EX-08 posture 保存）。全 test で `127.0.0.1:0` 動的 port を使い parallel `cargo test` の port collision を排除。**cargo test -p vokra-server → 120 unit + 16 integration all green**。
+- **unit-level hard-assert**（`0bb73bb`、workflow `wf_b891d85d-2f3`）: 当時の記録では `crates/vokra-server/tests/wyoming_info_reply.rs`（350 行）に 3 tests 追加 — (1) describe → info reply の well-formed JSONL 一致を 5s deadline 内で hard-assert、(2) 3 fresh TCP 接続それぞれで info reply、(3) unknown event 後の explicit error を hard-assert（FR-EX-08 posture 保存）。この test は現在 `integrations/vokra-server/tests/wyoming_info_reply.rs` に移設済み。全 test で `127.0.0.1:0` 動的 port を使い parallel `cargo test` の port collision を排除。**cargo test -p vokra-server → 120 unit + 16 integration all green**（当時の結果）。
 - **判定範囲**: unit test level の reply 検証は CC 側で完結。Kill switch J の採用可否（HA 側が Vokra を「推奨 Wyoming Server」として案内するか）は依頼者判断領域。
 
 ### Exit 判定への寄与

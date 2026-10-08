@@ -5,6 +5,22 @@ finish the public Mac CPU/Apple Metal catalog, repair public artifacts, and
 resolve the dependency and OpenSSF findings. It is not a completion claim or
 an upload authorization.
 
+## 2026-10-08 current-readback boundary
+
+The root-owned [2026-10-08 documentation refresh](documentation-refresh-2026-10-08.md)
+is authoritative for the current readback. At `main` `d100d93778191ccab77bd1c37fe3552e3d889758`,
+the metadata-only audit remains 194 public repositories, 193 GGUF-bearing
+repositories and 198 GGUF files; CPU remains 136 `full`, 43 `partial`, 14
+`no-runtime-binder` and 1 `not-artifact`, and Metal remains 136 `full`, 57
+`blocked-by-cpu` and 1 `not-artifact`, leaving 58 unresolved rows. The fresh
+security readback is 283 open Dependabot alerts (254 with a named patched
+version and 29 without one) and four open Scorecard findings:
+`CIIBestPracticesID`, `CodeReviewID`, `SASTID` and `VulnerabilitiesID`.
+Sixteen pull requests remain open, fifteen drafts; PR #199 remains unmerged.
+These facts do not promote a model row, close an owner/legal gate, or prove
+real-weight CPU, Apple, publication or release completion. The 2026-10-04
+counts below remain dated evidence rather than the current security snapshot.
+
 ## Audited starting point
 
 **2026-10-04 documentation readback:** the starting values below remain
@@ -3038,7 +3054,7 @@ main run `36847827407` agree that only three Scorecard findings remain open.
 `MaintainedID` and `SASTID` are fixed without dismissal; Best Practices,
 independent Code Review and Vulnerabilities remain open. Exact-head evidence,
 SARIF hash and current Dependabot counts are recorded in the
-[security readback](security-remediation-2026-09-21.md#2026-10-02-current-security-readback).
+[security readback](security-remediation-2026-09-21.md#2026-10-02-security-readback-historical-evidence).
 This supersedes the older five-open observations, not the full completion
 scope or the outstanding security remediation.
 

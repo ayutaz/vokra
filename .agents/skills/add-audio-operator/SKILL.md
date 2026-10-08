@@ -10,10 +10,10 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 ## 1. 定義は `vokra-ops`、カーネルは各 backend（CPU 必須 / Metal / CUDA）
 
 - op の型・属性・shape 検査・reference forward を `crates/vokra-ops/` に定義。
-- 実カーネル（SIMD）は `crates/vokra-backend-cpu/`。**CPU は第一級 backend で必須**（全 backend の下限）。**runtime dispatch**（x86-64: SSE2 baseline→AVX2+FMA 主力、ARM64: NEON baseline→dotprod/i8mm）。RTF 最優先で `unsafe` + SIMD intrinsics を積極使用してよいが、**各 `unsafe` に `// SAFETY:` 必須**（`undocumented_unsafe_blocks = deny`）。公開 API 境界は safe に保つ。`unsafe` 許可 crate は `vokra-ops` / `vokra-backend-cpu` / `vokra-backend-metal` / `vokra-backend-cuda` / `vokra-capi` / `vokra-mmap`（crate root で `#![allow(unsafe_code)]`。`vokra-core` は unsafe-free）。
+- 実カーネル（SIMD）は `crates/vokra-backend-cpu/`。**CPU は第一級 backend で必須**（全 backend の下限）。**runtime dispatch**（x86-64: SSE2 baseline→AVX2+FMA 主力、ARM64: NEON baseline→dotprod/i8mm）。RTF 最優先で `unsafe` + SIMD intrinsics を積極使用してよいが、**各 `unsafe` に `// SAFETY:` 必須**（`undocumented_unsafe_blocks = deny`）。公開 API 境界は safe に保つ。現行の unsafe 許可境界は `docs/architecture.md` §1.4 と各 crate root の実定義を照合する（`vokra-core` は unsafe-free）。
 - **GPU backend が要るなら 2 経路のどちらかに配線**（非対応 op は必ず明示 `UnsupportedOp`、**silent CPU fallback 禁止** = FR-EX-08）:
-  - **グラフ経路** — `vokra-core` の `Backend::eval_op`（default = `UnsupportedOp`）を `vokra-backend-metal` / `vokra-backend-cuda` が対応 op だけ override（`run_graph`（`vokra-core/src/runtime/`）が topo 順に駆動）。
-  - **imperative 経路（モデル hot op）** — `vokra-models/src/compute.rs` の `Compute` seam（Cpu/Metal/Cuda を enum dispatch、`HotOp` に列挙 = GEMM/GEMV/softmax/layer_norm/gelu/conv1d、`for_backend` が model 必要 op を全網羅しなければ `UnsupportedOp`）。Metal=objc_msgSend、CUDA=libcuda/libnvrtc の手書き生 FFI。metal/cuda は**既定 OFF の first-party optional feature** ゆえ zero-dep 不変条件は不変。音声 op 自体（STFT/vocoder 等）の GPU カーネルは現状ほぼ未配線で CPU 実行、GPU 化するなら上記いずれかに追加する。
+  - **グラフ経路** — `vokra-core` の `Backend::eval_op`（default = `UnsupportedOp`）を対応 backend が override（例: Metal/CUDA。Vulkan/WebGPU も実際の対応集合を確認）。`run_graph`（`vokra-core/src/runtime/`）が topo 順に駆動する。CoreML/QNN の whole-submodel delegate は generic op coverage と別契約（`docs/backend-guide.md`）であり、存在だけで op 対応を推定しない。
+  - **imperative 経路（モデル hot op）** — `vokra-models/src/compute.rs` の `Compute` seam。必要な `HotOp` と各 backend の対応集合を実定義で確認する（基本六種だけでなく dilation/grouped convolution 等を含む）。GPU を選択して未対応の音声 op に達した場合は明示エラーであり、CPU 実行へ自動的に流してよいという意味ではない。各 backend は first-party optional feature で既定 OFF、zero-dep 不変条件は不変。
 - **device 常駐融合（readback 削減パターン）**: 複数連続 op を 1 submission に融合するときは、**中間を DeviceTensor（`!Send` / `'ctx` / Drop で release）として device 上に保持**し、host readback を削減する（例: `MetalContext::encode_prenorm_stack` = n blocks の ln→attn→residual→ln→mlp→residual+final ln を 1 submission、encoder 全体で 6N+1→1 readback。`MetalDecodeSession` / `CudaDecodeSession` = decoder-step の self KV append + causal fused attn + cross attn + MLP を device 常駐化、logits のみ D2H）。融合実装は **per-op GPU 経路と bit-identical** が要件（新しい数値を持ち込まない、readback 位置のみを動かす）。parity は skill `numerical-parity` の GPU backend parity 節。
 
 ## 2. 属性を明示的に設計する（暗黙のデフォルト禁止）
@@ -28,7 +28,7 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 
 ## 3. GPL / 非商用 codec を持ち込まない
 
-- **soxr / rubberband（GPL）禁止** → resample は speexdsp(BSD) resampler 設計ベースの自前実装。
+- **soxr（LGPL）/ rubberband（GPL）は runtime 不採用**（`docs/license-audit.md` の監査行）。resample は speexdsp(BSD) resampler 設計ベースの自前実装。
 - FFT は pocketfft(BSD-3) アルゴリズムの自前 Rust 移植（`crates/vokra-ops/src/fft/`、`NOTICE` §3 に既記）。
 - **【2026-07-22 訂正】BigVGAN は MIT**（`github.com/NVIDIA/BigVGAN/LICENSE` = 標準 MIT `Copyright (c) 2024 NVIDIA CORPORATION`）。旧記述「Source Code License-NC で非商用ゆえ論文からスクラッチ再実装」の**非商用前提は失効**し、スクラッチ制約は解除 = reference の直接移植が MIT 帰属表示で可能（移植時は `crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt` に MIT 全文を同 PR で同梱、`NOTICE` §1 + §9 / `docs/license-audit.md` BigVGAN 行）。
 - **EnCodec weight は CC-BY-NC → 公式 zoo 除外**。DAC/Mimi/WavTokenizer は

@@ -38,12 +38,12 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 `docs/license-audit.md` は**オフライン監査**だが、runtime も weight license を強制する。
 
 - `vokra-core/src/compliance/` の `CompliancePolicy` + `LicenseClass` gate が **GGUF の `vokra.provenance.*` metadata**（`weight_license` / `license` / `model_id`）を読み、**CC-BY-NC 等の NC weight を research flag なしでロード拒否**する（`VokraError` を返す）。
-- research weight（F5-TTS / Fish-Speech / EnCodec）は **research flag を明示的に立てたときのみ**解禁（`CompliancePolicy::with_research_license`、または config level が Research / Disabled）。既定（Standard）は拒否。
+- research weight（F5-TTS / Fish-Speech / EnCodec）は **research opt-in を明示したときのみ**解禁（`CompliancePolicy::with_research_license(true)`、`VOKRA_ALLOW_RESEARCH_LICENSE` を読む `from_env()`、または level が Research / Disabled）。`CompliancePolicy::default()` は **Strict**（opt-in なし）で拒否し、Standard も opt-in がなければ拒否する。根拠は `crates/vokra-core/src/compliance/mod.rs`。
 - 新 weight を公式 model-zoo に足すときは converter で `vokra.provenance.weight_license` に正準クラスを焼き込み、gate が読めるようにする（オフライン監査行と一致させる）。
 
 ## codec / DSP
 
-- **soxr / rubberband（GPL）禁止** → speexdsp(BSD) / pocketfft(BSD-3) 設計ベースの自前実装。AEC は SpeexDSP(BSD) / WebRTC AEC3 port。
+- **soxr（LGPL）/ rubberband（GPL）は runtime 不採用**（`docs/license-audit.md` の監査行）。代替は speexdsp(BSD) / pocketfft(BSD-3) 設計ベースの自前実装。AEC は SpeexDSP(BSD) / WebRTC AEC3 port。
 
 ## §3.1 sign-off の primary-source rule（fail-closed default、agent は勝手に埋めない）
 
@@ -69,7 +69,7 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 
 1. `docs/license-audit.md` に行追加（**code と weight 双方**のライセンス・商用可否・学習データ由来）。§3.1 sign-off 欄は **上記 primary-source rule** に従い、条件未達なら空欄据置。
 2. attribution / 配布条件があれば `NOTICE` に追記（credit 要・NC・scratch-reimpl の別を明記）。
-3. TTS/VC なら `docs/legal-compliance.md`（EU AI Act Art.50 / SB 942）も通す → skill `add-speech-model`。**watermark / C2PA 埋め込み（FR-CP-01/02）は 2026-07-04 依頼者ドロップで未実装**（`WatermarkConfig` は config 面のみ・`backend_status`=Deferred）。weight license は上記 compliance gate で強制。
+3. TTS/VC なら `docs/legal-compliance.md` の確認日・未確定事項と現行公式条文を確認 → skill `add-speech-model`。**通常生成経路への自動 watermark 接続 / C2PA は未実装**（`WatermarkConfig::backend_status()==Deferred`）。AudioSeal standalone 明示 embed/detect は別機能であり、法令適合の保証ではない。weight license は上記 compliance gate で強制。
 4. HF 公開する場合 → skill `publish-model-to-hf`（5-tier gate）。
 5. ゲートを走らせる。`cargo deny` / `cargo audit` は workspace を読むため VAST、shell / uv のゲートはローカルでよい:
 

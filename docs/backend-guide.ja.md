@@ -152,7 +152,8 @@ GigaAM v3、GigaAM Multilingual、OmniASR、ReazonSpeech、BiCodec、Voice Gende
 について approval-bound CPU/Metal check を合格した。これらは exact head と契約に
 限った verdict であり、source-level route の complete を catalog 全体の Apple device
 結果へ一般化しない。
-2026-10-04 の fresh metadata-only public audit は CPU `full=136`、`partial=43`、
+2026-10-08 の metadata/card-only public audit（GitHub の exact `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758`）は CPU `full=136`、`partial=43`、
 `no-runtime-binder=14`、`not-artifact=1`、Metal `full=136`、
 `blocked-by-cpu=57`、`not-artifact=1`、source-level CPU-only は 0 で、未解決の public row は58件である。
 `v0.3.0` release tag と GitHub Release は公開済みである。2026-10-04 の修正済み VAST
@@ -166,7 +167,8 @@ Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak �
 
 ## Keeping this page current
 
-**最終確認日: 2026-10-04 — local checkout `3a3fd822`、実装済みの 5 計算バックエンド、上記の汎用
+**最終確認日: 2026-10-08 — GitHub の exact `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758`、実装済みの 5 計算バックエンド、上記の汎用
 convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
 delegate scaffold に対して確認。**
 

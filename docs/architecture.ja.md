@@ -257,7 +257,8 @@ MB-iSTFT-VITS2 の推論スタックは Rust で native 再実装されていま
 *理由。* GPL-3.0 だからです。Vokra は Unity / Godot をはじめとするプロプラ
 エタリな組み込み用途を対象にしており、そこでは GPL は製品を出す側にとって
 受け入れられません。G2P は piper-plus 自身の MIT 実装、または IPA 辞書ベース
-の手法から得ます。同じ理由で soxr / rubberband も除外します（R5）。
+の手法から得ます。同じ配布境界により、soxr（LGPL）/ rubberband（GPL）も
+除外します（R5）。
 
 ### R4 — NNAPI バックエンドを作らない
 
@@ -267,8 +268,8 @@ MB-iSTFT-VITS2 の推論スタックは Rust で native 再実装されていま
 
 ### R5 — soxr / rubberband を使わない
 
-*理由。* R3 と同じく GPL です。リサンプリングは speexdsp（BSD）の resampler
-設計に基づいて native 実装しています。
+*理由。* soxr は LGPL、rubberband は GPL の copyleft 依存です。リサンプリングは
+speexdsp（BSD）の resampler 設計に基づいて native 実装しています。
 
 ### R6 — 未対応は必ずエラー、silent fallback にしない（`FR-EX-08`）
 
