@@ -825,6 +825,33 @@ reconciliation: only the three reviewed locks change from `90585b10` /
 normal acceptance and post-main responsibility/duplicate coverage remain
 mandatory. No original family, #169 or #195 is closed in this step.
 
+### SpeechBrain bot audit review: initial result not accepted
+
+The bounded #195 audit helper is reviewed against exact main `bf428b40`,
+#195 `bf54a6c2` and #147 `7b596dd9`. Manager does not accept its initial
+supported-context/extras PASS claim. The helper substitutes `CPython` / `PyPy`
+for `implementation_name`, while the [primary PyPA marker specification](https://packaging.python.org/en/latest/specifications/dependency-specifiers/#defined-environment-marker-fields)
+defines `cpython` / `pypy` for that field; the capitalized values belong to
+`platform_python_implementation`. A literal string partition is not actual
+interpreter support evidence. Its extras handling records an edge label but
+does not activate optional dependencies, so that test cannot prove extras
+closure. Its version-wildcard handling also needs an explicit bounded contract.
+
+Corrections are delegated to the same Luna owner, limited to the two existing
+temporary audit-source/test files. The request retains the strict serialized
+non-target-row failure, requires explicit project/top-level-lock and artifact
+identity checks, and rejects graph forms outside the helper's proven scope.
+No dependency resolver, installation, package import, model or Cargo execution
+is authorized by this static audit. #195 remains open: even corrected
+dependency-only evidence cannot replace actual #147 incorporation into main
+and a fresh scoped responsibility readback.
+
+The independently read #191 link job `112586733021` in Security run
+`37557412972` is terminal FAILURE for two occurrences of the same official
+SB942 comparison URL returning HTTP403, with zero timeouts. This is a dated
+external-link failure, not a model or numerical failure. No unchanged retry,
+citation removal, global accepted403 rule or owner/upstream decision is made.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
