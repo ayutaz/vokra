@@ -647,6 +647,48 @@ current-law/applicability and sign-off boundaries remain unresolved; no full
 ZIP, LAW_SECTION payload, SQL/database, model, package installation or paid
 worker is part of this source-only work.
 
+### Corrected generated capture: actual source acceptance boundary
+
+The manager finds and rejects a further writer cleanup race before execution:
+an `O_EXCL` failure must not unlink a file created by a competing process.
+Luna's correction limits cleanup to its own successful creation, rejects a
+non-owned/symlink parent and adds a causal competing-creator regression.
+Manager reads the corrected functions and independently passes the offline
+capture/scanner adversarial suite at exact reader hash
+`ea117df6d76d8e55e894c1a785a1fb7e2ca64b640c4ba76dbfe6f1300ca6b439`.
+
+One changed capture-procedure run exits zero after 51.73 seconds, peak RSS
+60,112,896 bytes. It generates the complete v4 receipt directly (95,161 bytes,
+SHA-256 `33e0853f58e4a8501fec6de4d3d229935049fe8dda1f1bbb5c2e376adea9b11e`)
+and emits only a bounded summary. Source requests total 22,937,132 bytes;
+archive ETag/size remain the frozen values. The older v3 truncated capture
+remains unaccepted and intact; this is a corrected producer, not an identical
+blind retrieval retry.
+
+Manager independently reads the saved complete JSON, re-parses all six original
+UTF-8 rows (including terminators), and verifies raw byte lengths/hashes,
+column values and all three bill/latest-version/LOB chains. Original decoded
+LOB byte sizes/hashes match their payload receipts:
+
+| Bill | LOB member | Original bytes | SHA-256 |
+|---|---|---:|---|
+| AB853 | `BILL_VERSION_TBL_9524.lob` | 21,326 | `f69387024f914945379706b944361dce5870573c9e0ecddde08b51daaeff6dda` |
+| AB2713 | `BILL_VERSION_TBL_19416.lob` | 9,915 | `34bdebb75d57c3be1f5c935d260e33a7115a84e7ae8eb0337caaef0120f54e60` |
+| SB1000 | `BILL_VERSION_TBL_19249.lob` | 28,045 | `4fe006c5fc88097a27e39b9b99d132039c83e495bfb4e48808e7cfb28fb1b61d` |
+
+The saved archive fields still describe the initial directory probe: 10,985
+of expected 205,033 entries, `entry_count_verified=false`. The literal bill-text
+route requires a complete scanner/count check before member retrieval, but a
+separate full-directory proof/digest is not serialized; initial probe flags
+are not rewritten or represented as that proof. Manager's XML readback confirms
+the expected chaptered measure identities and named sections. This closes
+the observed full-text/raw-row preservation gap only. LAW_SECTION is not
+acquired; integrated current-law/applicability, approval and #198's required
+link failure remain open. No full ZIP, model, package installation, Cargo or
+provider operation runs. The next source task is comparison with the proposed
+legal wording and the remaining official current-code chain, not re-acquisition
+of these now-preserved three bill texts.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
