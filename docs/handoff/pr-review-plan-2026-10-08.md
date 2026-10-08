@@ -198,6 +198,46 @@ native/archive evidence is not relabelled as evidence for the changed lock.
 PR #198's dated-source conflict reconciliation is separately under review;
 no fresh legal reauthentication, applicability verdict or sign-off is inferred.
 
+### Subsequent independent Draft updates published
+
+PR #152 is now non-force pushed as
+`66b5a7c10a95184351af8d0ab75a03143fbc5422`, with reviewed parent
+`b8148ab3` and main `edc2ab54`. The parent-to-child diff has the accepted
+nine-file #199 change plus two reviewed additions: the explicit hosted
+XCodec2 regression step and a dated identity supersession note. The three
+stdlib/synthetic suites contain 22, seven and six named cases (35 total);
+their fresh hosted results are pending, not substituted by local self-tests.
+Normal commit gates 5/5 pass. Manager independently passes actionlint,
+workflow hygiene, diff checks and compliance regression 8/8. Runtime/Cargo/
+test inputs match accepted dated VAST `0a11d8d9`; release tools match accepted
+VAST `3468a48c` and merged main. These identities support the non-force push
+instead of prohibited local deep Cargo, not a fresh whole-HEAD VAST verdict.
+Fresh CI `37752090942`, Security `37752090609` and Quality `37752090602`
+exist and are queued. Draft and all mandatory dependency/native/owner/model
+and publication gates remain unchanged; historical archive receipts retain
+their original identities.
+
+PR #198 is non-force pushed as
+`799a407b2501fbda41f92cf94f025cf43af4bf87`, with original `ab33cd6c` and
+main `edc2ab54` parents. Its main-relative scope is exactly the two existing
+documents. The manager reviews both conflict resolutions and verifies exact
+workflow/release-tool identity with main and unchanged runtime/Cargo/test
+inputs against the corresponding dated VAST source. Normal commit gates 5/5,
+focused example/reference/runbook checks and diff hygiene pass. Its push uses
+the same corresponding source-evidence boundary, not new local deep Cargo
+or a fresh legal-source authentication. Fresh CI `37752095434`, Security
+`37752095100` and Quality `37752095005` exist and are queued. Keep Draft;
+Oct6, Oct7 and Oct8 source/date boundaries, checklist warnings and old 403
+failures are retained, with no new exclusion, sign-off or compliance claim.
+
+The existing PR bodies have current-head supplements without removing old
+receipts. In this batch no new provider was allocated and no local model,
+third-party environment synchronization/import or artifact publication was
+performed. Superseded old CI runs `37749256154` and `37749579773` are now
+completed/cancelled. The old #209 run `37748187779` has a cancellation request
+but its first readback remains queued; do not infer terminal cancellation.
+All five current reviewed candidate heads retain their own live verification.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
