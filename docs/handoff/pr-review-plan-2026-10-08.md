@@ -158,6 +158,46 @@ claim. The explicitly superseded old #197 run `37746838643` received a normal
 cancel request; its first readback was still queued, so cancellation completion
 is not inferred from the accepted request. Current-head verification is retained.
 
+### Subsequent #199 acceptance and current-main refresh
+
+PR #199 was normally squash-merged at 2026-10-08 08:36:36 UTC as
+`edc2ab5404f1b9d23dab121f9b4d7e1657ea9db9`. The reviewed exact head remained
+`cf36b448a63105fc8d97147982212cabf08485b5`; all 16 required checks succeeded.
+Desktop release completeness `37746580632` succeeded on Windows, macOS and
+Linux and in `assemble-and-verify`. No failed current-head check was present
+at acceptance; other non-required checks were still nonterminal, so this is
+not a claim that the entire rollup was terminal. No admin merge, protection
+change, package-registry release or model publication occurred. GitHub's
+merged-state/commit readback and local fast-forward verify the actual main
+integration. This supersedes the earlier unmerged #199 observations above.
+
+The remaining reviewed candidates were updated through normal GitHub branch
+merges. The manager independently verifies that each parent-to-child raw Git
+diff is exactly the accepted nine-file #199 change and that both the reviewed
+parent and new main are ancestors:
+
+| PR | Current head | Fresh CI / Security / Quality |
+|---|---|---|
+| #209 | `f61c5d0e707fdb0adff65ea26ac4e859b2251922` | `37751100055` / `37751099734` / `37751099758` |
+| #197 | `90585b100c75ea19bc305a38cb6958538073c406` | `37751101589` / `37751101264` / `37751101245` |
+| #147 | `b18fcc6dc317fef9ce1390ac922902f5d0a65d62` | `37751105191` / `37751104870` / `37751104790` |
+
+These fresh runs are queued/pending, not accepted green. The superseded #197
+run `37746838643` is now authoritatively completed/cancelled, while current-head
+verification is retained. In the frozen scope, one PR has actually merged;
+the other 19 remain open, and no incorporated-original closure is yet made.
+
+PR #152's five-file lock/identity reconciliation is independently reviewed:
+only the multidict package record changes, it exactly matches main's 6.9.1
+record, all bound hashes agree, and approval/execution/publication states are
+unchanged. The normal merge commit `b8148ab3654d01496951969b673d5bdc0b5ae90f`
+passed all five commit gates. A new main merge and explicit hosted stdlib-test
+wiring are being reviewed, not yet pushed or passed. Local full unittest was
+refused by the maintainer safety hook and not bypassed. Accepted historical
+native/archive evidence is not relabelled as evidence for the changed lock.
+PR #198's dated-source conflict reconciliation is separately under review;
+no fresh legal reauthentication, applicability verdict or sign-off is inferred.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
