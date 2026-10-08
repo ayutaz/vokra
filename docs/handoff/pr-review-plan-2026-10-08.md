@@ -372,6 +372,63 @@ running/queued jobs are live waits, not merge permission. #152's 35-case
 acceptance above does not replace its outstanding required checks or primary
 archive/native/upstream/model/owner duties. Main remains clean at `edc2ab54`.
 
+### Subsequent temporary-reader safety review and CI coverage boundary
+
+The manager reviews all 513 lines of the corrected temporary official-source
+reader before authorizing more retrieval. Streaming curl and exact Range/ETag
+checks improve the earlier implementation, but the requested 64MiB fetch and
+128MiB memory limits are not yet proved: ZIP member decompression remains
+unbounded, table parsing materializes all rows, and local-header, archive
+bounds, header-length and cleanup checks remain incomplete. Further network
+retrieval is stopped pending bounded decompression, sequential selected-row
+processing and adversarial offline tests. The older metadata-only output is
+not accepted as proof of enforced limits or authenticated bill/code records.
+This supersedes the prospective bounded-inspector description above; it does
+not replace the independently verified index/one-byte Range observations.
+No full ZIP, statutory payload, model, database or paid provider is activated.
+
+The manager independently reads completed #197 Quality jobs through their
+individual log API while the parent workflow remains live. At exact head
+`90585b10`, `python-parity-oracles` job `113224749219` succeeds, but the log's
+test list is the existing Whisper/workflow-oracle suite; it does not execute
+the new Dia compatibility or Chatterbox worker-contract tests. Similarly,
+successful `shell-self-tests` job `113224749229` covers the named generic
+checks and publication/hook self-tests, not the Dia inspection worker's
+source-clean regression. Retain the separately recorded focused source-only
+verification for those changes; do not label these two hosted jobs as new
+family-specific regression acceptance or model parity.
+
+The current required checks are independently read back against all 16 strict
+protected contexts. #209 has 13 successful checks and three queued checks;
+#197 has 11 successful checks with two running and three queued. Exact jobs
+`113229896294` / `113229896422` / `113245511567` (#209) and
+`113228158789` / `113228158655` (#197) verify genuine queue/execution state.
+No failed required check is present in either candidate, but neither can be
+merged yet. Main remains clean and matches live `edc2ab54`; no additional
+merge or incorporated-original closure is inferred.
+
+### Current #169 / #182 responsibility-coverage audit
+
+Read-only Luna audit confirms current #169 `b3e9d5c1` and #182 `477ddd32`
+remain open Drafts and neither is incorporated into accepted main `edc2ab54`.
+#169's project, lock and five-case lock-contract regression are byte-identical
+in #182. The collector's installed-closure bounds and
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD` status are preserved; #182 adds strict JSON
+duplicate-key rejection and strengthens the collector regression from 31 to
+33 cases. Its README retains the earlier collector responsibilities and the
+separate outstanding license/native/owner/reference/real-weight/Apple gates.
+One current command-description sentence still says 31 tests despite naming
+the current 33-case suite; a bounded correction is delegated without rewriting
+the earlier 31-case receipts. No model/composite/Metal completion is inferred
+from the added runtime, CLI, manifest or backend error handling.
+
+Both branches still need current-main reconciliation and fresh acceptance
+evidence. A new owned #182 worktree may prepare the normal main merge and that
+current-description correction, but no public push or additional CI launch is
+made before manager review and the current normal-PR acceptance wave. Closure
+of #169 still requires an actually merged replacement and a scoped readback
+of the retained and strengthened responsibilities, not this coverage report.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
