@@ -1348,7 +1348,7 @@ jobs:
           echo "== DRY RUN (release-notes): notes written to step summary only =="
 
   # ---------------------------------------------------------------------------
-  # X-07-T29/T30: desktop shared-library + CLI release publish (SCAFFOLD).
+  # X-07-T29/T30: desktop shared-library + CLI release publish.
   #
   # This closes the NFR-MT-08 gap recorded in docs/handoff/m4-11.md §(c):
   # ci.yml#build uploads per-OS cdylibs (7-day retention) but release.yml had no
@@ -1357,12 +1357,11 @@ jobs:
   # x86_64-unknown-linux-musl static CLI (deliverables §3.5), with SBOM + sha256.
   #
   # T32-GATED (owner-undecided): the M4-11-T13 gap-flow 3-choice (M4 follow-up /
-  # M5 / requirement revision) is pending. Until the owner sets the repo
-  # variable DESKTOP_AAR_ENABLED=true after that decision (X-07-T32), the
-  # effectful steps are skipped and the job ANNOUNCES the gated state
-  # (announced skip, FR-EX-08 — NOT a fabricated pass). Asset filenames match
-  # tools/release/gen_package_managers.py ASSETS so the winget/Debian manifests
-  # can reference them.
+  # M5 / requirement revision) remains the authority for publication. Until
+  # the owner sets DESKTOP_AAR_ENABLED=true after that decision, the effectful
+  # assembly/attestation/upload steps are skipped and the job announces the
+  # gated state. The reusable preflight still builds and smoke-tests its native
+  # payloads so this path cannot hide a partial desktop release.
   # ---------------------------------------------------------------------------
   desktop-release:
     name: desktop-release
@@ -1415,47 +1414,101 @@ jobs:
           name: vokra-capi-windows
           path: reuse/windows
 
-      - name: Build Linux CLI and assemble same-run desktop C ABI artifacts
+      - name: Download same-run Linux C ABI artifact for desktop release
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-linux
+          path: reuse/linux-capi
+
+      - name: Download same-run Linux glibc CLI artifact
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-linux-x86_64
+          path: reuse/linux-cli
+
+      - name: Download same-run Linux musl CLI artifact
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-linux-musl-x86_64
+          path: reuse/linux-musl-cli
+
+      - name: Download same-run macOS CLI artifact
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-macos-aarch64
+          path: reuse/macos-cli
+
+      - name: Download same-run Windows CLI artifact
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-windows-x86_64
+          path: reuse/windows-cli
+
+      - name: Assemble complete desktop payload from same-run artifacts
         if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           V="${{ needs.validate-tag.outputs.version }}"
-          mkdir -p dist/desktop
-          # Linux glibc CLI (built here) + musl static CLI (deliverables §3.5).
-          cargo build --release -p vokra-cli
-          cp target/release/vokra-cli "dist/desktop/vokra-cli-${V}-x86_64-linux"
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --release -p vokra-cli --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/vokra-cli \
-            "dist/desktop/vokra-cli-${V}-x86_64-linux-musl"
-          # Linux cdylib + C header (T29).
-          cargo build --release -p vokra-capi
-          cp target/release/libvokra.so "dist/desktop/libvokra-${V}-x86_64-linux.so"
-          cp include/vokra.h "dist/desktop/vokra.h"
-          # macOS/Windows cdylibs are guaranteed by the same-run reusable
-          # preflight; download-artifact fails before this step if absent.
-          test -f reuse/macos/libvokra.dylib
-          test -f reuse/windows/vokra.dll
-          cp reuse/macos/libvokra.dylib "dist/desktop/libvokra-${V}-macos.dylib"
-          cp reuse/windows/vokra.dll "dist/desktop/vokra-${V}-windows.dll"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py assemble \
+            --version "$V" \
+            --out-dir dist/desktop \
+            --header include/vokra.h \
+            --capi-linux reuse/linux-capi/libvokra.so \
+            --capi-macos reuse/macos/libvokra.dylib \
+            --capi-windows reuse/windows/vokra.dll \
+            --cli-linux reuse/linux-cli/vokra-cli \
+            --cli-linux-musl reuse/linux-musl-cli/vokra-cli \
+            --cli-macos reuse/macos-cli/vokra-cli \
+            --cli-windows reuse/windows-cli/vokra-cli.exe
 
-      - name: SBOM + sha256 for desktop assets
+      - name: Smoke assembled Linux CLIs without a model
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          V="${{ needs.validate-tag.outputs.version }}"
+          EXPECTED_VERSION="$(uv run --no-project --python 3.12 python tools/release/version_contract.py \
+            --github-ref "$GITHUB_REF" --dispatch-version "")"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            native-smoke "dist/desktop/libvokra-${V}-x86_64-linux.so" --expected-version "$EXPECTED_VERSION"
+          "dist/desktop/vokra-cli-${V}-x86_64-linux" --help >/tmp/vokra-assembled-glibc-help.txt
+          "dist/desktop/vokra-cli-${V}-x86_64-linux-musl" --help >/tmp/vokra-assembled-musl-help.txt
+          test -s /tmp/vokra-assembled-glibc-help.txt
+          test -s /tmp/vokra-assembled-musl-help.txt
+
+      - name: Generate separate C ABI and CLI SPDX SBOMs
         if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
           export SOURCE_DATE_EPOCH
           uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
-            --package vokra-capi --doc-name vokra-desktop \
-            --output dist/desktop/vokra-desktop.spdx.json
-          ( cd dist/desktop && for f in *; do
-              [ -f "$f" ] || continue
-              case "$f" in *.sha256) continue;; esac
-              sha256sum "$f" > "$f.sha256"
-            done )
-          echo "== desktop assets ==" && ls -la dist/desktop
+            --package vokra-capi --no-default-features --features cpu \
+            --doc-name vokra-desktop-capi \
+            --output dist/desktop/vokra-desktop-capi.spdx.json
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
+            --package vokra-cli --no-default-features \
+            --doc-name vokra-desktop-cli \
+            --output dist/desktop/vokra-desktop-cli.spdx.json
 
-      - name: Attest desktop assets provenance and SBOM
+      - name: Validate complete payload and write deterministic SHA256 manifest
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          V="${{ needs.validate-tag.outputs.version }}"
+          # Writes dist/desktop/vokra-desktop-manifest.json and its sidecars.
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            manifest --version "$V" --dist-dir dist/desktop
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version "$V" --dist-dir dist/desktop
+          echo "== complete desktop assets =="
+          ls -la dist/desktop
+
+      - name: Attest desktop assets provenance and C ABI SBOM
         if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
@@ -1464,7 +1517,15 @@ jobs:
             dist/desktop/libvokra-*
             dist/desktop/vokra-*-windows.dll
             dist/desktop/vokra.h
-          sbom-path: dist/desktop/vokra-desktop.spdx.json
+          sbom-path: dist/desktop/vokra-desktop-capi.spdx.json
+
+      - name: Attest desktop CLI provenance and CLI SBOM
+        if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            dist/desktop/vokra-cli-*
+          sbom-path: dist/desktop/vokra-desktop-cli.spdx.json
 
       - name: Upload desktop assets to GitHub Release (enabled + tag + non-dry-run)
         if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
