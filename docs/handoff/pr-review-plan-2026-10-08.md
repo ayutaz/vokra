@@ -112,6 +112,52 @@ responsibilities. Later MAGNeT vendored-license holds and Chatterbox worker
 identity checks strengthen the execution stops; shared documentation refreshes
 do not supply missing model, legal or hardware approvals.
 
+### Subsequent reviewed corrections and current heads
+
+The later #197 child `def974d3eb942a107f9262306bbc52ed646019b9` corrects a
+concrete source-only reproducibility gap found in final review: matching HEAD
+and candidate hashes alone did not reject a dirty Vokra probe/source-contract
+file. The Dia worker now requires successful, well-formed exact HEAD and clean
+tracked/staged/untracked state before source acquisition and after the probe.
+Model-free regression covers wrong HEAD, dirty states, invalid repository,
+failed Git status and malformed/empty HEAD output. Luna and manager self-tests,
+ShellCheck and diff hygiene pass. Normal commit gates 5/5 and normal pre-push
+compliance 8/8 pass; the existing Rust-neutral classifier skipped local Cargo
+without a bypass. Fresh CI `37749256154`, Security `37749255699` and Quality
+`37749255847` exist for this concrete correction; the old 9c checks are not
+child-head evidence. Draft, upstream compatibility hold and NO_UPLOAD remain.
+
+#147 was reconciled with the starting main in a separate worktree, reviewed,
+committed and non-force pushed as
+`ac31162fde438d0efd257ef8ad2e71a9fc0d3d0f`. The original dirty worktree was
+not changed. Both dated legal-source records and main's non-reauthentication
+boundary remain distinct, with no new link exemption or owner/legal decision.
+Manager independently passed the three stdlib-only SpeechBrain self-tests,
+workflow hygiene and diff checks. An initial workflow-check invocation could
+not access the default UV cache; the established writable cache rerun passed.
+No environment sync or third-party import occurred. The excluded benchmark
+crate tree `ab134dbc7884c67e97cffeebcd5060768e43623f` matches accepted VAST
+`6a02a03e`; root Rust/Cargo/test inputs match accepted workspace VAST `0a11d8d9`.
+Those corresponding dated remote inputs supported the push instead of local
+deep Cargo; this is not a fresh ac311 VAST replay. Fresh CI `37749579773`,
+Security `37749579383` and Quality `37749579516` remain to be accepted.
+Draft, official-link access concerns, all pending reviews and NO_UPLOAD remain.
+
+The 2026-10-08 readback of official Moshi main is still
+`e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`; upstream
+[issue #429](https://github.com/kyutai-labs/moshi/issues/429) remains open with
+zero comments. This does not provide a supported patched dependency range for
+#191. #182's public head remains `477ddd32`, Draft; its independent model and
+audit duties are not absorbed by #197. #152 current-main lock/identity
+reconciliation is delegated without promoting approval or execution state.
+
+At this readback no PR in the frozen 20-PR scope has newly merged or closed.
+The maintainer main remains the starting baseline, and the management record
+is committed separately. Current-head CI remains an actual wait, not a green
+claim. The explicitly superseded old #197 run `37746838643` received a normal
+cancel request; its first readback was still queued, so cancellation completion
+is not inferred from the accepted request. Current-head verification is retained.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
