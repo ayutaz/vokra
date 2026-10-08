@@ -1093,6 +1093,59 @@ no new upstream answer or owner/legal decision is inferred. #147 CI
 `37760770589` is now actually completed/success at 11:38:53 UTC, superseding
 only its residual pending-packaging observation, not recording a model run.
 
+### Seven-original scoped file coverage before #197 acceptance
+
+Manager independently reads each original PR's changed-file list and current
+OPEN head, then compares all 53 original changed-path entries with published
+#197 `fb4eb913`. All seven actual heads remain ancestors. No original target
+path is deleted: 44 entries are byte-identical, and nine changed entries are
+individually reviewed below. This is current candidate coverage, not accepted
+main incorporation or a claim that all remaining model duties are complete.
+
+| Original PR | Current head | Changed paths / equal in #197 | Reviewed subsequent delta |
+|---|---|---|---|
+| #150 | `373c853e` | 7 / 2 | Shared AudioCraft gate plus two MAGNeT project policies and READMEs: retained unresolved vendored LGPL evidence and stronger unconditional stop. Both locks remain identical. |
+| #158 | `c38ae4ed` | 9 / 9 | All original changed-path contents are identical. |
+| #159 | `40653c7e` | 9 / 8 | Only shared dated catalog record changes: named-head snapshot and corrected historical anchor; original evidence remains. |
+| #173 | `ddcdd74a` | 3 / 3 | All original changed-path contents are identical. |
+| #174 | `edc1e6d0` | 5 / 4 | Only README gains dated exact-wheel metadata facts with ABI/native/owner/NO_UPLOAD holds preserved. |
+| #176 | `501645ac` | 10 / 10 | All original changed-path contents are identical. |
+| #180 | `f39d4a96` | 10 / 8 | README retains exact-wheel metadata as non-approval; source-only worker adds clean expected-HEAD checks before and after probe. |
+
+The MAGNeT delta adds exact evidence/schema/record matching, changes the
+setuptools row from MIT-only to `UNRESOLVED_VENDORED_LGPLV3`, includes that
+evidence in the approval scope, and refuses execution even with a synthetic
+signed approval. Unknown retained member-path/SPDX details remain unknown.
+This stages enforcement only; it does not install/import the locked package,
+approve its license or introduce a runtime crate. Existing forbidden-package,
+NC/owner and NO_UPLOAD stops remain. Dia retains the upstream-version mismatch,
+VAST-only route, expected exit 2 and compatibility stop while rejecting dirty,
+invalid, malformed or changed checkouts. No new legal decision is made.
+
+Manager reads the license-audit guidance, deny policy, contributor dependency/
+model boundaries and owner sign-off semantics before accepting this narrow
+stopped-preparation distinction. Full original-family source, native/license,
+real-weight, independent-reference, Apple and publication duties survive any
+later duplicate closure; ancestry alone is not their completion evidence.
+
+Two path-rich read-only Git commands are refused by the maintainer model-safety
+hook, not bypassed and not counted as executed tests. The permitted candidate
+status and whole-diff-name readback instead show only the nine known staged
+incoming #147 paths and no content delta against published `fb4eb913`; these
+checks do not read/hash the protected CosyVoice manifest. On that matching
+candidate, explicit stdlib/synthetic AudioCraft self-test passes. Dia's explicit
+inspection self-test also passes: inspection, source contract, model-free
+dependency audit/approval, wrapper and clean-head/tamper regressions. Its expected
+negative-test diagnostics are not runtime failures. Forbidden-symbol and
+first-party-only Cargo.lock static gates pass. No package/model acquisition,
+model execution, broad Cargo, paid worker or upload occurs.
+
+The 2026-10-08 11:56:50 UTC exact-name/application readback gives #197 13/16
+required successes with zero current-head failures. Remaining macOS build/test
+are queued and parity is not yet registered; none is presumed passed. Main is
+still `2da1b3fa`. No original PR is closed before actual #197 acceptance and a
+fresh post-main head/content responsibility readback.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
