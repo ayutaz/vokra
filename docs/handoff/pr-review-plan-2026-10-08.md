@@ -589,6 +589,64 @@ the older reviewed head. The #182 local candidate remains unpushed; its
 three-lock latest-main preparation is delegated for independent review.
 These updates advance source/CI preparation, not any model or Apple verdict.
 
+### Actual #182 current-main update and retained local correction
+
+Manager independently checks the separate public-update candidate: its 95
+incoming paths exactly equal the `d100d937`-to-`bf428b40` accepted-main delta.
+Ninety-three staged blobs match main; the two remaining document differences
+retain only #182's dated Realtime records and caveats. This candidate does
+not contain the separately prepared 31-to-33 README correction or any new
+runtime authorship. A normal GitHub-native update with expected head succeeds;
+the published head is `a6ff40225b975eff7b17ce4ef5c429abd47e7418`, parents
+`477ddd32` / `bf428b40`, tree `4b4d90d766e00dc491adf8b6af12b7e70f5112b4`.
+Manager independently verifies the public parents/tree and Draft state.
+
+Fresh CI `37762123156`, Security `37762122931` and Quality `37762123290`
+exist and start queued/pending, not green. The updated public body matches
+the owned body exactly and preserves the previous 64,929-character history.
+The local `a492cc7c` plus three-lock staged candidate remains unpushed, including
+its README correction. The literal normal pre-push classifier requires the
+deep path for that local candidate; no local heavy Cargo or hook override is
+used. GitHub's ordinary base integration is not fresh whole-HEAD VAST evidence.
+Installed-closure Torch HTTP403, dependency/native/license/voice-rights/owner,
+full E2E/CPU/reference and Apple/publication duties remain open.
+
+### Current bot and upstream scoped readbacks
+
+At current #195 `bf54a6c2`, the lock has 63 additions and 63 deletions, rather
+than silently retaining the older bot-head disposition. Independent read-only
+comparison proves its complete urllib3 2.8.0 block (source and both artifact
+hashes/sizes) exactly matches #147 `7b596dd9`. #195 also removes edge markers
+and Torch/TorchAudio wheel size fields while preserving the project's Linux
+x86_64 and Python 3.12 restrictions. Effective contextual graph equivalence
+of that collateral normalization is not proved here. #195 remains open until
+the reviewed replacement is actually in main and scoped responsibility proof
+is repeated; that eventual dependency-only closure does not complete #147's
+separately retained model/reference/owner/Apple duties. Fresh primary issue
+readbacks confirm Moshi #429 and X-Codec-2.0 #41 are open with zero comments.
+
+### Actual bill-text retrieval and capture failure diagnosis
+
+After correction review and manager's own offline adversarial PASS, literal
+`--bill-text-only` at reader hash
+`d9c63609e74e1c56bd19ec77e20958378244876251328d5b2e07f6f4ccf0035d`
+exits zero after 37.40 seconds, with measured peak RSS 60,784,640 bytes and
+22,937,132 fetched bytes. The visible output reports the fixed archive identity,
+three expected bill/version/LOB chains and `complete-bill-text-only`.
+However, the execution tool truncates stdout. The separate v3 receipt records
+`stdout-truncated-by-tool`; it is not a complete preserved source receipt and
+does not prove the complete LOB/hash set or independent raw-byte replay.
+No missing bytes are reconstructed, and no identical acquisition is retried.
+
+The concrete defect is the stdout capture boundary, not archive retrieval.
+A bounded generated-receipt file mode is delegated for offline validation
+before any further source run. It must preserve the complete original rows
+and three LOB payloads directly, refuse overwrites/symlinks, and print only a
+small summary. Prior receipts remain intact. #198's required link failure,
+current-law/applicability and sign-off boundaries remain unresolved; no full
+ZIP, LAW_SECTION payload, SQL/database, model, package installation or paid
+worker is part of this source-only work.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
