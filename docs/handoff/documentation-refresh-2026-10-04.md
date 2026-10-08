@@ -7,6 +7,13 @@ review-start HEAD `3a3fd82281ae3ef9e995cb212ec794531ed13493`, not only the
 26 public files covered by the example checker. Ignored local planning files
 are not forced into Git. A path assignment is not a completed content review.
 
+**2026-10-08 PR147 legal-scope transfer boundary:** The dated 2026-10-06 EU and
+California records, HTML endpoint references, checklist/penalty rows, and
+California source rows originally carried by PR147 are consolidated in the
+PR198 legal review record. This is a responsibility transfer only; it does not
+re-authenticate inaccessible bytes, resolve the HTTP 403 observations, waive
+the `documentation-links` gate, or add owner/legal approval.
+
 **2026-10-07 California legal-source reconciliation boundary:** The legal
 section's 2026-08-30 SB 942 facts and this 2026-10-04 audit remain historical
 records. The [California Secretary of State's 2025 chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2025/Chapter-Number.pdf)
