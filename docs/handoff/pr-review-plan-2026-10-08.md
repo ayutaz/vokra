@@ -510,6 +510,48 @@ be reported rather than reconstructed as retrieval evidence. #198 stays
 Draft with its actual required-link failure; no primary URL is removed,
 HTTP403 accepted, approval invented or model count changed.
 
+### Source-row preservation and exact-summary correction
+
+The actual completed output's six selected column/value rows are preserved
+separately for comparison. Their original raw UTF-8 lines were not retained;
+all six explicitly say `UNAVAILABLE`, and raw-row hashes are not recomputed
+from reconstructed values. Manager comparison finds a summary-only error:
+the original receipt shortened SESSION_YEAR `20252026` to `2025` and version
+action timestamps to dates. A separate v2 receipt restores the exact column
+values, retaining the original receipt and comparison packet. Chapter,
+version and LOB facts are unchanged. No additional network or statutory text
+is acquired; the raw-byte preservation gap remains explicit for the next
+source-collection step rather than invented into evidence.
+
+### Actual dependency acceptance and normal-PR closeout
+
+At reviewed #209 head `f61c5d0e707fdb0adff65ea26ac4e859b2251922`, all 16
+strict required contexts actually succeed. Manager confirms unchanged head,
+base `edc2ab54`, mergeability and no failed/cancelled current-head checks.
+Other non-required jobs are still nonterminal; entire-rollup termination is
+not claimed. The main-relative scope remains exactly the three reviewed
+lockfiles. A normal squash merge with exact-head match succeeds at
+2026-10-08 09:57:37 UTC, producing main
+`bf428b40779752728e00f9d63d332981aa7ba3c7`. GitHub state/commit readback and
+the clean local fast-forward prove actual incorporation.
+
+All three main lock blobs exactly match the accepted candidate. Manager's
+stdlib-only locked-metadata readback confirms Hydra 1.3.7 / Werkzeug 3.1.9,
+Mako 1.4.2 and multidict 6.9.1. Current #207, #208 and #210 heads are
+ancestors of that reviewed integration. #207 is already closed at 09:57:38;
+manager closes #208 and #210 as incorporated at 09:59:25/09:59:28, with
+scoped disposition comments. None is separately merged or branch-deleted.
+No model/reference/native/owner/Apple/publication verdict is inferred.
+
+The frozen normal-PR scope is now complete: two actual merges (#199/#209)
+and three incorporated closures (#207/#208/#210). The authoritative open list
+has exactly 15 Drafts and zero normal PRs. #197/#147/#152 still need the new
+main's three-lock delta and fresh exact-head CI. Their conflict/delta review
+is delegated before public branch updates; old-head checks stay historical.
+#182's clean local preparation remains unpushed. Original-family closures,
+retained-Draft gates and the overall Draft-disposition finish audit remain
+open; the persistent goal is not complete.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
