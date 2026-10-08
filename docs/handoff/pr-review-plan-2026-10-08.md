@@ -238,6 +238,43 @@ completed/cancelled. The old #209 run `37748187779` has a cancellation request
 but its first readback remains queued; do not infer terminal cancellation.
 All five current reviewed candidate heads retain their own live verification.
 
+### Subsequent required-link diagnosis and scope separation
+
+At unchanged #147 head `b18fcc6dc317fef9ce1390ac922902f5d0a65d62`, required
+[documentation-links job113224260463](https://github.com/ayutaz/vokra/actions/runs/37751104870/job/113224260463)
+completed FAILURE at 2026-10-08 08:55:29 UTC. The manager reads the completed
+log: nine HTTP403 citations in `docs/legal-compliance.md`, covering five unique
+official California endpoints (AB853 billCompare/billStatus, AB2713 billNav,
+BPC section22757.6 and BPC Chapter25). This is a retrieval failure, not a
+runtime/parity verdict or legal reauthentication. The existing PR body now
+records the actual failure without removing earlier receipts. No new link
+exemption, accepted403 status, unchanged retry or admin merge was performed.
+
+Read-only Luna comparison finds overlapping but non-identical legal changes
+in #147 and the isolated legal reconciliation #198. The next bounded change
+is responsibility separation: preserve every unique #147 legal record and
+source in #198, integrate its separate October7 dated observations, then
+restore only #147's legal-document blob to accepted main. The security
+workflow, SpeechBrain preparation, pending manifests and benchmark changes
+remain in #147. The transfer is not yet reviewed, committed or pushed at this
+record. A per-hunk preservation audit is required before either push; moving
+the review scope must not silently drop facts or resolve the primary-source
+access failure. #198 retains that explicit unresolved duty and required CI.
+
+The superseded old #209 run `37748187779` still ignored the earlier ordinary
+cancel request. After exact old-head and queued-job revalidation, a targeted
+force-cancel request was made. Authoritative readback now reports
+`completed/cancelled` at old head `0292b6f4`; all latest reviewed-head runs
+remain intact. No workflow run/log was deleted and no main run was cancelled.
+
+The #152 hosted `python-parity-oracles` job `113227528167` in Quality
+`37752090602` is still queued with no step results at the 09:03 UTC readback;
+its new three suites / 35 cases are not claimed as passed. #209, #197 and
+#152 latest rollups show no failed checks, but remain nonterminal. #198 also
+remains queued; no further merge or incorporated-original closure is inferred.
+Main remains `edc2ab54`, clean. No local model execution, provider allocation
+or publication occurred in this diagnosis.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
