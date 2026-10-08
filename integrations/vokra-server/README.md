@@ -54,6 +54,12 @@ built-in default.
 | `--wyoming-bind` | `VOKRA_WYOMING_BIND` | (CLI/env only) | `127.0.0.1:10300` | HA Wyoming reference port |
 | `--whisper-base` | `VOKRA_WHISPER_BASE` | `whisper_base` | (unset → ASR unavailable) | Whisper base GGUF |
 | `--whisper-base-tokenizer` | `VOKRA_WHISPER_BASE_TOKENIZER` | `whisper_base_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--whisper-small` | `VOKRA_WHISPER_SMALL` | `whisper_small` | (unset → unavailable) | Whisper small GGUF |
+| `--whisper-small-tokenizer` | `VOKRA_WHISPER_SMALL_TOKENIZER` | `whisper_small_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--whisper-medium` | `VOKRA_WHISPER_MEDIUM` | `whisper_medium` | (unset → unavailable) | Whisper medium GGUF |
+| `--whisper-medium-tokenizer` | `VOKRA_WHISPER_MEDIUM_TOKENIZER` | `whisper_medium_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--whisper-turbo` | `VOKRA_WHISPER_TURBO` | `whisper_turbo` | (unset → unavailable) | Whisper large-v3-turbo GGUF |
+| `--whisper-turbo-tokenizer` | `VOKRA_WHISPER_TURBO_TOKENIZER` | `whisper_turbo_tokenizer` | (unset) | Optional external tokenizer side-car |
 | `--whisper-large-v3` | `VOKRA_WHISPER_LARGE_V3` | `whisper_large_v3` | (unset → unavailable) | Whisper large-v3 GGUF (M2-06) |
 | `--whisper-large-v3-tokenizer` | `VOKRA_WHISPER_LARGE_V3_TOKENIZER` | `whisper_large_v3_tokenizer` | (unset) | Optional external tokenizer side-car |
 | `--piper-plus` | `VOKRA_PIPER_PLUS` | `piper_plus` | (unset → TTS unavailable) | piper-plus native voice GGUF |
@@ -61,6 +67,9 @@ built-in default.
 | `--kokoro` | `VOKRA_KOKORO` | `kokoro` | (unset → unavailable) | Kokoro-82M GGUF |
 | `--voxtral` | `VOKRA_VOXTRAL` | `voxtral` | (unset → unavailable) | Voxtral GGUF |
 | `--silero-vad` | `VOKRA_SILERO_VAD` | `silero_vad` | (unset → unavailable) | Silero VAD GGUF |
+| `--max-concurrent-sessions` | `VOKRA_MAX_CONCURRENT_SESSIONS` | `max_concurrent_sessions` | `4` | Must be at least `1`; Wyoming session registry/scheduler cap (not an HTTP cap) |
+| `--backend` | `VOKRA_BACKEND` | `backend` | `cpu` | Requires the matching compiled Cargo feature |
+| `--model-backend <SLOT>=<NAME>` | `VOKRA_MODEL_BACKENDS` | `model_backends` | (unset) | Repeatable CLI flag; comma-separated env/TOML list |
 | `--config` | `VOKRA_CONFIG` | — | (none) | Path to TOML config file (flat keys mirror the flag names with underscores) |
 
 Request-body size is capped at 25 MiB (OpenAI parity) as a compiled-in
@@ -77,39 +86,22 @@ combinations return an explicit error — **no silent CPU fallback**
 - **TLS and authentication are delegated to a reverse proxy**
   (nginx / Caddy / traefik). vokra-server itself does not terminate
   TLS in v0.5.
-- **Forward-compatible `Authorization: Bearer <key>` parsing** is
-  wired but disabled by default; enable via the reverse proxy or a
-  future `--api-key` flag.
+- **Authentication is delegated to a reverse proxy.** The v0.5 server does
+  not parse or enforce `Authorization: Bearer <key>` and has no `--api-key`
+  flag; do not expose a non-loopback listener without an authenticated
+  proxy boundary.
 - **CORS is restrictive** by default (no `Access-Control-Allow-Origin`
   header emitted). Opt-in per deployment.
-- **Panic isolation**: every HTTP handler and Wyoming session runs
-  under a panic guard; a panic maps to a 500 response and closes the
-  offending Wyoming connection cleanly, never the whole runtime
-  (NFR-RL-07).
+- **Panic isolation**: Wyoming sessions run in per-connection panic guards
+  and a panic closes only that connection. The production HTTP router does
+  not yet attach the `CatchPanicLayer`; HTTP panic isolation is therefore an
+  explicit follow-up, not a claimed v0.5 guarantee (NFR-RL-07).
 
-Example nginx reverse proxy config (TLS termination + hostname
-enforcement, keeps vokra-server on loopback):
-
-```
-server {
-    listen 443 ssl http2;
-    server_name vokra.example.com;
-    ssl_certificate     /etc/letsencrypt/live/vokra.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/vokra.example.com/privkey.pem;
-
-    client_max_body_size 25m;
-    proxy_read_timeout   60s;
-
-    location / {
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
-        proxy_set_header   Authorization     $http_authorization;
-    }
-}
-```
+The canonical nginx and Caddy reverse-proxy examples, including an explicit
+authentication gate and the request-body cap, live in
+[`docs/security-ops.md`](docs/security-ops.md). They are illustrative and
+must be adapted and reviewed for the deployment; this README intentionally
+does not duplicate an unauthenticated proxy recipe.
 
 For Wyoming (JSONL over raw TCP, not HTTP), publish the listener on
 the trusted VLAN only (`--wyoming-bind 10.0.0.5:10300`) or SSH-tunnel
@@ -250,8 +242,9 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8080/v1",
-    api_key="not-required-loopback",  # any non-empty string; auth is
-                                       # handled by the reverse proxy
+    api_key="ignored-loopback",  # vokra-server ignores Bearer auth;
+                                 # a public Basic-auth proxy needs an
+                                 # adapting client/auth layer
 )
 
 with open("hello.wav", "rb") as f:
@@ -300,7 +293,7 @@ Steps to register the server with Home Assistant OS / Container:
 
 4. **Enter the host + port** for the machine running `vokra-server`
    (e.g. `192.168.1.42` + `10300`). HA discovers the available
-   services (STT, TTS, wake-word) by sending a `describe` event; the
+   ASR and TTS services by sending a `describe` event; the
    Vokra listener responds with an `info` event describing the ASR
    and TTS models registered at boot (Whisper base / large-v3 for
    STT, piper-plus native / Kokoro for TTS, subject to GGUF
@@ -327,8 +320,8 @@ JSON header terminates at the first `\n`; the binary payload region
 `read_exact(N)`, NEVER with a line-buffered reader. This is asserted
 by the unit test
 `framing_invariant_read_exact_over_payload_region` in
-`tests/wyoming_compat.rs` and runs on every push, whether or not the
-T14+ event loop is wired.
+`tests/wyoming_compat.rs` and runs on every push. The service-aware event
+loop is wired; a health-only boot intentionally answers only `describe`.
 
 Real Home Assistant hardware verification (VoicePE satellite, HA
 Assist pipeline) is deferred to M2-15 (依頼者 quarterly Go/No-go,

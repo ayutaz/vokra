@@ -132,7 +132,7 @@ declined regardless of implementation quality:
 - **No eSpeak-NG** (GPL-3.0) in the core. G2P comes from piper-plus's own
   MIT implementation or IPA-dictionary-based approaches.
 - **No NNAPI backend** (deprecated by Google as of Android 15).
-- **No soxr / rubberband** (GPL). Resampling is a native implementation
+- **No soxr (LGPL) / rubberband (GPL)**. Resampling is a native implementation
   based on the speexdsp (BSD) resampler design.
 
 ## 6. Finding something to work on

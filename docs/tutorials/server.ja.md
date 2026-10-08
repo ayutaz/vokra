@@ -67,14 +67,19 @@ turbo / large-v3 を cover し、それぞれ `-tokenizer` の相棒を持つ。
 
 ## 4. multi-session と並行性
 
-サーバは並行セッションを扱う（`FR-SV-06`）。`--max-concurrent-sessions` で上限
-を設け、バーストがメモリを枯渇させないようにする:
+サーバは並行セッションを扱う（`FR-SV-06`）。`--max-concurrent-sessions` は
+Wyoming の inference connection scheduler（設定した各 Wyoming 接続につき
+1 permit / stream slot）に上限を設定する:
 
 ```sh
 ./target/release/vokra-server --http-bind 0.0.0.0:8080 \
   --whisper-base whisper-base.gguf --whisper-base-tokenizer tok.gguf \
   --max-concurrent-sessions 8
 ```
+
+これは HTTP request concurrency の上限ではなく、プロセス全体のメモリ保護を
+保証する設定でもない。HTTP route やその他の allocation はこの scheduler の
+cap 外である。
 
 ## 5. bind アドレスとセキュリティ姿勢
 

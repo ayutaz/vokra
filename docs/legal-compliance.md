@@ -1,6 +1,6 @@
 # legal-compliance.md — Vokra 音声 AI 法務対応
 
-**最終更新**: 2026-08-30（公式一次資料の確認日）
+**最終更新**: 2026-10-08（文書境界更新；公式一次資料の最終確認日は2026-08-30）
 **目的**: EU AI Act Article 50、California SB 942、Tennessee ELVIS Act、連邦 NO FAKES Act、Apple App Review Guidelines、Google Play AI-Generated Content policy について、Vokra provider と deployer が法務確認すべき論点と現行実装の境界を記録する。
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
@@ -16,6 +16,13 @@ EU/Californiaの施行・経過措置を今回の日付で再認証できてい�
 は2025-04-09の上院提出版（IS）であり、現在の審議・成立状況を保証するものではない。
 以前のCongress.gov取得ページでのIntroducedというキャッシュ観測も、現在の成立状況の保証としない。
 法務文書の全面的な現行法再確認は未完了であり、owner/legal sign-offを追加・変更していない。
+
+**2026-10-08 法令再認証境界:** EUR-Lexのbot確認、California公式条文ページの403、
+および同ページの代替取得失敗により、EU/Californiaの現行法をこの日付で再認証したとは
+扱わない。[PR #198](https://github.com/ayutaz/vokra/pull/198)は未マージのdraftで、
+2026-10-07の公式ブラウザ読戻しに基づくCalifornia条文事実を含むが、同PRの
+`ab33cd6c` headでは必須`documentation-links` gateが未通過である。
+そのdraftをこの文書へ取り込まず、追加の法務sign-off・免除・配布許可も作成しない。
 
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
@@ -88,6 +95,12 @@ consent, disclosure, and model rights before release or deployment.
 ---
 
 ## 2. California SB 942 (California AI Transparency Act)
+
+> **2026-08-30 historical-law snapshot (not current-law reauthentication):** this
+> section preserves the dated Chapter 291, threshold, manifest/latent-disclosure
+> and implementation notes from the 2026-08-30 primary-source review. The
+> 2026-10-08 readback could not re-authenticate the official California page;
+> do not rely on this section alone for a current legal conclusion.
 
 ### 施行・status（2026-08-30確認）
 - **Chapter 291として2024-09-19に成立**し、§22757.6により **2026-01-01からoperative**。審議中法案ではない。
@@ -270,6 +283,11 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 ---
 
 ## 11. Vokra 提供の Compliance Checklist (deployer 向け)
+
+> **Historical checklist boundary:** the SB 942 checkbox below, including the
+> 1,000,000 visitor/user threshold and manifest/latent options, is retained
+> from the 2026-08-30 dated snapshot. It is a prompt for renewed official-source
+> and counsel review, not a current-law determination or compliance sign-off.
 
 新規 Vokra 統合プロジェクト開始時に確認すべき checklist:
 

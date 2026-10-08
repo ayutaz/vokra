@@ -93,14 +93,14 @@ real-weight workflows（`parity-kokoro-real` / `parity-sbv2-real`）は、固定
 
 ## GPU backend parity（Metal / CUDA）
 
-GPU backend は **reference fixtures を持たず、CPU backend を oracle にする**（同じ per-(backend, op) kernel の別実装なので、CPU parity が通っていれば CPU が真値）。
+GPU/CPU の kernel 比較は **独立 reference に照合済みの CPU 経路を比較対象にする**。CPU との一致だけでは共有バグを除外できず、CPU を無条件の真値とは扱わない。モデルの完了判定では independent upstream reference、CPU/reference、GPU/reference、GPU/CPU/no-fallback を必要な exact scope ごとに区別する。
 
 - **device-gate（skip、fail しない）**: Metal は `MetalContext::new` / `vokra_metal_probe`、CUDA は device probe で gate。device が無い host は skip（GGUF-gated の model parity と同じ「runner に実機が要る」方針）。CI の `gpu-backends` job は **Metal を Apple-silicon macOS runner で実行**、CUDA は GitHub に NVIDIA GPU が無いので build/lint のみ（実機 parity は **vast.ai RTX 4090**）。
 - **許容誤差は CPU parity と同じ FP32 `atol = 0.01`**。`vokra-backend-{metal,cuda}/tests/parity_{metal,cuda}.rs`（GEMM）と `parity_kernels_{metal,cuda}.rs`（gemv/softmax/layer_norm/gelu/conv1d）が GPU 出力を CPU kernel 出力と比較（観測誤差は遥かに tight）。
 - **fused op（`Compute::mlp_f32` / `attn_f32` / `encode_prenorm_stack` / decoder-step session）は per-op GPU 経路と bit-identical**（1 GPU submission で中間を device 常駐、readback 削減のみ＝新しい数値ではない）。CPU arm の `mlp_f32` は fusion 前の 3-kernel 列と bit-for-bit 一致（CPU parity 維持）。**causal fused attention は host mask+softmax と IEEE-754 bit-identical**（masked col が `exp(-inf)=0` で寄与ゼロ）。**device KV cache append は host project+concat と 7.15e-7 一致**（M1 実測）。
 - **e2e（`vokra-models/tests/parity_whisper.rs`、GGUF-gated）**: encoder / decoder logits は `atol = 0.01` 内、**greedy token 列は CPU と完全一致（`assert_eq`）** を要求（最も強い e2e 判定）。**whisper base full e2e greedy は Metal M1 と CUDA RTX 4090 の双方で CPU と完全一致（5/5 tokens）を実証済み**（Phase 3b、encoder 1.32e-3 / decoder logits 4.29e-5）。
 
-## 最新の実 checkpoint precedent（SBV2 four-file ZH、2026-08-18）
+## 日付付き実 checkpoint precedent（SBV2 four-file ZH、2026-08-18）
 
 PR #36 の VAST run は、SBV2 + JA DeBERTa v2 + EN DeBERTa v3 + ZH Chinese-RoBERTa の4 GGUFを再生成し、全 sidecar hash 一致を確認してから独立 upstream reference を生成した。Rust consumer は `1 passed / 0 failed / 0 ignored`（1026.70 秒）。bound は変更せず、ZH BERT max `1.907349e-5`、waveform max `1.031446e-1`、mel-loss RMS `1.820711e-1` で PASS。`MinimalG2P` は byte-replay fixture であり production Mandarin G2P 完成の主張ではない。実 GGUF はコミットせず、HF upload も行わず、instance を破棄した。詳細は `docs/handoff/parity-sbv2-real-vast-2026-08-18.md`。
 

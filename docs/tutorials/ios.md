@@ -39,9 +39,11 @@ scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
 ### Path B — release download
 
 The `v0.3.0` GitHub Release publishes `Vokra.xcframework.zip` and its SHA-256.
-The `v0.3.0` tag's `Package.swift` remains local-path based, so use the local
-build path above for a clean tag checkout. A consumer that chooses the release
-asset must add this explicit URL/checksum target:
+The released `v0.3.0` tag's `Package.swift` uses the local
+`build/ios/Vokra.xcframework` path. The current `main` manifest contains the
+following pinned URL/checksum target. Use the local build path above for the
+tag/local flow; a consumer that chooses the release asset must use this exact
+target in its own manifest:
 
 ```swift
 .binaryTarget(
