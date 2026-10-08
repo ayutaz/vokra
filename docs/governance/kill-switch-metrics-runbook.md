@@ -23,8 +23,9 @@ release 1**（`v0.3.0`、2026-09-20）を返し、tracked quarterly review recor
 | **K** | v0.5 時点で addressable market（Unity Asset Store DL 数、GitHub star、Discord DAU）が競合の 10% 未満 | v0.5 時点 |
 
 **Discord は非採用（2026-07-04 依頼者決定）** ゆえ、Kill switch C の "Discord active user < 20"
-は **GitHub Issues / Discussions の直近 3 ヶ月の active participant 数** で代替判定する。
-本 runbook はこの代替判定の具体手順を定義する。
+は GitHub Issues / Discussions の engagement **proxy** で代替判定する。proxy は
+collector が返した author unique count であり、実際の直近 3 ヶ月の作成・コメント
+イベントの完全な census ではない。本 runbook はこの proxy の手順と制限を定義する。
 
 ---
 
@@ -74,6 +75,10 @@ gh api "repos/ayutaz/vokra/contributors?per_page=100" --paginate \
 
 **注意事項**:
 - `--paginate` を付けないと最大 100 人までしか集計されない（Link header page 2+ を追わない）
+- `--paginate` の複数ページは JSON 配列ごとに `jq` へ渡るため、この形の filter は
+  page-local な件数を複数行で返し、全ページを合算する保証がない。100人を超える
+  contributor がいる場合、collector の出力だけでは全件数を証明せず、owner が別途
+  確認して記録する。
 - `jq` の `test("bot|Claude") | not` は case-sensitive 正規表現。実際の bot 命名慣行
   （`dependabot[bot]`、`github-actions[bot]`、`renovate[bot]`）は末尾 `[bot]` を含むが、
   部分マッチ `bot` で十分ヒットする。`Claude` は Claude Code のコミッター名
@@ -83,16 +88,23 @@ gh api "repos/ayutaz/vokra/contributors?per_page=100" --paginate \
 
 ---
 
-## 3. Issues / Discussions active participants（直近 3 ヶ月）
+## 3. Issues / Discussions engagement proxy（政策窓: 直近 3 ヶ月）
 
-Discord 廃止に伴う代替として、GitHub Issues + PR + Discussions への active participant
-（コメント投稿者、issue/PR 作成者、reaction 発火者）を集計する。**「active」= 直近 3 ヶ月に
-最低 1 回コメント or 作成を投稿した unique login**。
+Discord 廃止に伴う代替として、GitHub Issues + PR + Discussions の参加状況を
+集計する。**方針上の「active」**は、直近 3 ヶ月にコメントまたは issue / PR /
+discussion の作成イベントを実際に記録した unique login とする。一方、現行 collector
+の出力はこの方針を完全に測る census ではなく、API が返す author の unique count
+（以下「engagement proxy」）である。REST の issue 一覧は更新日時で絞るため古い
+issue / PR 作成者を含み得、Discussions も discussion の更新日時だけで絞るため古い
+comment author を含み得る。metrics の値を厳密な「直近 3 ヶ月 active」と表記せず、
+proxy と制限を記録する。reaction はこの収集経路では取得しないため、active participant
+の根拠に含めない。
 
-### 3a. Issues + PR の active participants
+### 3a. Issues + PR の engagement proxy
 
 Issues API と PR API は `/repos/{owner}/{repo}/issues/comments`
 と `/repos/{owner}/{repo}/issues` を `since` 付きで叩いて `user.login` を uniq-count する。
+この `since` は更新日時による絞り込みであり、issue / PR の作成日時による絞り込みではない。
 
 ```bash
 # 直近 3 ヶ月の since (macOS BSD date)
@@ -104,7 +116,7 @@ gh api "repos/ayutaz/vokra/issues/comments?since=$SINCE&per_page=100" --paginate
   | jq -r '.[].user.login' \
   > /tmp/vokra-issue-comment-authors.txt
 
-# 直近 3 ヶ月に作成された全 issue / PR の作成者（state=all で closed も含む）
+# 直近 3 ヶ月に更新された issue / PR の作成者（state=all で closed も含む）
 gh api "repos/ayutaz/vokra/issues?since=$SINCE&state=all&per_page=100" --paginate \
   | jq -r '.[].user.login' \
   > /tmp/vokra-issue-authors.txt
@@ -116,19 +128,24 @@ cat /tmp/vokra-issue-comment-authors.txt /tmp/vokra-issue-authors.txt \
   | wc -l
 ```
 
-**出力例**: `5`（整数）
+**出力例**: `5`（整数）。これは上記の engagement proxy であり、作成イベントだけの
+直近 3 ヶ月 census ではない。
 
-### 3b. Discussions active participants
+### 3b. Discussions engagement proxy
 
 Discussions は GraphQL API が公式経路。ただし Discussions 未有効なリポジトリでは
-`hasDiscussionsEnabled: false` となる。有効時のみ集計する。
+`hasDiscussionsEnabled: false` となる。有効時のみ集計する。現行の collector は
+discussion を最大 100 件、各 discussion の comment も最大 100 件取得するが、GraphQL
+ページネーションは行わない。discussion の `updatedAt` だけで窓を絞り、comment 自身の
+`updatedAt` は絞り込まないため、最近更新された discussion に含まれる古い comment author
+も数え得る。この制限を metrics 記録に明記する。
 
 ```bash
 # Discussions 有効かチェック
 DISC_ON=$(gh repo view ayutaz/vokra --json hasDiscussionsEnabled --jq .hasDiscussionsEnabled)
 
 if [ "$DISC_ON" = "true" ]; then
-  # 直近 3 ヶ月に投稿された discussion + comment の author を集計
+  # discussion の updatedAt 窓に入った discussion と、返却された comment の author を集計
   # GraphQL: discussions(first: 100, orderBy: {field: UPDATED_AT, direction: DESC})
   gh api graphql -f query='
     query($owner:String!, $repo:String!) {
@@ -156,7 +173,8 @@ else
 fi
 ```
 
-**出力例**: `3`（整数、または `0  # Discussions not enabled`）
+**出力例**: `3`（整数、または `0  # Discussions not enabled`）。これも engagement
+proxy であり、comment の実際の投稿日時だけを数えるものではない。
 
 ### 3c. Fallback: events API
 
@@ -178,107 +196,39 @@ gh api "repos/ayutaz/vokra/events?per_page=100" --paginate \
 **注意**: Events API は過去 90 日 or 300 events のどちらか短い方までしか保持しない
 （GitHub の仕様）。人気リポジトリでは 90 日未満で溢れる可能性があるため、Issues +
 Discussions API での集計を primary、Events を fallback とする位置付けを堅持する。
+ただし、tracked collector (`scripts/kill-switch-metrics.sh`) は Events API を自動で
+呼ばない。primary API が利用できない場合の Events 集計は owner が手動で実施し、
+fallback であることと API の保持限界を記録する。
 
 ---
 
 ## 4. 集約スクリプト（Kill switch C / K judgement input）
 
-上記 §1〜§3 を一括実行し、判定に必要な JSON を出力する bash スクリプト。
+実行可能な canonical collector は [`scripts/kill-switch-metrics.sh`](../../scripts/kill-switch-metrics.sh)
+だけである。ここにスクリプト本文を複製しない（複製は仕様 drift を生む）。tracked
+file は既に executable なので、owner は次のように実行する。
 
 ```bash
-#!/usr/bin/env bash
-# scripts/kill-switch-metrics.sh
-# Usage: bash scripts/kill-switch-metrics.sh > docs/governance/quarterly-reviews/2026-Q3.metrics.json
-set -euo pipefail
-
-OWNER=ayutaz
-REPO=vokra
-TODAY=$(date -u +%Y-%m-%d)
-
-# BSD date (macOS) と GNU date (Linux) 両対応
-if date -u -v-3m +%Y-%m-%dT%H:%M:%SZ >/dev/null 2>&1; then
-  SINCE=$(date -u -v-3m +%Y-%m-%dT%H:%M:%SZ)
-else
-  SINCE=$(date -u -d '3 months ago' +%Y-%m-%dT%H:%M:%SZ)
-fi
-
-# 1. Stars
-STARS=$(gh repo view "$OWNER/$REPO" --json stargazerCount --jq .stargazerCount)
-
-# 2. Contributors (excluding bots and Claude Code)
-CONTRIB=$(gh api "repos/$OWNER/$REPO/contributors?per_page=100" --paginate \
-  | jq '[.[] | select(.login | test("bot|Claude") | not)] | length')
-
-# 3a. Issues + PR active participants (3 months)
-ISSUE_AUTHORS=$(gh api "repos/$OWNER/$REPO/issues/comments?since=$SINCE&per_page=100" --paginate \
-  | jq -r '.[].user.login')
-ISSUE_CREATORS=$(gh api "repos/$OWNER/$REPO/issues?since=$SINCE&state=all&per_page=100" --paginate \
-  | jq -r '.[].user.login')
-
-# 3b. Discussions (if enabled)
-DISC_ON=$(gh repo view "$OWNER/$REPO" --json hasDiscussionsEnabled --jq .hasDiscussionsEnabled)
-DISC_AUTHORS=""
-if [ "$DISC_ON" = "true" ]; then
-  DISC_AUTHORS=$(gh api graphql -f query='
-    query($owner:String!, $repo:String!) {
-      repository(owner:$owner, name:$repo) {
-        discussions(first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
-          nodes {
-            author { login } updatedAt
-            comments(first: 100) { nodes { author { login } updatedAt } }
-          }
-        }
-      }
-    }' -F owner="$OWNER" -F repo="$REPO" \
-    | jq -r --arg since "$SINCE" '
-        .data.repository.discussions.nodes
-        | map(select(.updatedAt >= $since))
-        | (map(.author.login) + (map(.comments.nodes[]?.author.login))) []')
-fi
-
-ACTIVE=$(printf '%s\n%s\n%s\n' "$ISSUE_AUTHORS" "$ISSUE_CREATORS" "$DISC_AUTHORS" \
-  | grep -v -E 'bot|Claude' \
-  | grep -v '^$' \
-  | sort -u \
-  | wc -l \
-  | tr -d ' ')
-
-# Kill switch C verdict
-if [ "$STARS" -ge 500 ] && [ "$ACTIVE" -ge 20 ]; then
-  KSC_VERDICT="PASS"
-else
-  KSC_VERDICT="FAIL"
-fi
-
-# JSON output
-cat <<EOF
-{
-  "measurement_date": "$TODAY",
-  "repo": "$OWNER/$REPO",
-  "window_since": "$SINCE",
-  "stars": $STARS,
-  "contributors_non_bot_non_cc": $CONTRIB,
-  "issues_discussions_active_3mo": $ACTIVE,
-  "kill_switch_c": {
-    "threshold": {"stars_min": 500, "active_min": 20},
-    "verdict": "$KSC_VERDICT",
-    "note": "Discord は非採用（2026-07-04）ゆえ 'active user' は GitHub Issues + Discussions の直近 3 ヶ月の unique participants で代替判定"
-  },
-  "kill_switch_k": {
-    "note": "competitor comparison is owner judgement; addressable market 10% threshold. 競合値の選定と比較は依頼者判断（本 runbook では自動収集しない）。",
-    "verdict_input": {
-      "vokra_stars": $STARS,
-      "vokra_active_3mo": $ACTIVE,
-      "unity_asset_store_dl": null,
-      "competitor_reference": "sherpa-onnx / whisper.cpp / Candle 等の star 数は依頼者が手動記入"
-    }
-  }
-}
-EOF
+bash scripts/kill-switch-metrics.sh --self-test
+bash scripts/kill-switch-metrics.sh \
+  > docs/governance/quarterly-reviews/2026-Q3.metrics.json
 ```
 
-**格納先**（推奨）: `scripts/kill-switch-metrics.sh` に恒久配置。パーミッションは
-`chmod +x`。実行時は `bash scripts/kill-switch-metrics.sh` で出力を JSON として得る。
+上記の `2026-Q3.metrics.json` は将来の実行で生成する出力例であり、現時点で
+completed metrics snapshot や quarterly review record が存在することを意味しない。
+
+collector が出力する JSON には stars、contributors（bot / Claude Code 除外、owner
+除外版を含む）、Issues + PR + Discussions の unique participant **proxy** 数、C/K の input、
+GA DoD item 4/5 の scaffold が含まれる。スクリプト自身の usage、依存、zero-activity
+guard、JSON schema、現在の実装との差分は source file を正本とする。
+
+**収集範囲の制限:** Issues の comments / issue 作成者は REST `since`（更新日時であり
+作成日時ではない）と pagination を使う。Discussions は最大 100 discussion、各最大 100 comment で、GraphQL pagination は
+なく、discussion の `updatedAt` のみを窓判定に使う。reaction は収集しない。Events API
+fallback も collector には含まれない。したがって出力は API が返した範囲の snapshot で
+あり、完全な participant census の証明ではない。review record にはこの制限、測定日時、
+fallback の有無を転記する。競合比較と最終 Go/No-go は owner 判断であり、collector は
+自動判定しない。
 
 ---
 
@@ -302,52 +252,21 @@ owner未確定であり、既存release日を自動でカレンダーに代入�
 
 ## 6. 意思決定の記録先
 
-判定の結果（Go / No-go、Kill switch 発動 / 継続、根拠、次アクション）は
-以下の四半期 review 記録ファイルに追記する。
+判定の結果（Go / No-go、Kill switch 発動 / 継続、根拠、次アクション）は、
+[`quarterly-reviews/README.md`](quarterly-reviews/README.md) が定める two-file 構成で
+記録する。ここでは手順を複製せず、canonical な命名・テンプレート・公開方針を同 README
+に集約する。
 
-**パス命名規約**: `docs/governance/quarterly-reviews/YYYY-QN.md`
+- Metrics snapshot: `docs/governance/quarterly-reviews/YYYY-QN.metrics.json`。
+  `scripts/kill-switch-metrics.sh` の stdout を保存する。
+- Review record: `docs/governance/quarterly-reviews/YYYY-QN.md`。blank template
+  [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) をコピーして記入し、template 本体は
+  編集しない。
 
-- `YYYY` = 4 桁西暦
-- `N` = 1〜4（Q1 = 1〜3 月、Q2 = 4〜6 月、Q3 = 7〜9 月、Q4 = 10〜12 月）
-- 例: `docs/governance/quarterly-reviews/2026-Q3.md`
-
-**書式（推奨テンプレ）**:
-
-```markdown
-# 2026-Q3 Quarterly Go/No-go review
-
-**開催日**: 2026-09-30
-**参加者**: ayutaz（依頼者、意思決定者）
-**参照メトリクス**: `docs/governance/quarterly-reviews/2026-Q3.metrics.json`
-（`bash scripts/kill-switch-metrics.sh > docs/governance/quarterly-reviews/2026-Q3.metrics.json` で生成）
-
-## 対象 Kill switch
-
-- Kill switch C（v0.1 MVP 3 ヶ月経過時点）: <status>
-- Kill switch K（v0.5 時点）: <status>
-- その他監視項目（A/B/E/F/G/H）: <status>
-
-## メトリクス（測定値）
-
-| 項目 | 値 | 閾値 | 判定 |
-|-----|---|---|-----|
-| GitHub stars | N | 500 | PASS/FAIL |
-| Issues/Discussions active (3mo) | N | 20 | PASS/FAIL |
-| non-bot non-CC contributors | N | 3 (Kill switch D) | PASS/FAIL |
-
-## 意思決定
-
-- Go / No-go: **<GO | NO-GO | HOLD>**
-- 発動する Kill switch: <該当なし | C | K | ...>
-- 根拠（依頼者記入）:
-- 次アクション: <続行 | 撤退 | 方針転換 | 次回 review 前倒し>
-- 次回 review: YYYY-MM-DD
-```
-
-**記録は git 管理下**（`docs/governance/` は public repo に含めるかは依頼者判断。
-本 runbook 自体は public `ayutaz/vokra` の docs 配下に
-配置しても問題ない — メトリクス収集手順にセンシティブ情報はない）。
-`.metrics.json` は生 JSON、判断は `.md` に人手で追記する two-file 構成を推奨。
+`YYYY` は 4 桁西暦、`N` は 1〜4（Q1 = 1〜3 月、Q2 = 4〜6 月、Q3 = 7〜9 月、Q4 =
+10〜12 月）とする。完了した review record は public `docs/governance/` に置くことを
+既定とし、private planning material が必要な場合も結論だけを記録する。snapshot は
+append-only、判断は `.md` に owner が追記する。
 
 ---
 

@@ -1,5 +1,17 @@
 # vast.ai handoff — Vocoder CUDA-half kernel implementation
 
+> **2026-10-08 historical/supersession boundary:** This handoff is the dated
+> 2026-08-13 audit / 2026-08-14 owner handoff for a CUDA-half kernel inventory.
+> It preserves the original kernel list, parity targets and owner-runbook
+> evidence; it is not a current implementation status or a live worker
+> target. Under the current [`AGENTS.md`](../../AGENTS.md) policy, do not run
+> workspace-wide or `vokra-models` Cargo commands, model conversion, model
+> execution or real-weight parity on the maintainer Mac. Route CUDA and heavy
+> verification through disposable VAST using the current
+> [`vast-ai-workflow`](../../.agents/skills/vast-ai-workflow/SKILL.md), and
+> use Scaleway only for the final Apple hardware campaign. No current local
+> recipe is authorized by this historical document.
+
 **Date**: 2026-08-13（audit）→ 2026-08-14（本 handoff land）
 **Branch**: `feat/post-audit-cc-gap-2026-08-13`
 **Status**: **Owner-triggered.** CC は本 handoff の作成のみ。CUDA NVRTC kernel

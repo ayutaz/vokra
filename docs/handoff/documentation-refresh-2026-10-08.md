@@ -122,6 +122,75 @@ does not waive that gate or claim the draft has merged. Deployment decisions
 still require current official sources and owner/legal review, not the old
 SB 942 threshold or marking summary alone.
 
+## Second-pass omissions and consolidation
+
+The additional review on the same `d100d937` code baseline follows the first
+three documentation commits (`f3452023`, `446e86df`, `5df96912`). The initial
+pass counts and receipts above remain historical; this section records the
+additional findings rather than rewriting that evidence. This pass changes
+38 existing Markdown files plus this audit record, with no implementation or
+workflow-definition changes.
+
+Source comparison identified the missing fifth CLI subcommand
+`npu-bakeoff`, the authenticated CoreML sidecar contract, incomplete server
+configuration rows, and server security claims that exceeded production
+wiring. The corrected server documentation distinguishes Wyoming session
+scheduling from HTTP concurrency, route-local body limits from uniform error
+responses, and the reusable panic helper from its still-missing production
+HTTP attachment. Built-in authentication, HTTP timeout/admission control and
+global HTTP panic isolation are not claimed as delivered. Proxy recipes are
+illustrative, authenticated deployment inputs, not deployment-tested results.
+
+Other corrections cover soxr's LGPL classification, missing reference input
+filenames, a JSON fragment mislabeled as a complete document, four relative
+heading links, relocated source/test paths, and the distinct Voxtral runtime
+mmap and converter streaming contracts. Historical hashes, measurements,
+license grants and owner decisions remain unchanged.
+
+The unnecessary duplicated content was consolidated as follows:
+
+| Removed duplicate | Canonical source retained |
+|---|---|
+| Embedded collector implementation in the metrics runbook | `scripts/kill-switch-metrics.sh` |
+| Repeated blank quarterly review template | `docs/governance/quarterly-reviews/README.md` and `vokra-go-nogo-v0.5.md` |
+| Unauthenticated proxy recipe repeated in the server README | `integrations/vokra-server/docs/security-ops.md` |
+
+No whole historical document was deleted. Exact-content comparison found
+only the eight intentional Codex/legacy skill twin pairs. GPU/CUDA handoffs,
+the two HF gap inventories, benchmark records and reusable bakeoff templates
+contain distinct evidence or callers; age, size and a newer summary are not
+sufficient grounds to discard them. Their historical/current boundary is
+clarified where needed. Ignored local planning files are not force-added.
+
+The expanded example-checker diagnostic covered 184 documents and 385 fenced
+blocks. It is not a whole-repository green gate: unsupported languages,
+generated outputs, historical recipes and CLI argument-position heuristics
+need manual classification. Genuine filename/fragment errors were corrected;
+unsupported examples were not relabeled to manufacture a pass. The collector
+still has documented pagination/event-timestamp limitations; documentation
+consolidation does not fix those implementation limitations or make an owner
+Go/No-go decision.
+
+Final lightweight checks before recording these changes:
+
+- Whole tracked Markdown/MDX link probe: 323 documents, 765 relative links,
+  183 heading-fragment links, zero missing tracked targets or fragment
+  candidates. Heading normalization is a static approximation, not a rendered
+  GitHub navigation test.
+- Standard example checker and self-test: PASS; 144 blocks across 26 guides,
+  with the same 30 Tier-C examples explicitly unverified.
+- Documentation references and self-test, runbook paths, community docs,
+  parity-sidecar citations, owner-checklist drift, platform support, ABI
+  changelog, workflow hygiene, Codex hooks and agent contracts: PASS.
+- Zero-dependency and forbidden-symbol checks, collector self-test,
+  VAST skill twin comparison and protected-manifest-excluding diff check: PASS.
+
+The workflow checker initially could not write its default UV cache inside
+the sandbox; rerunning with the existing temporary UV cache passed, without
+changing permissions or dependencies. No model execution, heavy Cargo build,
+provider operation, live metrics collection, publication or PR mutation was
+performed. The external-law and hardware limits recorded above still apply.
+
 ## Per-file coverage inventory
 
 This is the exact starting tracked Markdown/MDX inventory assigned to the review

@@ -10,7 +10,7 @@ system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review を
 
 **兄弟 runbook**: [kill-switch-metrics-runbook.md](kill-switch-metrics-runbook.md)
 （VOKRA-GOV-001）— review 実施時に依頼者が実行する **指標データ収集手順**
-（GitHub star / contributor / Issues+Discussions active participants）を定義。
+（GitHub star / contributor / Issues+Discussions engagement proxy）を定義。
 本 runbook はその出力を **入力の 1 つ** として消費する上位運用手順。
 
 ---
@@ -123,8 +123,10 @@ v0.5 期間内に到来 | C 判定日 = 到来した四半期 review に合流�
 **Discord サブ閾値の読み替え**（2026-07-06 決定、`docs/tickets/m2/M2-15-quarterly-review.md`
 「改訂記録 (a)」）: C の「Discord active user < 20」・K の「Discord DAU」は
 Discord 全体非採用により実測不能。GitHub Issues + Discussions の直近 3 ヶ月
-active participant 数を代替 proxy とする（兄弟 runbook §3 で計測手順を定義済）。
-**proxy と閾値の対応確定は依頼者判断**であり、本 runbook では固定しない
+engagement proxy を代替値とする（兄弟 runbook §3 で計測手順と制限を定義済）。
+proxy は更新された issue / discussion に含まれる古い author を除去しないため、
+実際の作成・コメントイベントの直近 3 ヶ月 census とは区別する。**proxy と閾値の
+対応確定は依頼者判断**であり、本 runbook では固定しない
 （M2-15-T06/T07/T10/T11 の依頼者判定に委ねる）。
 
 ---
@@ -137,10 +139,11 @@ active participant 数を代替 proxy とする（兄弟 runbook §3 で計測�
 
 ### 3.1 T03 指標 JSON（兄弟 runbook 出力）
 
-- **収集ツール**: `scripts/kill-switch-metrics.sh`（推奨格納先、兄弟 runbook
-  [kill-switch-metrics-runbook.md](kill-switch-metrics-runbook.md) §4 に定義。
-  2026-07-11 時点では runbook 内スクリプトブロックとして提供、依頼者が手元で
-  `chmod +x` して恒久配置する運用）。
+- **収集ツール**: tracked canonical script
+  [`scripts/kill-switch-metrics.sh`](../../scripts/kill-switch-metrics.sh)（詳細と制限は
+  兄弟 runbook [kill-switch-metrics-runbook.md](kill-switch-metrics-runbook.md) §4）。
+  リポジトリに executable として存在するため、依頼者が本文をコピーしたり `chmod +x`
+  で恒久配置したりする必要はない。
 - **入力先**: 上記スクリプトの stdout を四半期 review 記録ディレクトリに
   リダイレクト保存する:
 
@@ -151,7 +154,8 @@ active participant 数を代替 proxy とする（兄弟 runbook §3 で計測�
 
   パス命名規約は兄弟 runbook §6「意思決定の記録先」に準拠。
 - **含まれる指標**: (1) GitHub star 数、(2) 非 bot・非 CC contributor 数、
-  (3) Issues + PR + Discussions 直近 3 ヶ月 active participants 数、
+  (3) Issues + PR + Discussions の engagement proxy 数（フィールド名は互換のため
+  `issues_discussions_active_3mo`）、
   (4) Kill switch C の暫定 verdict（PASS/FAIL）、(5) Kill switch K の
   verdict_input（自社値のみ、競合値は依頼者手動記入）。
 - **使い所**: C 判定（§2）と K 自社側指標（§2）、D 監視開始（`docs/tickets/m2/M2-15-quarterly-review.md`
@@ -255,10 +259,10 @@ KPI 実績を同型で投入する。
   選択欄（撤退時のみ）と意思決定ログ（判定日・判定者）。
 - **記入者と時期**: §3 の入力収集は CC が支援、判定欄の記入は依頼者（M2-15-T07 /
   T09 / T11 / T14）。
-- **T01 テンプレート未整備時**: 初回 review 実施までに M2-15-T01 が land して
-  いない場合は、本 runbook §5 の手順に沿った Markdown を review 実施者が
-  ad-hoc に作成し、`docs/governance/vokra-go-nogo-<phase>.md` に配置する
-  （空欄含む形で公開して次期に T01 テンプレを完成させる。fabricated pass 禁止）。
+- **T01 テンプレート**: v0.5 の blank template は既に
+  [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) として tracked されている。
+  review ではこれをコピーして記入する。別形式の ad-hoc schema は作らず、空欄を
+  fabricated pass として埋めない。
 
 ### 4.2 四半期 review 記録の公開
 

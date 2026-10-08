@@ -24,9 +24,11 @@
 - **Decision maker**: `ayutaz`
 - **Milestone under review**: v1.0 GA (M5)
 - **Where the result is recorded**: the GA go-nogo review record
-  `docs/governance/vokra-go-nogo-v1.0-ga.md` (created from
-  `vokra-go-nogo-v0.5.md`, the M2-15-T01 naming convention). The Kill switch
-  A–L verdicts live **there**, not here — this template does not duplicate them.
+  `docs/governance/vokra-go-nogo-v1.0-ga.md` (**not yet created**; the future
+  owner record is to be created from `vokra-go-nogo-v0.5.md` under the
+  M2-15-T01 naming convention). The Kill switch A–L verdicts belong in that
+  future record, not here — this template does not duplicate them or imply a
+  Go/No-go decision.
 
 ## Read-through notes (apply to every item below)
 
@@ -109,7 +111,8 @@ Material: `kill-switch-metrics.sh` → `dod_item4_kill_switch` (C/D/K computed;
 A/B/E/F/G/H/I/J/L are competitor-changelog owner judgments and are emitted as
 `owner-judgment-required`, never fabricated — FR-EX-08). **The A–L verdict table
 is not duplicated here** — record each switch in
-`docs/governance/vokra-go-nogo-v1.0-ga.md` (X-05-T17).
+the future, not-yet-created `docs/governance/vokra-go-nogo-v1.0-ga.md`
+(X-05-T17).
 
 - **Any switch fired?**: _(記入: いいえ / はい — which)_
 - **Reference**: go-nogo record §"Kill switch A–L status"

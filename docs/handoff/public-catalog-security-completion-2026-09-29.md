@@ -3054,7 +3054,7 @@ main run `36847827407` agree that only three Scorecard findings remain open.
 `MaintainedID` and `SASTID` are fixed without dismissal; Best Practices,
 independent Code Review and Vulnerabilities remain open. Exact-head evidence,
 SARIF hash and current Dependabot counts are recorded in the
-[security readback](security-remediation-2026-09-21.md#2026-10-02-current-security-readback).
+[security readback](security-remediation-2026-09-21.md#2026-10-02-security-readback-historical-evidence).
 This supersedes the older five-open observations, not the full completion
 scope or the outstanding security remediation.
 

@@ -23,8 +23,9 @@ the metrics are collected and interpreted.
 | Metrics snapshot | `<YYYY>-Q<N>.metrics.json` | `scripts/kill-switch-metrics.sh` |
 | Review record | `<YYYY>-Q<N>.md` | The maintainer, from the template |
 
-Example for the third quarter of 2026: `2026-Q3.metrics.json` and
-`2026-Q3.md`.
+Illustrative future names for the third quarter of 2026 are
+`2026-Q3.metrics.json` and `2026-Q3.md`; these examples do not imply that
+either file currently exists.
 
 The metrics filename is **not** a free choice — it is the output path the
 metrics script's own usage text documents:
@@ -32,6 +33,9 @@ metrics script's own usage text documents:
 ```bash
 bash scripts/kill-switch-metrics.sh > docs/governance/quarterly-reviews/2026-Q3.metrics.json
 ```
+
+This is a future-generation example, not a completed metrics snapshot or
+review record.
 
 Keep the two names in step. A record with no snapshot beside it cannot be
 audited later, and a snapshot with no record is just numbers.
@@ -70,9 +74,10 @@ file.
 No review records have been filed yet. The first one is due per the Kill
 switch evaluation calendar in the runbook.
 
-**Open item affecting the calendar**: the runbook derives the Kill switch C/D
-start date from the `v0.5.0` release tag, which is absent. The existing
-`v0.3.0` source release is not an automatic substitute, and the planning documents give two different calendar
-windows for the D verdict. Resolving that — pick a start date, or tag
-retroactively — is a maintainer decision and is tracked as X-05-T23. Until it
-is settled, record the date you used and why, in the review record itself.
+**Open item affecting the calendar**: the owner-approved Kill switch C/D
+milestone start dates (`v0.1.0` for C and `v0.5.0` for D) are not established by
+the currently published `v0.3.0` source release. That release is not an
+automatic substitute, and the planning documents give two different calendar
+windows for the D verdict. Resolving the dates — or tagging retroactively — is
+a maintainer decision tracked as X-05-T23. Until it is settled, record each
+date used and why in the review record itself.

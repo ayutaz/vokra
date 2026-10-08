@@ -379,7 +379,7 @@
 > individual and complete account readbacks confirming absence. New source
 > preparation `fd7159f5` is clean but has no remote native-KV or real-weight
 > result. All 194 rows and final Apple gates remain in scope; see the
-> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-v21-code-source-readback-0402-utc).
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-v21-codesource-readback-0402-utc).
 
 > **2026-10-03 official KV preparation review (03:52 UTC):** root accepts
 > bounded independent KV snapshots after full source review and nine offline

@@ -366,7 +366,7 @@
 > use the newly authenticated streaming lifecycle source to assess parent
 > reset visibility. Full source/dependency/owner closure and real-weight
 > CPU gates remain ahead of final Scaleway. See the
-> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-v21-code-source-readback-0402-utc).
+> [dated record](public-catalog-security-completion-2026-09-29.md#2026-10-03-terminal-v21-codesource-readback-0402-utc).
 
 > **2026-10-03 official KV preparation review (03:52 UTC):** reviewed
 > snapshot adapter `2c0f855e` and empty-closure correction `9829a0f0` are
