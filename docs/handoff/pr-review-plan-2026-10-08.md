@@ -733,6 +733,49 @@ are not PASS. Branch protection still requires all 16 contexts with strict
 base freshness. #198 has 15 successful required contexts and the actual
 documentation-links failure; it remains Draft with no waiver or blind retry.
 
+### Actual selected LAW_SECTION preservation and independent acceptance
+
+Session `83888` terminates zero after 84.98 seconds, with peak RSS 54,280,192
+bytes and 47,711,457 bytes fetched. The generated exclusive receipt is
+102,182 bytes, SHA-256
+`26ca867f9ac1a60b62571e597e24ee99819fa348c7fca503dd6470afacb638a3`.
+The fixed archive ETag/size do not change. Both complete central-directory
+scans are serialized separately from the initial 10,985-entry probe; the
+scanner checks the full expected 205,033 records and archive boundary before
+returning. No complete central-directory byte digest is claimed.
+
+The streamed LAW_SECTION member has compressed SHA-256
+`c9d8e3b2d1de20ada218c954b90aa3872d56c8dc89682937bd8c15922dcc54a5`
+and uncompressed SHA-256
+`dde1d3d09d161856d7e35906f6ba855724da6b878ea9b8a7454f75c9d8eac3bb`.
+Its declared 6,058,294/43,276,148-byte sizes and CRC32 `ae791104` pass the
+producer's streaming integrity checks. Manager independently parses the saved
+complete JSON, authenticates the 504-byte SQL member, re-parses all 18 original
+selected rows and verifies their byte lengths, hashes, exact column values
+and referents. All 18 original base64 LOBs independently pass decoded size,
+SHA-256, CRC32 and strict UTF-8 checks; the exact referenced/preserved sets agree.
+The whole 43-MiB table is not preserved or independently re-inflated locally.
+
+The prefix selection includes 11 Chapter 25 sections and seven SB53/Chapter26
+sections (22757.10 through 22757.16). The latter are outside this PR's legal
+wording review: 18 selected prefix rows is not 18 Chapter25 obligations.
+The saved Chapter25 XML and row histories support the dated SB1000 source
+observations for sections 22757.1/.2/.3/.4/.4.1/.5, and distinguish section
+22757.6's January1,2026 effective history from its August2,2026 operative
+text. Section 22757.3.1 remains the AB853/2025 Chapter674 version in this
+official table, while the preserved chaptered AB2713/2026 Chapter856 bill
+amends that section. This version boundary is retained for authoritative
+legal reconciliation; neither source is silently overwritten or promoted
+to an integrated latest-law/applicability verdict.
+
+The new receipt closes the selected original current-code-source preservation
+gap, not EU reauthentication, legal review/sign-off, role-specific
+applicability, required-link CI or model/Apple gates. Source-boundary-only
+additions to #198's two existing documents are delegated for review before
+publication. The protected manifest, all prior receipts and model counts
+remain unchanged. No full ZIP, SQL/database, model, package installation,
+Cargo verification, paid provider or upload runs.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
