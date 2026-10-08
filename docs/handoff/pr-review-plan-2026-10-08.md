@@ -1,5 +1,14 @@
 # PR review and disposition plan — 2026-10-08
 
+> **2026-10-08 12:51:46 UTC disposition readback:** the frozen 20-PR batch
+> now has four actual merges, eleven incorporated closures and five retained
+> OPEN/Draft entries. Accepted main is `f5902db5cc164a292d0095a30a1151cd075eee82`;
+> the maintainer checkout is clean and synchronized. The
+> [final disposition audit](#final-frozen-scope-disposition-audit) supersedes
+> earlier pending observations without rewriting their dated evidence.
+> Publication and acceptance of this management record remain the last
+> delivery step; model/legal/Apple/publication gates are not closed by PR cleanup.
+
 ## Scope and baseline
 
 This is the management plan for the owner's request to handle the normal PRs
@@ -1145,6 +1154,89 @@ required successes with zero current-head failures. Remaining macOS build/test
 are queued and parity is not yet registered; none is presumed passed. Main is
 still `2da1b3fa`. No original PR is closed before actual #197 acceptance and a
 fresh post-main head/content responsibility readback.
+
+### Actual #197 acceptance and seven incorporated closures
+
+At 2026-10-08 12:47:48 UTC, manager independently re-reads strict main
+protection and matches all 16 required check names to their exact application
+IDs (GitHub Actions `15368`, CodeQL `57789`) on reviewed head
+`fb4eb91324292bc8e159cebe11613aa75e07b911`. Every required context has exactly
+one completed/success result; no failed, cancelled, timed-out or
+action-required current-head check is present. The final macOS build
+`113287545935` and test `113287546009` both succeed. Advisory `unity-package`
+`113316887550` is still in progress at acceptance; this is not a claim that
+the entire rollup is terminal. CI is `37770169016`, Security `37770168808`
+and Quality `37770168555` at the accepted head.
+
+Manager normally marks #197 ready and squash-merges with the exact-head guard,
+without admin/force, branch deletion or protection changes. API readback proves
+actual MERGED at 2026-10-08 12:48:04 UTC, with main commit
+`f5902db5cc164a292d0095a30a1151cd075eee82`, parent `2da1b3fa`. Its complete tree
+`75f8aa72f2ac6728b0cf9bd1c89bb5ab0b87b3c5` equals the independently reviewed
+consolidation tree. A whole-tree diff-name comparison has no changed paths.
+The maintainer main is fetched and fast-forwarded, then independently read
+back clean and equal to origin/main.
+
+Before closure, all seven originals' latest OPEN heads are read again and
+match the heads in the scoped coverage review above. Fresh changed-path lists
+also exactly match that review: 53 entries, with the same 44 identical and
+nine individually reviewed subsequent changes inherited into accepted main.
+There is no protected-path target. The original heads' ancestry belongs to
+the reviewed consolidation head, not to squash main; equal accepted trees
+and unchanged original scopes establish incorporation instead.
+
+Each original receives a scoped incorporated comment retaining its model,
+dependency/native/license, owner, independent-reference, CPU/Apple and
+publication obligations. Actual CLOSED readbacks have null mergedAt and
+mergeCommit; no original is claimed individually merged or model-complete.
+
+| Original | Verified unchanged head | Actual closure, UTC |
+|---|---|---|
+| #150 | `373c853e` | 2026-10-08 12:49:54 |
+| #158 | `c38ae4ed` | 2026-10-08 12:50:00 |
+| #159 | `40653c7e` | 2026-10-08 12:50:12 |
+| #173 | `ddcdd74a` | 2026-10-08 12:50:19 |
+| #174 | `edc1e6d0` | 2026-10-08 12:50:26 |
+| #176 | `501645ac` | 2026-10-08 12:50:33 |
+| #180 | `f39d4a96` | 2026-10-08 12:50:40 |
+
+### Final frozen-scope disposition audit
+
+The 2026-10-08 12:51:46 UTC API audit enumerates every original PR, not only
+the accepted subset. The denominator remains 20:
+
+| Actual disposition | Original PRs | Count |
+|---|---|---:|
+| MERGED | #199, #209, #147, #197 | 4 |
+| CLOSED as incorporated, not individually merged | #207, #208, #210, #195, #150, #158, #159, #173, #174, #176, #180 | 11 |
+| OPEN/Draft with an explicit retained next condition | #152, #169, #182, #191, #198 | 5 |
+
+Accepted main commits are #199 `edc2ab54`, #209 `bf428b40`, #147 `2da1b3fa`
+and #197 `f5902db5`, with the actual acceptance evidence recorded in their
+dated sections. The eleven closures retain null merge commits. Every retained
+entry remains Draft; none receives an invented owner/legal or execution pass.
+
+| Retained Draft | Current head | Evidence required before further acceptance |
+|---|---|---|
+| #152 | `fe1f5fe2` | Authoritative XCodec2 primary archive/build/RECORD/API and native/license evidence, supported upstream/checkpoint route, and exact owner disposition before independent real-weight validation. |
+| #169 | `b3e9d5c1` | Its replacement responsibilities are in #182, not accepted main. Close only after #182 is accepted and fresh scoped coverage is verified. |
+| #182 | `a6ff4022` | Diagnose the locked Torch wheel HTTP403 and complete the authenticated 41-package audit; full E2E/reference, streaming/KV lifecycle, CPU/Apple and voice/license/owner conditions remain. |
+| #191 | `63cadf3c` | Supported patched upstream/dependency/native and owner scope plus independent real-weight PCM reference; an open upstream issue and synthetic scheduling tests are insufficient. |
+| #198 | `5614a92c` | Current required link job `113287531384` actually fails on official California citations with HTTP403 after bounded throttling. Preserve citations and source receipts; obtain a genuinely passing required result and retain current-law/version, EU/applicability/counsel/owner holds. |
+
+This closes the original normal-PR acceptance and Draft disposition work,
+not the real models behind the retained or incorporated entries. The frozen
+batch is not expanded to later bot arrivals such as #211–#213, or to the
+58-row unresolved-model campaign. Those are separately planned work.
+
+The remaining delivery requirement is to integrate accepted main into the
+management-only branch, review its sole handoff-file delta, pass relevant
+static/normal hook gates, publish its PR and obtain fresh required CI before
+normal acceptance. Until that record is actually delivered, the overall
+PR-handling goal is not declared complete. No new model download/execution,
+broad local Cargo, paid worker, HF publication or owner/legal approval is
+introduced by this disposition audit; the protected manifest remains outside
+all reads and edits.
 
 ## Execution and finish conditions
 
