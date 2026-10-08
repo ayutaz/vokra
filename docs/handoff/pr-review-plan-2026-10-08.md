@@ -852,6 +852,43 @@ SB942 comparison URL returning HTTP403, with zero timeouts. This is a dated
 external-link failure, not a model or numerical failure. No unchanged retry,
 citation removal, global accepted403 rule or owner/upstream decision is made.
 
+### Corrected #195 static responsibility audit: limited acceptance
+
+Luna freezes the corrected temporary helper at SHA-256
+`dbeca6a3bb89744bdec2d8e481460643012b5c4e412c0187905db48bf4960da2`
+and its tests at
+`22246b2a11d54bfa3d5c73dbd17162055d33ae6346c274c8c5c72eaf40aca227`.
+Manager reviews the changed contracts and independently runs the eight
+unittests through offline Python 3.12/uv: all pass. The aggregate closure now
+uses the CPython partition explicitly, rather than the last loop's synthetic
+partition. Unevaluated extras, optional/group/dev inputs and string-field
+wildcards fail closed. This helper is a bounded static comparator for these
+exact Git inputs, not a general Python resolver or interpreter-support test.
+
+Manager's independent actual audit uses main
+`bf428b40779752728e00f9d63d332981aa7ba3c7`, #195
+`bf54a6c256854708ca0802353373e42649fd5d70` and #147
+`7b596dd9477a121d6411cc1214c6c90b899b3d42`. Main and #195 have identical
+complete project TOML/direct dependencies and top-level lock metadata.
+Both lowercase `cpython` and `pypy` marker partitions have identical
+38-package closures and no edge delta; other/empty strings also have 38,
+and the explicitly hypothetical titlecase `PyPy` partition has 37. These
+are symbolic marker facts, not proof that the locked CPython-ABI Torch wheel
+supports PyPy or that any package/model was installed or executed.
+
+All 15 non-target serialized row differences are independently classified
+as dependency-marker changes, plus `torch.wheels[0].size` and
+`torchaudio.wheels[0].size` omissions. No other non-target version, registry,
+artifact URL/hash or field delta is reported by the exact comparison.
+The strict audit intentionally exits 1, with `audit_pass=false`; this is
+the expected scoped-change rejection, not a failed numerical test. #147's
+complete urllib3 artifact contract exactly matches #195, while its separate
+SpeechBrain/Torch/TorchAudio dependency updates remain intentional and held
+behind their own execution gates. There is no general closure/license,
+real-weight, owner, Apple or publication PASS. #195 remains open until the
+reviewed replacement is actually incorporated into main and this scoped
+responsibility proof is repeated against the then-current live heads.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
