@@ -307,7 +307,8 @@ boundaries and receipts:
    new shared protocol is 128 lines / 6,806 bytes. The three-file total is
    therefore 441 lines / 20,914 bytes (+87 lines / +5,234 bytes); this is
    consolidation and centralization, not an overall-size reduction claim.
-4. Only the four reproducible pytest-generated README files were removed:
+4. Only the four reproducible pytest-generated README files were removed
+   (each deleted file does not exist in a clean checkout):
    `.pytest_cache/README.md`, `bindings/python/.pytest_cache/README.md`,
    `tools/eval/.pytest_cache/README.md`, and
    `tools/parity/.pytest_cache/README.md`. Each was 302 bytes with generated
@@ -332,6 +333,29 @@ allocation, live external API collection, publication, protected-manifest
 access, or push was performed for this cleanup. The CoreML/QNN
 protocol is documented and indexed; its protocol text is not evidence that a
 hardware bakeoff or model gate has passed.
+
+## PR #200 CI follow-up — 2026-10-08
+
+The first GitHub run at `1de3110f` exposed two issues not covered by the
+successful local checks:
+
+- `documentation-links` in run `37720938891` returned HTTP 403 for the
+  historical California SB 942 `billVersionsCompareClient.xhtml` citation.
+  The official bill navigation and text endpoints also returned 403 during
+  the follow-up. The citations and historical-law caveats are retained; a
+  narrowly anchored exclusion for that exact URL follows the existing
+  bot-blocked endpoint policy. It is not a legal-source reauthentication,
+  acceptance of all 403 responses, or a skipped link-check job.
+- `license` in run `37720939450` passed the dependency checks but failed its
+  runbook citation step on two deleted pytest README paths in this record.
+  Explicit absence wording now marks the deleted files for a clean checkout;
+  the files are not recreated and the checker is not weakened. Local ignore
+  behavior had hidden this clean-checkout difference.
+
+These are a documentation citation correction and an exact-URL link-check
+configuration correction, not runtime or model changes. Fresh GitHub CI on
+the corrected head is required before merge; the original failures are not
+treated as passing evidence.
 
 ## Per-file coverage inventory
 
