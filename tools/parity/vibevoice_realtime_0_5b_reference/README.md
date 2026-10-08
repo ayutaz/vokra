@@ -59,7 +59,7 @@ uv run --no-project --no-sync --python 3.12 python -B -S \
   tools/parity/vibevoice_realtime_0_5b_reference/test_lock_contract.py
 ```
 
-The first command exercises the 31 collector tests and the second exercises
+The first command exercises the 33 collector tests and the second exercises
 the five CPU-lock contract tests. These checks do not establish installed
 closure, license sign-off, real-weight parity, Apple CPU/Metal parity,
 publication eligibility, or authority to run upstream.
