@@ -776,6 +776,55 @@ publication. The protected manifest, all prior receipts and model counts
 remain unchanged. No full ZIP, SQL/database, model, package installation,
 Cargo verification, paid provider or upload runs.
 
+### Published #198 source-only documents on actual current main
+
+Manager catches and rejects two concrete wording errors in Luna's initial
+document diff: the LAW receipt references 18 LOBs, not three, and bill/LAW
+preservation comes from separate actual runs. The corrected two-file diff
+also distinguishes a BPC section from a subsection. Manager reviews the
+corrected diff and independently passes example self-tests, the 144-block
+source/example check and doc-reference gates. The example checker explicitly
+retains 30 deferred/unverified tiers; this is not a runtime/toolchain pass.
+
+Normal hooks pass for local document commit `14de2a0e` and the reviewed main
+merge `421ab7b1` (tree `92347fbf87ec83c70ac32ab7770bb50dc56194ef`). A normal
+push is correctly refused before Cargo: the upstream is still `6b567fed`, so
+the incoming accepted-main nested NanoCodec lock triggers the conservative
+deep classifier. Compliance regression passes 8/8; neither hook bypass nor
+local Cargo is used. The initial sandboxed `git write-tree` inspection is
+also refused; actual committed-tree readback subsequently proves the expected
+tree, rather than claiming that denied command passed.
+
+The corrected normal workflow first performs GitHub's ordinary base update
+with expected head `6b567fed`. The actual published integration is
+`ac64ec9a12a93bc855bf0eb238bc8533584faa7d`, parents `6b567fed` / `bf428b40`.
+Its three incoming lock blobs exactly equal main. A separate owned worktree
+replays only the reviewed two-document commit on that actual public head;
+the earlier local candidates remain intact. Manager sets the correct existing
+PR upstream, verifies the unchanged literal classifier now sees only those
+two documents, and commits normally at
+`99676662c438d44e43914ccd005d4aca6cf38192`. Parent is `ac64ec9a`; tree remains
+`92347fbf87ec83c70ac32ab7770bb50dc56194ef`. Ordinary non-force push passes the
+compliance regression and the existing Rust-neutral fast path, without
+allow-list/configuration changes, deep Cargo or a paid worker.
+
+GitHub independently confirms #198 at `99676662`, still Draft/unmerged.
+Fresh CI `37766087586`, Security `37766087153` and Quality `37766087141`
+exist and are queued/pending, not accepted green. The updated body exactly
+matches the owned file (15,418 characters) and preserves all 13,154 characters
+of the previous body. Earlier LAW-not-acquired statements are explicitly
+retained as superseded narrow source scopes, not erased. The historical
+`6b567fed` required link failure is not a new-head verdict; every new-head
+required check must independently pass. The source-display/version,
+EU/applicability/counsel/owner and CI holds remain.
+
+Read-only final preparation review of #197 `00d01921` and #147 `7b596dd9`
+finds no additional source-preparation defect in their accepted-main
+reconciliation: only the three reviewed locks change from `90585b10` /
+`82f8544f`, and every resulting blob equals main. Actual fresh required CI,
+normal acceptance and post-main responsibility/duplicate coverage remain
+mandatory. No original family, #169 or #195 is closed in this step.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
