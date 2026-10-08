@@ -57,15 +57,15 @@ SOURCE_ROLE_BLOBS = {
 
 REFERENCE_PROJECT = Path(__file__).with_name("chatterbox_t3")
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f"
-REFERENCE_PACKAGE_ROWS_SHA256 = "1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8"
+REFERENCE_LOCK_SHA256 = "3c1a295bd6d45e6b83f7a182a4421bbb7cc5904a554f4305b9f7d08d1e92029d"
+REFERENCE_PACKAGE_ROWS_SHA256 = "a47f8a74ef9d990289002eaccd346d7d5cbbc9d1480d1213596bc01b0ed36c24"
 LOCK_CORE_VERSIONS = {
     "numpy": "1.26.4",
     "huggingface-hub": "1.27.0",
     "einops": "0.8.2",
     "safetensors": "0.5.3",
-    "torch": "2.6.0",
-    "torchaudio": "2.6.0",
+    "torch": "2.13.0",
+    "torchaudio": "2.11.0",
     "tqdm": "4.67.1",
     "transformers": ISOLATED_TRANSFORMERS_PIN,
 }
@@ -128,7 +128,7 @@ LICENSE_CONCLUSION_BY_NAME = {
     "safetensors": ("Apache-2.0", "https://pypi.org/pypi/safetensors/0.5.3/json"),
     "setuptools": ("MIT", "https://pypi.org/pypi/setuptools/84.0.0/json"),
     "shellingham": ("ISC", "https://pypi.org/pypi/shellingham/1.5.4/json"),
-    "sympy": ("BSD-3-Clause", "https://pypi.org/pypi/sympy/1.13.1/json"),
+    "sympy": ("BSD-3-Clause", "https://pypi.org/pypi/sympy/1.14.0/json"),
     "tokenizers": ("Apache-2.0", "https://pypi.org/pypi/tokenizers/0.22.2/json"),
     "torch": ("BSD-3-Clause; official CPU index", "https://download.pytorch.org/whl/cpu"),
     "torchaudio": ("BSD-3-Clause; official CPU index", "https://download.pytorch.org/whl/cpu"),
@@ -346,6 +346,14 @@ def license_audit_identity(lock_record: dict[str, Any] | None = None) -> dict[st
         raise RuntimeError("transformers security advisory identity drifted")
     if reference_metadata.get("transformers_security_policy") != "REJECT_VERSIONS_BELOW_ISOLATED_FLOOR":
         raise RuntimeError("transformers security policy drifted")
+    if reference_metadata.get("isolated_torch_pin") != LOCK_CORE_VERSIONS["torch"]:
+        raise RuntimeError("isolated torch pin drifted")
+    if reference_metadata.get("isolated_torchaudio_pin") != LOCK_CORE_VERSIONS["torchaudio"]:
+        raise RuntimeError("isolated torchaudio pin drifted")
+    if reference_metadata.get("isolated_torch_index_policy") != "OFFICIAL_PYTORCH_CPU_INDEX_ONLY":
+        raise RuntimeError("isolated CPU index policy drifted")
+    if reference_metadata.get("isolated_torch_api_policy") != "SOURCE_API_AND_VAST_REFERENCE_REQUIRED":
+        raise RuntimeError("isolated source/API policy drifted")
     if not isinstance(metadata, dict):
         raise RuntimeError("dedicated license audit metadata is missing")
     reviewed = metadata.get("reviewed_packages")
@@ -874,14 +882,14 @@ def main() -> int:
         assert "def import_smoke" in source_text
         lock = reference_lock_identity()
         assert lock["python"] == "==3.12.*"
-        assert lock["core_versions"]["torch"] == "2.6.0"
+        assert lock["core_versions"]["torch"] == "2.13.0"
         assert lock["core_versions"]["transformers"] == ISOLATED_TRANSFORMERS_PIN
         assert SOURCE_DECLARED_TRANSFORMERS == "5.2.0"
         assert ISOLATED_TRANSFORMERS_SECURITY_FLOOR == "5.10.0"
         assert ISOLATED_TRANSFORMERS_PIN == "5.10.4"
         assert TRANSFORMERS_SECURITY_ADVISORY == "GHSA-xrqw-3rrv-vx5w"
         assert lock["cpu_index"] == "https://download.pytorch.org/whl/cpu"
-        assert lock["cpu_distribution_versions"] == {"torch": "2.6.0+cpu", "torchaudio": "2.6.0+cpu"}
+        assert lock["cpu_distribution_versions"] == {"torch": "2.13.0+cpu", "torchaudio": "2.11.0+cpu"}
         assert lock["package_rows_sha256"] == REFERENCE_PACKAGE_ROWS_SHA256
         assert lock_rows_sha256(lock["package_rows"]) == REFERENCE_PACKAGE_ROWS_SHA256
         assert len(lock["package_rows"]) == 40

@@ -452,12 +452,13 @@ self_test() {
     'card_data_license_status' 'repo_license_file_status' '--remote-identity' '--dependency-inventory' \
     'remote_files' 'local_git_blob_sha1' 'remote_lfs_sha256' 'dependency_audit_status=PENDING_VAST_AUDIT' 'weights=NOT_ACQUIRED' \
     'transformers_clap_model_source_sha256' 'tensor_manifest' 'source_contract' \
+    'torch==2.13.0' '2.13.0+cpu' '4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2' \
     'PENDING_VAST_WHEEL_BINDING' 'source_contract_status' 'AUTHENTICATED_LOCKED_WHEEL_SOURCE' 'PASS_LOCKED_WHEEL_BINDING' \
     'SOURCE_ONLY_REFERENCE_EXECUTED' 'BLOCKED_SOURCE_ONLY' 'BLOCKED_META_CONSTRUCTION' 'SOURCE_DERIVED_EXPECTED_MANIFEST' 'transformers-wheel' 'wheel-binding-only' \
     'archive_members' 'installed_members' 'python_source_tree' 'canonical_tree_sha256' 'RECORD' 'byte_length' 'itemsize' 'endianness' 'ClapFeatureExtractor' '_get_input_mel' \
     '_np_extract_fbank_features' 'ProcessorMixin' 'RobertaTokenizer' 'clap_source_only_reference.py' \
     'clap_expected_manifest.py' 'transformers_sources' '--source-reference' '--expected-manifest' '--transformers-wheel' \
-    'owner_review_candidate.py' 'owner_review_candidate.json' 'PENDING_OWNER_REVIEW' 'SIGNED_COMMERCIAL' \
+    'owner_review_candidate.py' 'owner_review_candidate.json' 'PENDING_OWNER_REVIEW' 'CURRENT_VAST_MODEL_FREE' 'VAST_EVIDENCE_REGENERATED' 'SIGNED_COMMERCIAL' \
     'row_sha256' 'docs/license-audit.md' 'payload_sha256' \
     'validate_feature_extractor_serializer_contract' 'processor_class' \
     'INSPECTION_ONLY' 'no upload' 'VOKRA_CLAP_REAL_GGUF' 'GGUFReader' \

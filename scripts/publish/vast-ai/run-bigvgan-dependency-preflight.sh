@@ -11,7 +11,7 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/bigvgan"
 PREFLIGHT="$PARITY_PROJECT/preflight_linux_closure.py"
 AUDITOR="$PARITY_PROJECT/audit_linux_closure.py"
 DEFAULT_LOCK="$PARITY_PROJECT/uv.lock"
-EXPECTED_LOCK_SHA256="80ef4819e06ad5b78675da245917bf852ee7952847a1be69fbb2baf97f91b36e"
+EXPECTED_LOCK_SHA256="f78c791e43d089cc9ddf2175cd29929a2c905f3b55d6aaf7ea32c885281edfda"
 
 log() { printf '[bigvgan-dependency-preflight] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }

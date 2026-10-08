@@ -43,9 +43,9 @@ TARGETS = {
         "missing_size_message": "Darwin wheel lock rows require a positive size except the exact torch row",
     },
 }
-DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
-DARWIN_TORCH_HASH = "7b4f8b2b83bd08f7d399025a9a7b323bdbb53d20566f1e0d584689bb92d82f9a"
-DARWIN_TORCH_UPLOAD_TIME = "2025-06-03T18:28:06Z"
+DARWIN_TORCH_URL = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl"
+DARWIN_TORCH_HASH = "2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027"
+DARWIN_TORCH_UPLOAD_TIME = "2026-07-08T12:26:18Z"
 DARWIN_MAX_WHEEL_BYTES = 1 << 30
 REGISTRY_HOSTS = {"pypi.org", "download.pytorch.org"}
 DOWNLOAD_HOSTS = {"files.pythonhosted.org", "download-r2.pytorch.org"}
@@ -255,7 +255,7 @@ def locked_artifact(
     exact_darwin_torch = (
         target == "arm64-darwin"
         and row.get("name") == "torch"
-        and row.get("version") == "2.7.1"
+        and row.get("version") == "2.13.0"
         and row.get("source") == {"registry": "https://download.pytorch.org/whl/cpu"}
         and candidate.get("url") == DARWIN_TORCH_URL
         and candidate.get("hash") == f"sha256:{DARWIN_TORCH_HASH}"
@@ -272,7 +272,7 @@ def locked_artifact(
     ):
         fail(f"{row.get('name', '<unknown>')} selected wheel lock row is malformed: {config['missing_size_message']}")
     if exact_darwin_torch:
-        if filename != "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl":
+        if filename != "torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl":
             fail("Darwin torch wheel filename is not the exact locked macOS arm64 artifact")
     elif target == "arm64-darwin" and row.get("name") == "torch":
         fail("Darwin torch row is not the exact locked package identity")
@@ -403,17 +403,17 @@ def wheel_compatibility(
             return "cp312-cp312-manylinux-x86_64-glibc"
     if target == "arm64-darwin":
         if (
+            package_name == "torch"
+            and filename == "torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl"
+        ):
+            return "cp312-cp312-macosx_14_0-arm64-locked-torch"
+        if (
             python_tag == "cp312"
             and abi_tag == "cp312"
             and platform_tag.startswith("macosx_")
             and platform_tag.endswith("_arm64")
         ):
             return "cp312-cp312-macosx-arm64"
-        if (
-            package_name == "torch"
-            and filename == "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
-        ):
-            return "cp312-none-macosx_11_0-arm64-locked-torch"
     return None
 
 
@@ -1007,8 +1007,8 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
             darwin_torch, target="arm64-darwin"
         )
         assert torch_artifact["url"] == DARWIN_TORCH_URL
-        assert torch_basis == "cp312-none-macosx_11_0-arm64-locked-torch"
-        assert torch_filename == "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl"
+        assert torch_basis == "cp312-cp312-macosx_14_0-arm64-locked-torch"
+        assert torch_filename == "torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl"
         assert torch_hash == DARWIN_TORCH_HASH
         assert torch_size is None
         bad_torch = {**darwin_torch, "wheels": [{**torch_artifact, "hash": "sha256:" + "0" * 64}]}
@@ -1022,8 +1022,8 @@ wheels = [{ url = 'https://files.pythonhosted.org/packages/inactive.whl', hash =
             "demo-1.0-cp312-cp312-macosx_11_0_arm64.whl", "arm64-darwin", "demo"
         ) == "cp312-cp312-macosx-arm64"
         assert wheel_compatibility(
-            "torch-2.7.1-cp312-none-macosx_11_0_arm64.whl", "arm64-darwin", "torch"
-        ) == "cp312-none-macosx_11_0-arm64-locked-torch"
+            "torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl", "arm64-darwin", "torch"
+        ) == "cp312-cp312-macosx_14_0-arm64-locked-torch"
         for label, filename in {
             "darwin-x86": "demo-1.0-cp312-cp312-macosx_11_0_x86_64.whl",
             "darwin-cp311": "demo-1.0-cp311-cp311-macosx_11_0_arm64.whl",

@@ -12,8 +12,8 @@ DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 PROJECT="$VOKRA_ROOT/tools/parity/dia_1_6b_reference"
 BUILD_CONSTRAINTS="$PROJECT/numpy-build-constraints.txt"
-LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+LOCK_SHA256="06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+PYPROJECT_SHA256="4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 NUMPY_SDIST_URL="https://files.pythonhosted.org/packages/dc/b2/ce4b867d8cd9c0ee84938ae1e6a6f7926ebf928c9090d036fc3c6a04f946/numpy-2.2.5.tar.gz"
 NUMPY_SDIST_SHA256="a9c0d994680cd991b1cb772e8b297340085466a6fe964bc9d4e80f5e2f43c291"
 NUMPY_SDIST_BYTES=20273920
@@ -148,12 +148,12 @@ if any("numpy.libs" in item["path"] for item in native):
 PY
 }
 
-assert_optional_audio_absent() {
+assert_soundfile_absent() {
   local environment="$1"
   UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 uv run --project "$PROJECT" --frozen --no-sync --python 3.12 python - <<'PY'
 from importlib import metadata
 
-for package in ("soundfile", "torchaudio"):
+for package in ("soundfile",):
     try:
         metadata.version(package)
     except metadata.PackageNotFoundError:
@@ -254,7 +254,7 @@ prepare() {
   log 'Installing every locked dependency except NumPy'
   UV_PROJECT_ENVIRONMENT="$environment" UV_NO_CACHE=1 UV_CACHE_DIR="${DIA_REFERENCE_UV_CACHE_DIR:-/tmp/vokra-dia-reference-uv-cache}" \
   uv sync --project "$PROJECT" --frozen --no-install-project --no-install-package numpy --python 3.12
-  assert_optional_audio_absent "$environment"
+  assert_soundfile_absent "$environment"
   uv venv --python 3.12 "$builder"
   UV_NO_CACHE=1 uv pip install --python "$builder/bin/python" --require-hashes --no-deps -r "$BUILD_CONSTRAINTS"
   write_build_dependency_evidence "$builder" "$output_real/build-dependency-evidence.json"
@@ -267,7 +267,7 @@ prepare() {
   inspect_wheel "$wheel_path"
   log 'Installing only the prepared NumPy wheel without dependency resolution'
   UV_NO_CACHE=1 uv pip install --python "$environment/bin/python" --no-deps --force-reinstall "$wheel_path"
-  assert_optional_audio_absent "$environment"
+  assert_soundfile_absent "$environment"
   inspect_numpy_install "$environment"
   write_config_evidence "$environment" "$output_real/numpy-config.json"
   wheel="$(sha256sum "$wheel_path" | awk '{print $1}')"
@@ -285,6 +285,7 @@ from pathlib import Path
 
 destination, wheel_path, wheel_sha, environment, sdist_url, sdist_sha, sdist_bytes, uv_version, compiler_version, meson_version, ninja_version, vendored_meson, vendored_meson_version = sys.argv[1:]
 dist = metadata.distribution("numpy")
+torchaudio_version = metadata.version("torchaudio")
 payload = {
     "schema": "vokra-dia-reference-preparation-v1",
     "status": "PREPARED_NO_BLAS",
@@ -293,7 +294,7 @@ payload = {
     "build": {"arguments": ["-C", "setup-args=-Dblas=none", "-C", "setup-args=-Dlapack=none", "-C", "setup-args=-Dallow-noblas=true"], "python": sys.version, "platform": platform.platform(), "uv": uv_version, "compiler": compiler_version, "ninja": ninja_version, "meson": {"builder_dependency": {"executable": "build-venv/bin/meson", "version": meson_version}, "actual_vendored_engine": {"path": "src/vendored-meson/meson/meson.py", "version": vendored_meson_version, "regular_non_symlink": True, "observed_path": vendored_meson}}, "isolation": "no-build-isolation; builder venv preinstalled from hash-pinned constraints"},
     "wheel": {"path": wheel_path, "sha256": wheel_sha, "bytes": Path(wheel_path).stat().st_size},
     "installed_distribution": {"name": dist.metadata["Name"], "version": dist.version, "location": str(dist.locate_file("")), "files": len(tuple(dist.files or ()))},
-    "runtime": {"environment": environment, "uv_run_mode": "--no-sync", "soundfile_installed": False, "torchaudio_installed": False},
+    "runtime": {"environment": environment, "uv_run_mode": "--no-sync", "soundfile_installed": False, "torchaudio_installed": True, "torchaudio_version": torchaudio_version},
     "numpy_config": "numpy-config.json",
 }
 if payload["installed_distribution"]["version"] != "2.2.5":
@@ -308,7 +309,7 @@ PY
 
 self_test() {
   local failed=0 required_tools_line temp_root diagnostic
-  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'build-dependency-evidence.json' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed'; do
+  for token in 'VOKRA_PUBLISH_ON_VAST=1' 'uv sync --project' '--no-install-package numpy' '--require-hashes' '--no-build-isolation' '--no-deps --force-reinstall' '--no-sync' 'Dblas' 'NUMPY_SDIST_SHA256' 'readelf' 'compiler' 'build-dependency-evidence.json' 'numpy-config.json' 'NO_UPLOAD' 'soundfile_installed' 'torchaudio_installed'; do
     grep -Fq -- "$token" "$0" || failed=1
   done
   required_tools_line="$(grep -F 'for tool in' "$0" | head -n 1)"

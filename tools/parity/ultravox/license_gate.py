@@ -49,9 +49,9 @@ UNRESOLVED_MARKERS = {
     "REVIEW_REQUIRED",
 }
 COMPACT_SCHEMA = "vokra-ultravox-dependency-audit-compact-v1"
-FULL_AUDIT_SHA256 = "22698a69938a657327a6ef074d4505e060ede67f4e8e3f3ece97d4085a92e6df"
-AUDIT_HEAD = "0ec56ac126bc8c55b64faf17139e5d3d05082007"
-AUDIT_SCRIPT_SHA256 = "9d6c6764c943ed9887d68cfa1dbd841bdcdcc84aab58f5753ccb9fd988a1f0d0"
+FULL_AUDIT_SHA256 = "77437cfb7fb1838ea791f67f4fc06552f6d64c52b4181ee3012387727e7832b7"
+AUDIT_HEAD = "b03473a2a280ae650ea17943270e45671416cb2d"
+AUDIT_SCRIPT_SHA256 = "17dd8c4167728a7470536f2647e12c93ba7134ca349d4d107861a5a4f7dccd97"
 HF_METADATA_COMPONENTS = ("ultravox-upstream", "llama-companion")
 
 
@@ -487,8 +487,8 @@ def validate_dependency_audit_evidence(path: Path, reference: Any, manifest: dic
         fail("compact model fact aggregate drifted")
     metadata = model["metadata_records"]
     expected_metadata = {
-        "ultravox-upstream": ("fixie-ai/ultravox-v0_5-llama-3_2-1b", "b95bec8ab291eeb04b5cd600dd473377f6b79026", "mit", False, [], "99c652b5bc9438a4f3fe44d358183ec8fbf4b24640c501c301f455afa495db1d", 6379, 14, "945c52e7f1a97dbaefd8257bca101e6e09ace88a732c63fdbdf8dafd78fe7b5f"),
-        "llama-companion": ("meta-llama/Llama-3.2-1B-Instruct", "9213176726f574b556790deb65791e0c5aa438b6", "llama3.2", "manual", ["LICENSE.txt"], "26833339b5003d861d40425a82ed906b3fcdcd5d3eef6d33a9dea9499eb29a57", 23492, 13, "ff5697784f0a22f407a0add7e46f4cdd0b0912c9651f91fbd1a9cd35da300877"),
+        "ultravox-upstream": ("fixie-ai/ultravox-v0_5-llama-3_2-1b", "b95bec8ab291eeb04b5cd600dd473377f6b79026", "mit", False, [], "f73b7b44269a75007b78eb017572581614b8b37a3dfc11ffc6a1a102cd92c490", 6425, 14, "945c52e7f1a97dbaefd8257bca101e6e09ace88a732c63fdbdf8dafd78fe7b5f"),
+        "llama-companion": ("meta-llama/Llama-3.2-1B-Instruct", "9213176726f574b556790deb65791e0c5aa438b6", "llama3.2", "manual", ["LICENSE.txt"], "b22e386cf5738db5b29a965f5cbf332fa7df5d12d2bd57e465c7e75b6cb3dc7b", 23487, 13, "ff5697784f0a22f407a0add7e46f4cdd0b0912c9651f91fbd1a9cd35da300877"),
     }
     if not isinstance(metadata, list) or [row.get("id") for row in metadata] != sorted(expected_metadata):
         fail("compact HF metadata order/count drifted")
