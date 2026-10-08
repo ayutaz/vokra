@@ -285,6 +285,50 @@ creation-time inspection; it is reproducible from the existing lock. Future
 local static hooks use no-sync/offline operation with a validated existing
 environment rather than silently installing a new dependency closure.
 
+### Reviewed scope transfer published; hosted XCodec2 regression accepted
+
+The legal-scope transfer above is now reviewed, normally committed and
+non-force pushed, in preservation-first order:
+
+- #198 `6b567fedc41f1c8ebdffe31e0a54d649d2e1531a` changes only the legal
+  guide and dated documentation audit. The manager's first review found
+  omitted concrete definition/exception/operative-date details; Luna restored
+  them as October6 observations before acceptance. All unique #147 legal URLs
+  are independently verified present, with the October7 observations and
+  October8 non-reauthentication boundary preserved. Official access, current
+  applicability and owner/legal approval remain unresolved here.
+- #147 `82f8544f2f2ef82409c493024b9372785bed2ae4` changes only the legal
+  guide back to the exact accepted `edc2ab54` main blob. All SpeechBrain,
+  benchmark, workflow and pending approval inputs are unchanged. This removes
+  the unrelated legal review from this PR, not from the project scope.
+
+Both normal commit gates pass 5/5 and both normal push compliance regressions
+pass 8/8. The actual public tracking-branch comparisons classify the one-/
+two-document child diffs as Rust-build-neutral; no hook bypass or compiling
+Cargo was used. Hook execution used the validated existing Python3.12
+environment with no-sync/offline settings and no installation output.
+GH readback confirms both published exact heads, still Draft/unmerged.
+
+Fresh #147 CI/Security/Quality are `37754825184` / `37754824988` /
+`37754825118`; fresh #198 equivalents are `37754807269` / `37754807054` /
+`37754806868`. They exist but are queued/pending, not accepted green. PR bodies
+and #198's broader EU/California title now describe the retained responsibilities
+and fresh heads. Old #147 CI `37751105191` and old #198 CI `37752095434` received
+normal cancellation requests after exact-head supersession checks; immediate
+readbacks remained queued, so terminal cancellation is not yet claimed.
+
+At unchanged #152 head `66b5a7c10a95184351af8d0ab75a03143fbc5422`, hosted
+[python-parity-oracles job113227528167](https://github.com/ayutaz/vokra/actions/runs/37752090602/job/113227528167)
+actually runs from 2026-10-08 09:11:01 to 09:11:16 UTC and completes SUCCESS.
+Manager reads the specific completed log: the newly wired XCodec2 suites run
+22, seven and six tests, each OK (35 total). The parent run's exact head is
+independently confirmed. This closes the added hosted regression obligation,
+not all CI or package/native/model/owner/independent-real-weight/Apple gates.
+The body records the result without overwriting the previous pending receipt.
+
+The frozen batch remains one actual merge (#199), 19 open PRs and no
+incorporated-original closure. Main remains `edc2ab54`, clean and synced.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
