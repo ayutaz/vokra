@@ -67,20 +67,34 @@ has occurred.
 The current workspace release line is `0.3.0`. The parity figures below remain
 a historical pre-documentation-refresh snapshot from PR #79 at `d8a93bc3`,
 against `origin/main` `41ce9ffd`; they are not refreshed by this README update.
-The independent CPU
-packet and source-level Metal route are not an Apple-device verdict: OmniASR
-CPU repetition and Metal execution remain explicitly blocked on the
-authenticated Scaleway run. That snapshot's parity summary is 109 passes and
-13 expected skips; the live coverage audit currently reports CPU
-`full=131/partial=42/no-runtime-binder=20/not-artifact=1` and Metal
-`full=131/blocked-by-cpu=62/not-artifact=1`.
-There are currently 0 release tags and 0 GitHub Releases.
+The independent CPU packet and source-level Metal route are not a blanket
+catalog verdict. The named OmniASR CPU and Metal packet checks passed on the
+bounded 2026-09-11 Scaleway run, with publication still `NO_UPLOAD`; see the
+[dated Apple results](../../../docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md),
+table row `OmniASR CTC 1B`. That snapshot's parity summary is 109 passes and
+13 expected skips; those numbers and the coverage values immediately below are
+history-only. The current metadata-only public inventory (2026-10-08, exact
+`main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`) is 194 public
+repositories, 193 GGUF-bearing repositories and 198 GGUF files. Its CPU
+classification is `full=136/partial=43/no-runtime-binder=14/not-artifact=1`,
+and its Metal classification is
+`full=136/blocked-by-cpu=57/not-artifact=1`, leaving 58 unresolved public
+rows. These are code/artifact metadata classifications, not an Apple-device
+completion verdict for every public row. The named OmniASR packet result does
+not close the global catalog denominator or authorize a public artifact
+replacement.
+
+The current GitHub release is `v0.3.0` with 18 release assets. External
+package registries and any OmniASR public-artifact replacement remain
+unauthorized; the former statement that there were 0 release tags and 0
+GitHub Releases belongs to the dated PR #79 snapshot above.
 
 **Audit-start CI snapshot (2026-09-09):** PR #79 was open, non-draft,
 `CLEAN`/`MERGEABLE`, at implementation head `9efcd16e` with base
 `41ce9ffd`; its completed checks were 110 successful, 13 intentionally skipped,
 and 0 failed or pending. The historical coverage counts above are not replaced
-by that PR summary. They remain a dated audit record, while Apple CPU
-repetition and Metal execution are still pending the authenticated Scaleway
-run. Later documentation-only commits do not change the implementation head
-recorded here.
+by that PR summary. They remain a dated audit record. At that snapshot,
+Apple CPU repetition and Metal execution were still pending; the later named
+OmniASR packet result is recorded in the current section above. Later
+documentation-only commits do not change the implementation head recorded
+here.

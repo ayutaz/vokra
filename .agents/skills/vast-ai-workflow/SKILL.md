@@ -26,7 +26,7 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 - H100 / A100 が必要な bakeoff（FA v3 Hopper、CoreML/ANE は別 = 実機 Mac / iPhone）
 
 **M1 iMac で OK**:
-- 軽い crate 単体: `-p vokra-convert` / `-cli` / `-eval` / `-core` / `-ops`（`CARGO_BUILD_JOBS=1` 併用）
+- 既知の軽量 crate 単体（`CARGO_BUILD_JOBS=1`）。package 名だけで安全と判断せず、依存・dev-dependency が `vokra-models` をコンパイルする scope は VAST に送る。`vokra-cli` などモデルを依存に持つ package を無条件のローカル安全例にしない。
 - シェルゲート全般（`scripts/check-*.sh`）、`cargo fmt`、`cargo metadata`
 - **restamp_provenance 経路**: **8.7 GB Voxtral を peak 6.4 MB で publish 実績あり**（mmap 読取のみ、tensor コピーなし。→ skill `publish-model-to-hf` §7）。**tensor を触らず provenance だけ差し替えるなら 2 GB 閾値の例外**
 
@@ -106,6 +106,9 @@ scripts/publish/vast-ai/vastai-safe.sh create instance <offer-id> \
 stderr の URL クエリに含まれる `api_key` 等の資格情報値を
 `[REDACTED]` に置換し、CLI 本来の終了コードを返す。`VASTAI_BIN` を設定すれば
 固定した CLI パスやオフラインのテストコマンドを指定できる。
+`--explain` / `--curl` とその省略形・値付き形式は資格情報を出力し得るため、
+read-only 調査でも禁止する。キーを引数や診断ログに入れない。資格情報が出力に
+現れた場合は再利用を止め、失効・ローテーション後にアクセスを再開する。
 
 ## 3. Provision phase — 4 gotcha を pre-handle
 
@@ -152,9 +155,16 @@ scripts/publish/vast-ai/run-one.sh \
 
 ### 4.2 Voxtral streaming reader パターン（sharded safetensors、mmap 節約）
 
-- 通常は sharded safetensors を `tools/parity/<slug>_prepare_checkpoint.py` で事前 merge（→ skill `add-speech-model` §2.1）
-- **Voxtral だけは例外**: TextDecoder の `Vec<f32>` eager binding が ~15 GB 要求で M1 を殺していた root cause → `MappedTextBlocks` / `MappedHeads`（mmap + tiled transpose、lm_head streaming）で **peak 15 GB → 3.55 GB**。同じ pattern を他 sharded モデルに横展開する場合は先例として参照
-- 実装: `crates/vokra-models/src/voxtral/mapped_lazy.rs` 系。streaming 適用可能なモデルは事前 merge 不要（converter が sharded を直接読む）
+- shard の入力契約はモデルごとの converter / preparation tool で確認する。
+  事前 merge が必要な経路と、shard を直接読む streaming 経路を混同しない。
+- **Voxtral の runtime binding の先例**: TextDecoder の `Vec<f32>` eager binding
+  が ~15 GB を要求した問題に対し、`MappedTextBlocks` / `MappedHeads`
+  （mmap + tiled transpose、lm_head streaming）で **peak 15 GB → 3.55 GB** を
+  記録した。実装は `crates/vokra-models/src/voxtral/text_decoder.rs`。
+  この履歴値は新しいモデルのメモリ保証や Mac ローカル実行の許可ではない。
+- **変換側の別経路**: `crates/vokra-convert/src/models/voxtral.rs` の
+  `convert_shards_streaming` が shard を直接読み、事前 merge を不要にする。
+  runtime の mmap binding と converter の streaming は別の契約である。
 
 ### 4.3 provenance-only の低メモリ経路
 

@@ -65,7 +65,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 ## 5. TTS / VC は法務チェックリスト
 
-- `docs/legal-compliance.md` を通す（EU AI Act Article 50 / California SB 942）。**watermark / C2PA 埋め込み（FR-CP-01 AudioSeal / FR-CP-02 C2PA）は 2026-07-04 依頼者ドロップで未実装**: `vokra-core` の `WatermarkConfig` は config 面のみで、`backend_status` は常に `Deferred`（埋め込み backend 未配線 — 偽の marker を付けない方針）。model-zoo 可否・weight license は下記 compliance gate（→ skill `license-audit`）で runtime 強制する。
+- `docs/legal-compliance.md` の確認日・未確定事項を読み、適用法の現行一次資料を再確認する。**通常の生成経路への自動 watermark 接続と C2PA は未実装**: `WatermarkConfig::backend_status()` は `Deferred`。一方、AudioSeal の standalone 明示 embed/detect API は存在するため「AudioSeal 全体が未実装」と扱わない。明示 API も同意・権利・法令適合を保証しない。model-zoo 可否・weight license は compliance gate（→ skill `license-audit`）で runtime 強制する。
 
 ## 6. ドキュメント更新（同一 PR 内）
 

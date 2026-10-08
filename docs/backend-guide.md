@@ -159,7 +159,8 @@ In the current 0.3.0 line, the 2026-09-11 Apple batch passed the exact
 approval-bound CPU/Metal checks for the named GigaAM v3, GigaAM Multilingual,
 OmniASR, ReazonSpeech, BiCodec and Voice Gender scopes. Those verdicts apply
 only to their exact heads and contracts; source-level route completeness does
-not generalize to the catalog. The fresh 2026-10-04 metadata-only public audit
+not generalize to the catalog. The 2026-10-08 metadata/card-only public audit
+at exact GitHub `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`
 reports CPU `full=136`, `partial=43`,
 `no-runtime-binder=14`,
 `not-artifact=1`, and Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`,
@@ -178,7 +179,8 @@ metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-10-04 — against local checkout `3a3fd822` and the five implemented compute backends,
+**Last verified: 2026-10-08 — against exact GitHub `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758` and the five implemented compute backends,
 the generic convolution seams above, the CoreML whole-submodel delegate path,
 and the SDK-gated QNN delegate scaffold.**
 

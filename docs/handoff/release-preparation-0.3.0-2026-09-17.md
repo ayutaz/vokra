@@ -1,5 +1,15 @@
 # Vokra 0.3.0 release-preparation record — 2026-09-17
 
+> **2026-10-08 current-readback boundary:** `v0.3.0` remains the GitHub-only,
+> pre-1.0 source release with 18 assets; no registry publication or ABI-freeze
+> decision is inferred. The root-owned [documentation refresh](documentation-refresh-2026-10-08.md)
+> records the current metadata/security/PR readback at `main`
+> `d100d93778191ccab77bd1c37fe3552e3d889758`: 194 repositories / 193
+> GGUF-bearing / 198 files, 136 CPU/Metal code-artifact-full / 58 unresolved,
+> 283 open Dependabot alerts (254 patched-version / 29 without), four open
+> Scorecard findings, and PR #199 unmerged. These values do not alter the
+> dated release evidence or authorize external publication.
+
 > **2026-10-04 supersession note:** `v0.3.0` was published on 2026-09-20 with 18 GitHub assets; the five named registry/AAR enable variables below are still `false` on this audit. Current all-pages security counts are 209 open Dependabot alerts (182 patched-version / 27 unpatched) and three open Code Scanning findings. Public metadata remains 194 repositories / 193 GGUF-bearing / 198 GGUF files, CPU/Metal code-artifact full 136 with 58 unresolved rows. These fresh values do not rewrite the dated release-preparation evidence, claim Apple-wide completion or authorize registry/model publication. See the [current index](../README.md).
 
 This record separates the source release from the ongoing public-model and

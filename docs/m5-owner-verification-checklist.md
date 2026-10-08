@@ -2,6 +2,19 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
+**2026-10-08 current-readback boundary:** the root-owned [documentation
+refresh](handoff/documentation-refresh-2026-10-08.md) supersedes the prior
+readback for current routing. At `main`
+`d100d93778191ccab77bd1c37fe3552e3d889758`, the metadata-only inventory
+remains 194 repositories, 193 GGUF-bearing repositories and 198 GGUF files;
+CPU remains `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`,
+and Metal remains `full=136`, `blocked-by-cpu=57`, `not-artifact=1`, leaving
+58 unresolved public rows. Security is 283 open Dependabot alerts (254
+patched-version / 29 without) and four open Scorecard findings. Sixteen PRs
+remain open (fifteen drafts), with PR #199 unmerged. No new owner/legal,
+real-weight, Apple, publication, GA or ABI decision is inferred; the 53/29
+literal checklist count and all dated evidence below remain unchanged.
+
 **2026-10-04 JST current-state / supersession note:** the read-only GitHub
 API observes `main` at `97447185361a37af64c1b30fe87e8e2618d96e20`.
 The local review starts at `3a3fd82281ae3ef9e995cb212ec794531ed13493`;
@@ -93,7 +106,7 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (reviewed 2026-10-04)
+## 0. Live remaining-work index (reviewed 2026-10-08; row-level inventory last fully audited 2026-10-04)
 
 This table is the complete M5 routing index. The 29 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must

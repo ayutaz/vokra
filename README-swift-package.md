@@ -2,11 +2,14 @@
 
 The workspace release is `0.3.0` (`v0.3.0`), and the XCFramework is published
 as the GitHub Release asset `Vokra.xcframework.zip`. This guide was reviewed
-on 2026-10-04 against the local documentation head `3a3fd822`; that checkout
-is a working branch and is not a replacement for the released tag. The tagged
-source's `Package.swift` still uses the local XCFramework path, so a clean tag
-checkout does not automatically resolve the remote asset. Apple Silicon
-CPU/Metal hardware evidence is not implied by this package guide and remains a
+on 2026-10-08 against exact `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758`; the released tag remains the
+consumer pin. Current `main`'s `Package.swift` uses the pinned `v0.3.0` GitHub
+binary target URL and checksum, while the released `v0.3.0` tag retains its
+local XCFramework path. For local development, build the XCFramework with the
+script below and use a consumer-side local package or `binaryTarget(path:)`.
+Apple Silicon CPU/Metal hardware evidence is not implied by this package guide
+and remains a
 separate, row-scoped validation gate.
 
 Consumer instructions for integrating Vokra into an iOS/macOS app via Swift Package Manager.
@@ -17,10 +20,11 @@ Apache-2.0 (NFR-LC-01). See `LICENSE` at the repository root. The XCFramework is
 
 ## Add to an Xcode project
 
-The `v0.3.0` GitHub Release publishes the XCFramework and checksum. The tagged
-source manifest uses a local binary target, so use the local flow below for a
-clean tag checkout, or place the explicit URL/checksum target shown below in a
-consumer-side manifest when consuming the release asset.
+The `v0.3.0` GitHub Release publishes the XCFramework and checksum. The
+released tag's `Package.swift` still points to the local XCFramework path;
+current `main` contains the pinned URL/checksum target. Use the local flow
+below when developing against a locally built XCFramework, or use the pinned
+release target in a consumer-side manifest.
 
 1. Clone the repository, check out the released tag, and build the local
    XCFramework:
@@ -83,10 +87,13 @@ falling back to CPU.
 
 ## Development vs Release
 
-- **Local dev / the `v0.3.0` tag** — `Package.swift` uses
-  `.binaryTarget(name: "Vokra", path: "build/ios/Vokra.xcframework")`.
-  Build it with `scripts/build-ios.sh`; the artifact lands at
-  `build/ios/Vokra.xcframework`.
+- **Local development / the `v0.3.0` tag** — build with
+  `scripts/build-ios.sh`; the artifact lands at
+  `build/ios/Vokra.xcframework`. The tag's local binary target can consume it
+  from that checkout; a consumer using current `main` must use a separate
+  local package reference or `.binaryTarget(path:)` because `main`'s target is
+  URL-based.
 - **Release asset (`v0.3.0`)** — use the explicit URL and checksum in the
-  consumer-side manifest shown in the iOS tutorial. The GitHub asset is
-  published, but the tag's source manifest remains local-path based.
+  consumer-side manifest shown in the iOS tutorial. The current `main` manifest
+  already contains that target; the released tag's local-path target does not
+  automatically resolve the remote asset.

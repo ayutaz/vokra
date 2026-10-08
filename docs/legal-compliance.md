@@ -1,6 +1,6 @@
 # legal-compliance.md — Vokra 音声 AI 法務対応
 
-**最終更新**: 2026-08-30（公式一次資料の確認日）
+**最終更新**: 2026-10-08（文書境界更新；公式一次資料の最終確認日は2026-08-30）
 **目的**: EU AI Act Article 50、California SB 942、Tennessee ELVIS Act、連邦 NO FAKES Act、Apple App Review Guidelines、Google Play AI-Generated Content policy について、Vokra provider と deployer が法務確認すべき論点と現行実装の境界を記録する。
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
@@ -35,6 +35,13 @@ HTML endpoint（[GDPR](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=
 判断は変更しない。
 
 **2026-10-06 California current-code review boundary:** 公式California BPC Chapter 25の現行コードを再照合した。SB 1000（Chapter 861, 2026-09-30）は§22757.1(e)のcovered provider定義、§22757.2のdisclosure verification tool、§22757.3のlatent disclosure、§22757.4/.4.1の罰則、§22757.5の例外を改正している。AB 2713（Chapter 856, 2026-09-30）は、公式California Legislative Information billNavのsource extractionで、Section 1によるBPC §22757.3.1改正、承認・提出日、および同条(e)の2027-01-01 operativeを確認した。AB 2713の全文legal review、適用・罰則、owner判断は未確認であり、直接HTTP GET 403のlink gateも未解決である。本追記はCalifornia §2の限定的なcurrent-code確認であり、法務承認やCalifornia法令全体の現行性を保証しない。
+
+**2026-10-08 法令再認証境界:** EUR-Lexのbot確認、California公式条文ページの403、
+および同ページの代替取得失敗により、EU/Californiaの現行法をこの日付で再認証したとは
+扱わない。[PR #198](https://github.com/ayutaz/vokra/pull/198)は未マージのdraftで、
+2026-10-07の公式ブラウザ読戻しに基づくCalifornia条文事実を含むが、同PRの
+`ab33cd6c` headでは必須`documentation-links` gateが未通過である。
+そのdraftをこの文書へ取り込まず、追加の法務sign-off・免除・配布許可も作成しない。
 
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
@@ -108,7 +115,14 @@ consent, disclosure, and model rights before release or deployment.
 
 ## 2. California SB 942 (California AI Transparency Act)
 
-### 施行・status（2026-08-30のSB 942確認 + 2026-10-06 current-code再照合）
+> **Dated-source boundary:** This section retains the dated 2026-08-30 SB 942
+> review history and the separate 2026-10-06 limited current-code/source-
+> extraction record. The latter is not a full legal review. Neither record was
+> reauthenticated on 2026-10-08: the official California page readback failed,
+> so neither establishes current applicability, legal compliance, owner/legal
+> approval, or distribution permission.
+
+### 施行・status（2026-08-30のSB 942確認 + 2026-10-06 limited current-code review）
 - **歴史**: SB 942はChapter 291として2024-09-19に成立し、制定時の§22757.6では **2026-01-01からoperative** とされた。審議中法案ではない。
 - **AB 853の現行日と役割別日**: AB 853（Chapter 674, Statutes of 2025）が§22757.6を改正し、chapterの基本的なoperative日を **2026-08-02** とした。上記の2026-01-01は制定時の履歴であり、現行のchapter operative日ではない。AB 853が追加した役割別規定は各条の明示日が優先され、§22757.3.1（large online platform、**2027-01-01**）、§22757.3.2（GenAI hosting platform、**2027-01-01**）、§22757.3.3（capture device manufacturer、**2028-01-01**）である。
 - **SB 1000の現行改正**: SB 1000（Chapter 861, Statutes of 2026）は **2026-09-30 effective** と現行コードに注記される。§22757.1(e)のcovered providerには従来の月間1,000,000 visitors/usersの閾値がなく、§22757.2はdisclosure verification tool、§22757.3はminor modificationを除くcreated/altered contentへのlatent disclosureを定める。§22757.5にはnon-user-generated videogameと、**2029-01-01より前**のassistive-technology GenAI systemの例外がある。これは§22757.6の2026-08-02 operative日や、AB 853の2027/2028役割別operative日を置き換える記載ではない。
@@ -292,6 +306,11 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 ---
 
 ## 11. Vokra 提供の Compliance Checklist (deployer 向け)
+
+> **Historical checklist boundary:** the SB 942 checkbox below, including the
+> 1,000,000 visitor/user threshold and manifest/latent options, is retained
+> from the 2026-08-30 dated snapshot. It is a prompt for renewed official-source
+> and counsel review, not a current-law determination or compliance sign-off.
 
 新規 Vokra 統合プロジェクト開始時に確認すべき checklist:
 
