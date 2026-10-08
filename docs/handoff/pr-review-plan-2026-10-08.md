@@ -338,6 +338,40 @@ This supersedes only the immediate nonterminal cancellation observations above.
 The frozen batch remains one actual merge (#199), 19 open PRs and no
 incorporated-original closure. Main remains `edc2ab54`, clean and synced.
 
+### New-head link outcomes and bounded primary-source investigation
+
+At unchanged #198 head `6b567fed`, required documentation-links job
+`113236626598` completes FAILURE at 2026-10-08 09:24:05 UTC. Manager reads
+the completed job log: 929 total, 899 successful, zero timeouts and 15 HTTP403
+citations across seven unique official California URLs (three citations in
+the dated audit, 12 in the legal guide). The five earlier #147 URLs and the
+AB2713/SB1000 chaptered billText URLs are all retained. No identical retry,
+expanded exemption, accepted403 or current-law conclusion is made; the body
+now records this actual result instead of inferring green from scope transfer.
+
+At unchanged #147 head `82f8544f`, required documentation-links job
+`113236681971` completes SUCCESS at 09:26:05 UTC. Manager reads its log:
+897 total, 884 successful, zero timeouts and zero errors. The exact-head
+Security run `37754824988` is completed/success. Other required checks remain
+pending, and the separately retained #198 legal/source duty is not waived.
+
+A new bounded investigation finds the separately published
+[official PUBINFO index](https://downloads.leginfo.legislature.ca.gov/) and
+[provider instructions](https://downloads.leginfo.legislature.ca.gov/pubinfo_Readme.pdf).
+Direct index GET succeeds HTTP200 (8519 bytes). A one-byte Range GET of the
+listed session ZIP succeeds HTTP206 with total length 1288351194 and
+Last-Modified 2026-10-05 04:26:12 GMT. This proves technical accessibility,
+not the relevant bill/code record identity or current applicability. Luna's
+temporary selective inspector is bounded to 64MB fetched and 128MB memory,
+fixed official origin, exact range/ETag and archive-integrity checks. No full
+1.2GB download, database installation, model activity or repository-source
+edit is authorized by this investigation. Its result is still pending here.
+
+Current #209/#197/#152 verification continues without failed required checks;
+running/queued jobs are live waits, not merge permission. #152's 35-case
+acceptance above does not replace its outstanding required checks or primary
+archive/native/upstream/model/owner duties. Main remains clean at `edc2ab54`.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
