@@ -19,7 +19,10 @@ PROJECT = Path(__file__).resolve().parent
 REPOSITORY = "https://huggingface.co/laion/clap-htsat-fused"
 REVISION = "365dea6ef167def6676140ed93bbc43f84dabb28"
 ENTRYPOINT = "tools/parity/clap_dump_reference.py"
-DEPENDENCIES = ["numpy==2.3.5", "torch==2.7.1", "transformers==5.10.4"]
+DEPENDENCIES = ["numpy==2.3.5", "torch==2.13.0", "transformers==5.10.4"]
+TORCH_WHEEL_SHA256 = (
+    "4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2"
+)
 TRANSFORMERS_WHEEL_SHA256 = (
     "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
 )
@@ -33,6 +36,8 @@ def self_test() -> None:
     assert values["reference_entrypoint"] == ENTRYPOINT
     assert values["isolated_transformers_pin"] == "5.10.4"
     assert values["transformers_wheel_sha256"] == TRANSFORMERS_WHEEL_SHA256
+    assert values["isolated_torch_pin"] == "2.13.0"
+    assert values["torch_wheel_sha256"] == TORCH_WHEEL_SHA256
     assert values["license_status"] == "OWNER_REVIEW_PENDING"
     assert values["dependency_audit_status"] == "PENDING_VAST_AUDIT"
     assert values["source_contract_status"] == "PENDING_VAST_WHEEL_BINDING"

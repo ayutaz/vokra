@@ -283,8 +283,6 @@ def main() -> int:
     import torchaudio
     from huggingface_hub.errors import RemoteEntryNotFoundError
     from requests.exceptions import HTTPError
-    if not hasattr(torchaudio, "list_audio_backends"):
-        torchaudio.list_audio_backends = lambda: []  # type: ignore[attr-defined]
     hf_hub_download = huggingface_hub.hf_hub_download
 
     def _hf_hub_download_compat(*args: object, **kwargs: object) -> str:

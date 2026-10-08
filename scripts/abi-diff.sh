@@ -390,12 +390,17 @@ classify() {
     added_keys="$(comm -13 <(printf '%s\n' "$anchor_keys") <(printf '%s\n' "$current_keys"))"
     common_keys="$(comm -12 <(printf '%s\n' "$anchor_keys") <(printf '%s\n' "$current_keys"))"
 
-    # Look up prototype for a key on a given side. We use grep -F -x on the
-    # start-of-line prefix to avoid regex escaping on function names — the
-    # anchor is `sort -u`-stable, so at most one line matches.
+    # Look up prototype for a key on a given side. We use awk on the
+    # start-of-line prefix to avoid regex escaping on function names. Keep the
+    # first matching row (the existing collision semantics), but consume the
+    # entire producer stream before printing it: an early awk exit under
+    # pipefail can SIGPIPE printf on a large symbol table.
     lookup() {
         local key="$1" side_syms="$2"
-        printf '%s\n' "$side_syms" | awk -F'|' -v k="$key" '$1 == k { print $0; exit }'
+        printf '%s\n' "$side_syms" | awk -F'|' -v k="$key" '
+            $1 == k && !found { first = $0; found = 1 }
+            END { if (found) print first }
+        '
     }
 
     # Split "changed" from "unchanged" by comparing full lines within the
@@ -618,7 +623,7 @@ self_test() {
     local tmp_anchor tmp_current
     tmp_anchor="$(mktemp -t vokra-abi-diff-anchor.XXXXXX)"
     tmp_current="$(mktemp -t vokra-abi-diff-current.XXXXXX)"
-    trap 'rm -f "$tmp_anchor" "$tmp_current"' RETURN
+    trap 'rm -f "$tmp_anchor" "$tmp_current" "$large_human_file" "$large_machine_file"' RETURN
 
     cat >"$tmp_anchor" <<'EOF'
 # anchor snapshot
@@ -690,7 +695,92 @@ EOF
         echo "self-test FAILED: machine CHANGED old"; ok=0
     fi
 
-    # 6. Extractor drift guard: re-run the awk pipeline over the same
+    # 6. Large-table lookup regression: keep only two distinct keys while
+    # making each side larger than the pipe buffer. The target key is near the
+    # sorted beginning and deliberately has two differing prototypes; lookup
+    # must keep the first row while consuming all input, so report mode stays
+    # exit-0 under pipefail and does not alter collision semantics.
+    local large_anchor large_current large_human_file large_machine_file
+    local old_lookup_rc large_human_rc large_machine_rc
+    large_anchor="$({
+        printf '%s\n' \
+            'FUNC vokra_lookup_target|void vokra_lookup_target(const char *first)' \
+            'FUNC vokra_lookup_target|void vokra_lookup_target(const char *second)'
+        awk 'BEGIN { for (i = 0; i < 30000; i++) printf "FUNC vokra_lookup_zzzz|void vokra_lookup_zzzz(unsigned long filler_%05d)\n", i }'
+    } | LC_ALL=C sort -u)"
+    large_current="$({
+        printf '%s\n' \
+            'FUNC vokra_lookup_target|void vokra_lookup_target(const char *first_new)' \
+            'FUNC vokra_lookup_target|void vokra_lookup_target(const char *second_new)'
+        awk 'BEGIN { for (i = 0; i < 30000; i++) printf "FUNC vokra_lookup_zzzz|void vokra_lookup_zzzz(unsigned long filler_%05d)\n", i }'
+    } | LC_ALL=C sort -u)"
+    if [ "${#large_anchor}" -lt 2097152 ] || [ "${#large_current}" -lt 2097152 ]; then
+        echo "self-test FAILED: large lookup fixture did not exceed 2 MiB" >&2
+        ok=0
+    fi
+
+    # The historical early-exit lookup is expected to fail here: with
+    # pipefail enabled, printf receives SIGPIPE after awk finds the first row.
+    # Keep this as an unconditional strict subprocess so the regression proves
+    # the old failure rather than inheriting a conditional's errexit masking.
+    (
+        set -euo pipefail
+        old_lookup() {
+            local key="$1" side_syms="$2"
+            printf '%s\n' "$side_syms" | awk -F'|' -v k="$key" '$1 == k { print $0; exit }'
+        }
+        old_lookup 'FUNC vokra_lookup_target' "$large_anchor" >/dev/null
+    )
+    old_lookup_rc=$?
+    if [ "$old_lookup_rc" -eq 0 ]; then
+        echo "self-test FAILED: old early-exit lookup unexpectedly succeeded" >&2
+        ok=0
+    fi
+
+    # Run the fixed classifier in unconditional strict subprocesses. Capturing
+    # to files avoids putting the command itself in an if/while conditional,
+    # which would disable errexit inside classify and mask a SIGPIPE regression.
+    large_human_file="$(mktemp -t vokra-abi-diff-large-human.XXXXXX)"
+    large_machine_file="$(mktemp -t vokra-abi-diff-large-machine.XXXXXX)"
+    (
+        set -e
+        classify "$large_anchor" "$large_current" text >"$large_human_file"
+    )
+    large_human_rc=$?
+    if [ "$large_human_rc" -eq 0 ]; then
+        large_human="$(cat "$large_human_file")"
+        if ! printf '%s\n' "$large_human" | grep -Fq 'CHANGED  1'; then
+            echo "self-test FAILED: large human report CHANGED count" >&2; ok=0
+        fi
+        if ! printf '%s\n' "$large_human" | grep -Fq '    -    void vokra_lookup_target(const char *first)'; then
+            echo "self-test FAILED: large human report did not preserve first old row" >&2; ok=0
+        fi
+        if ! printf '%s\n' "$large_human" | grep -Fq '    +    void vokra_lookup_target(const char *first_new)'; then
+            echo "self-test FAILED: large human report did not preserve first new row" >&2; ok=0
+        fi
+    else
+        echo "self-test FAILED: strict large human report returned $large_human_rc" >&2
+        ok=0
+    fi
+    (
+        set -e
+        classify "$large_anchor" "$large_current" machine >"$large_machine_file"
+    )
+    large_machine_rc=$?
+    if [ "$large_machine_rc" -eq 0 ]; then
+        large_machine="$(cat "$large_machine_file")"
+        if ! printf '%s\n' "$large_machine" | grep -Fq '~ FUNC vokra_lookup_target|void vokra_lookup_target(const char *first_new)'; then
+            echo "self-test FAILED: large machine report new row" >&2; ok=0
+        fi
+        if ! printf '%s\n' "$large_machine" | grep -Fq '~-FUNC vokra_lookup_target|void vokra_lookup_target(const char *first)'; then
+            echo "self-test FAILED: large machine report old row" >&2; ok=0
+        fi
+    else
+        echo "self-test FAILED: strict large machine report returned $large_machine_rc" >&2
+        ok=0
+    fi
+
+    # 7. Extractor drift guard: re-run the awk pipeline over the same
     #    synthetic header that check-abi-changelog.sh uses in its own self-
     #    test, and verify we produce the same FUNC / TYPEDEF surface. This
     #    catches any drift between the two extractors (the whole reason we
@@ -726,7 +816,7 @@ EOF
         ok=0
     fi
 
-    # 7. Format-detection guard: verify is_symbols_format returns TRUE for
+    # 8. Format-detection guard: verify is_symbols_format returns TRUE for
     #    a pre-extracted symbols file and FALSE for a raw C header. This
     #    is what routes --anchor m0 (raw header) vs. --anchor v0.9
     #    (symbols) to the right loader.
@@ -739,7 +829,7 @@ EOF
         ok=0
     fi
 
-    # 8. load_anchor_symbols must produce IDENTICAL output for the raw
+    # 9. load_anchor_symbols must produce IDENTICAL output for the raw
     #    header and a pre-extracted symbols file derived from that same
     #    header. This is the drift guard between the two anchor formats
     #    and is why M3-16-T02 can commit only the raw M0 header
@@ -775,7 +865,7 @@ EOF
     fi
     rm -f "$tmp_syms" "$tmp_hdr"
 
-    # 9. --gate enforcement: prove the gate actually FAILS on a blocking delta
+    # 10. --gate enforcement: prove the gate actually FAILS on a blocking delta
     #    and PASSES only when it should. Without this, wiring abi-diff.sh into a
     #    required CI check would be a fabricated pass (the report mode always
     #    exits 0). Uses dedicated synthetic anchor/current/changelog fixtures so

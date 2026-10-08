@@ -6,7 +6,12 @@ ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 INSPECTOR="$ROOT/tools/parity/chatterbox_family_inspect.py"
 REFERENCE="$ROOT/tools/parity/chatterbox_t3_reference.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/chatterbox_t3"
-REFERENCE_LOCK_SHA256="2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f"
+REFERENCE_LOCK_SHA256="3c1a295bd6d45e6b83f7a182a4421bbb7cc5904a554f4305b9f7d08d1e92029d"
+REFERENCE_PACKAGE_ROWS_SHA256="a47f8a74ef9d990289002eaccd346d7d5cbbc9d1480d1213596bc01b0ed36c24"
+REFERENCE_TORCH_VERSION="2.13.0"
+REFERENCE_TORCHAUDIO_VERSION="2.11.0"
+REFERENCE_TORCH_DISTRIBUTION="2.13.0+cpu"
+REFERENCE_TORCHAUDIO_DISTRIBUTION="2.11.0+cpu"
 SOURCE_URL="https://github.com/resemble-ai/chatterbox.git"
 SOURCE_REV="5de7a54aa4e5e2baadb0182dde554908b48b85c2"
 WORK="${CHATTERBOX_WORK_DIR:-/dev/shm/vokra-chatterbox-family-inspection}"
@@ -108,16 +113,67 @@ license_audit_preflight(){
  audit_rc=$?
  set -e
  if [[ "$audit_rc" == 2 ]]; then
-  [[ "$audit_output" == *"$REFERENCE_LOCK_SHA256"* ]] || die 'license audit did not report the reviewed lock identity'
+  CHATTERBOX_AUDIT_OUTPUT="$audit_output" UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
+   "$REFERENCE_LOCK_SHA256" "$REFERENCE_PACKAGE_ROWS_SHA256" "$REFERENCE_TORCH_VERSION" \
+   "$REFERENCE_TORCHAUDIO_VERSION" "$REFERENCE_TORCH_DISTRIBUTION" \
+   "$REFERENCE_TORCHAUDIO_DISTRIBUTION" <<'PY' || die 'license audit identity is stale or malformed'
+import json
+import os
+import sys
+
+expected_lock, expected_rows, expected_torch, expected_torchaudio, expected_torch_cpu, expected_torchaudio_cpu = sys.argv[1:]
+expected_core = {
+    "numpy": "1.26.4",
+    "huggingface-hub": "1.27.0",
+    "einops": "0.8.2",
+    "safetensors": "0.5.3",
+    "torch": expected_torch,
+    "torchaudio": expected_torchaudio,
+    "tqdm": "4.67.1",
+    "transformers": "5.10.4",
+}
+expected_cpu = {"torch": expected_torch_cpu, "torchaudio": expected_torchaudio_cpu}
+try:
+ def pairs(items):
+  result = {}
+  for key, item in items:
+   if key in result:
+    raise ValueError(f"duplicate audit key: {key}")
+   result[key] = item
+  return result
+
+ value = json.loads(os.environ["CHATTERBOX_AUDIT_OUTPUT"], object_pairs_hook=pairs)
+ if not isinstance(value, dict) or set(value) != {"reference_environment", "license_audit"}:
+  raise ValueError("audit envelope schema drifted")
+ environment, audit = value["reference_environment"], value["license_audit"]
+ if not isinstance(environment, dict) or not isinstance(audit, dict):
+  raise ValueError("audit sections are malformed")
+ if environment.get("sha256") != expected_lock:
+  raise ValueError("lock SHA-256 drifted")
+ if environment.get("package_rows_sha256") != expected_rows:
+  raise ValueError("package-row SHA-256 drifted")
+ if environment.get("core_versions") != expected_core:
+  raise ValueError("core package versions drifted")
+ if environment.get("cpu_distribution_versions") != expected_cpu:
+  raise ValueError("CPU distribution versions drifted")
+ if environment.get("cpu_index") != "https://download.pytorch.org/whl/cpu":
+  raise ValueError("CPU index drifted")
+ if audit.get("lock_sha256") != expected_lock:
+  raise ValueError("license audit lock identity drifted")
+ if audit.get("status") != "BLOCKED_UNRESOLVED":
+  raise ValueError("license audit is not the current blocked disposition")
+except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+ raise SystemExit(str(error))
+PY
   log "$audit_output"
   return 1
  fi
- [[ "$audit_rc" == 0 ]] || die 'dependency license audit command failed unexpectedly'
- return 0
+ [[ "$audit_rc" == 0 ]] && die 'license audit unexpectedly cleared before owner approval'
+ die "dependency license audit command failed unexpectedly (exit $audit_rc)"
 }
 self_test(){
  local fail=0 token tmp approval approval_sha
- for token in 'ResembleAI/chatterbox' '5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18' 'ResembleAI/chatterbox-nano' '71ccd1d0081b430592cea481f4307e764e07bc64' 'ResembleAI/chatterbox-turbo' '749d1c1a46eb10492095d68fbcf55691ccf137cd' '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'BLOCKED_APPROVAL/INSPECTION_ONLY' '--approval-sha256' '--expected-head' 'CARGO_BUILD_JOBS=1' 'chatterbox_t3/pyproject.toml' 'uv.lock' '--license-audit' 'BLOCKED_UNRESOLVED' 'https://download.pytorch.org/whl/cpu' '2.6.0+cpu' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' '2fa167c5d2587d7fef6ac2c589a193f9cbd9a8d4495e22487a53a7ba5da6798f' '1feb25cd45b465dc7fb37dce07599c16218584211640357d541ba969917342d8' 'package_rows' 'license_conclusions'; do
+ for token in 'ResembleAI/chatterbox' '5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18' 'ResembleAI/chatterbox-nano' '71ccd1d0081b430592cea481f4307e764e07bc64' 'ResembleAI/chatterbox-turbo' '749d1c1a46eb10492095d68fbcf55691ccf137cd' '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'BLOCKED_APPROVAL/INSPECTION_ONLY' '--approval-sha256' '--expected-head' 'CARGO_BUILD_JOBS=1' 'chatterbox_t3/pyproject.toml' 'uv.lock' '--license-audit' 'BLOCKED_UNRESOLVED' 'https://download.pytorch.org/whl/cpu' '2.13.0+cpu' '2.11.0+cpu' 'transformers==5.10.4' 'source_declared_transformers' 'isolated_transformers_security_floor' 'isolated_transformers_pin' 'GHSA-xrqw-3rrv-vx5w' '3c1a295bd6d45e6b83f7a182a4421bbb7cc5904a554f4305b9f7d08d1e92029d' 'a47f8a74ef9d990289002eaccd346d7d5cbbc9d1480d1213596bc01b0ed36c24' 'package_rows' 'license_conclusions'; do
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test FAIL missing $token"; fail=1; }
  done
  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$0" <<'PY'

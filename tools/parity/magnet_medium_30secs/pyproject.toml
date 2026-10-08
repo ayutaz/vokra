@@ -3,7 +3,11 @@ name = "vokra-magnet-medium-30secs-reference"
 version = "0.1.0"
 description = "VAST-only AudioCraft MAGNeT Medium checkpoint bridge; no runtime dependency."
 requires-python = "==3.12.*"
-dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+dependencies = [
+    "huggingface-hub==1.27.0",
+    "safetensors==0.7.0",
+    "torch==2.13.0",
+]
 
 [tool.uv]
 package = false
@@ -33,7 +37,7 @@ lock_policy = "Every uv.lock package row (name/version/source, resolver markers 
 forbidden_packages = ["soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
 license_blocker = "Owner clearance is required for CC-BY-NC-4.0 weights and any non-Apache/MIT/BSD or bundled/native notices; no local model or pickle access is permitted."
 owner_clearance = "UNRESOLVED_OWNER_SIGNOFF"
-dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.13.0"]
 model_identity = { repo = "facebook/magnet-medium-30secs", revision = "2559c5978450f62782cf1d17826d384fb93fb64b", license_spdx = "CC-BY-NC-4.0", readme_bytes = 10695, readme_sha256 = "85f191c1d886dc8e907986a100f0415751cb86479d18268d2cfacd614b5fd6db", compression_bytes = 236003715, compression_sha256 = "91598c7da3d183eb8e0cc19cbbdc4f64f2d0c53069f9c8aa84185d0e33873c67", state_bytes = 3677670163, state_sha256 = "9bc89122b640f11394f51e6e77b4194d57da328ae81b2301ee316de916dbf4c5" }
 source_identity = { repo = "facebookresearch/audiocraft", revision = "905371a779f608169353fe6ad42bb5fc10c5c9a8", license_spdx = "MIT", license_path = "LICENSE", license_bytes = 1088, license_sha256 = "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93", roles = [{ path = "models/__init__.py", bytes = 669, sha256 = "75c8f32bd306a2df4203eb0cc4bf7edeaf831ea83100c176a481d31e14c5a531" }, { path = "models/magnet.py", bytes = 4400, sha256 = "d0307171a21fd96cb898fefff1190df124d5ce245823a71e1a62b8b8ffe8cdcf" }, { path = "models/loaders.py", bytes = 6699, sha256 = "91a79fcb028b2f1fafdac53b1060598bf0e4a6927467131f20055f6b8a33e4c2" }, { path = "models/lm_magnet.py", bytes = 24724, sha256 = "0c9349d1238d0a0aa276c921c3629de72bbadc9f19fa81b9429fa2e82678e06b" }] }
 license_records = [
@@ -44,9 +48,9 @@ license_records = [
     { name = "mpmath", version = "1.3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/mpmath/1.3.0/json" },
     { name = "networkx", version = "3.6.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json" },
     { name = "safetensors", version = "0.7.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/safetensors/0.7.0/json" },
-    { name = "setuptools", version = "84.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json" },
+    { name = "setuptools", version = "84.0.0", license = "UNRESOLVED_VENDORED_LGPLV3", primary_source = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl" },
     { name = "sympy", version = "1.14.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/sympy/1.14.0/json" },
-    { name = "torch", version = "2.7.1+cpu", license = "BSD-3-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { name = "torch", version = "2.13.0+cpu", license = "OWNER_REVIEW_REQUIRED", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" },
     { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json" },
     { name = "anyio", version = "4.14.2", license = "MIT", primary_source = "https://pypi.org/pypi/anyio/4.14.2/json" },
     { name = "certifi", version = "2026.7.22", license = "MPL-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json" },
@@ -61,7 +65,8 @@ license_records = [
     { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json" },
     { name = "tqdm", version = "4.70.0", license = "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.70.0/json" },
 ]
-lock_sha256 = "9bde738a4aded86102e8df5d44b5342bd2aabf856ce0201535d8c465198ebb20"
-package_rows_sha256 = "431c4b1f65c02becb7f8346b64aa194dc870d373b14751c149dc7c429f2229c7"
-approval_scope_sha256 = "85b4a999b1b10e4deb9f9bcc9dc81247664d4ec486440152e1388290e4888eb5"
-license_rows_sha256 = "c19b1c2c9d4ec83d8ca6a0500b40c706f9fe5ea90d7fb63416d448b63c9c1d63"
+bundled_license_evidence = { package = "setuptools", version = "84.0.0", artifact_url = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl", artifact_sha256 = "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670", artifact_bytes = 818216, metadata_path = "setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA", metadata_declared = "LGPLv3", license_member_path = "UNKNOWN_RETAINED_PRIMARY_EVIDENCE", license_member_path_status = "UNKNOWN", license_sha256 = "ade78d04982d69972d444a8e14a94f87a2334dd3855cc80348ea8e240aa0df2d", spdx_status = "UNKNOWN_LGPLV3_SUFFIX", disposition = "BLOCKED_UNRESOLVED_VENDORED_LICENSE" }
+lock_sha256 = "e4d0bc22869f2c4341a1ba1a0084e87f3c245df011395d126371bf752d44f10e"
+package_rows_sha256 = "044d76194a3200e92f87581e1edc82da43259b24f0b6ec5877e8695a1beacb26"
+approval_scope_sha256 = "cc68a27de3b08fff6c7e16898f1e5d2a8be2d0d18f94309c604040b73cfb8489"
+license_rows_sha256 = "af58ddee8013d595091f6087b2cb9a9124c1437198c0422ed5348caf419095cc"
