@@ -901,6 +901,88 @@ retains the strict scoped-change failure, no-runtime/no-owner/no-publication
 boundary and actual-main-before-closure condition. No PR is merged or closed
 by posting this review evidence.
 
+### Actual SpeechBrain acceptance and incorporated duplicate closure
+
+PR #147 was normally squash-merged at 2026-10-08 11:22:56 UTC as
+`2da1b3fa1cb6ecb15fa1bf3db97b8b369bb5c02a`, parent accepted main
+`bf428b40779752728e00f9d63d332981aa7ba3c7`. The reviewed head is
+`7b596dd9477a121d6411cc1214c6c90b899b3d42`. All 16 required checks passed
+with their exact required application identities; the final parity job
+`113274115012` succeeded. Two non-required packaging checks were still pending
+at acceptance, so this is not a whole-rollup terminal-success claim.
+The merged tree `c0950c0c910faf7cc6f45d6e1352daac892993c8` equals the reviewed
+head tree. Normal API merged-state readback and local fast-forward confirm
+the actual integration; local main is clean and synced. No admin/force merge,
+protection change, model execution, owner sign-off or publication occurred.
+
+Before acceptance, manager independently reran the three stdlib-only
+SpeechBrain synthetic self-tests and the forbidden-import/zero-dependency
+static gates: all passed.
+These do not authorize the pending package/native/source/model/fixture and
+operator rows. Corresponding dated benchmark/workspace VAST source identities
+remain dated evidence, not a fresh whole-head VAST replay.
+
+The corrected #195 comparator is repeated against actual accepted main
+`2da1b3fa`, original bot head `bf54a6c2` and base `bf428b40`. Main contains
+the exact complete urllib3 version/source/sdist/wheel artifact contract from
+#195. Its 15 non-target serialized differences still cause the strict audit
+to exit 1 / `audit_pass=false`; their bounded classification is retained,
+not recast as a general resolver, native-license or runtime PASS. Symbolic
+marker reachability is equal within the proven scope. Main's separate
+SpeechBrain/Torch/TorchAudio changes are intentional, not silently imported
+bot collateral. No unique #195 responsibility remains outside accepted main.
+
+PR #195 is actually CLOSED at 2026-10-08 11:24:39 UTC as incorporated through
+#147, with `mergeCommit=null` and unchanged head. It is not individually
+merged and its branch is not deleted. #147's updated 68,481-character body
+is independently read back exactly and preserves its entire prior body.
+An initially generated trailing blank line was corrected before final
+whitespace validation/readback; no historical evidence is rewritten.
+
+### Published #197 and #198 refresh after actual #147 main integration
+
+Both ordinary GitHub main updates preserve the reviewed old heads and add
+accepted main `2da1b3fa` as a parent. Their trees exactly match the separate
+Luna-prepared, manager-reviewed no-conflict candidates. The incoming delta is
+only the nine accepted #147 paths; original family/legal documents and all
+stopped-execution, owner, real-weight, Apple and publication duties remain.
+
+| PR | Current published head | Reviewed tree | Fresh CI / Security / Quality |
+|---|---|---|---|
+| #197 | `fb4eb91324292bc8e159cebe11613aa75e07b911` | `75f8aa72f2ac6728b0cf9bd1c89bb5ab0b87b3c5` | `37770169016` / `37770168808` / `37770168555` |
+| #198 | `5614a92c1938a0cee44ee333bec2b8cbbaa7d969` | `48559583688128d1f94ebb6db09f58601c87f0e2` | `37770169594` / `37770169295` / `37770169314` |
+
+These actual fresh handles are queued/nonterminal, not accepted green. The
+readback has 58 queued / one running / one skipped checks for #197 and
+33 queued / one skipped registered checks for #198; unregistered checks
+are not presumed passed. Both remain OPEN/Draft. Seven original family PRs
+remain open until actual #197 acceptance in main and fresh live-head
+responsibility coverage. #169 likewise remains until accepted #182 in main.
+
+At old #198 head `99676662`, actual documentation-links job `113273993157`
+in Security `37766087153` completed FAILURE at 2026-10-08 11:21:01 UTC:
+932 total, 902 successful, zero timeouts and 15 HTTP403 citation errors across
+seven official California URLs. This is an old-head external source-access
+result, not a numerical failure or a verdict on `5614a92c`. The new accepted
+main includes reviewed bounded link throttling; no global accepted403 rule,
+extra exclusion, citation deletion or identical failed-job rerun is made.
+Original source receipts/version caveats and EU/applicability/counsel/owner
+holds are preserved.
+
+At 2026-10-08 11:34 UTC, manager publishes updated #197/#198 bodies and
+independently verifies API exact equality (21,920 / 17,261 characters), full
+prior-body inclusion, unchanged current heads and OPEN/Draft states. A
+generated #198 EOF-blank issue is corrected while preserving the prior
+body's literal trailing newlines before the final bounded end note; both
+body files pass whitespace checks before publication.
+
+The frozen 20-PR batch now has three actual merges (#199/#209/#147), four
+incorporated closures (#207/#208/#210/#195), and 13 still-open Drafts. New
+#211/#212/#213 are a separate later bot batch. Original item 1 is complete;
+item 2 remains incomplete while #197 acceptance, original-family dispositions
+and #198 current-head outcome are unresolved. No provider is allocated by
+this PR work; this does not claim that an unqueried cloud account is empty.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
