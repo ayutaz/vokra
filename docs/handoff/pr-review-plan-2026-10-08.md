@@ -1,5 +1,159 @@
 # PR review and disposition plan — 2026-10-08
 
+> **2026-10-08 14:01 UTC active execution readback:** the owner has now
+> requested steps 1 and 2 of the latest plan. The next frozen scope is
+> Dependabot #211–#213 plus independently actionable diagnosis of the five
+> held Drafts. This supersedes the earlier planning-only boundary, not its
+> dated observations. Main remains `4b009540fe4e98b29258b9b2c1566933f6f2b431`;
+> no new PR merge or model/hardware completion is claimed at this snapshot.
+
+## Steps 1 and 2 — reviewed candidate and Draft work
+
+Luna prepared an ordinary, uncommitted octopus-merge candidate from main
+`4b009540` with the three actual original heads listed in the next-batch
+table below as merge parents. Its three-lock-only tree was
+`174378b93adae11ccfccbf2727b6ceef42b22595`. This management file is added
+after that source review, so the eventual four-file delivery tree is a
+different identity and requires its own review and fresh required CI.
+
+- DAC: restore all 17 unrelated CUDA optional-edge marker changes to the
+  original Linux/Windows conditions; retain only Werkzeug 3.1.8 → 3.1.9.
+- GigaAM v3: retain Hydra Core 1.3.6 → 1.3.7 and the 68 contextual marker
+  normalizations, which are equivalent within the unchanged x86_64/Linux
+  supported domain. The independent implementation-name condition is retained.
+- NanoCodec: fsspec 2025.12.0 → 2026.6.0, with no dependency-edge collateral.
+
+The manager independently compared all 109 DAC, 48 GigaAM and 172 NanoCodec
+ordered package variants, preserving duplicate-name variants, target dependency
+edges and all non-target artifact metadata. Only the target version/artifacts
+differ after supported-domain normalization. All 12 old/new sdist/wheel
+identities match official PyPI URL/hash/size/non-yanked facts; upload timestamps
+agree at uv.lock's millisecond precision. Luna also checked the six new
+artifacts' primary license/metadata payloads: Werkzeug BSD-3-Clause, Hydra
+Core MIT and fsspec BSD-3-Clause. This is scoped dependency evidence, not a
+whole installed/native closure, model or publication verdict.
+
+Serial `uv lock --check`, locked exports and diff hygiene passed. Manager
+compliance regression 8/8, zero-dependency and forbidden-symbol gates passed.
+The reviewed Rust/Cargo/compiling-test inputs match dated accepted workspace
+VAST `0a11d8d9ef1a7836c751c1c1ca239a5aafb56db7`; the sole test-tree delta
+is a documentation note in `tests/parity/README.md`. Release-tool inputs match
+dated accepted VAST `3468a48c`. These corresponding input identities do not
+become a fresh whole-HEAD VAST run or justify local deep Cargo.
+
+### Draft diagnosis actually advanced
+
+| Draft | Actual new evidence and retained next condition |
+|---|---|
+| #152 | Current-head hosted job `113256588638` actually executed 22 + 7 + 6 stdlib/synthetic tests, all OK. Current rollup is 69 SUCCESS / 1 SKIPPED. Its old queued observation is superseded in the PR body; archive/build/RECORD/API, native/copyleft, supported checkpoint equivalence, owner and independent model duties remain. Official migration issue #41 is still open with zero replies. |
+| #191 | Official Moshi main is unchanged and still requires Torch <2.10, excluding the advisory's patched floor 2.10.0. Official issue #429 has zero replies and related PR408/415 remain unmerged. Current rollup is 76 SUCCESS / 5 SKIPPED / 1 required link FAILURE. Preserve secure supported dependency/native/composite approval and independent real-weight holds. |
+| #182 | Official locked Torch identity remains advertised. Bounded 1KiB Range probes succeed with206; manager independently confirms the download-r2 result. This does not explain the old VAST full-GET403 or prove full retrieval/41-package closure. A small exact tqdm wheel supplies primary `MPL-2.0 AND MIT` license bytes, contradicting a blanket current missing-license claim; full selected-wheel/native review and scoped owner/legal judgment remain required. Current source rollup is 105 SUCCESS / 13 SKIPPED, not model/Apple acceptance. |
+| #169 | Current replacement #182 is `a6ff4022`, still Draft/unmerged; its older replacement-head pointer was superseded in the body. Keep this PR until actual replacement acceptance and fresh scoped coverage. Its required link failure is not waived. |
+| #198 | Required job `113287531384` has 15 official-citation403 errors, zero timeouts. Manager independently reproduces Cloudflare `cf-mitigated: challenge` on the AB2713 text URL. Alternate official bulk access is not an equivalent individual citation. No safe replacement or passing gate was established; preserve citations and record the external access hold, separate from current-law/EU/counsel/owner duties. |
+
+All five PR bodies received dated current-state notes and exact API readbacks;
+their complete prior bodies and Draft status were preserved. Source-only
+success is not promoted to parity. No model download/execution, native execution,
+paid provider allocation, full Torch-wheel retrieval, upload or legal sign-off
+was performed. Local model-free VibeVoice tests blocked by the safety hook
+were not bypassed or reported passed. Remaining primary artifact-license
+inspection is kept separate from full installed/native and owner approval.
+
+### Delivery still required at this snapshot
+
+Review the final four-file candidate, commit through the normal lightweight
+gates, then publish by non-force fast-forward into existing #213. Update that
+PR's title/body to its actual consolidated scope. Require the exact 16
+protected check names/application identities and current-base strict CI on the
+new reviewed head. Do not merge old green checks. Only after actual accepted
+main integration and a fresh original-head/content audit, close #211/#212 as
+incorporated (not individually merged) and synchronize the maintainer main.
+Later bot arrivals do not expand this frozen three-PR batch.
+
+> **2026-10-08 13:39:14 UTC plan supersession:** GitHub and the clean
+> maintainer checkout agree on `main`
+> `4b009540fe4e98b29258b9b2c1566933f6f2b431`. Management-record
+> [PR #214](https://github.com/ayutaz/vokra/pull/214) actually merged at
+> 13:17:19 UTC, so the earlier record-delivery-pending observations below are
+> historical. The original 20-PR batch is complete as a review/disposition
+> batch: four merged, eleven incorporated and closed, five retained Drafts.
+> This does not complete their underlying model/legal/Apple obligations.
+
+## Latest remaining plan — 2026-10-08 13:39 UTC
+
+### Current boundary and next bounded batch
+
+The fresh GitHub readback contains eight open PRs: three new normal Dependabot
+PRs and five held Drafts. These are not unfinished acceptance of the original
+20-PR batch. PR #214's reviewed head was
+`2762388b90b483fa0e8f45d94d3b9f3ae274036d`; its required 16/16 acceptance
+was recorded at 13:16:54 UTC. This plan update does not claim a new replay of
+those checks, every advisory job's terminal success, or new hardware evidence.
+
+Handle the following three-PR batch before new model implementation. Later bot
+arrivals receive their own bounded review rather than extending this batch.
+
+| PR | Read-back head | Next action and acceptance gate |
+|---|---|---|
+| [#211](https://github.com/ayutaz/vokra/pull/211) | `f2c84de44128b3f193f1b8fc6be2ad4626cbe060` | Review Werkzeug 3.1.8 → 3.1.9 in the DAC reference tree, including collateral lock, exact artifact and license changes. |
+| [#212](https://github.com/ayutaz/vokra/pull/212) | `4a9c0bb400ac732f114128121338f11a0b92e717` | Review Hydra Core 1.3.6 → 1.3.7 in GigaAM v3, including dependency edges and contextual markers. |
+| [#213](https://github.com/ayutaz/vokra/pull/213) | `ce4783845b07c1665de8e34fcc7b4694f1a7a195` | Review fsspec 2025.12.0 → 2026.6.0 in NanoCodec, including artifact identities and reachable graph changes. |
+
+For each candidate, delegate implementation-artifact edits to Luna, review its
+diff and evidence, integrate the then-current main, and require fresh required
+CI on the exact reviewed head. Use normal protected acceptance only; old green
+checks are not acceptance of a changed candidate. Combine only independently
+reviewed compatible scopes. Close an incorporated source PR only after actual
+accepted integration and a fresh head/content readback. Synchronize the clean
+maintainer main after accepted merges.
+
+### Held Draft lane — do not merge to clear the queue
+
+| PR | Remaining condition / safe next step |
+|---|---|
+| #152 — XCodec2 | Complete primary archive/build/RECORD/API and native/license evidence, resolve supported upstream/checkpoint mapping, then obtain the exact owner disposition before independent real-weight work. Retain `BLOCKED` / `NO_UPLOAD`. |
+| #191 — Kyutai DSM | Resolve the supported secure Torch/upstream/native route and exact owner scope before authenticated independent PCM reference and CPU parity. Synthetic/source checks do not close this gate. |
+| #182 — VibeVoice Realtime | Diagnose the locked Torch-wheel HTTP403 before another paid replay. Complete the authenticated 41-package audit, native/license/voice-rights/owner scope and full E2E/reference, streaming/KV lifecycle and real CPU evidence before Apple validation. |
+| #169 — VibeVoice preparation | Retain until #182 is actually accepted in main and a fresh responsibility-coverage audit proves incorporation. A replacement Draft is not acceptance. |
+| #198 — legal documentation | Fix the required official-citation link failure without global HTTP403 acceptance or removing primary citations. Preserve the collected receipts; current-law/version, EU applicability and counsel/owner judgments remain distinct unresolved gates. |
+
+Upstream or owner/legal waits are a separate lane: record the exact missing
+fact and continue independent work. Do not repeatedly run the same failed job,
+invent sign-off, weaken security/license gates or classify a skipped task as
+complete. The detailed dated evidence below remains authoritative for the
+scope actually measured.
+
+### Model campaign after PR triage
+
+| Order | Work | Exit condition |
+|---|---|---|
+| 1 | Finish the bounded #211–#213 review/CI/disposition batch; diagnose safe, independently actionable Draft issues. | Accepted scope recorded, current main synchronized; held Draft conditions preserved. |
+| 2 | Refresh per-row non-Apple gaps and advance unblocked source, dependency/license, converter/binder/native/CLI and independent-reference work in bounded family changes. | Exact evidence and scope for every advancing row; missing external facts remain explicitly blocked. Implementation edits belong to Luna and require manager review. |
+| 3 | Complete hash-bound owner/legal and upstream decisions for the scopes eligible to execute. | Required decisions actually recorded, or exact owner-approved withholding/withdrawal; a generic instruction to proceed is not a fabricated legal determination. |
+| 4 | For eligible scopes, use disposable VAST for no-upload real-weight conversion, independent upstream reference and CPU parity, plus the required remote repository gates. | Exact reviewed clean HEAD, approved inputs/bounds and authenticated small evidence; BF16, HiFTNet and BigVGAN shared requirements included where applicable. Destroy owned instance/storage after evidence recovery or verified immediate transfer. |
+| 5 | Freeze the final clean HEAD, repeat the live metadata audit and regenerate/verify fresh Apple transfer packets. | All non-Apple duties completed or covered by an exact approved disposition; packet hashes, inputs and HEAD agree. No model bytes pass through the maintainer Mac. |
+| 6 | Use Scaleway last for Apple CPU/reference, Metal/reference, Metal/CPU and explicit no-fallback verification, including required Arm BF16 hardware checks. | Actual per-row hardware verdicts at the registered bounds. Failures return to implementation/VAST, not a success label. |
+| 7 | Record results in a reviewed follow-up PR; reconcile public artifacts only within separately authorized exact repository scopes and gated publication tooling. | CI acceptance, evidence, publication/disposition and live inventory agree; unnecessary owned compute/storage is confirmed removed. |
+
+The latest **recorded metadata-only** inventory remains 194 public repositories,
+193 GGUF-bearing repositories and 198 GGUF files, with 136 code/artifact-full
+and 58 unresolved rows (CPU: 43 partial, 14 missing binders, one non-artifact).
+This turn did not requery Hugging Face or promote any row. Neither 136 nor a
+merged preparation PR means Apple hardware completion. Preserve the separate
+immutable 63-row owner decision ledger. The canonical
+[remaining ledger](mac-pre-scaleway-remaining-tasks-2026-09-05.md),
+[execution gates](mac-cpu-metal-execution-plan-2026-09-07.md) and
+[owner packet](mac-cpu-metal-owner-disposition-packet-2026-09-07.md) govern
+row-level advancement; Scaleway alone cannot finish the remaining campaign.
+
+This request updates management documentation only. It starts no model run,
+workspace-scale local Cargo, paid VAST/Scaleway worker or artifact publication,
+and does not inspect the protected owner manifest. Commit, push and PR creation
+are not performed by this plan refresh. Provider inventory was not queried, so
+this note does not assert that no remote instance currently exists.
+
+### Preserved earlier disposition snapshot
+
 > **2026-10-08 12:51:46 UTC disposition readback:** the frozen 20-PR batch
 > now has four actual merges, eleven incorporated closures and five retained
 > OPEN/Draft entries. Accepted main is `f5902db5cc164a292d0095a30a1151cd075eee82`;
