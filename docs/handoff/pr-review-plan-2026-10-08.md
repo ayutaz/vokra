@@ -275,6 +275,16 @@ remains queued; no further merge or incorporated-original closure is inferred.
 Main remains `edc2ab54`, clean. No local model execution, provider allocation
 or publication occurred in this diagnosis.
 
+The normal management-record commit `6b06148f` subsequently exposed a local
+hook side effect: its stdlib lint uses `uv run --project tools/parity`, which
+automatically created this new worktree's Python environment and installed
+146 packages (about 1.3GB). This is environment synchronization, so no
+no-sync claim applies to that commit. No model load/forward was performed.
+Only that newly created task-owned `.venv` was deleted after exact-path and
+creation-time inspection; it is reproducible from the existing lock. Future
+local static hooks use no-sync/offline operation with a validated existing
+environment rather than silently installing a new dependency closure.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
