@@ -471,6 +471,52 @@ not revalidated because the official endpoints challenged/timed out. Keep
 their dated legal-source verification and explicit pending current-law
 boundary; do not infer a new legal sign-off from a document refresh.
 
+## 2026-10-08 official bulk-source preservation (dated, source-only)
+
+Without changing the existing 403 and non-reauthentication boundary, the PR198
+bounded source producer read only selected records from the fixed
+[`pubinfo_2025.zip`](https://downloads.leginfo.legislature.ca.gov/pubinfo_2025.zip)
+at the official [California Legislative Information downloads site](https://downloads.leginfo.legislature.ca.gov/).
+The saved archive identity was ETag `4ccaadda-65d10482c8100` and total size
+`1288351194` bytes. The bill receipt is 95,161 bytes with SHA-256
+`33e0853f58e4a8501fec6de4d3d229935049fe8dda1f1bbb5c2e376adea9b11e`; it
+preserves the six selected `BILL_TBL`/`BILL_VERSION_TBL` rows with original
+line terminators and hashes and the source chain AB853 →
+`BILL_VERSION_TBL_9524.lob`, AB2713 → `BILL_VERSION_TBL_19416.lob`, and
+SB1000 → `BILL_VERSION_TBL_19249.lob`. The three referenced bill-text LOBs
+were checked against their captured sizes, SHA-256 values, and CRCs. This is
+source-byte provenance only, not a current-law, applicability, or legal-approval
+finding.
+
+The saved `LAW_SECTION_TBL` receipt is 102,182 bytes with SHA-256
+`26ca867f9ac1a60b62571e597e24ee99819fa348c7fca503dd6470afacb638a3` and
+preserves the selected 18 original rows, row hashes, and the 18 referenced
+LOBs' names, sizes, SHA-256 values, CRCs, and original bytes. The saved loader
+schema source is 504 bytes with SHA-256
+`212274f8ccbc93ea8e48258a0c062ac337c26cce357986912caccef1290329d6`; SQL was
+not executed. Both bounded central-directory scans verified 205,033 entries.
+That is a scanner result, not a direct digest of all central-directory bytes;
+the separate initial 10,985-entry probe remains preserved as an incomplete
+probe and is not substituted for the complete scans.
+
+The selection is BPC §22757 and descendants only. It includes SB53 Chapter 26
+§22757.10–.16 rows, so it does not establish a completed Chapter 25 review or
+a legal conclusion for all 18 selected rows. As dated source observations, the
+preserved base-point records for §§22757.1, .2, .3, .4, .4.1, and .5 correspond
+to 2026 Chapter 861, effective 2026-09-30. The preserved AB853 / 2025 Chapter
+674 record for §22757.3.1 displays effective 2026-01-01 and operative
+2027-01-01, while the preserved AB2713 / Chapter 856 record amends that
+section; these records have not been synthesized into a latest-law
+conclusion. For §22757.6, the section history's 2026-01-01 effective display
+and the LOB rule's 2026-08-02 operative display remain separate observations.
+
+This source-only capture does not reauthenticate the EU corpus or resolve the
+California §22757.3.1 source-display/version mismatch. Applicability, counsel,
+owner/legal approval, current-law status, and the required `documentation-links`
+gate remain pending. Existing 403 URLs, failed-link evidence, and CI boundaries
+remain unchanged; no exclusion, mirror, waiver, compliance conclusion, or
+publication approval is inferred from these receipts.
+
 ## Logical commits
 
 - `1599ce66`: public-core guides (10 changed files, 21 reviewed paths).

@@ -53,6 +53,46 @@ observationとして保持するが、現行法の再認証、適用判断、com
 approval、免除、配布許可を意味しない。SB 942本文endpointの403記録は維持し、
 追加された公式endpointの候補HEADにおける`documentation-links` CI結果も保留する。
 
+**2026-10-08 公式bulk source preservation boundary（dated source record only）:**
+上記の403境界を変更せず、[California Legislative Information の公式
+downloads](https://downloads.leginfo.legislature.ca.gov/) にある固定された
+`pubinfo_2025.zip`（保存された取得時の ETag `4ccaadda-65d10482c8100`、全体
+`1288351194` bytes）から、bounded な source-only producer が選択範囲だけを取得した。
+保存済みの bill receipt（95,161 bytes、SHA-256
+`33e0853f58e4a8501fec6de4d3d229935049fe8dda1f1bbb5c2e376adea9b11e`）は
+`BILL_TBL`/`BILL_VERSION_TBL` の対象6行を元の行終端・hash とともに保持し、
+AB 853 → `BILL_VERSION_TBL_9524.lob`、AB 2713 →
+`BILL_VERSION_TBL_19416.lob`、SB 1000 → `BILL_VERSION_TBL_19249.lob` の
+参照連鎖を保存する。bill本文の保存bytesはそれぞれ取得済みのサイズ・SHA-256・
+CRCと照合されているが、これだけで現行法、適用性、または法務承認を示すものではない。
+
+別の上限付き取得で `LAW_SECTION_TBL` の選択18行と参照された18個のLOB bytesを保存した
+law receipt（102,182 bytes、SHA-256
+`26ca867f9ac1a60b62571e597e24ee99819fa348c7fca503dd6470afacb638a3`）は、
+元のCSV行、行hash、LOBのサイズ・SHA-256・CRC・参照名を保持する。loader schema
+の保存済み原文は504 bytes、SHA-256
+`212274f8ccbc93ea8e48258a0c062ac337c26cce357986912caccef1290329d6` であり、
+SQLは実行していない。central directory は2回のbounded scanで各205,033件を確認したが、
+receiptが主張するのはscan結果であって、central directory全体の直接digestではない。
+初回probeの10,985件という値は別の未完了probeとして保持し、完全scanの値と混同しない。
+
+選択はBPC §22757とその子孫に限定される。18行にはSB 53 Chapter 26の
+§22757.10–.16も含まれるため、Chapter 25の法務レビュー、または18行すべての
+法的評価を完了したとは扱わない。保存されたsource record上では、§22757.1、.2、.3、
+.4、.4.1、.5のbase pointsは2026 Chapter 861（2026-09-30 effective）に対応する。
+一方、§22757.3.1はAB 853 / 2025 Chapter 674の記録が2026-01-01 effective、
+2027-01-01 operativeを示す一方、保存されたAB 2713 / Chapter 856のrecordは同条を
+改正している。この不一致を統合したlatest-law conclusionは作っていない。§22757.6も、
+保存されたsection historyの2026-01-01 effective表示とLOB ruleの2026-08-02 operative
+表示を正規化せず、別々のdated observationとして保持する。
+
+このsource-only preservationで、EU全体の現行資料の再認証、California §22757.3.1の
+source-display/version mismatchの解消、適用性・counsel・owner/legal判断、法務承認、
+required `documentation-links` gateの成功は得られていない。403 URLの削除、mirrorへの
+置換、CI waiver、complianceまたは公開許可の推定は行わない。上記receiptは保存された
+bytesの来歴を確認するための2026-10-08時点の限定証拠であり、現行法・法的助言・適合判定
+ではない。
+
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
 implementation remains fail-closed for unsupported model/license paths;
