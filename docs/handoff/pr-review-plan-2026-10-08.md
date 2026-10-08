@@ -1041,6 +1041,58 @@ checks are likewise not accepted green. #197/#198 remain Draft/unmerged
 until their independent exact-head required gates pass; original-family
 closure and the frozen-batch completion audit are still outstanding.
 
+### New-head #198 link failure diagnosed and published; #197 advances
+
+At current #198 head `5614a92c1938a0cee44ee333bec2b8cbbaa7d969`, required
+[documentation-links job `113287531384`](https://github.com/ayutaz/vokra/actions/runs/37770169295/job/113287531384)
+in Security `37770169295` actually completes FAILURE at 2026-10-08
+11:48:17 UTC. Manager reads the completed job's final report and independently
+confirms its failed link step: 932 total, 902 successful, zero timeouts and
+15 HTTP403 citation errors across the same seven official California LegInfo
+URLs in `docs/legal-compliance.md` and the 2026-10-04 documentation record.
+This is fresh failure after reviewed bounded throttling, not old-head evidence
+substituted for the current head. It is source-access failure, not a runtime,
+numerical or legal-conformance verdict.
+
+The initial run-level CLI log request is refused because the overall run
+still has nonterminal jobs. The completed-job-specific API returns the actual
+log successfully; job status and failed step are then separately read back.
+No signed log URL, credentials or raw authenticated diagnostic is recorded.
+There is no unchanged retry, citation deletion, extra exclusion, accepted403
+rule or protection change. The original citations, bounded authenticated bulk
+receipts, integrated current-law/version caveat and EU/applicability/counsel/
+owner holds remain intact. #198 stays OPEN/Draft as an explicitly held lane.
+Its link gate needs an actual passing required result against the preserved
+sources; the other source/legal duties are not closed by HTTP availability.
+
+At 2026-10-08 11:50:57 UTC, manager publishes the dated current-head failure
+header and independently verifies API full-body equality (18,837 characters),
+preservation of the complete previous 17,261-character body, unchanged head
+and OPEN/Draft state. Earlier pending/old-failure entries remain dated history.
+
+#197's current-head link job `113287526813` succeeds independently. The
+11:48:34 UTC exact required-name/application audit has five required successes
+(dependency-review, documentation-links, workflow-security, pins sync and
+gitleaks), no current-head failure, and remaining build/test/parity/license/
+CodeQL checks still incomplete. The 16 required contexts and app IDs are
+re-read from strict main protection, not assumed from prose. #197 is not yet
+accepted or used to close its seven source PRs; its independent CI progresses
+while #198's genuine external hold is retained.
+
+A full check-run payload exceeds the bounded tool output and cannot be
+accepted as JSON evidence. The corrected read projects only check name,
+application ID, state, conclusion and ID/URL before returning output; all
+registered checks fit, and total-count equality is verified. Missing parity
+or CodeQL contexts are not treated as passed. This is an observation fix,
+not a job restart or evidence manufactured from truncated output.
+
+The live frozen-scope audit still confirms three actual merges, four
+incorporated closures and 13 OPEN/Draft entries. Existing Moshi #429 and
+XCodec2 #41 remain open with zero comments and unchanged 2026-10-05 updates;
+no new upstream answer or owner/legal decision is inferred. #147 CI
+`37760770589` is now actually completed/success at 11:38:53 UTC, superseding
+only its residual pending-packaging observation, not recording a model run.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
