@@ -983,6 +983,36 @@ item 2 remains incomplete while #197 acceptance, original-family dispositions
 and #198 current-head outcome are unresolved. No provider is allocated by
 this PR work; this does not claim that an unqueried cloud account is empty.
 
+### Scoped current-head coverage and redundant-run cancellation requests
+
+Manager fetches the actual public #197/#198 Git objects and independently
+confirms their exact parents/trees above. Both parent-to-child changes list
+only the nine accepted #147 paths and pass `git diff --check`. Fresh live
+original heads #150 `373c853e`, #158 `c38ae4ed`, #159 `40653c7e`, #173
+`ddcdd74a`, #174 `edc1e6d0`, #176 `501645ac` and #180 `f39d4a96` are all
+ancestors of published #197 `fb4eb913`. This confirms current-head inclusion,
+not acceptance in main or proof that ancestry alone preserves every duty.
+Their prior scoped responsibility review remains separate; no original is
+closed before actual accepted-main incorporation and another live readback.
+
+The current CI list still contains redundant old #198 CI `37766087586` at
+`99676662` and closed #195 CI `37761058312` at unchanged `bf54a6c2`.
+Manager confirms #198's replacement `37770169594` exists at `5614a92c` with
+the same workflow identity `305986097`, event and branch, and independently
+reads #195's actual CLOSED state. Ordinary cancellation requests for only
+these two redundant runs are accepted at 2026-10-08 11:36 UTC. No run is
+restarted; current heads, accepted-main CI and unrelated PR runs are kept.
+
+The 11:38:40 UTC API poll still reports both old runs queued/nonterminal,
+#198 new CI pending, and #197 new CI and both new Security runs queued.
+Cancellation completion or freed capacity is therefore not claimed. An
+intermediate `gh run view` result contains a display warning and cannot be
+parsed as JSON; direct run-API readback supplies the authoritative state.
+Queue delay is observed, but its provider/capacity cause is not established.
+These confirmed live handles are a verified wait, not a stopped/missing-run
+condition and not a reason to rerun unchanged jobs or waive required checks.
+Local main and the management worktree remain independently clean.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
