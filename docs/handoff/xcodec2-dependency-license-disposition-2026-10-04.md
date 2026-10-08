@@ -1,5 +1,24 @@
 # XCodec2 dependency-license disposition — 2026-10-04
 
+## Supersession note — 2026-10-08
+
+The PR #152 current-main reconciliation against exact main
+`edc2ab5404f1b9d23dab121f9b4d7e1657ea9db9` retains the exact lock and code-bound
+identities below: `tools/parity/xcodec2/uv.lock` SHA-256
+`bcc3ea222df56026684a1f2810cf80b7e1b6ff7cabd7d8052fa235de72f5bc98`,
+`dependency_audit.py` SHA-256
+`9c12f57f1a31588b25fb5da2d658894e73b8092ecf298fe0d8e48c11bf2710f3`,
+`dependency_audit.json` SHA-256
+`2e5322154d50eb21f627290918fc23f358b85e14c06951c7d23586008e4f588a`, and
+`pyproject.toml` SHA-256
+`8ab3bed941e2f77a04b6311f8ba0e27363274507dfc0dcef41e97358e9b6e2c5`.
+The historical V5/V6 native and archive receipts are not rebound to these
+identities. The full local unittest command was refused by the maintainer-Mac
+execution guard and was not run; the workflow now schedules three explicit
+stdlib-only regression suites on the GitHub Ubuntu runner, and a fresh remote
+result remains pending for this exact main baseline. Draft,
+mandatory-copyleft/native/owner-review, and `NO_UPLOAD` remain unchanged.
+
 ## Scope and decision
 
 This record belongs to existing draft PR #152. It separates archive facts,
