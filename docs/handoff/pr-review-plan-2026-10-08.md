@@ -326,6 +326,15 @@ independently confirmed. This closes the added hosted regression obligation,
 not all CI or package/native/model/owner/independent-real-weight/Apple gates.
 The body records the result without overwriting the previous pending receipt.
 
+After both ordinary cancel requests remained queued, exact old-head job
+readback found only the queued `python-wheel-build` leaf in each superseded
+run and no active leaf. Targeted force-cancel requests were then made for
+`37751105191` and `37752095434` only. Both now authoritatively report
+completed/cancelled. Latest #147 CI `37754825184` and #198 CI `37754807269`
+remain present at their reviewed new heads and progressed from pending to
+queued; no logs/runs were deleted and no main/current-head run was cancelled.
+This supersedes only the immediate nonterminal cancellation observations above.
+
 The frozen batch remains one actual merge (#199), 19 open PRs and no
 incorporated-original closure. Main remains `edc2ab54`, clean and synced.
 
