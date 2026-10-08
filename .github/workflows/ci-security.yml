@@ -179,7 +179,10 @@ jobs:
           # Three requirement/ADR targets are intentionally gitignored-local
           # and therefore absent from a clean CI checkout. Tennessee's ELVIS
           # Act page resets automated clients; its two citations remain in
-          # the docs but are excluded as a single known bot-blocked endpoint.
+          # the docs but are excluded as known bot-blocked endpoints. The
+          # historical California SB 942 comparison page below is likewise
+          # excluded only because automation receives HTTP 403; this is not
+          # a legal-source verification or a blanket 403 exemption.
           args: >-
             --no-progress
             --max-retries 3
@@ -190,5 +193,6 @@ jobs:
             --exclude '^https://wapp\.capitol\.tn\.gov/apps/BillInfo/Default\?BillNumber=SB2096&GA=113$'
             --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/covered-entities/index\.html$'
             --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/privacy/guidance/business-associates/index\.html$'
+            --exclude '^https://leginfo\.legislature\.ca\.gov/faces/billVersionsCompareClient\.xhtml\?bill_id=202320240SB942$'
             README.md CONTRIBUTING.md .github docs
           fail: true

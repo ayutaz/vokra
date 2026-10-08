@@ -5,14 +5,14 @@ cron 時刻・trigger・job の実行内容は各 workflow の実定義、requir
 GitHub branch protection API が一次資料です。本文や comment と実定義に差異が
 あれば、本 index を一次資料に合わせます。本文だけを根拠に workflow を変更しません。
 
-- 対象範囲: `.github/workflows/*.yml` 全件（**2026-10-04実数 47 file**）。
+- 対象範囲: `.github/workflows/*.yml` 全件（**2026-10-08実数 47 file**）。
   2026-09-09 の46 fileに `lightning-checkpoint-security.yml` が追加されています。
-- **2026-10-04 inventory確認**: 47 workflow file を本 index に収録。
+- **2026-10-08 inventory確認**: 47 workflow file を本 index に収録。
   required / advisory / weekly / nightly / release / manual のいずれかに各 `.yml` を
   明示し、cron 値は workflow の実 `schedule:` から転記した。
 - required check name の実態: `gh api /repos/ayutaz/vokra/branches/main/protection/required_status_checks`
   を primary source として取得し、本 file の §1 に転記。現行は **16 contexts、strict=true**。
-- Actions policy の実態: `sha_pinning_required=true`（2026-10-04 API再確認）。
+- Actions policy の実態: `sha_pinning_required=true`（2026-10-08 API再確認）。
 - cron 時刻の実態: 各 workflow file 内の `schedule: - cron: '...'` 実定義から抽出。
   各 workflow の comment 側は本 file を参照する形に段階的に集約予定
 - 変更禁止事項: 本 file の書式や見出し名の変更は required check job id の追跡性を
@@ -32,10 +32,10 @@ legacy Lightning checkpoint is intentionally refused by the restricted
 `weights_only=True` loader.
 At that historical audit start there were 0 release tags and 0 GitHub Releases.
 
-**2026-10-04 current readback:** GitHub `main` is
-`97447185361a37af64c1b30fe87e8e2618d96e20`; the latest release is `v0.3.0`
-(2026-09-20, 18 assets). Branch protection still lists the same 16 contexts
-with `strict=true`. The fresh metadata-only HF audit is CPU full 136 /
+**2026-10-08 current readback:** GitHub `main` is
+`d100d93778191ccab77bd1c37fe3552e3d889758`; the latest release is `v0.3.0`
+(2026-09-20, 18 assets). Branch protection lists 16 contexts with
+`strict=true`. The metadata/card-only HF audit at this exact head is CPU full 136 /
 partial 43 / no-runtime-binder 14 / non-artifact 1, and Metal full 136 /
 CPU-blocked 57 / non-artifact 1: 58 unresolved rows, not all-model Apple
 completion. Bounded Apple results and later source-only/real-weight probes
@@ -131,7 +131,7 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 | cpu-isa-server-tier | .github/workflows/ci-platform.yml | M4-17 AVX-512/VNNI/BF16 + ARM64 dotprod/i8mm/bf16 dispatch build |
 | bench-regression | .github/workflows/ci-platform.yml | 5% regression gate (M3-01 defer 分は M2-14 self-hosted runner まで aspirational) |
 | server-deployment | .github/workflows/ci-platform.yml | vokra-server musl 静的リンク + runtime workspace 非汚染 (FR-SV-01 / NFR-DS-02) |
-| ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `verify-xcframework.sh` |
+| ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `scripts/verify-ios-xcframework.sh` |
 | parity-matrix | .github/workflows/ci.yml | fixture parity matrix leg (aggregator `parity` の元) |
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
 | python-wheel-build | .github/workflows/ci.yml + python-wheels.yml | 4 native wheels（manylinux x86_64 / macOS arm64+x86_64 / Windows x86_64）のrepair・archive/arch検証・Python 3.9/3.12 clean-installを集約 |

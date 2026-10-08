@@ -124,9 +124,10 @@ tamper rejection, raw duplicate-key rejection, bounded-response rejection,
 and output no-clobber behavior without network access or model artifacts.
 
 The checkout binding has this exact shape (the two values are the supplied
-and observed 40-character commit, not a branch name):
+and observed 40-character commit, not a branch name). The following is a
+JSON fragment copied from the report, not a standalone JSON document:
 
-```json
+```text
 "vokra_checkout": {
   "expected_head": "<40-lowercase-hex>",
   "actual_head": "<same-40-lowercase-hex>",

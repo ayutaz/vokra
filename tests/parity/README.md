@@ -16,6 +16,15 @@ verified in CI for every PR:
 
 ## Current status (audit-start snapshot 2026-09-09)
 
+**2026-10-08 current-pointer note:** this heading and the audit-start values
+below are retained as dated parity-harness history. For the current workspace,
+release, public-catalog classification and Apple-verification state, use the
+[current main audit](../../README.md), the
+[documentation index](../../docs/README.md) and the
+[2026-10-04 refresh ledger](../../docs/handoff/documentation-refresh-2026-10-04.md).
+No new model or numeric parity run was performed for this documentation audit;
+the dated fixture evidence below is not promoted to a current pass.
+
 This crate now contains the FFT/window/reference harness tests under `tests/`
 and a broad committed fixture tree for front ends, VAD, TTS, codecs, and later
 models. Model-specific Rust comparisons also live beside their owning model or

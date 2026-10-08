@@ -1,10 +1,22 @@
 # NVIDIA CUDA / cuDNN — EULA compliance record
 
-**Status**: normative for the `vokra-backend-cuda` crate and any distribution
-that enables CUDA. **Scope**: this file records *how Vokra stays compliant with
-NVIDIA's End User License Agreements*; it is **separate** from Vokra's own
-Apache-2.0 license (Vokra bundles no NVIDIA code, so no NVIDIA license text is
-vendored here). Cross-referenced from `NOTICE` and `docs/license-audit.md`.
+**Status**: implementation/design boundary for the `vokra-backend-cuda` crate;
+it is not a legal-compliance certification or a claim that a critical-safe SKU
+has shipped. **Scope**: this file records *how Vokra is intended to remain
+within NVIDIA's End User License Agreements*; it is **separate** from Vokra's own
+Apache-2.0 license. Vokra bundles no proprietary NVIDIA CUDA/cuDNN runtime,
+driver, or SDK code, so those vendor runtime terms are not shipped here.
+Separately attributed MIT operator code, such as BigVGAN, is recorded in
+`NOTICE` and `crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt`; that
+does not change the proprietary-runtime no-bundle boundary. Cross-referenced
+from `NOTICE` and `docs/license-audit.md`.
+
+> **2026-10-08 implementation boundary:** the current CUDA source confirms the
+> no-bundle/raw-runtime-FFI and explicit no-silent-fallback design. The current
+> foundation slice has no cuDNN dependency or cuDNN runtime detection; the
+> optional cuDNN detection/compatibility work remains a planned M2-03-T06
+> follow-on. Re-read the applicable NVIDIA terms at release time; this record
+> does not itself establish current EULA compliance or authorize distribution.
 
 > Requirement source IDs: FR-BE-08, NFR-LG-04, `docs/milestones.md` §6 M2-03,
 > `docs/tickets/m2/M2-03-cuda-backend.md` (T02), `AGENTS.md` memory-safety and
@@ -47,29 +59,32 @@ applications"* disclaimer. Vokra's response to both is below.
    with no CUDA at all** (e.g. an Apple Mac). See
    `crates/vokra-backend-cuda/src/sys.rs`.
 
-3. **Explicit version/availability probe, no silent fallback.**
+3. **Explicit availability probe, no silent fallback.**
    `vokra_cuda_probe()` reports the driver version, device count, device name and
-   compute capability. A missing driver, an absent GPU, or (in later M2-03
-   tickets) an incompatible CUDA/cuDNN version is an **explicit
+   compute capability. A missing driver or absent GPU is an **explicit
    `VokraError::BackendUnavailable`** — Vokra never silently degrades to the CPU
-   backend (FR-EX-08 / NFR-RL-06). Selecting the CPU is the caller's explicit
+   backend (FR-EX-08 / NFR-RL-06). CUDA/cuDNN version-compatibility checks are
+   not part of this foundation slice; any later compatibility gate requires its
+   own implementation and evidence. Selecting the CPU is the caller's explicit
    choice. See `crates/vokra-backend-cuda/src/probe.rs`.
 
-4. **cuDNN is never a required dependency.** Audio models are implemented with an
-   op set that does **not** require cuDNN (e.g. `conv1d` via im2col + GEMM). cuDNN
-   is used only as an *optional* optimisation where detected; its absence must
-   never fail the CUDA backend. (This foundation slice ships no cuDNN dependency
-   at all; the cuDNN-optional detection is M2-03-T06.)
+4. **cuDNN is not a current dependency.** The foundation slice ships no cuDNN
+   dependency or cuDNN detection path; its current CUDA kernels do not require
+   cuDNN. Optional cuDNN detection/optimization is a planned M2-03-T06 follow-on,
+   not an implemented or shipped capability. Any future path must preserve the
+   no-bundle rule and must not make cuDNN absence a silent CPU fallback.
 
 5. **This file.** The EULA references and the compliance strategy are recorded
    here (self-referential point 5), and `NOTICE` / `docs/license-audit.md` point
    to it. Its presence is checked by CI (M2-03-T23).
 
-## Critical-application disclaimer (critical-safe SKU, FR-BE-09, M5 / v1.0 GA)
+## Planned critical-application boundary (critical-safe SKU, FR-BE-09, M5 / v1.0 GA)
 
 The NVIDIA EULA disclaims suitability for critical applications. Vokra's
-medical / automotive / military SKU is therefore **CPU + Vulkan-only** and is
-**out of scope for M2-03 (it belongs to M5 / v1.0 GA, formerly labelled v2.0)**.
+candidate medical / automotive / military SKU is therefore planned as **CPU +
+Vulkan-only** and is **not a shipped SKU or completion claim**. It is out of
+scope for M2-03 and belongs to M5 / v1.0 GA (formerly labelled v2.0), pending
+the owner/product gates for that release.
 Because the entire CUDA path is confined
 to the `vokra-backend-cuda` crate + an optional `cuda` feature in `vokra-models`,
 a feature-off build already excludes CUDA, leaving room for that future SKU.

@@ -7,9 +7,9 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: source implementation current; PyPI/TestPyPI unpublished; GitHub wheels available
 
-**Reviewed:** 2026-10-04 against the generated C header and the local
-documentation head `3a3fd822`. That head is an unpushed working branch; the
-released workspace tag is `v0.3.0`.
+**Reviewed:** 2026-10-08 against the generated C header and the current
+source/documentation tree. The released workspace tag remains `v0.3.0`;
+this checkout may contain unreleased documentation changes.
 
 The workspace is `0.3.0`. The `v0.3.0` GitHub source release (2026-09-20)
 attaches the four platform wheels (`vokra-0.3.0-py3-none-*.whl`) as release
