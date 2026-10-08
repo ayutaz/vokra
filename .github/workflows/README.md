@@ -124,7 +124,7 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 | cpu-isa-server-tier | .github/workflows/ci-platform.yml | M4-17 AVX-512/VNNI/BF16 + ARM64 dotprod/i8mm/bf16 dispatch build |
 | bench-regression | .github/workflows/ci-platform.yml | 5% regression gate (M3-01 defer 分は M2-14 self-hosted runner まで aspirational) |
 | server-deployment | .github/workflows/ci-platform.yml | vokra-server musl 静的リンク + runtime workspace 非汚染 (FR-SV-01 / NFR-DS-02) |
-| ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `verify-xcframework.sh` |
+| ios-build | .github/workflows/ci.yml | iOS `libvokra.a` static build + `scripts/verify-ios-xcframework.sh` |
 | parity-matrix | .github/workflows/ci.yml | fixture parity matrix leg (aggregator `parity` の元) |
 | unity-package | .github/workflows/ci.yml | Unity plugin package audit (M2-11、UNITY_LICENSE 未 provisioning ゆえ WARN skip) |
 | python-wheel-build | .github/workflows/ci.yml + python-wheels.yml | 4 native wheels（manylinux x86_64 / macOS arm64+x86_64 / Windows x86_64）のrepair・archive/arch検証・Python 3.9/3.12 clean-installを集約 |

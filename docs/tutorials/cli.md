@@ -2,8 +2,9 @@
 
 **English** | [日本語](cli.ja.md)
 
-`vokra-cli` is the umbrella command-line tool (`FR-TL-01`, `FR-TL-02`): four
-subcommands — `run`, `convert`, `bench`, `f0` — over the same native runtime,
+`vokra-cli` is the umbrella command-line tool (`FR-TL-01`, `FR-TL-02`): five
+subcommands — `run`, `convert`, `bench`, `f0`, and the experimental
+`npu-bakeoff` — over the same native runtime,
 with hand-written argument parsing and no external dependency (`NFR-DS-02`).
 This is the deep dive; for the 5-minute path see
 [getting-started.md](../getting-started.md).
@@ -192,7 +193,50 @@ rate the WAV carries, so nothing is silently resampled. The neural members of
 the same family — RMVPE, FCPE, CREPE — do need a checkpoint and stay on
 `run`.
 
-## 6. Backend selection is explicit (`FR-EX-08`)
+## 6. `npu-bakeoff` — same-session delegate gate (experimental)
+
+The experimental `npu-bakeoff` command compares a Whisper encoder's CPU path
+with a Core ML or QNN delegate in the same session. It excludes model loading,
+delegate compilation, and log-mel extraction from the latency measurement, and
+fails when numerical parity or the requested speedup threshold is not met. It
+does not fall back to CPU. QNN whole-encoder execution is currently an
+explicitly unsupported path; confirm the delegate artifact and platform before
+running it. The `--model` must be a Vokra Whisper GGUF, and its CoreML sidecar
+must already be generated beside it; the sidecar manifest authenticates the
+exact GGUF bytes:
+
+```sh
+# The output directory must exist and be empty; this is an offline macOS tool.
+mkdir -p whisper-base.gguf.coreml
+bash tools/coreml/build_whisper_encoder.sh \
+  whisper-base.gguf whisper-base.gguf.coreml
+```
+
+The current runtime contract is `whisper-base.gguf.coreml/manifest.txt` plus
+the compiled `whisper-encoder.mlmodelc/` tree; it is not a loose
+`<GGUF>.coreml.json` file. The manifest binds the exact source GGUF and
+compiled-tree SHA-256, Whisper feature names/shapes, `macOS14` deployment
+target, CoreML Tools version, and arithmetic precision. Any missing or stale
+binding fails before CoreML load and never substitutes CPU. The input WAV must
+be 16 kHz mono PCM (int16 or float32); no resampling is performed.
+
+```sh
+cargo build --release -p vokra-cli --features coreml   # macOS
+./target/release/vokra-cli npu-bakeoff \
+  --model whisper-base.gguf --input speech.wav \
+  --delegate coreml --warmup 2 --iters 10 --atol 0.01 --min-speedup 2.0
+```
+
+The delegate path is feature-gated: a binary built without `--features coreml`
+fails explicitly and never falls back to CPU. The parser accepts `qnn` for the
+same command surface, but whole-encoder QNN execution currently returns an
+explicit unsupported error. This is an owner/developer measurement gate, not a
+general end-to-end ASR benchmark. It is a first-party Vokra CPU-vs-delegate
+measurement for one authenticated Whisper artifact, not an independent
+upstream/PyTorch parity result and not an all-model Apple Neural Engine
+qualification. See `vokra-cli npu-bakeoff --help` for the current options.
+
+## 7. Backend selection is explicit (`FR-EX-08`)
 
 `--backend` chooses the compute backend. Vokra never silently falls back: an op
 a GPU backend does not cover, or a device that is absent, is an explicit error,
@@ -207,7 +251,7 @@ cargo build --release -p vokra-cli --features metal   # macOS
 Use `--backend cpu` to choose the CPU *deliberately* — that is a decision you
 make, not one Vokra makes behind your back.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | symptom | cause / fix |
 |---|---|
@@ -226,8 +270,8 @@ make, not one Vokra makes behind your back.
 
 ## Keeping this page current
 
-**Last verified: 2026-10-04 — against the `run` / `convert` / `bench` / `f0`
-argument parsers in `crates/vokra-cli/src/`.**
+**Last verified: 2026-10-08 — against the `run` / `convert` / `bench` / `f0` /
+`npu-bakeoff` argument parsers in `crates/vokra-cli/src/`.**
 
 - **Update responsibility**: a PR that adds or renames a CLI flag updates this
   page and its Japanese twin in the same PR. Every `vokra-cli` invocation here
@@ -237,5 +281,5 @@ argument parsers in `crates/vokra-cli/src/`.**
 - **Re-fetch the flag surface**:
 
 ```sh
-grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs crates/vokra-cli/src/f0.rs
+grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs crates/vokra-cli/src/f0.rs crates/vokra-cli/src/npu_bakeoff.rs
 ```

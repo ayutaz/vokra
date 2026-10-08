@@ -2,8 +2,12 @@
 
 Out-of-workspace integration crate that packages a Kotlin/Android JNI
 binding for the Vokra speech-first runtime. Landed 2026-08-14 as the CC
-implementation branch of `docs/adr/M4-kotlin-binding-jni-vs-jna.md`
-(**Proposed** — owner sign-off queued on M4-11 T13 gap-flow).
+implementation branch for the JNI-vs-JNA design (**Proposed** — owner
+sign-off queued on M4-11 T13 gap-flow). The detailed ADR and ticket records
+are maintainer-local planning files; the tracked C ABI and binding boundary
+are documented by [`include/vokra.h`](../../include/vokra.h),
+[`docs/architecture.md`](../../docs/architecture.md), and
+[`docs/legal-compliance.md`](../../docs/legal-compliance.md).
 
 **ADR status**: this scaffold implements branch (B) raw-JNI. If the owner
 approves branch (A) JNA at ADR §7 sign-off, the Kotlin sources under
@@ -92,7 +96,8 @@ cargo ndk -t arm64-v8a -t armeabi-v7a -o jniLibs build --release
 - `--release` — hits the size-optimised `[profile.release]` in the
   workspace root (LTO + strip + single codegen unit; see the root
   `Cargo.toml` §Build profiles). Runtime `panic = "unwind"` is
-  preserved for the FFI panic firewall (see ADR-0003 §4).
+  preserved for the FFI panic firewall; the public C ABI boundary is
+  [`include/vokra.h`](../../include/vokra.h).
 
 Copy `jniLibs/<abi>/libvokra_android.so` and the `kotlin/com/vokra/*`
 sources into your Android app project — see
@@ -143,19 +148,19 @@ dominate over binary size in real deployments.
   Android GPU work goes through Vulkan (M3-02) or CPU. See
   `docs/platform-support/v1.0-rc-support-matrix.md` and `AGENTS.md`.
 
-## Related documents
+## Related tracked documents
 
-- `docs/adr/M4-kotlin-binding-jni-vs-jna.md` — the Proposed ADR gating
-  the JNI vs JNA decision (owner sign-off queued).
-- `docs/adr/ADR-00xx-language-binding-conventions.md` — cross-language
-  FFI contracts (handle ownership, error variant surface, thread rules,
-  buffer ownership, locale-independence).
-- `docs/adr/0003-c-abi-design.md` — Vokra C ABI (`include/vokra.h`,
-  cbindgen; opaque handles + thread-local errno + poll-driven streams).
-- `docs/m3-18-android-rtf-handover.md` — the one-shot Android RTF
-  scaffold that this permanent binding supersedes.
-- `docs/tickets/m2/M2-12-language-bindings.md` — the M2-12 ticket that
-  originally deferred Kotlin/Swift/JS to a follow-up rolling wave (Python
-  landed in M2-12).
-- `integrations/vokra-godot/` — sister integration with the same
-  isolated-workspace + hand-written FFI pattern for Godot 4.x.
+- [`include/vokra.h`](../../include/vokra.h) — C ABI symbols, opaque handles,
+  status values, and poll-driven streams.
+- [`docs/architecture.md`](../../docs/architecture.md) — runtime and binding
+  boundaries, including the excluded-workspace rule.
+- [`docs/api-reference.md`](../../docs/api-reference.md) — public API index.
+- [`docs/legal-compliance.md`](../../docs/legal-compliance.md) — distribution,
+  model, and voice-cloning boundaries.
+- [`integrations/vokra-godot/`](../vokra-godot/) — sister integration with
+  the same isolated-workspace and hand-written FFI pattern.
+
+The original JNI-vs-JNA ADR, language-binding conventions, and M2-12/M3-18
+ticket records remain maintainer-local historical planning material. They are
+not links from the public checkout because those files are intentionally
+gitignored; the tracked documents above are the public contract.

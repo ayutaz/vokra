@@ -71,7 +71,8 @@ Sister binding: [`bindings/unity/com.vokra.unity`](../../bindings/unity/com.vokr
 
 ## Platform matrix
 
-Scope of M3-11 (ADR-0011 §D4):
+Scope of M3-11 (the tracked Godot platform-support and cross-build
+contracts):
 
 | Target | Cargo triple | Artifact |
 |--------|-------------|----------|
