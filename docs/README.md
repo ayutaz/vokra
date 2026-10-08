@@ -3,72 +3,17 @@
 **Current-state review:** 2026-10-08 JST
 
 **Read-only external baseline:** GitHub `main` at
-`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08).
-The documentation branch starts at that exact checkout. There are 16 open PRs,
-15 of them drafts; their unmerged code is not part of this baseline.
-PR #152 remains an open draft, now at
-`e22913d9aaf6e9fc26659e55637dce5e6458f978`. Its remaining package/license
-and real-weight gates are not closed by model-free CI. The 76 successful
-and three skipped checks at its former `b0add994` head were a 2026-10-04
-observation, not evidence for the new head. Desktop-release PR #199 is also
-unmerged; its proposed package completeness must not be described as shipped.
-The 2026-09-21 reviewed baseline was
-`0df21558c0a8f699a4b2b11c108f413ee21fc8c2`; the pre-documentation code
-baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
-documentation/evidence checkpoint was
-`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08). The
+documentation branch starts at that exact checkout; unmerged PRs and their CI
+are not part of this baseline. The detailed dated snapshot, including its
+source boundaries and historical evidence, is retained in the
+[documentation audit](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation).
 
-The current checkout is workspace `0.3.0`; tag `v0.3.0` was published on
-2026-09-20 with 18 GitHub release assets, and its release workflow
-(`35490198908`) succeeded. PR #113 then merged at the historical reviewed `main` head
-`0df21558c0a8f699a4b2b11c108f413ee21fc8c2`. At the 2026-09-09 audit start,
-PR #79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped,
-and 0 failed remote checks. The hashes above are dated historical records, not
-the current version. PR #79 was subsequently merged as
-`1787818e702bdaba488d52aa1666fd5f08c5ae16`.
-The bounded post-merge VAST and Scaleway execution is recorded in the
-[2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md).
-Those accepted hardware verdicts apply only to the rows and exact heads named
-there. They do not make the complete public catalog Apple-complete, and did
-not themselves authorize an artifact upload. A separate, explicit
-publication approval on 2026-09-12 subsequently replaced the reviewed
-ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
-artifacts through the gated publisher; the exact revisions and hashes are in
-the [post-batch reconciliation record](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
-The 2026-10-08 read-only metadata/card audit, evaluated with
-`tools/audit/hf_mac_coverage.py` at the exact `main` baseline above, reports
-194 public repositories, 193 repositories with GGUFs, and 198 GGUF files. CPU
-code status is 136 full, 43 partial, 14 without a runtime binder, and 1
-non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1
-non-artifact, leaving 58 unresolved public rows. VibeVoice Realtime-0.5B now
-has a strict structural `vibevoice_streaming` binder and CLI inspection route,
-so it is partial; synthesis, independent native CPU parity, and Apple
-CPU/Metal verification remain pending. On 2026-09-30, a VAST-only replay
-authenticated and converted its complete 605-tensor checkpoint and ran a
-narrow independent Microsoft-source reference. For that fixed probe, FP32
-CUDA was both faster and within the unchanged output guard, so it was
-selected; BF16 exceeded the guard and stayed on CPU. This is not full
-streaming or Metal parity, and no public artifact was replaced. The
-[dated evidence](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback)
-records the hashes and limitations. The exact-revision BiCodec
-and SGMSE CLI routes now promote those two published, Apple-verified rows to
-full; that promotion does not extend either route beyond its authenticated
-artifact contract. UTMOS numeric parity remains unclaimed.
-PR #109 was merged at `2b08b7f7` after its clean no-upload VAST candidate
-completed strict official-weight reload, converted all four public Qwen3-TTS
-variants plus the shared 12 Hz decoder, passed independent real-weight CPU
-parity 4/4, and closed 38/38 recovered packet checksums. Apple CPU/reference,
-Metal/reference and Metal/CPU no-fallback verification remain pending, and no
-public artifact was replaced. This evidence therefore does not change the
-58-row denominator. The 2026-10-08 all-pages GitHub read reports 283 open
-Dependabot alerts (254 with a patched version, 29 without), with severity
-counts of 3 critical, 81 high, 106 medium and 93 low, and four open Scorecard
-findings: `CIIBestPracticesID`, `CodeReviewID`, `SASTID` and
-`VulnerabilitiesID`. The protected branch still requires 16 check contexts
-with `strict=true`; no protection or alert setting was changed. See the
-[security readback](handoff/security-remediation-2026-09-21.md)
-for the boundary between an API snapshot and actual remediation.
+The public catalog is not fully Apple-complete. Conversion, binding, native
+forward, independent parity, Apple CPU/Metal/no-fallback verification, and
+publication remain separate gates; VAST or accepted hardware evidence applies
+only to the exact rows and heads named in its dated record and does not
+authorize an artifact upload by itself.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -100,6 +45,49 @@ environment they name.
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).
+
+## Additional references by reader
+
+These documents are useful entry points but are not all current status pages.
+Design records and dated handoffs retain the scope, source, and evidence of the
+commit or campaign they name.
+
+### Current protocol and runbooks
+
+| Need | Document |
+|---|---|
+| Shared NPU bakeoff rules and report boundaries (protocol, not an execution result) | [NPU bakeoff protocol](handoff/npu-bakeoff-protocol.md) |
+
+### API, conversion, and design
+
+| Need | Document |
+|---|---|
+| Streaming C API ownership and backpressure | [Streaming codec decoder C API](c-api-streaming-codec.md) |
+| NanoCodec conversion contract | [NanoCodec conversion](nanocodec-conversion.md) |
+| FireRed PCM beam composition | [FireRed PCM design](design/firered-pcm-beam-composite.md) |
+| Kyutai STT PCM boundary | [Kyutai STT PCM design](design/kyutai-stt-pcm-composite.md) |
+| Kyutai incremental language model | [Kyutai STT streaming-LM design](design/kyutai-stt-streaming-lm.md) |
+| Mimi checkpoint provenance | [Mimi checkpoint provenance](design/mimi-checkpoint-provenance.md) |
+| Mimi Rust metadata binding | [Mimi metadata binding](design/mimi-rust-core-metadata-binding.md) |
+
+### Governance
+
+| Need | Document |
+|---|---|
+| GA judgment record template | [GA Definition-of-Done judgment template](governance/dod-judgment-template.md) |
+
+### Dated benchmark and historical evidence
+
+| Evidence | Document |
+|---|---|
+| M5-14 Wave-0 per-model hot-spot measurements | [Hot-spot tables](bench-baselines/m5-14-wave0-2026-07-18/hotspot-tables.md) |
+| Audit campaign follow-up | [2026-08-14 audit follow-up](handoff/audit-followup-2026-08-14.md) |
+| Codex operations handoff | [2026-08-28 Codex operations](handoff/codex-operations-2026-08-28.md) |
+| Fun-CosyVoice3 dependency-route decision | [2026-09-08 CosyVoice3 route](handoff/cosyvoice3-soxr-route-2026-09-08.md) |
+| Coverage-audit Wave A | [2026-08-03 coverage audit](handoff/coverage-audit-2026-08-03-wave-a.md) |
+| Readback branch closeout | [2026-10-04 branch closeout](handoff/readback-branch-closeout-2026-10-04.md) |
+| SBV2 parity owner handoff | [2026-08-11 SBV2 handoff](handoff/sbv2-parity-owner-handoff-2026-08-11.md) |
+| X-06 nightly-benchmark operations | [X-06 owner handoff](handoff/x-06.md) |
 
 ## Reading model status correctly
 

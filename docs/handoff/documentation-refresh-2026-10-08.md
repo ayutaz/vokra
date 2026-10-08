@@ -22,6 +22,84 @@ read-only public metadata. A 26-guide example checker is useful but does not
 by itself prove whole-repository documentation coverage. Source comparison,
 per-area review and the tracked-file link inventory are separate checks.
 
+## Documentation index snapshot retained from before consolidation
+
+This dated snapshot was previously placed at the top of `docs/README.md`. It
+is retained here so the public index can stay short without discarding its
+source, baseline, or historical evidence. The links below are relative to
+this handoff directory; the facts remain a 2026-10-08 read-only observation,
+not a live claim for a later checkout.
+
+**Current-state review:** 2026-10-08 JST
+
+**Read-only external baseline:** GitHub `main` at
+`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08).
+The documentation branch starts at that exact checkout. There are 16 open PRs,
+15 of them drafts; their unmerged code is not part of this baseline.
+PR #152 remains an open draft, now at
+`e22913d9aaf6e9fc26659e55637dce5e6458f978`. Its remaining package/license
+and real-weight gates are not closed by model-free CI. The 76 successful
+and three skipped checks at its former `b0add994` head were a 2026-10-04
+observation, not evidence for the new head. Desktop-release PR #199 is also
+unmerged; its proposed package completeness must not be described as shipped.
+The 2026-09-21 reviewed baseline was
+`0df21558c0a8f699a4b2b11c108f413ee21fc8c2`; the pre-documentation code
+baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+documentation/evidence checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+
+The current checkout is workspace `0.3.0`; tag `v0.3.0` was published on
+2026-09-20 with 18 GitHub release assets, and its release workflow
+(`35490198908`) succeeded. PR #113 then merged at the historical reviewed `main` head
+`0df21558c0a8f699a4b2b11c108f413ee21fc8c2`. At the 2026-09-09 audit start,
+PR #79 was at head `9efcd16e`, with 110 successful, 13 intentionally skipped,
+and 0 failed remote checks. The hashes above are dated historical records, not
+the current version. PR #79 was subsequently merged as
+`1787818e702bdaba488d52aa1666fd5f08c5ae16`.
+The bounded post-merge VAST and Scaleway execution is recorded in the
+[2026-09-11 Apple results](mac-cpu-metal-scaleway-results-2026-09-11.md).
+Those accepted hardware verdicts apply only to the rows and exact heads named
+there. They do not make the complete public catalog Apple-complete, and did
+not themselves authorize an artifact upload. A separate, explicit
+publication approval on 2026-09-12 subsequently replaced the reviewed
+ReazonSpeech NeMo v2, Voice Gender Classifier, BiCodec, and SGMSE VoiceBank
+artifacts through the gated publisher; the exact revisions and hashes are in
+the [post-batch reconciliation record](mac-cpu-metal-scaleway-results-2026-09-11.md#post-batch-public-artifact-reconciliation-2026-09-12).
+The 2026-10-08 read-only metadata/card audit, evaluated with
+`tools/audit/hf_mac_coverage.py` at the exact `main` baseline above, reports
+194 public repositories, 193 repositories with GGUFs, and 198 GGUF files. CPU
+code status is 136 full, 43 partial, 14 without a runtime binder, and 1
+non-artifact; Metal code status is 136 full, 57 blocked by CPU, and 1
+non-artifact, leaving 58 unresolved public rows. VibeVoice Realtime-0.5B now
+has a strict structural `vibevoice_streaming` binder and CLI inspection route,
+so it is partial; synthesis, independent native CPU parity, and Apple
+CPU/Metal verification remain pending. On 2026-09-30, a VAST-only replay
+authenticated and converted its complete 605-tensor checkpoint and ran a
+narrow independent Microsoft-source reference. For that fixed probe, FP32
+CUDA was both faster and within the unchanged output guard, so it was
+selected; BF16 exceeded the guard and stayed on CPU. This is not full
+streaming or Metal parity, and no public artifact was replaced. The
+[dated evidence](public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback)
+records the hashes and limitations. The exact-revision BiCodec
+and SGMSE CLI routes now promote those two published, Apple-verified rows to
+full; that promotion does not extend either route beyond its authenticated
+artifact contract. UTMOS numeric parity remains unclaimed.
+PR #109 was merged at `2b08b7f7` after its clean no-upload VAST candidate
+completed strict official-weight reload, converted all four public Qwen3-TTS
+variants plus the shared 12 Hz decoder, passed independent real-weight CPU
+parity 4/4, and closed 38/38 recovered packet checksums. Apple CPU/reference,
+Metal/reference and Metal/CPU no-fallback verification remain pending, and no
+public artifact was replaced. This evidence therefore does not change the
+58-row denominator. The 2026-10-08 all-pages GitHub read reports 283 open
+Dependabot alerts (254 with a patched version, 29 without), with severity
+counts of 3 critical, 81 high, 106 medium and 93 low, and four open Scorecard
+findings: `CIIBestPracticesID`, `CodeReviewID`, `SASTID` and
+`VulnerabilitiesID`. The protected branch still requires 16 check contexts
+with `strict=true`; no protection or alert setting was changed. See the
+[security readback](security-remediation-2026-09-21.md)
+for the boundary between an API snapshot and actual remediation.
+
 ## Authoritative read-only snapshot
 
 | Source | 2026-10-08 observation | What it does not prove |
@@ -190,6 +268,70 @@ the sandbox; rerunning with the existing temporary UV cache passed, without
 changing permissions or dependencies. No model execution, heavy Cargo build,
 provider operation, live metrics collection, publication or PR mutation was
 performed. The external-law and hardware limits recorded above still apply.
+
+## Index and generated-record cleanup — completed
+
+This cleanup remained narrower than a general age- or size-based deletion.
+All five planned items were completed on 2026-10-08, with the following
+boundaries and receipts:
+
+1. Three obsolete ignored local drafts were moved byte-preservingly into
+   `docs/tickets/m5/archive/2026-10-08/`. The archive README records the four
+   canonical root sources and the restoration procedure. SHA-256 values
+   matched before and after: `CODE_OF_CONDUCT`
+   `ea3497c6d0d08258fe1d550ede242384276aaf9498686649efe8c8e7cf7961ac`,
+   `SECURITY`
+   `eff7e112bf28f24a6cf26a60acc277bee42cfa8b16038dcfbce1089a231ab746`,
+   and the Japanese twin pair
+   `972b8d87a0de7b3caca09525cf602e27d8a66e077a5c58aff5a7ec78b58e5f00`.
+   The original ignored paths are absent and the archive remains untracked;
+   nothing was force-added.
+2. The public `docs/README.md` snapshot was shortened and 16 previously
+   unreferenced tracked documents were added under reader-specific API,
+   conversion, design, governance, benchmark, and dated-evidence headings.
+   The detailed snapshot remains in the section above; dated evidence is
+   linked as historical rather than presented as current status. The source
+   snapshot comparison is exact apart from the required `handoff/` to sibling
+   relative-link prefix change. The new
+   `npu-bakeoff-protocol.md` is indexed as a current protocol/runbook, not as
+   an execution result.
+3. The CoreML/QNN templates were consolidated around the shared NPU protocol
+   while retaining both original template filenames and sections 1–7. Device,
+   SDK, placement, and delegate-specific fields remain in their respective
+   templates; the common CPU/delegate metric table and acceptance criteria are
+   centralized. The original `CV > 0.20` warning/owner-acceptance semantics
+   and the M5-13 T19 `NO-GO` semantics remain intact. The two dead template
+   fragments found during review were corrected or retargeted. The original
+   two templates were 354 lines / 15,680 bytes; they are now 313 lines /
+   14,108 bytes, and the
+   new shared protocol is 128 lines / 6,806 bytes. The three-file total is
+   therefore 441 lines / 20,914 bytes (+87 lines / +5,234 bytes); this is
+   consolidation and centralization, not an overall-size reduction claim.
+4. Only the four reproducible pytest-generated README files were removed:
+   `.pytest_cache/README.md`, `bindings/python/.pytest_cache/README.md`,
+   `tools/eval/.pytest_cache/README.md`, and
+   `tools/parity/.pytest_cache/README.md`. Each was 302 bytes with generated
+   content hash prefix `73fd6fcc`, for 1,208 bytes total. The deletion scope
+   did not include cache contents or metadata, models, hand-written guides,
+   fixtures, benchmark or licence text, or dated handoffs; only the four
+   generated README files were deleted.
+5. The integrated review was rerun after the cleanup. The whole-worktree
+   Markdown link probe covered 324 documents (323 tracked plus the new
+   untracked protocol), 795 relative links, and 188 heading fragments, with
+   zero missing targets or fragment candidates. Six Bash/shell examples were
+   checked with `bash -n` for syntax only. The documentation example checker
+   passed for 144 blocks across 26 guides; its 30 Tier-C examples remain
+   explicitly unverified. Documentation references passed with 110 IDs and
+   33 anchors; runbook citations passed with 1,723 citations across 126
+   runbooks and 700 paths. Community docs, parity-sidecar citations,
+   owner-checklist drift, platform support, ABI changelog, workflow hygiene,
+   and `git diff --check` all passed.
+
+No model execution, workspace or `vokra-models` Cargo command, cloud
+allocation, live external API collection, publication, protected-manifest
+access, or push was performed for this cleanup. The CoreML/QNN
+protocol is documented and indexed; its protocol text is not evidence that a
+hardware bakeoff or model gate has passed.
 
 ## Per-file coverage inventory
 
