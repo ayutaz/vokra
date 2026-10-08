@@ -429,6 +429,87 @@ made before manager review and the current normal-PR acceptance wave. Closure
 of #169 still requires an actually merged replacement and a scoped readback
 of the retained and strengthened responsibilities, not this coverage report.
 
+### Actual bounded official metadata acceptance
+
+After the safety review, the temporary reader gains a separate
+`--metadata-only` route. Manager independently passes its offline adversarial
+self-test and reviews its call path: no table payload, LOB or selected-record
+decompression is called. The authorized single actual retrieval exits zero in
+17.98 seconds, fetching 2,491,728 bytes with measured peak RSS 33,161,216 bytes.
+The exact reader SHA-256 is
+`9f6b839356fb7c4486a963f26896b78b7b3b5259a25ae38d4cb4861f9aa62939`.
+The fresh task-owned metadata receipt is distinct from the unaccepted old
+output and the manager verifies its fields and byte-accounting sum.
+
+The official session ZIP still reports 1,288,351,194 bytes, ETag
+`"4ccaadda-65d10482c8100"` and Last-Modified 2026-10-05 04:26:12 GMT. The
+one-MiB central-directory probe observes 10,985 of 205,033 expected entries;
+the full count and payload hashes remain unverified. Selected table metadata
+is now known: BILL_TBL compressed/uncompressed 100,852/954,288 bytes;
+BILL_VERSION_TBL 756,287/4,512,719; LAW_SECTION_TBL 6,058,294/43,276,148.
+The law table exceeds the new eight-MiB member cap and is not acquired.
+
+This changes the next safe action: authenticate the official loader's column
+schema without executing SQL, then separately retrieve just the two bounded
+bill tables and select the three named bill/version rows. That preparation
+is delegated, with new network activity held until manager review. Bill-text
+LOBs and the larger law table need a later bounded design; there is no full
+ZIP, database, model or paid-worker operation. #198's required link failure,
+statutory-byte/record-chain work, current-law/applicability questions and all
+sign-off/CI protection boundaries remain unresolved.
+
+### Reviewed local #182 clean preparation
+
+Luna prepares the conflict-free normal merge of public #182 `477ddd32` with
+accepted main `edc2ab54` in a new owned worktree. Manager independently checks
+that the staged 92 paths exactly equal the merge-base-to-main delta: 90 blobs
+are identical to main, and the two different documents retain only #182's
+dated Realtime history and scope caveats. The additional README change is
+the reviewed current-command description from 31 to 33 collector tests;
+manager's AST inspection confirms 33 collector and five lock-contract cases.
+The earlier 31-case historical receipt remains intact. Diff hygiene and all
+documentation-reference legs pass independently.
+
+The normal local merge commit is
+`a492cc7cd54d092ba6134ee119df06a1e223f3cf`, with parents `477ddd32` and
+`edc2ab54`, tree `7a46b138b18fbbeeefc0771538d3a46407758996`. Normal commit
+hooks pass 5/5 using the existing environment with synchronization disabled.
+Manager verifies the parents, tree, exact README delta and clean owned
+worktree. This candidate is not pushed and no fresh CI is launched yet;
+the public PR remains `477ddd32`. Update it after the current normal-PR
+acceptance wave to avoid an unnecessary serial whole-CI restart. Historical
+source/tokenizer/`21dded9b` Rust/`7e11e027` API receipts keep their original
+scope; no fresh whole-HEAD VAST, real-model, approval or Apple verdict is made.
+No original dirty worktree or protected owner manifest is changed.
+
+### Actual official bill/version source-only advancement
+
+After manager review and an independent offline self-test, the separately
+authorized `--bill-records-only` retrieval exits zero in 10.87 seconds. It
+fetches 3,349,015 bytes with measured peak RSS 47,480,832 bytes. The official
+loader SQL members (500 and 530 bytes) supply the static column schemas;
+SQL is not executed. The two authenticated table payloads retain their
+declared sizes/CRC and have SHA-256 values
+`28f3e439d5119054f1c79e60409438054dc603956115d52a274f40bbc690c227`
+and `2c4eebab90988ec5c569f3db33ab0ade9f6683458fc986e87676a46839482044`.
+Archive length/ETag/date match the earlier actual metadata receipt.
+
+Manager reads the fresh bill-records receipt: the selected table rows report
+AB853 chapter 674 (2025), AB2713 chapter 856 (2026) and SB1000 chapter 861
+(2026), with `Chaptered` status. Their latest version IDs are respectively
+`20250AB85393CHP`, `20250AB271393CHP`, `20250SB100094CHP`, pointing to
+`BILL_VERSION_TBL_9524.lob`, `_19416.lob` and `_19249.lob`. These are dated
+official table facts, not authentication of the LOB/statutory text or a legal
+applicability judgment. All earlier receipts remain separate; no full ZIP,
+LAW_SECTION, bill-text LOB, model, Cargo or paid provider is acquired.
+
+The next evidence requirement is preservation/readback of the six selected
+full column/value rows from the actual output, then a separately reviewed
+bounded retrieval of the three referenced LOBs. Missing raw-line bytes must
+be reported rather than reconstructed as retrieval evidence. #198 stays
+Draft with its actual required-link failure; no primary URL is removed,
+HTTP403 accepted, approval invented or model count changed.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
