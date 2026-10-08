@@ -689,6 +689,50 @@ provider operation runs. The next source task is comparison with the proposed
 legal wording and the remaining official current-code chain, not re-acquisition
 of these now-preserved three bill texts.
 
+### Preserved bill-text wording review and bounded LAW source preparation
+
+At unchanged Draft #198 `6b567fed`, the read-only wording review reuses the
+accepted original v4 receipt rather than reacquiring the three bills. Its
+chaptered AB853/AB2713/SB1000 bytes support the named chapter identities,
+dates, section changes and statutory date observations in the proposed
+document. The EU observations and the historical browser's current-code
+display remain separate sources; the California bill-text receipt does not
+authenticate either. No wording is promoted to current-law applicability,
+compliance or owner/legal approval. The public body preserving the v4 facts
+is independently confirmed at the same unmerged head.
+
+Before a LAW_SECTION acquisition, manager rejects and corrects three concrete
+producer problems: stripping arbitrary path prefixes before checking a LOB
+basename; checking the 512-KiB LOB output cap only after retrieval; and using
+zlib `flush(length)` as though its initial buffer size were a hard allocation
+limit. The separate Luna implementation validates the full official basename,
+rejects oversized entries before fetch, consumes deflate output in <=64-KiB
+pieces and finalizes only at clean EOF without `flush`. The receipt includes
+the complete 504-byte official loader SQL member, whose source SHA-256 is
+`212274f8ccbc93ea8e48258a0c062ac337c26cce357986912caccef1290329d6`;
+SQL is parsed statically, never executed.
+
+Manager independently reads the corrected implementation and passes its
+offline adversarial suite at producer SHA-256
+`b1edf092185e26cb4a210b3d5b3a06ac35eb27a3222623d28ddfb57246cf6f22`.
+The frozen bill-text helper remains
+`ea117df6d76d8e55e894c1a785a1fb7e2ca64b640c4ba76dbfe6f1300ca6b439`.
+The input fetch uses <=4-MiB slabs, split into <=64-KiB inflater pieces,
+rather than 93 individual payload requests. Full-table size/CRC/hash and
+complete directory scans remain mandatory; only selected BPC 22757 rows and
+their exact LOBs may be preserved. Aggregate transfer stays <=64 MiB, each
+selected LOB <=512 KiB and the exclusive receipt <=4 MiB. Existing receipts,
+the 8-MiB member cap and the protected owner manifest remain untouched.
+
+The actual source-only run has started at session `83888`; it is confirmed
+live, not yet accepted as source evidence. This is not a full ZIP download,
+database import, model/package execution, paid provider or legal approval.
+Current #197/#147 exact-head CI handles `37760742831`/`37760770589` are also
+confirmed live. Required parity is not registered yet; pending/queued checks
+are not PASS. Branch protection still requires all 16 contexts with strict
+base freshness. #198 has 15 successful required contexts and the actual
+documentation-links failure; it remains Draft with no waiver or blind retry.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
