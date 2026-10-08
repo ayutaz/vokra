@@ -23,10 +23,11 @@ says implementation began on August 1 and describes later January 1/2028 phases,
 which differs from the April analysis; neither replaces the chaptered statutory
 body or current AB 2713 / SB 1000 text. Mirrors are not substituted and the
 pending authoritative reconciliation remains fail-closed. The 2026-10-07
-normal-browser read supersedes the earlier retrieval-pending statement only
-for the AB 2713 chaptered body, the SB 1000 chaptered body, and the current BPC
-Chapter 25 display. The historical SB 942 403 observation remains unchanged;
-applicability, compliance, CI gates, and owner/legal decisions remain pending.
+normal-browser read is retained as a separate dated observation for the AB 2713
+chaptered body, the SB 1000 chaptered body, and the current BPC Chapter 25
+display; it is not a fresh current-law reauthentication. The historical SB 942
+403 observation remains unchanged; applicability, compliance, CI gates, and
+owner/legal decisions remain pending.
 
 **2026-10-07 official chaptered-text browser read:** A normal Chrome rendering
 also exposed the official chaptered text for [AB 2713](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2713#93CHP)

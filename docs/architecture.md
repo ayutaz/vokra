@@ -265,8 +265,8 @@ design got validated rather than merely specified.
 *Why.* It is GPL-3.0. Vokra targets Unity, Godot and other proprietary
 embedding scenarios, where GPL is not acceptable to the people shipping the
 product. G2P comes from piper-plus's own MIT implementation or from
-IPA-dictionary approaches. The same reasoning excludes soxr and rubberband
-(R5).
+IPA-dictionary approaches. The same distribution boundary excludes soxr
+(LGPL) and rubberband (GPL) (R5).
 
 ### R4 — No NNAPI backend
 
@@ -277,8 +277,9 @@ through Vulkan instead.
 
 ### R5 — No soxr, no rubberband
 
-*Why.* GPL, as in R3. Resampling is implemented natively, based on the
-speexdsp (BSD) resampler design.
+*Why.* They are copyleft dependencies: soxr is LGPL and rubberband is GPL.
+Resampling is implemented natively, based on the speexdsp (BSD) resampler
+design.
 
 ### R6 — Unsupported means an error, never a silent fallback (`FR-EX-08`)
 

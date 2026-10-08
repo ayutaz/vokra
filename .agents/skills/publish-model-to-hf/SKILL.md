@@ -63,7 +63,8 @@ skill `license-audit` の primary-source rule に従う。agent 側で埋めて�
 ## 5. publish-one.sh の呼び方
 
 ```bash
-# .env から HF_TOKEN を明示 source（デフォルトの環境継承では拾わない場合あり）
+# 既存の利用許可済み .env から読む例。xtrace を無効にし、値を表示・記録しない。
+# 新しい credential file を作らず、remote 注入は承認済み暗号化 SSH stdin 等を使う。
 export HF=$(grep '^HF=' .env | cut -d= -f2-) && export HF_TOKEN="$HF"
 
 # T1 (Permissive) 例: whisper-large-v3
@@ -113,9 +114,9 @@ license 表記を差替。**tensor は mmap 読取して byte-copy せず、meta
 ## 8. HF_TOKEN の扱い
 
 - **CLI 引数で渡さない**（shell history + `ps` output に残る）
-- `.env` に `HF=hf_xxx` で保存（`.gitignore` 済 = 履歴に載らない、`git check-ignore .env` で確認可）
+- 既存の利用許可済み `.env`、secret manager または一時環境変数から読む。gitignore は漏えい防止そのものではないため、値を表示・ログ・Git履歴に出さない。
 - Session で使う時は `export HF=$(grep '^HF=' .env | cut -d= -f2-) && export HF_TOKEN="$HF"` で明示 source（環境継承だけでは拾わないケースあり）
-- 期限切れ or 403 なら **fresh token を新規発行**（既存を回転、CSM-1B publish で使った precedent）
+- 403 だけで期限切れと決めつけず、対象 repo の権限・gated access・token scope を値を表示せず確認する。失効・漏えいが確定した token は再利用せず、owner の失効・ローテーションを待つ。
 
 ## 9. Precedent 集（判断の記憶）
 

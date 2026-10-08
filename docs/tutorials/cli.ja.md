@@ -3,8 +3,9 @@
 [English](cli.md) | **日本語**
 
 `vokra-cli` は umbrella コマンドラインツール（`FR-TL-01`, `FR-TL-02`）。
-同じ native runtime 上の 4 つの subcommand — `run` / `convert` / `bench` /
-`f0` — を、手書きの引数パーサ・外部依存ゼロ（`NFR-DS-02`）で提供する。本ページは
+同じ native runtime 上の 5 つの subcommand — `run` / `convert` / `bench` /
+`f0` / 実験的な `npu-bakeoff` — を、手書きの引数パーサ・外部依存ゼロ
+（`NFR-DS-02`）で提供する。本ページは
 deep dive。5 分コースは [getting-started.md](../getting-started.ja.md) を参照。
 
 ## 1. ビルド
@@ -186,7 +187,47 @@ confidence は `voiced` と同じ明示的な `1.0` / `0.0` のままとなる�
 範囲を導出するので、暗黙のリサンプルは発生しない。同じ family の neural
 メンバ — RMVPE / FCPE / CREPE — は checkpoint を要するため `run` 側に残る。
 
-## 6. バックエンド選択は明示的（`FR-EX-08`）
+## 6. `npu-bakeoff` — 同一セッションの delegate gate（実験的）
+
+実験的な `npu-bakeoff` は、Whisper encoder の CPU 経路と Core ML または
+QNN delegate を同一セッションで比較する。model load、delegate compilation、
+log-mel 抽出はレイテンシ計測から除外し、数値 parity または指定 speedup 閾値に
+失敗した場合はエラーになる。CPU への fallback は行わない。QNN の encoder 全体
+実行は現在明示的に未対応なので、delegate artifact と platform を確認してから
+実行する。`--model` には Vokra Whisper GGUF を指定し、その隣に CoreML
+sidecar を事前生成する。sidecar manifest が GGUF の正確な bytes を認証する:
+
+```sh
+# 出力ディレクトリは存在し、空である必要がある。macOS の offline tool。
+mkdir -p whisper-base.gguf.coreml
+bash tools/coreml/build_whisper_encoder.sh \
+  whisper-base.gguf whisper-base.gguf.coreml
+```
+
+現在の runtime contract は `whisper-base.gguf.coreml/manifest.txt` と、
+コンパイル済みの `whisper-encoder.mlmodelc/` tree であり、単独の
+`<GGUF>.coreml.json` ファイルではない。manifest は元 GGUF と compiled tree
+の SHA-256、Whisper の feature 名/shape、`macOS14` deployment target、CoreML
+Tools version、算術精度を結び付ける。不足・古い binding は CoreML load 前に
+失敗し、CPU へ置き換えない。入力 WAV は 16 kHz mono PCM（int16 または
+float32）とし、リサンプルは行わない。
+
+```sh
+cargo build --release -p vokra-cli --features coreml   # macOS
+./target/release/vokra-cli npu-bakeoff \
+  --model whisper-base.gguf --input speech.wav \
+  --delegate coreml --warmup 2 --iters 10 --atol 0.01 --min-speedup 2.0
+```
+
+delegate 経路は feature gate 下にあり、`--features coreml` なしでビルドした
+binary は明示エラーになり CPU へ fallback しない。`qnn` も同じ command surface
+で parse されるが、encoder 全体の QNN 実行は現在明示的な unsupported error に
+なる。これは認証済みの一つの Whisper artifact に対する、Vokra の first-party
+CPU-vs-delegate 測定 gate であり、一般的な end-to-end ASR benchmark、独立した
+upstream/PyTorch parity 結果、全モデルの Apple Neural Engine qualification では
+ない。現在のオプションは `vokra-cli npu-bakeoff --help` で確認する。
+
+## 7. バックエンド選択は明示的（`FR-EX-08`）
 
 `--backend` で計算バックエンドを選ぶ。Vokra は silent fallback をしない:
 GPU バックエンドが cover しない op、不在の device は明示エラーであり、CPU への
@@ -201,7 +242,7 @@ cargo build --release -p vokra-cli --features metal   # macOS
 CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあなたが下す決定で
 あり、Vokra が裏で下す決定ではない。
 
-## 7. トラブルシューティング
+## 8. トラブルシューティング
 
 | 症状 | 原因 / 対処 |
 |---|---|
@@ -220,8 +261,8 @@ CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあな�
 
 ## Keeping this page current
 
-**最終確認日: 2026-10-04 — `crates/vokra-cli/src/` の `run` / `convert` /
-`bench` / `f0` 引数パーサに対して確認。**
+**最終確認日: 2026-10-08 — `crates/vokra-cli/src/` の `run` / `convert` /
+`bench` / `f0` / `npu-bakeoff` 引数パーサに対して確認。**
 
 - **更新責任**: CLI フラグを追加・改名した PR が、同一 PR で本ページと英語版を
   更新する。本ページの全 `vokra-cli` 呼び出しは `doc-examples` CI job が実
@@ -230,5 +271,5 @@ CPU を*意図的に*選ぶには `--backend cpu` を使う — それはあな�
 - **フラグ surface の再取得**:
 
 ```sh
-grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs crates/vokra-cli/src/f0.rs
+grep -oE '"--[a-z0-9-]+"' crates/vokra-cli/src/run.rs crates/vokra-cli/src/convert.rs crates/vokra-cli/src/bench.rs crates/vokra-cli/src/f0.rs crates/vokra-cli/src/npu_bakeoff.rs
 ```

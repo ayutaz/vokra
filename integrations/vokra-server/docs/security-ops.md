@@ -1,6 +1,6 @@
 # vokra-server — Security & Operations (M2-09 T20)
 
-**Current-status note (2026-09-09):** This document retains the M2-09 security
+**Current-status note (2026-10-08):** This document retains the M2-09 security
 and operations decision record. Current implementation status is the source
 and [`../README.md`](../README.md): Wyoming full ASR/TTS handling and its
 connection-scoped barge-in path are wired; HTTP `stream=true` and word-level
@@ -21,6 +21,10 @@ network exposure), NFR-RL-01 (LC_NUMERIC), NFR-RL-07 (API-boundary
 safety), NFR-SC-* (see [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) and
 [`docs/legal-compliance.md`](../../../docs/legal-compliance.md) for the
 reverse-proxy/auth and legal-review boundary).
+
+The Wyoming connection task is panic-isolated; the production HTTP router
+does not currently attach the reusable `CatchPanicLayer`, so HTTP panic
+isolation remains an open implementation follow-up (§9).
 
 ## 1. Bind posture: loopback by default, explicit opt-in for network
 
@@ -55,10 +59,19 @@ firewall).
 `vokra-server` deliberately does NOT terminate TLS and does NOT
 implement session auth in v0.5. Operators MUST place a reverse proxy
 in front of the loopback listener for any exposure beyond the local
-host. Two vetted example configs follow. Both target Ubuntu 24.04 LTS
-and Debian 12 defaults.
+host. The examples below are illustrative, not deployment-tested, and do
+not claim Ubuntu/Debian package or filesystem compatibility. Adapt the
+certificate paths, package layout, firewall, and authentication policy to
+the target host before deployment. Both examples include an explicit HTTP
+Basic-auth gate; this is not the OpenAI Bearer scheme that `vokra-server`
+ignores, so clients may need an authentication adapter.
 
-### 2.1 nginx (Apache-2.0 fork of BSD, package-manager install)
+### 2.1 nginx (official two-clause BSD-style license)
+
+See the official [`ngx_http_auth_basic_module` documentation](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)
+and [NGINX license](https://nginx.org/LICENSE). Generate the htpasswd file
+with `htpasswd` or an equivalent approved tool; never put a real password in
+this document.
 
 ```
 # /etc/nginx/sites-available/vokra-server
@@ -71,32 +84,47 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/asr.example.org/privkey.pem;
 
     # Cap uploads at the same 25 MiB limit vokra-server enforces (§5).
-    client_max_body_size 25m;
+    client_max_body_size 26214400;
 
     # Increase read timeouts to accommodate multi-second ASR responses.
     proxy_read_timeout  120s;
     proxy_send_timeout  120s;
 
     location / {
+        auth_basic           "vokra-server";
+        auth_basic_user_file /etc/nginx/.htpasswd;
         proxy_pass         http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
-
-        # For future WebSocket / streaming endpoints (real-time ASR).
-        proxy_set_header   Upgrade    $http_upgrade;
-        proxy_set_header   Connection $connection_upgrade;
     }
 }
 ```
 
 ### 2.2 Caddy 2 (Apache-2.0, automatic TLS)
 
+This example targets Caddy **v2.8.0 or later**, where the directive is named
+`basic_auth` (older versions called it `basicauth`). See the official
+[`basic_auth` documentation](https://caddyserver.com/docs/caddyfile/directives/basic_auth),
+[`request_body` documentation](https://caddyserver.com/docs/caddyfile/directives/request_body),
+and [Caddy source license](https://github.com/caddyserver/caddy/blob/master/LICENSE).
+The hash must be generated out of band with `caddy hash-password`; the
+placeholder below is not a credential.
+
 ```
 # /etc/caddy/Caddyfile
 asr.example.org {
+    basic_auth {
+        operator {env.VOKRA_BASIC_AUTH_HASH}
+    }
+
+    # Match the 25 MiB body cap vokra-server enforces (§5).
+    request_body {
+        max_size 26214400
+    }
+
     # Caddy provisions TLS automatically via Let's Encrypt.
     reverse_proxy 127.0.0.1:8080 {
         header_up X-Real-IP {remote_host}
@@ -105,11 +133,6 @@ asr.example.org {
             read_timeout  120s
             write_timeout 120s
         }
-    }
-
-    # Match the 25 MiB body cap vokra-server enforces (§5).
-    request_body {
-        max_size 25MB
     }
 }
 ```
@@ -121,23 +144,14 @@ loopback of the HA host and rely on HA's own network boundary. Do NOT
 expose Wyoming directly on `0.0.0.0` on the public internet — the
 protocol has no authentication of its own.
 
-## 3. API key (Bearer token): forward-compat parsing hook, disabled by default
+## 3. API key (Bearer token): reverse-proxy boundary only
 
-v0.5 does NOT ship a shared-secret auth flow (that layer belongs to
-the reverse proxy in §2). It DOES ship a forward-compatible parsing
-hook so operators can start emitting `Authorization: Bearer <key>`
-headers today without breaking:
-
-- The parser accepts and ignores `Authorization: Bearer <token>` on
-  every HTTP route. Presence of the header is a NOOP.
-- Absence of the header is also a NOOP (default policy is "no auth").
-- Malformed `Authorization` headers do NOT produce a 4xx. They are
-  silently ignored so that clients configured for a future v1.0 auth
-  flow can point at a v0.5 server for smoke tests.
-- Once the auth layer lands (post-v0.5), the default will FLIP to
-  "reject unauthenticated requests when a key is configured"; the
-  ambient default with no key configured stays "accept all" so this
-  is not a silent-exposure regression.
+v0.5 does NOT ship a shared-secret auth flow or an `Authorization` parser.
+Operators MUST place a reverse proxy in front of the loopback listener for
+any exposure beyond the local host. The proxy terminates TLS and authenticates
+requests before forwarding them. A future built-in auth layer is a separate
+design decision; this server must not be described as accepting or validating
+Bearer credentials today.
 
 Rationale for parking auth in a proxy for v0.5: keeping TLS + auth
 out of `vokra-server` shrinks the trusted-code surface, avoids
@@ -172,9 +186,14 @@ policy.
 
 Matches the OpenAI `/v1/audio/transcriptions` upstream limit so
 faster-whisper-compatible clients Just Work. Enforced at the axum
-layer (`tower_http::limit::RequestBodyLimitLayer`, to be wired when
-the security layer lands alongside CORS). Requests exceeding the
-limit receive `413 Payload Too Large` with the T05 JSON error schema.
+layer (`axum::extract::DefaultBodyLimit::max` on the OpenAI
+transcription route). The route is fail-closed at this limit before
+inference. Handler-side multipart parsing maps `MultipartError` and other
+request-shape failures to `400 invalid_multipart`; an extractor-level
+body-limit rejection is outside that mapper. Therefore the current contract
+does not promise one uniform `413 Payload Too Large` status or T05 JSON
+envelope for every over-limit path. This limit is route-local; it is not a
+claim that every future endpoint accepts the same body size.
 The nginx/Caddy examples in §2 mirror this cap so proxies fail fast
 without buffering huge bodies.
 
@@ -182,36 +201,33 @@ without buffering huge bodies.
 comfortably exceeds Whisper base's 30 s chunk boundary. Larger
 transcription jobs should chunk client-side.
 
-## 6. Connection timeout: 60 s (default)
+## 6. Connection timeout: not enforced by the server
 
-The keep-alive / idle timeout for HTTP connections is 60 s. Long
-ASR responses (Whisper large-v3 on CPU can take multiple seconds)
-finish comfortably under this ceiling; if a request is still
-in-flight after 60 s of idle, it is assumed dead. Aligned with the
-`proxy_read_timeout 120s` in the nginx example — the proxy gives
-the backend headroom.
+The current `vokra-server` HTTP listener does not install a 60-second
+keep-alive or request timeout layer. Operators MUST set an appropriate
+timeout at the reverse proxy (the nginx example uses `proxy_read_timeout
+120s`) and should account for long CPU ASR requests. Adding a server-side
+timeout is a future implementation change, not current v0.5 behavior.
 
 Wyoming per-connection timeout is `None` in v0.5: HA satellites hold
 long-lived TCP sessions and would break under a strict deadline.
 Idle Wyoming connections are cleaned up on graceful shutdown
 (`shutdown::install_shutdown_signal`) — see the T03 accept loop.
 
-## 7. Concurrent connection cap: 100 (default)
+## 7. Wyoming session concurrency: no HTTP or raw-TCP accept cap
 
-Cap on the number of simultaneously accepted HTTP connections. Above
-this limit, new `accept()` calls block until a slot opens, providing
-back-pressure without dropping requests silently. 100 is chosen to
-match a moderately provisioned host (8 vCPU, 16 GB RAM) running one
-whisper-base engine — the reference `crates/vokra-models` engines
-are `Send + Sync` and share `Arc`s across all workers, so per-request
-memory overhead is small.
+The service-aware startup path passes the shared
+`--max-concurrent-sessions` / `VOKRA_MAX_CONCURRENT_SESSIONS` value to the
+Wyoming connection loop. It defaults to `4` and bounds concurrent configured
+Wyoming model sessions. The scheduler is not attached to the OpenAI, vLLM, or
+piper HTTP routers, so this value is not an HTTP-request cap. It also does not
+limit raw TCP accepts; there is no independent Wyoming accept semaphore.
+
+Use the reverse proxy for HTTP connection/rate limiting and a firewall or
+authenticated tunnel for Wyoming network exposure.
 
 Operators running large-v3 on a single GPU should LOWER this cap to
-match GPU memory budget; a v1.0 admission-control layer will make
-this dynamic.
-
-Wyoming does not enforce a cap in v0.5: HA typically opens a
-single long-lived session, so a static cap would be an anti-feature.
+match GPU memory budget.
 
 ## 8. LC_NUMERIC pinning (defense in depth)
 
@@ -223,13 +239,14 @@ bug: even if a transitive dependency reaches a C library's
 security fence per se, but a hard-to-diagnose availability risk if
 skipped, so it is documented alongside the security posture.
 
-## 9. Panic isolation (NFR-RL-07)
+## 9. Panic isolation (NFR-RL-07) — HTTP attachment pending
 
-Every axum handler is wrapped in `tower_http::catch_panic::CatchPanicLayer`
-via `error::catch_panic_layer` so a `panic!()` inside a handler
-becomes a `500 Internal Server Error` with the T05 JSON error schema,
-NOT a runtime abort. Wyoming per-connection tasks live inside
-`tokio::spawn` and any panic aborts only the affected connection.
+The reusable `error::catch_panic_layer` helper and its unit test exist, but
+`server::build_http_app` does not currently attach that layer to the
+production router. Therefore HTTP panic-to-500 behavior is **not claimed**
+for v0.5 and must remain a follow-up before this section can be marked
+complete. Wyoming per-connection tasks do run inside the `catch_unwind`
+guard and a panic closes only the affected connection.
 
 ## 10. Smoke test contract
 
@@ -260,14 +277,15 @@ cannot drift silently.
   `limit_req_zone`, Caddy `rate_limit`).
 - WAF / OWASP Top 10 filtering: reverse proxy layer.
 - TLS termination: reverse proxy layer.
-- Bearer-token verification: forward-compat parse only (§3), full
-  enforcement post-v0.5.
+- Bearer-token verification: reverse-proxy boundary only (§3); no server-side
+  parser or enforcement is present in v0.5.
 - Wyoming auth: rely on network isolation (Tailscale / WireGuard /
   loopback + HA on the same host).
 - Web UI / admin console: out of scope for v0.5.
 
 ## 12. Change log
 
-- 2026-07-06 — T20 initial cut. Loopback defaults, reverse proxy
-  examples, forward-compat auth hook, restrictive CORS, 25 MiB /
-  60 s / 100-conn caps, smoke test wired in `src/lib.rs`.
+- 2026-07-06 — T20 initial cut. Loopback defaults, reverse-proxy
+  examples, restrictive CORS, and the initial 25 MiB / timeout /
+  connection-cap design record were drafted; current enforcement is
+  summarized in the status note and §§3/5–9 above.

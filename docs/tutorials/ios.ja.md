@@ -39,9 +39,11 @@ scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
 ### 経路 B — リリース DL
 
 `v0.3.0` GitHub Release は `Vokra.xcframework.zip` と SHA-256 を公開済みです。
-ただし `v0.3.0` tag の `Package.swift` は local path のままなので、clean tag
-checkout では上の local build 経路を使います。release asset を使う consumer は
-次の URL/checksum target を明示的に追加します:
+公開済み `v0.3.0` tag の `Package.swift` は local の
+`build/ios/Vokra.xcframework` path を使います。現行 `main` の manifest には
+次の固定 URL/checksum target が入っています。tag/local 経路では上の local
+build を使い、release asset を使う consumer は自身の manifest にこの target
+を明示してください:
 
 ```swift
 .binaryTarget(

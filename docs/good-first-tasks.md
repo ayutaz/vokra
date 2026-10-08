@@ -7,7 +7,7 @@ has a file/line anchor or a reproduction command, acceptance criteria you can
 check yourself, and a rough size — so you can decide before starting whether
 it is worth your time.
 
-**Last reviewed: 2026-10-04.** All six entries below remain open after checking
+**Last reviewed: 2026-10-08.** All six entries below remain open after checking
 the current source tree; completed entries are intentionally not listed.
 
 ## How to use this list
@@ -93,7 +93,7 @@ Reproduce the list:
 rg --files-without-match -- '--help' scripts/check-*.sh
 ```
 
-At the 2026-10-04 review that prints **22** scripts.
+At the 2026-10-08 review that prints **22** scripts.
 
 **What to do**: follow the shape already used by
 `scripts/check-platform-support.sh` and `scripts/check-doc-references.sh` — a

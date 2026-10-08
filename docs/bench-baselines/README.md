@@ -22,8 +22,8 @@ only there. Everything else here is a reference, not a gate.**
 
 | file | gate | posture |
 |------|------|---------|
-| `mel_frontend_baseline.json` | `ci.yml` bench-regression, `--task mel-frontend` (M2-04) | **required** (PR-blocking) |
-| `silero_vad_baseline.json` | `ci.yml` bench-regression, Silero VAD (X-06-T09) | advisory; **placeholder** until seeded on ubuntu-latest via `bench-baseline-capture.yml` |
+| `mel_frontend_baseline.json` | `.github/workflows/ci-platform.yml` `bench-regression`, `--task mel-frontend` (M2-04) | advisory workflow context (the step hard-fails that job on regression; `bench-regression` is not one of the 16 protected required contexts); **seeded numeric baseline** (`rtf`: `0.003115`, 30 iterations) |
+| `silero_vad_baseline.json` | `.github/workflows/ci-platform.yml` `bench-regression`, Silero VAD (X-06-T09) | advisory; **placeholder** until seeded on ubuntu-latest via `bench-baseline-capture.yml` |
 | `whisper_base_asr_nightly_baseline.json` | `nightly-asr-wer.yml` RTF companion (X-06-T11) | advisory record-only; **placeholder** |
 | `piper_tts_nightly_baseline.json` | `nightly-asr-wer.yml` RTF companion (X-06-T12) | advisory record-only; **placeholder** (no piper GGUF committed — open question #7) |
 

@@ -1,6 +1,6 @@
 # legal-compliance.md — Vokra 音声 AI 法務対応
 
-**最終更新**: 2026-08-30（公式一次資料の確認日）
+**最終更新**: 2026-10-08（文書境界更新；公式一次資料の最終確認日は2026-08-30）
 **目的**: EU AI Act Article 50、California SB 942、Tennessee ELVIS Act、連邦 NO FAKES Act、Apple App Review Guidelines、Google Play AI-Generated Content policy について、Vokra provider と deployer が法務確認すべき論点と現行実装の境界を記録する。
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
@@ -16,6 +16,16 @@ EU/Californiaの施行・経過措置を今回の日付で再認証できてい�
 は2025-04-09の上院提出版（IS）であり、現在の審議・成立状況を保証するものではない。
 以前のCongress.gov取得ページでのIntroducedというキャッシュ観測も、現在の成立状況の保証としない。
 法務文書の全面的な現行法再確認は未完了であり、owner/legal sign-offを追加・変更していない。
+
+**2026-10-08 法令再認証境界:** EUR-Lexのbot確認、California公式条文ページの403、
+および同ページの代替取得失敗により、EU/Californiaの現行法をこの日付で再認証したとは
+扱わない。[PR #198](https://github.com/ayutaz/vokra/pull/198)の
+`ab33cd6c` headは、この境界文を書いた時点では未マージのdraftであり、必須
+`documentation-links` gate未通過と記録されていた。
+そのPRの2026-10-07公式ブラウザ読戻しは、下記に日付付きの限定的なsource
+observationとして保持するが、現行法の再認証、適用判断、compliance、owner/legal
+approval、免除、配布許可を意味しない。SB 942本文endpointの403記録は維持し、
+追加された公式endpointの候補HEADにおける`documentation-links` CI結果も保留する。
 
 **Implementation snapshot (2026-09-09):** The legal-source verification dates in
 the sections below are intentionally retained as dated checks. The current
@@ -99,7 +109,7 @@ applicability, compliance, CI gates, and owner/legal decisions remain pending.
 
 - **a. EU対象のdeployer**: deepfake等に該当するかを確認し、該当時はclear and distinguishableなdisclosureを実装する。Vokra coreはUIや地域判定を提供しない。
 - **b. EU対象のprovider**: Article 50(2)のmarkingが自分の役割に適用されるか、技術的手段と検出性能を検証する。Vokraのdefault経路に自動markingはない。
-- **c. California AI Transparency Act対象のcovered provider**: 現在の§22757.1、§22757.2、§22757.3、§22757.4、§22757.4.1、§22757.5にあるdetection/verification、latent disclosure、個人情報、licensee、例外の要件と、§22757.6および各節のoperative条項を公式条文に照らして確認する。旧SB 942のmanifest要件や月間100万人閾値を現行要件として扱わない。VokraのAPIを使えば自動的に適合するとはいえない。
+- **c. California AI Transparency Act対象のcovered provider**: 2026-10-07の公式BPC Chapter 25表示で観測した§22757.1、§22757.2、§22757.3、§22757.4、§22757.4.1、§22757.5のdetection/verification、latent disclosure、個人情報、licensee、例外の表示と、§22757.6および各節のoperative表示を出発点に、現行条文・operative clausesを公式一次資料と counsel で改めて確認する。旧SB 942のmanifest要件や月間100万人閾値だけから現行要件を推定しない。VokraのAPIを使えば自動的に適合するとはいえない。
 - **d. ELVIS Act / NO FAKES Act**: disclosureだけではvoice rights、consent、配布責任を解消しない。§3/§4の要法務確認を行う。
 - **e. 音声録音 / speaker embedding**: 同意、個人情報・生体情報、撤回、保存期間をdeployerが確認する。
 
@@ -116,11 +126,19 @@ applicability, compliance, CI gates, and owner/legal decisions remain pending.
 
 ## 2. California SB 942 (California AI Transparency Act)
 
+> **Dated-source boundary:** This section retains the dated 2026-08-30 SB 942
+> review history and the separate 2026-10-07 limited current-code/source-
+> extraction observation. The latter is a dated normal-browser source read, not
+> a full legal review or current-law reauthentication. The SB 942 endpoint's
+> 403 record remains unchanged; neither record establishes current
+> applicability, compliance, owner/legal approval, distribution permission, or
+> a waiver of the `documentation-links` CI gate.
+
 The status below is retained as the dated 2026-08-30 record. The 2026-10-07
-normal-browser read supersedes the earlier retrieval-pending statement only
-for the AB 2713 chaptered body, the SB 1000 chaptered body, and the current BPC
-Chapter 25 display; it does not rewrite this historical record or decide
-applicability, compliance, CI gates, or owner/legal approval.
+normal-browser read records a separate, limited observation for the AB 2713
+chaptered body, the SB 1000 chaptered body, and the current BPC Chapter 25
+display; it does not rewrite this historical record or decide applicability,
+compliance, CI gates, or owner/legal approval.
 
 ### 2026-10-07 公式本文の通常ブラウザ読解（現行適用判断前）
 2026-10-07、公式ページを通常のChrome表示で再読できた。これは同日記録の
@@ -316,6 +334,11 @@ Vokraは一般目的の推論ランタイムであり、利用者がロードす
 ---
 
 ## 11. Vokra 提供の Compliance Checklist (deployer 向け)
+
+> **Historical checklist boundary:** the SB 942 checkbox below, including the
+> 1,000,000 visitor/user threshold and manifest/latent options, is retained
+> from the 2026-08-30 dated snapshot. It is a prompt for renewed official-source
+> and counsel review, not a current-law determination or compliance sign-off.
 
 新規 Vokra 統合プロジェクト開始時に確認すべき checklist:
 

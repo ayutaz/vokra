@@ -1,5 +1,13 @@
 # Mac CPU / Metal residual execution ledger (2026-09-12)
 
+> **2026-10-08 supersession boundary:** the 135-full / 59-unresolved audit
+> described below is retained as dated 2026-09-12 evidence, not the latest live
+> inventory. The current metadata-only readback is 136 CPU/Metal code-artifact
+> full and 58 unresolved across 194 public repositories; it is not Apple
+> hardware-completion evidence. No historical packet, owner decision, or row
+> result below is rewritten by this pointer. See the [current documentation
+> audit](documentation-refresh-2026-10-08.md).
+
 ## Scope and baseline
 
 This ledger continues the public Mac CPU / Apple Metal campaign after the

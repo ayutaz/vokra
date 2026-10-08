@@ -1,5 +1,12 @@
 # Mac CPU / Metal full-coverage execution ledger (2026-08-28)
 
+> **2026-10-08 current-routing pointer:** the 2026-09-09 snapshot below is
+> historical evidence. The current root audit remains 136 CPU/Metal
+> code-artifact-full and 58 unresolved across 194 public repositories; this is
+> not full-catalog Apple completion evidence. See the [current documentation
+> audit](documentation-refresh-2026-10-08.md). Preserve the dated counts,
+> hashes, packets, and owner decisions below unchanged.
+
 > **Active execution plan (2026-08-31):** the cloud boundary, blocker-class
 > ordering and final proof for continuing this ledger are fixed in
 > `docs/handoff/mac-cpu-metal-completion-plan-2026-08-30.md`.  Scaleway is a
@@ -17,7 +24,7 @@
   uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
   ```
 
-## Authoritative current snapshot (2026-09-09)
+## Historical snapshot (2026-09-09; superseded for current routing 2026-10-08)
 
 At the 2026-09-09 audit start, the campaign head was PR #79 at `9efcd16e`
 (`CLEAN` / `MERGEABLE`), with

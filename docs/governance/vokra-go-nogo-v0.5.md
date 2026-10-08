@@ -1,6 +1,7 @@
 # Go / No-go review record — v0.5 (M2)
 
-> **Current state (2026-10-04):** This remains a blank v0.5 template. The
+> **Current state (2026-10-08; exact GitHub `main`
+> `d100d93778191ccab77bd1c37fe3552e3d889758`):** This remains a blank v0.5 template. The
 > all-pages API reports **one tag and one GitHub release** (`v0.3.0`,
 > 2026-09-20), but there are zero tracked quarterly review records. The
 > X-07 cadence mechanism (`release-cadence.yml` +
@@ -36,13 +37,19 @@ numbers.
    monitoring mechanism, which raises the cost of skipping one.
 2. **Kill switch C's "Discord active user" sub-threshold is measured by
    proxy.** Discord was not adopted (2026-07-04 / 2026-07-06), so the
-   engagement figure is unique participants in GitHub Issues and Discussions
-   over the trailing three months. **Note that Discussions is currently
-   disabled**, so that channel contributes zero by construction — the proxy is
-   effectively Issues-only until that changes (X-05-T23).
-3. **Runtime watermarking is deferred, not delivered.** This is tracked as a
-   known risk below, not as a completed compliance item. Do not let a green
-   engineering column imply the compliance obligation is met.
+   engagement figure is the collector's author-count proxy for GitHub Issues
+   and Discussions over the policy's trailing-three-month window. It is not a
+   complete event-timestamp census: updated issues/discussions can contribute
+   older authors. **Note that Discussions is currently disabled**, so that
+   channel contributes zero by construction — the proxy is effectively
+   Issues-only until that changes (X-05-T23).
+3. **Automatic runtime watermarking is deferred, not delivered.** The native
+   `Audioseal::embed_pcm` and `Audioseal::detect_pcm` /
+   `detect_pcm_with_thresholds` routes are explicit CPU/Metal model operations
+   when the caller selects them, but the normal synthesis path does not
+   automatically apply a watermark. This remains a known compliance risk below;
+   do not treat standalone availability or a green engineering column as proof
+   that the deployer's marking obligation is met.
 
 ## Kill switch A–L status
 
@@ -100,11 +107,12 @@ source of truth). "該当" means the switch fires, i.e. argues for withdrawal.
 | **J** | _(記入)_ | _(記入)_ | _(記入)_ |
 | **K** | _(記入)_ | _(記入 — competitor selection is a judgement call; name the comparator)_ | _(記入)_ |
 
-**Start-date note (C and D)**: the runbook derives these from the `v0.5.0`
-release tag date. **No `v0.5.0` tag/release exists**; the published `v0.3.0`
-source release is not an automatic substitute for the owner-approved milestone
-start date. The planning documents contain two different calendar windows for the D verdict.
-Record the start date you used and the basis for choosing it (X-05-T23).
+**Start-date note (C and D)**: C is measured from the owner-approved `v0.1.0`
+MVP release date; D is measured from the owner-approved `v0.5.0` release date.
+**Neither milestone tag/release exists currently.** The published `v0.3.0`
+source release is not an automatic substitute for either owner-approved
+milestone start date. Record each start date separately and state the basis for
+choosing it (X-05-T23).
 
 ## Continuous monitoring — A / B / E / F / G / H / L
 
@@ -125,9 +133,9 @@ recording how it closed.
 
 | Risk | Status | Owner | Note |
 |---|---|---|---|
-| Runtime watermarking deferred — deployer-side disclosure remains a required consideration; runtime compliance is not claimed | Open | Maintainer | See `docs/legal-compliance.md`. Read-through note 3. |
+| Automatic runtime watermarking deferred — standalone `Audioseal::embed_pcm` / `detect_pcm` is available on CPU/Metal, but normal synthesis is not automatically watermarked; deployer-side disclosure remains a required consideration | Open | Maintainer | See `docs/legal-compliance.md`. Read-through note 3. |
 | GitHub Discussions disabled — half of the Kill switch C engagement channel does not exist | Open | Maintainer | X-05-T23 |
-| Kill switch C/D start date undefined — no `v0.5.0` tag or release exists | Open | Maintainer | X-05-T23 |
+| Kill switch C/D start date undefined — no owner-approved `v0.1.0` or `v0.5.0` milestone tag/release exists | Open | Maintainer | X-05-T23 |
 | Kill switch D threshold ambiguous — two contributor definitions disagree | Open | Maintainer | X-05-T23 |
 | _(記入)_ | | | |
 

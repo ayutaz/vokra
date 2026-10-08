@@ -65,9 +65,9 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 The current release line is workspace version `0.3.0`.
 
-**2026-10-04 current snapshot:** this documentation review is based on local
-checkout `3a3fd822`; the read-only remote `main` ref was observed at
-`97447185361a37af64c1b30fe87e8e2618d96e20`. A fresh 2026-10-04 metadata-only public audit reports 194 repositories,
+**2026-10-08 current snapshot:** this documentation review and the read-only
+metadata/card-only public audit use exact GitHub `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758`. The audit reports 194 repositories,
 193 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`, `partial=43`,
 `no-runtime-binder=14`, `not-artifact=1`; Metal status is `full=136`,
 `blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. The
@@ -105,7 +105,8 @@ the restricted `weights_only=True` loader.
 
 ## Keeping this page current
 
-**Last verified: 2026-10-04 — against local checkout `3a3fd822` and
+**Last verified: 2026-10-08 — against exact GitHub `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758` and
 `include/vokra.h`.** The
 pre-alpha Python generator and checked-in `ctypes` table cover all 57 generated
 C functions exactly; the header has 15 typedefs, four enums, two concrete

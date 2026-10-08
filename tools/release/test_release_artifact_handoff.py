@@ -10,6 +10,7 @@ import re
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 RELEASE = os.path.join(ROOT, ".github", "workflows", "release.yml")
 DESKTOP = os.path.join(ROOT, ".github", "workflows", "release-desktop-preflight.yml")
+DESKTOP_PR = os.path.join(ROOT, ".github", "workflows", "desktop-release-completeness.yml")
 GODOT = os.path.join(ROOT, ".github", "workflows", "godot-crossbuild.yml")
 
 
@@ -27,6 +28,7 @@ def job_block(text: str, job_id: str) -> str:
 def main() -> None:
     release = open(RELEASE, encoding="utf-8").read()
     desktop = open(DESKTOP, encoding="utf-8").read()
+    desktop_pr = open(DESKTOP_PR, encoding="utf-8").read()
     godot = open(GODOT, encoding="utf-8").read()
     checks: list[tuple[bool, str]] = []
 
@@ -57,7 +59,44 @@ def main() -> None:
             ("gh run list" not in desktop_release and "gh run download" not in desktop_release, "desktop release has no cross-run lookup"),
             ("workflow_call:" in desktop, "desktop preflight is reusable"),
             ("vokra-capi-macos" in desktop and "vokra-capi-windows" in desktop, "desktop preflight emits both artifacts"),
+            ("vokra-capi-linux" in desktop, "desktop preflight emits Linux C ABI"),
+            (all(token in desktop for token in (
+                "vokra-cli-macos-aarch64",
+                "vokra-cli-windows-x86_64",
+                "vokra-cli-linux-x86_64",
+                "vokra-cli-linux-musl-x86_64",
+            )), "desktop preflight emits all native CLI artifacts"),
+            (desktop.count("cargo build --locked") >= 5, "desktop producers use locked package-scoped Cargo builds"),
+            ("verify-binary" in desktop and "native-smoke" in desktop and "--help" in desktop, "native identity, C ABI load, and model-free CLI smoke are wired"),
             ("if-no-files-found: error" in desktop, "desktop upload is fail-loud"),
+            (all(token in desktop_release for token in (
+                "vokra-capi-linux",
+                "vokra-cli-linux-x86_64",
+                "vokra-cli-linux-musl-x86_64",
+                "vokra-cli-macos-aarch64",
+                "vokra-cli-windows-x86_64",
+                "desktop_release.py assemble",
+                "vokra-desktop-capi.spdx.json",
+                "vokra-desktop-cli.spdx.json",
+                "vokra-desktop-manifest.json",
+                "version_contract.py",
+                "--expected-version \"$EXPECTED_VERSION\"",
+            )), "desktop release consumes every same-run payload and writes manifest"),
+            ("--cli-windows reuse/windows-cli/vokra-cli.exe" in desktop_release and "x86_64" in desktop_release, "desktop release preserves winget Windows ZIP contract"),
+            ("cargo build" not in desktop_release, "desktop release delegates builds to same-run preflight"),
+            (all(token in desktop_pr for token in (
+                "desktop-release-completeness.yml",
+                "pull_request:",
+                "vokra-desktop-capi.spdx.json",
+                "vokra-desktop-cli.spdx.json",
+                "manifest --version 0.0.0-ci",
+                "verify --version 0.0.0-ci",
+                "test_desktop_release.py",
+                "test_release_artifact_handoff.py",
+                "--help",
+                "native-smoke",
+            )), "PR workflow exercises build, SBOM, manifest, smoke, and regressions"),
+            ("contents: write" not in desktop_pr and "gh release" not in desktop_pr, "PR workflow cannot publish"),
             ("workflow_call:" in godot, "Godot crossbuild is reusable"),
         ]
     )

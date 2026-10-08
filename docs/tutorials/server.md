@@ -67,14 +67,19 @@ uncovered op is an explicit error, never a silent CPU fallback (`FR-EX-08`).
 
 ## 4. Multi-session and concurrency
 
-The server handles concurrent sessions (`FR-SV-06`); cap them with
-`--max-concurrent-sessions` so a burst cannot exhaust memory:
+The server handles concurrent sessions (`FR-SV-06`).
+`--max-concurrent-sessions` configures the Wyoming inference-connection
+scheduler (one permit / stream slot per configured Wyoming connection):
 
 ```sh
 ./target/release/vokra-server --http-bind 0.0.0.0:8080 \
   --whisper-base whisper-base.gguf --whisper-base-tokenizer tok.gguf \
   --max-concurrent-sessions 8
 ```
+
+This setting is not an HTTP request-concurrency limit and is not a guarantee
+of total process-memory protection; HTTP routes and other allocations are
+outside this scheduler's cap.
 
 ## 5. Bind address and security posture
 

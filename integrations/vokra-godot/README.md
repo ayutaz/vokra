@@ -55,10 +55,11 @@ Sister binding: [`bindings/unity/com.vokra.unity`](../../bindings/unity/com.vokr
 
 - **No `godot-cpp`, no `gdext-rs`, no bindgen** — hand-written `extern "C"`
   bridge over `gdextension_interface.h`. Matches Vokra's Metal / CUDA raw-FFI
-  posture (`docs/adr/0011-godot-gdextension.md` §D1/D3).
+  posture described by the tracked architecture and source contracts.
 - **Excluded from the Vokra root workspace** — mirrors
   `integrations/vokra-piper-g2p/` and `integrations/vokra-server/`. Root
-  `Cargo.lock` stays zero-dep (NFR-DS-02).
+  `Cargo.lock` stays zero-dep (NFR-DS-02); see the tracked
+  [architecture guide](../../docs/architecture.md).
 - **`silent CPU fallback 禁止`** (FR-EX-08) — every backend error
   propagates through `vokra_last_error()` into a Godot-side
   `VokraError` (see `src/error.rs`); the binding never retries on a
@@ -70,7 +71,8 @@ Sister binding: [`bindings/unity/com.vokra.unity`](../../bindings/unity/com.vokr
 
 ## Platform matrix
 
-Scope of M3-11 (ADR-0011 §D4):
+Scope of M3-11 (the tracked Godot platform-support and cross-build
+contracts):
 
 | Target | Cargo triple | Artifact |
 |--------|-------------|----------|
@@ -151,9 +153,9 @@ func _ready() -> void:
 Apache-2.0 (workspace-wide policy; see `LICENSE` at repo root).
 Godot Engine itself is MIT; this binding does not link `godot-cpp`.
 
-## Related documents
+## Related tracked sources
 
-- [`docs/adr/0011-godot-gdextension.md`](../../docs/adr/0011-godot-gdextension.md) — design record
-- [`docs/tickets/m3/M3-11-godot-gdextension.md`](../../docs/tickets/m3/M3-11-godot-gdextension.md) — ticket list
-- [`docs/adr/0003-c-abi-design.md`](../../docs/adr/0003-c-abi-design.md) — the Vokra C ABI we wrap
-- [`docs/adr/0007-unity-official-plugin.md`](../../docs/adr/0007-unity-official-plugin.md) — sister binding
+- [`docs/architecture.md`](../../docs/architecture.md) — tracked runtime/binding architecture
+- [`godot-crossbuild.yml`](../../.github/workflows/godot-crossbuild.yml) — tracked cross-build and headless verification workflow
+- [`include/vokra.h`](../../include/vokra.h) — tracked C ABI header wrapped by this binding
+- [`bindings/unity/com.vokra.unity/README.md`](../../bindings/unity/com.vokra.unity/README.md) — tracked sister binding
