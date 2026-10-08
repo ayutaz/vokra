@@ -552,6 +552,43 @@ is delegated before public branch updates; old-head checks stay historical.
 retained-Draft gates and the overall Draft-disposition finish audit remain
 open; the persistent goal is not complete.
 
+### Latest accepted-main Draft integrations
+
+After the actual #209 acceptance, manager independently reviews three normal
+merge candidates against `bf428b40779752728e00f9d63d332981aa7ba3c7`. Each
+adds only the three accepted dependency lockfiles; all three blobs match main.
+The staged candidates have no runtime, Cargo, source-test or approval-input
+changes. GitHub-native updates use the expected old head and normal merge
+semantics, without force, rebase, admin acceptance or manual CI cancellation.
+Manager then independently verifies the published parents and exact tree:
+
+| PR | Published head | Parent heads | Tree |
+|---|---|---|---|
+| #197 | `00d019210248b3e06dbbef269e5a7f07337cc3ee` | `90585b10`, `bf428b40` | `5381322dfff1ea58fc86faaf35ce99e980cba585` |
+| #147 | `7b596dd9477a121d6411cc1214c6c90b899b3d42` | `82f8544f`, `bf428b40` | `c0950c0c910faf7cc6f45d6e1352daac892993c8` |
+| #152 | `fe1f5fe27fe4016d6a6fd76fe131fa3d62e1f307` | `66b5a7c1`, `bf428b40` | `edd4a32e4066965781295538d4b4efcfbd500bf4` |
+
+Fresh exact-head CI / Security / Quality runs are respectively:
+
+- #197: `37760742831` / `37760742350` / `37760742366`.
+- #147: `37760770589` / `37760770161` / `37760770044`.
+- #152: `37760793532` / `37760793150` / `37760793324`.
+
+All are real registered runs, initially queued/pending, not accepted green.
+The old CI runs `37751101589`, `37754825184` and `37752090942` are independently
+confirmed completed/cancelled after the updates; no live run remains for those
+three old heads. Their logs and receipts remain historical. The public bodies
+now name each new head and retain Draft, execution/owner/license/reference/
+Apple holds and `NO_UPLOAD`. Manager verifies those body/head readbacks.
+
+A subsequent live readback still finds 15 open Drafts and zero normal PRs.
+It also observes a changed #195 head (`bf54a6c2`), so the earlier collateral
+scope and duplicate closure proof must be revalidated against that current
+head before any eventual closure. No changed bot head is silently treated as
+the older reviewed head. The #182 local candidate remains unpushed; its
+three-lock latest-main preparation is delegated for independent review.
+These updates advance source/CI preparation, not any model or Apple verdict.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
