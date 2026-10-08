@@ -1,19 +1,21 @@
 # vokra-server — Scope Boundary (M2-09-T01 kickoff)
 
-**Current-status note (2026-09-09):** This is the T01 kickoff boundary and its
+**Current-status note (2026-10-08):** This is the T01 kickoff boundary and its
 M2 target language is retained as historical context. Current behavior is
 authoritatively described by [`../README.md`](../README.md) and the source:
 the service-aware accept loop routes configured connections through the full
-ASR/TTS Wyoming handler, with scheduler-backed sessions and TTS barge-in. The
+ASR/TTS Wyoming handler, with scheduler-backed Wyoming sessions and TTS barge-in. The
 HTTP `stream=true`/word-timestamp surfaces and built-in authentication remain
-unexposed; authentication is handled by a reverse proxy. Repository policy is
+unexposed; authentication is handled by a reverse proxy. The HTTP production
+router's reusable panic layer is not attached yet, so HTTP panic isolation is
+also an open follow-up. Repository policy is
 in [`AGENTS.md`](../../../AGENTS.md), [`CONTRIBUTING.md`](../../../CONTRIBUTING.md),
 and [`docs/legal-compliance.md`](../../../docs/legal-compliance.md).
 
 This document nails down the scope of the `vokra-server` crate at the
-WP kickoff (T01), so subsequent tickets can be graded against a fixed
-target. Source of truth for the WP is `docs/milestones.md` §6 M2-09 and
-the M2-09 ticket spec (`docs/tickets/m2/M2-09-vokra-server`).
+WP kickoff (T01), so subsequent work can be graded against a fixed target.
+The tracked [`../README.md`](../README.md) and the source are authoritative
+for current behavior; this file preserves the historical M2-09 boundary.
 
 ## What this crate delivers (FR-SV-01..05, NFR-PF-05)
 
@@ -53,8 +55,12 @@ the M2-09 ticket spec (`docs/tickets/m2/M2-09-vokra-server`).
   server MUST NOT fabricate generations (NFR-RL-06). Behaviour is
   either 501 Not Implemented with an explicit error body or a
   clearly-marked placeholder string; final choice is made in T09.
-- **No multi-session serving (FR-SV-06).** v0.5 is per-request single
-  model selection. FR-SV-06 is a v0.9 concern (M3-15; formerly labelled v1.0).
+- **No multi-session serving (FR-SV-06).** This was the T01 kickoff boundary.
+  The current service-aware Wyoming path now has bounded concurrent model
+  sessions via `--max-concurrent-sessions`; the scheduler is passed to the
+  Wyoming connection loop only. HTTP routes use the shared inference service
+  directly and are not covered by this cap; the historical T01 non-goal is
+  therefore superseded only for Wyoming sessions.
 - **No watermark / C2PA embedding.** Dropped by the client on
   2026-07-04; this crate holds forward-compat hooks only, wired into
   the registry (T21) for future re-enablement in M2-13.

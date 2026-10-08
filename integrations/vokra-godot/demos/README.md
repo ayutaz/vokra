@@ -31,9 +31,10 @@ API described in [`../README.md`](../README.md) to the on-screen UI.
 - **Native binaries** (`libvokra_godot.so` / `.dylib` / `.dll`) — pulled
   from the CI-produced AssetLib package (M3-11-T12 / T16).
 - **Model weights** (`whisper-base.gguf`, `piper-en-amy.gguf`) — fetched
-  out-of-band by `fetch-demo-models.sh` (MIT weights only, per
-  `docs/adr/0011-godot-gdextension.md` §D5). CC-BY-NC weights are
-  never distributed via the demos.
+  out-of-band by `fetch-demo-models.sh` (MIT weights only, subject to the
+  tracked [`docs/legal-compliance.md`](../../../docs/legal-compliance.md)
+  distribution boundary). CC-BY-NC weights are never distributed via the
+  demos.
 - **Audio fixtures** (`res://audio/jfk.wav`) — copy from the runtime
   parity fixtures under `tests/fixtures/audio/` or supply your own
   16 kHz mono PCM16 WAV.

@@ -26,7 +26,7 @@ Vokra の公開文書（`README.md` / `CONTRIBUTING.md` および `docs/` 配下
 
 ## 本ページの維持
 
-**最終確認日: 2026-10-04 — 公開文書に出現する ID は 110 種類、architecture
+**最終確認日: 2026-10-08 — 公開文書に出現する ID は 110 種類、architecture
 anchor は 33 個（いずれも機械的に導出した現行集合）。**
 
 本ページが網羅すべき集合は手作業ではなく機械的に導出します。再生成コマンド:
@@ -230,7 +230,7 @@ ID を持ちます）。
 | ID | 何を規定するか |
 |---|---|
 | `FR-TL-01` | checkpoint → GGUF のオフライン変換ツール。ONNX の取り扱いが許される唯一の場所（`FR-LD-05` 参照）。 |
-| `FR-TL-02` | `vokra-cli`: `run` / `convert` / `bench` / `f0`。 |
+| `FR-TL-02` | `vokra-cli`: `run` / `convert` / `bench` / `f0`。release-only の parity/performance gate `npu-bakeoff` も subcommand として公開する。 |
 | `FR-TL-03` | `vokra-eval`: `FR-OP-93` の品質メトリクスを 1 コマンドで実行する。 |
 | `FR-TL-04` | C ヘッダおよびエンジン / binding パッケージを生成するビルドスクリプト群。 |
 | `FR-TL-05` | **廃止済。** 競合 changelog の自動監視ワークフローだったが、依頼者決定で廃止し、`NFR-MT-05` の手動四半期レビューに全面的に読み替えた。廃止の事実が今も参照されるため掲載している。 |
