@@ -14,10 +14,10 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **開発状況（2026-10-04）:** workspace は `0.3.0` development で、今回の
-> documentation review は local checkout `3a3fd822` を基準にしています。read-only で
-> 取得した remote `main` ref は `97447185361a37af64c1b30fe87e8e2618d96e20` でした。
-> 2026-10-04 の fresh metadata-only 読み取り専用公開 audit は repository 194、GGUF を持つ repository
+> **開発状況（2026-10-08）:** workspace は `0.3.0` development で、今回の
+> documentation review と read-only 公開 audit は GitHub の exact `main` checkout
+> `d100d93778191ccab77bd1c37fe3552e3d889758` を基準にしています。
+> 2026-10-08 の metadata/card-only 公開 audit は repository 194、GGUF を持つ repository
 > 193、GGUF file 198 を確認しました。model weight の取得・実行は行っていません。CPU code status の内訳は full 136、partial 43、runtime binder なし
 > 14、non-artifact 1、Apple Metal full 136、CPU 起因の block 57、non-artifact 1
 > です。VibeVoice Realtime-0.5B には strict structural `vibevoice_streaming` binder
@@ -55,7 +55,8 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 
 ## クイックスタート
 
-Git と Rust 1.89 以降が必要です。ソースから CLI をビルドします。
+Git と Rust 1.89 以降（effective MSRV。CPU backend が 1.89 を要求）が必要です。
+ソースから CLI をビルドします。
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git

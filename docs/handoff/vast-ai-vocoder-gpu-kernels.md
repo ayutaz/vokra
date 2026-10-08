@@ -1,5 +1,20 @@
 # vast.ai handoff — vocoder / codec GPU kernel implementation wave
 
+> **2026-10-08 historical/supersession boundary:** This pre-existing historical
+> handoff was first tracked on `main` in commit `8e048d8a` (2026-08-17). It
+> records the kernel inventory, design rationale and owner-runbook proposal
+> from that earlier wave. Its old M1-local examples and parity numbers are dated evidence, not current
+> execution instructions or proof that the listed kernels are implemented.
+> Current maintainer-machine policy is defined by [`AGENTS.md`](../../AGENTS.md)
+> and the [`vast-ai-workflow`](../../.agents/skills/vast-ai-workflow/SKILL.md)
+> skill: do not run workspace-wide or `vokra-models` Cargo commands, model
+> execution, conversion or real-weight parity on the maintainer Mac. Delegate
+> implementation, run heavy/package `vokra-models` verification on disposable
+> VAST, and reserve Apple CPU/Metal hardware evidence for the final Scaleway
+> workflow in the current Mac campaign ledgers. Preserve the historical
+> kernel/parity evidence below; do not treat it as a live packet or restart
+> target.
+
 **Owner-triggered.** CC は本 doc 作成のみ。実 vast.ai instance の起動・NVRTC
 kernel bakeoff・parity verification は owner が本 runbook を追いながら実行する。
 
@@ -110,12 +125,21 @@ Metal 半分は M1 iMac ローカル、CUDA 半分のみ vast.ai:
 **注意**: 本 wave は publish command ではなく **kernel implementation +
 bit-identical parity verify** のフロー。以下は Metal + CUDA 両側の pattern。
 
-### 5.1 Metal MSL kernel（M1 iMac local、CC 単発可）
+### 5.1 Metal MSL kernel（historical M1 iMac recipe; current route is delegated/VAST/Scaleway）
+
+The M1-local command sequence below is retained as historical context for the
+original 2026-08 wave. It is not an instruction to execute `vokra-models`
+Cargo or model parity on the maintainer Mac under the current `AGENTS.md`
+memory policy. Use VAST for package/workspace verification and real-weight
+parity, then use the final Scaleway worker for Apple hardware evidence.
 
 例: `mimi_rvq_decode` の Metal arm 実装（M3-06 T14）:
 
 ```bash
-# M1 iMac local
+# HISTORICAL ONLY: M1 iMac local recipe from the 2026-08 handoff.
+# CURRENT POLICY: do not run workspace/vokra-models Cargo or model parity on
+# the maintainer Mac; route implementation verification through VAST and the
+# final Apple hardware run through Scaleway.
 cd ~/vokra
 
 # 1. MSL kernel を追加
@@ -189,14 +213,16 @@ git commit -m "feat(mimi-rvq): CUDA NVRTC kernel + bit-identical vs CPU (vast.ai
 git push
 ```
 
-### 5.3 Verify-on-actual-HEAD 規律（両側）
+### 5.3 Verify-on-actual-HEAD 規律（historical two-host recipe; current remote routing）
 
 Metal + CUDA が **別 commit**（Metal は M1 iMac から / CUDA は vast.ai から）で
 land する場合、片側が land した段階で **必ず全 gate 再走**（memory
 [[project-m4-implementation]] の verify-on-actual-HEAD 規律を horizontal 展開）:
 
 ```bash
-# M1 iMac 上（両 land 後の統合 HEAD 上）
+# HISTORICAL M1 iMac command sequence. CURRENT POLICY routes workspace and
+# vokra-models Cargo verification to disposable VAST; Apple hardware checks
+# belong to the final Scaleway worker.
 cd ~/vokra
 git pull origin <branch>
 cargo test --workspace  # default
@@ -230,7 +256,7 @@ Kernel 実装 wave 完了後の artifacts:
 | `crates/vokra-backend-metal/src/context.rs` | MSL kernel source を inline const 文字列として追記（`.metal` ファイルは存在しない） |
 | `crates/vokra-backend-cuda/src/context.rs` | NVRTC kernel source string を追記（`const &'static str`、実行時 compile。`src/kernels/` は存在しない） |
 | `crates/vokra-models/src/compute.rs` | Metal / CUDA arm の実装追加 |
-| `crates/vokra-models/tests/*_metal_bit_identical.rs` | M1 iMac local で bit-exact parity verify |
+| `crates/vokra-models/tests/*_metal_bit_identical.rs` | historical M1-iMac bit-exact parity record; current Apple hardware verification is Scaleway-scoped |
 | `crates/vokra-models/tests/*_cuda_bit_identical.rs` | vast.ai 上で bit-exact parity verify |
 | `docs/bench-baselines/vast-YYYY-MM-DD/*.jsonl` | RTF baseline（optional、GPU vs CPU speedup 記録） |
 | `docs/abi-changelog.md` | Rust surface のみ additions（新規 C ABI ゼロ、既存 M4 pattern と同じ） |
@@ -248,8 +274,9 @@ blocking ではない、C ABI 凍結 M5-13 の precondition でもない）。�
    `hifigan` / `bigvgan` / `hiftnet` / `snac` / `qwen3_tts_codec` / `dac_rvq` /
    `fsq_codec` / `denoise` 等から選択、ちなみに **`mimi_rvq` (Moshi/CSM real-time
    critical) + `hiftnet` (CosyVoice2/3 hot path) が最優先候補**）
-2. **CC 側 Metal 半分実装** — M1 iMac local で MSL kernel + bit-identical parity
-   → commit（1 op 単位、bundle でも OK）
+2. **CC 側 Metal 半分実装** — historical M1-iMac recipe is retained above;
+   current implementation and heavy verification are delegated through VAST,
+   with Apple hardware parity reserved for Scaleway（1 op 単位、bundle でも OK）
 3. **Owner vast.ai instance 起動** — §3 recipe、~$1-4 / 1-2 op
 4. **CC 側 CUDA kernel source string 下書き** — vast.ai bakeoff 前に CC が
    drafting（`const &'static str` の string literal ゆえ compile 検証は vast.ai 上
@@ -259,8 +286,9 @@ blocking ではない、C ABI 凍結 M5-13 の precondition でもない）。�
 6. **Owner commit + push from vast.ai** — Metal + CUDA が両揃った時点で
    `docs/abi-changelog.md` に entry 追加（Rust surface additions のみ、新規 C ABI
    ゼロ）
-7. **Verify-on-actual-HEAD** — §5.3 の統合 verify を M1 iMac 上で実行、all gate
-   green 確認
+7. **Verify-on-actual-HEAD** — historical §5.3 M1 recipe is not a current
+   maintainer-Mac command; verify the exact integrated HEAD on VAST, then run
+   Apple CPU/Metal/no-fallback checks on Scaleway.
 
 ## 9. Notes
 

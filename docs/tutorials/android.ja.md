@@ -56,7 +56,7 @@ class VokraBridge {
 }
 ```
 
-JNI の `.c`/`.cpp` shim は `vokra.h` を include し、[getting-started](../getting-started.ja.md#5-min-call-from-c-abi)
+JNI の `.c`/`.cpp` shim は `vokra.h` を include し、[getting-started](../getting-started.ja.md)
 の C 例が示すのと同じ session API を呼ぶ（`vokra_session_create_from_file` →
 `vokra_asr_transcribe` → `vokra_string_free` → `vokra_session_destroy`）。
 モデルは `vokra-cli convert` でオフライン GGUF 化し、アプリの `filesDir` 下の

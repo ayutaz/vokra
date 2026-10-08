@@ -15,11 +15,11 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Development status (2026-10-04):** the workspace is `0.3.0` development;
-> this documentation review is based on local checkout `3a3fd822`; the
-> read-only remote `main` ref was independently observed at
-> `97447185361a37af64c1b30fe87e8e2618d96e20`. A fresh metadata-only, read-only public
-> audit on 2026-10-04 reports 194 repositories, 193 GGUF-bearing repositories and 198
+> **Development status (2026-10-08):** the workspace is `0.3.0` development;
+> this documentation review and the read-only public audit use exact GitHub
+> `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`. The
+> metadata/card-only public audit on 2026-10-08 reports 194 repositories, 193
+> GGUF-bearing repositories and 198
 > GGUF files: CPU code status is 136 full, 43 partial, 14 without a runtime binder and
 > 1 non-artifact. The audit confirms these current counts; it did not download
 > or execute model weights.
@@ -63,7 +63,8 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 
 ## Quick start
 
-You need Git and Rust 1.89 or newer. Build the CLI from source:
+You need Git and Rust 1.89 or newer (the effective MSRV; the CPU backend
+requires 1.89). Build the CLI from source:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git

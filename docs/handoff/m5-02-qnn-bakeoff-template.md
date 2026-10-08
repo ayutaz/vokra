@@ -1,23 +1,22 @@
 # M5-02 QNN/Hexagon bakeoff report — template
 
-**Owner-fillable template**. Copy this to a dated sibling (e.g.
-`docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`) and populate every
-`TBD` field from a real run of `tools/parity/npu_rtf_variance.sh
---backend qnn`. Do NOT edit this template in-place — the template is
-the fresh sheet for the *next* bakeoff.
+**Owner-fillable template.** Copy this to a dated sibling (for example
+`docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`) and populate every `TBD`
+from a real owner-side run. Do not edit this template in place. The shared
+rules, including the distinction between the exact encoder gate and the
+legacy all-model RTF harness, are in
+[`npu-bakeoff-protocol.md`](npu-bakeoff-protocol.md); their outputs must not
+be combined as one experiment.
 
-**Position in the plan** — this feeds `docs/m5-owner-verification-checklist.md`
-§1.5 (NPU bakeoff runbook) which in turn feeds `docs/handoff/m5-13.md`
-§(c) T19 (C-ABI freeze GO/NO-GO for the NPU delegate selector). The 2×
-verdict recorded here is the input to that owner decision, not a
-release-gate on its own.
+**Position in the plan** — this feeds
+`docs/m5-owner-verification-checklist.md` §1.5, which in turn feeds
+`docs/handoff/m5-13.md` §(c) T19 (C-ABI freeze GO/NO-GO). The recorded 2×
+verdict is input to that owner decision, not a release gate on its own.
 
-**NFR-PF-12 protocol** (2026-08-09 codification): the CPU baseline for
-the 2× ratio is **M5-14-post CPU** (SIMD hot-path optimised,
-libm-route). An NPU RTF captured without a matched CPU baseline
-collected on the same host in the same session **cannot** feed the 2×
-verdict. Silent-CPU-fallback (placement < 90 %) **disqualifies** the
-run — this is the FR-EX-08 hazard clause, not a soft warning.
+The QNN examples in §2 and §3 use the legacy product-RTF path. The exact
+`vokra-cli npu-bakeoff --delegate qnn` surface is separate and currently
+returns an explicit unsupported error until whole-encoder QNN execution and
+its real SDK/runtime contract exist. Do not substitute a CPU result.
 
 ---
 
@@ -33,7 +32,7 @@ run — this is the FR-EX-08 hazard clause, not a soft warning.
 | Android / Linux version | TBD (e.g. `Android 14 (UP1A.231005.007)` / `Ubuntu 22.04 LTS on Debian devroot`) |
 | QNN SDK version | TBD (e.g. `qnn-2.24.0.240626` — `qnn-net-run --version`) |
 | Thermal state at start | TBD (`nominal` — Snapdragon reports via `getprop persist.vendor.thermal.status` on Android, or `/sys/class/thermal/thermal_zone*/temp` on Linux) |
-| Battery / plugged in / active cooling | TBD (bakeoff must be plugged in, active cooling on if the devboard has a fan — Snapdragon throttles aggressively) |
+| Battery / plugged in / active cooling | TBD (bakeoff must be plugged in; active cooling on if available) |
 
 Notes on device selection (owner records why this rig was chosen):
 
@@ -43,12 +42,13 @@ Notes on device selection (owner records why this rig was chosen):
 
 ## 2. Baseline (M5-14-post CPU RTF)
 
-Captured on the **same host in the same session** with `--backend cpu`
-so the 2× ratio compares apples to apples (thermal state / big-core
-availability / cpufreq policy are held constant).
+For the legacy RTF lane, capture the M5-14-post CPU leg on the same host and
+in the same session as §3. Hold thermal state, big-core availability,
+cpufreq policy, and background load constant. Use the shared protocol for the
+exact encoder gate and do not merge the two lanes.
 
 ```bash
-./tools/parity/npu_rtf_variance.sh \
+uv run --no-project --python 3.12 bash ./tools/parity/npu_rtf_variance.sh \
     --gguf   /data/local/tmp/whisper-large-v3.gguf \
     --audio  /data/local/tmp/jfk-30s.wav \
     --backend cpu \
@@ -57,38 +57,33 @@ availability / cpufreq policy are held constant).
     --label  m5-14-post-cpu-baseline \
     --output /data/local/tmp/rtf-cpu-baseline.jsonl
 
-./tools/parity/npu_rtf_analyze.py /data/local/tmp/rtf-cpu-baseline.jsonl \
+uv run --no-project --python 3.12 python -B ./tools/parity/npu_rtf_analyze.py /data/local/tmp/rtf-cpu-baseline.jsonl \
     --output /data/local/tmp/rtf-cpu-baseline.report.md
 ```
 
-On Android devices the invocation is via `adb shell` — the
-harness itself is portable bash + python3, so no port required.
+On Android, the owner invokes the portable harness through `adb shell` on
+the target's prepared Python 3.12 environment; this is not a maintainer-Mac
+run.
 
 | field | value |
 |---|---|
 | GGUF | TBD (SHA256 recommended) |
 | Audio fixture | TBD (e.g. `jfk-30s.wav 16 kHz mono PCM16`) |
-| N (iters) | TBD (default 10, extend if CV > 0.20) |
-| mean RTF | TBD |
-| median RTF | TBD |
-| CV | TBD (must be ≤ 0.20 to record the mean without WARN) |
-| p95 RTF | TBD |
-| p99 RTF | TBD |
-| Analyzer CV verdict | TBD (`OK` / `WARN`) |
-| JSONL artifact | TBD (path in `docs/bench-baselines/…`) |
-| Report artifact | TBD (path in `docs/bench-baselines/…`) |
+
+In the dated copy, add the shared CPU/delegate RTF metric block from
+[`npu-bakeoff-protocol.md` §4](npu-bakeoff-protocol.md#4-shared-rtf-metric-block-and-decision-inputs)
+and link both raw JSONL and analyzer report artifacts.
 
 ## 3. QNN/HTP run
 
-Owner must wire up an HTP placement probe before running —
-`qnn-net-run --profiling_option=op --profiling_level=basic` is the
-reference; parse its `op stats` output into
-`{"htp_frac": <0..1>, "cpu_frac": <0..1>}` and expose that as the
-probe. Older QNN profiler dumps use `dsp_frac` — the analyzer accepts
-either key for back-compat.
+Wire and validate an HTP placement probe before timing. The owner supplies a
+`qnn-net-run --profiling_option=op --profiling_level=basic` wrapper that emits
+`{"htp_frac": <0..1>, "cpu_frac": <0..1>}`. Older profiler dumps may emit
+`dsp_frac`; the analyzer accepts that alias for back-compat, but it does not
+change the placement rule. A missing or invalid probe is `INSUFFICIENT DATA`.
 
 ```bash
-./tools/parity/npu_rtf_variance.sh \
+uv run --no-project --python 3.12 bash ./tools/parity/npu_rtf_variance.sh \
     --gguf   /data/local/tmp/whisper-large-v3.gguf \
     --audio  /data/local/tmp/jfk-30s.wav \
     --backend qnn \
@@ -98,43 +93,24 @@ either key for back-compat.
     --label  m5-02-qnn-htp \
     --output /data/local/tmp/rtf-qnn.jsonl
 
-./tools/parity/npu_rtf_analyze.py /data/local/tmp/rtf-qnn.jsonl \
+uv run --no-project --python 3.12 python -B ./tools/parity/npu_rtf_analyze.py /data/local/tmp/rtf-qnn.jsonl \
     --output /data/local/tmp/rtf-qnn.report.md
 ```
 
 | field | value |
 |---|---|
-| N (iters) | TBD |
-| mean RTF | TBD |
-| median RTF | TBD |
-| CV | TBD |
-| p95 RTF | TBD |
-| p99 RTF | TBD |
-| Analyzer CV verdict | TBD (`OK` / `WARN`) |
-| **NPU fraction (mean, HTP)** | TBD (must be ≥ 0.90 to record the mean) |
+| **NPU fraction (mean, HTP)** | TBD (must be ≥ 0.90) |
 | NPU fraction (min, HTP) | TBD |
-| Placement probe used | TBD (path to the qnn-net-run wrapper) |
+| Placement probe used | TBD (path to the `qnn-net-run` wrapper) |
+| Legacy placement key, if used | TBD (`dsp_frac` only when emitted by the profiler) |
 | Analyzer placement verdict | TBD (`OK` / `WARN`) |
-| JSONL artifact | TBD |
-| Report artifact | TBD |
-
-If the placement probe is not yet wired up:
-
-> **STOP**. Per FR-EX-08 an NPU bakeoff without a placement probe is
-> not a bakeoff — you are measuring `HTP || CPU-fallback` vs pure CPU,
-> which is not the same experiment. Wire the probe up (or record the
-> bakeoff as "insufficient tooling, deferred") before proceeding.
 
 ## 4. NFR-PF-12 verdict
 
-Only fill this section if:
-- (a) both §2 and §3 have `Analyzer CV verdict = OK` (or the owner has
-  chosen to accept high-CV numbers with an explicit note explaining why
-  a WARN is not fatal for this run), AND
-- (b) §3 has `Analyzer placement verdict = OK` (≥ 90 % HTP placement).
-
-If either condition fails, the verdict is **INSUFFICIENT DATA**; record
-the reason and re-run.
+Apply the shared protocol's acceptance and decision rules. For this QNN
+legacy lane, a numeric 2× record requires acceptable CV evidence for §2 and
+§3 and `Analyzer placement verdict = OK` (≥ 90% HTP). A missing probe,
+placement failure, or unresolved noisy run is **INSUFFICIENT DATA**.
 
 | field | value |
 |---|---|
@@ -144,36 +120,38 @@ the reason and re-run.
 | NFR-PF-12 threshold | 2.0 |
 | **Verdict** | TBD (`PASS` / `FAIL` / `INSUFFICIENT DATA`) |
 | Reason (if FAIL / INSUFFICIENT) | TBD |
-| Feeds M5-13 T19 GO/NO-GO | TBD (`GO` = expose the delegate selector as a frozen C symbol; `NO-GO` = keep Rust-only per handoff m5-13.md §(c) T19) |
+| Feeds M5-13 T19 GO/NO-GO | TBD (`GO` = expose the delegate selector as a frozen C symbol; `NO-GO` = keep Rust-only per `m5-13.md` §(c) T19) |
 
 ## 5. Rerun / defer conditions
 
+Apply the shared protocol's rerun/defer matrix. QNN-specific follow-up:
+
 | symptom | action |
 |---|---|
-| `Analyzer CV verdict = WARN` on both §2 and §3 | Re-run with `--iters 20` after a thermal cooldown, active cooling on, other workloads killed. Snapdragon CV is inherently higher than Apple M-series; a `CV = 0.15` on HTP is normal, `> 0.20` calls for more iters. |
-| `placement < 0.90` on §3 | The delegate is silently falling back — inspect the `qnn-net-run --profiling_option=op` dump to identify which op(s). Report the op + shape to CC as an M5-02 follow-up ticket. Verdict: `INSUFFICIENT DATA`. |
-| `Speedup < 2.0` cleanly | Verdict: `FAIL`. Feeds `NO-GO` for the M5-13 T19 C-ABI symbol call. NO-GO is recoverable post-GA via an additive MINOR bump (handoff m5-13.md §(c) T19), so this is not a v1.0 blocker — just a signal that the delegate is not ready for a frozen selector. |
-| HTP unreachable / QNN backend load fails | Bakeoff cannot fire. Record the failure (Android SELinux denials, `qnn-net-run` diagnostics, `libQnnHtp.so` presence, SDK vs firmware compatibility) and hand back to CC. |
-| Only `dsp_frac` reported (no `htp_frac`) | Legacy QNN profiler — the analyzer accepts `dsp_frac` as an alias for back-compat, so this is not itself a bakeoff blocker. Note the profiler version so a future upgrade is not confused by the alias fallthrough. |
+| `placement < 0.90` on §3 | Inspect the `qnn-net-run --profiling_option=op` dump, report the failing operation and shape, and record `INSUFFICIENT DATA` as an M5-02 follow-up. |
+| HTP unreachable / QNN backend load fails | Record Android SELinux denials, `qnn-net-run` diagnostics, `libQnnHtp.so` presence, and SDK/firmware compatibility; the bakeoff is `INSUFFICIENT DATA`. |
+| Only `dsp_frac` is reported | Preserve the profiler version and use the analyzer alias; do not treat the alias as evidence that a QNN graph executed. |
 
 ## 6. Artifacts to commit
 
-After the verdict is recorded:
+Follow the shared evidence boundary and retain the QNN-specific rows:
 
 - [ ] `rtf-cpu-baseline.jsonl` → `docs/bench-baselines/m5-02-qnn-bakeoff-YYYY-MM-DD/`
 - [ ] `rtf-qnn.jsonl` → same directory
 - [ ] `rtf-cpu-baseline.report.md` → same directory
 - [ ] `rtf-qnn.report.md` → same directory
+- [ ] HTP placement/profiler export, including SDK/profiler version → same dated evidence set
 - [ ] filled-out copy of this template → `docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`
 - [ ] `docs/m5-owner-verification-checklist.md` §1.5 checkbox tick
 
 ## 7. Cross-references
 
+- Shared protocol: `docs/handoff/npu-bakeoff-protocol.md`
 - Runbook: `docs/m5-owner-verification-checklist.md` §1.5
 - Sister template: `docs/handoff/m5-01-coreml-bakeoff-template.md`
 - Harness: `tools/parity/npu_rtf_variance.sh`
 - Analyzer: `tools/parity/npu_rtf_analyze.py`
+- Exact encoder gate: `vokra-cli npu-bakeoff` / `crates/vokra-cli/src/npu_bakeoff.rs`
 - Feeds: `docs/handoff/m5-13.md` §(c) T19 (C-ABI freeze GO/NO-GO)
 - Priors: `docs/handoff/m5-02.md` (spec + NFR-PF-12 baseline discussion)
-- NFR-PF-12 protocol: `docs/system-requirements.md` (gitignored-local) /
-  public glossary `docs/requirement-ids.md` NFR-PF-12
+- NFR-PF-12: public glossary `docs/requirement-ids.md`

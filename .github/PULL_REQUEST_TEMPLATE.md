@@ -77,7 +77,7 @@ Confirm this PR crosses none of them
 - [ ] No onnxruntime in the piper-plus inference path
 - [ ] No eSpeak-NG (GPL-3.0)
 - [ ] No NNAPI backend
-- [ ] No soxr / rubberband (GPL)
+- [ ] No soxr (LGPL) / rubberband (GPL)
 
 ### If this PR touches `unsafe`
 

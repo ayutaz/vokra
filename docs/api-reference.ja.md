@@ -62,9 +62,9 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 現行の workspace release line は `0.3.0` である。
 
-**2026-10-04 current snapshot:** 今回の documentation review は local checkout
-`3a3fd822` を基準にしている。read-only で取得した remote `main` ref は
-`97447185361a37af64c1b30fe87e8e2618d96e20` だった。2026-10-04 の fresh metadata-only public audit は repository 194、GGUF
+**2026-10-08 current snapshot:** 今回の documentation review と read-only
+metadata/card-only 公開 audit は GitHub の exact `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758` を基準にしている。audit は repository 194、GGUF
 repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=43`、
 `no-runtime-binder=14`、`not-artifact=1`、Metal status は `full=136`、
 `blocked-by-cpu=57`、`not-artifact=1` で、未解決の public row は58件
@@ -96,7 +96,8 @@ UTMOS の legacy Lightning checkpoint は制限付き `weights_only=True` loader
 
 ## Keeping this page current
 
-**最終確認日: 2026-10-04 — local checkout `3a3fd822` および
+**最終確認日: 2026-10-08 — GitHub の exact `main` checkout
+`d100d93778191ccab77bd1c37fe3552e3d889758` および
 `include/vokra.h` に対して
 確認。** pre-alpha の Python generator と checked-in `ctypes` table は、生成 C
 の全 57 function と完全に一致する。header は 15 typedef、4 enum、2 concrete

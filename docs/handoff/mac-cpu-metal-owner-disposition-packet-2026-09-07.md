@@ -2,6 +2,14 @@
 
 Updated with owner-independent evidence on 2026-09-09.
 
+> **2026-10-08 current-readback boundary:** the root-owned
+> [documentation refresh](documentation-refresh-2026-10-08.md) confirms that
+> the latest metadata-only inventory remains 136 code-artifact-full / 58
+> unresolved across 194 public repositories. No new owner/legal decision,
+> hardware result, publication authorization or PR #199 merge changes this
+> packet. Preserve the frozen 63-row/hash-bound denominator below; it is not
+> a live replacement for the 58-row public inventory.
+
 > **2026-10-04 reading boundary:** 63 below is the frozen, hash-bound owner
 > decision-ledger denominator, not today's unresolved public inventory. The
 > fresh metadata-only audit has 58 unresolved rows (CPU/Metal code-artifact
