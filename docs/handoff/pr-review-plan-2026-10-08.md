@@ -1013,6 +1013,34 @@ These confirmed live handles are a verified wait, not a stopped/missing-run
 condition and not a reason to rerun unchanged jobs or waive required checks.
 Local main and the management worktree remain independently clean.
 
+### Redundant old CI cancellation completed; current #198 CI released
+
+The two ordinary cancellations above remain nonterminal on the fresh
+2026-10-08 11:39 UTC readback. Job-level evidence narrows the remainder in
+both runs to queued `python-wheel-build` with no assigned runner; their other
+jobs are terminal. Manager reads the exact old #198 workflow source and
+confirms that this aggregator has `if: always()`. The
+[official GitHub API documentation](https://docs.github.com/en/rest/actions/workflow-runs#force-cancel-a-workflow-run)
+describes force-cancel for runs not responding to ordinary cancellation,
+including `always()` conditions. This identifies the surviving condition,
+not a general explanation of all runner queue delays.
+
+After another exact-ID/head/nonterminal check, manager uses the official
+force-cancel endpoint only for replaced #198 `37766087586` / `99676662` and
+closed #195 `37761058312` / `bf54a6c2`. Both requests succeed. Independent
+API readback now proves `completed/cancelled`, respectively at 2026-10-08
+11:40:44 and 11:40:46 UTC. No logs/artifacts are deleted; their terminal
+cancelled states are not recorded as PASS. This is bounded old-run cleanup,
+not force merging, weakening branch protection or changing workflow code.
+
+The retained #198 current-head CI `37770169594` moves from pending to queued
+at 11:40:44 UTC. The 11:41:02 UTC readback confirms 13 actual registered jobs,
+all queued; #197 `37770169016` also has 13 queued jobs. Latest heads, main and
+unrelated PR runs remain intact, with no unchanged rerun. The latest Security
+checks are likewise not accepted green. #197/#198 remain Draft/unmerged
+until their independent exact-head required gates pass; original-family
+closure and the frozen-batch completion audit are still outstanding.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
