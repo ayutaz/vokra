@@ -1238,6 +1238,28 @@ broad local Cargo, paid worker, HF publication or owner/legal approval is
 introduced by this disposition audit; the protected manifest remains outside
 all reads and edits.
 
+### Management-record delivery candidate
+
+At 2026-10-08 12:55:23 UTC, manager publishes #197's actual acceptance and
+seven-original disposition header, then independently verifies the complete
+23,230-character body and preservation of every character of its prior
+21,920-character body. MERGED state and reviewed head remain unchanged.
+
+The final audit is committed as `03c1dbe0`, with all five normal compile-free
+pre-commit gates passing. Accepted main is then normally merged into the
+management branch as `7a3e3da7`; the branch is clean and its complete main-to-
+candidate path delta contains only this handoff file. No implementation is
+authored in this delivery step and no protected path is changed.
+
+On the integrated candidate, diff hygiene and documentation-reference
+self-tests (17 cases) pass; the normal reference gate passes all six legs.
+Documentation-example self-tests pass, including their expected negative
+diagnostics. The public-example check passes 144 blocks across 26 documents,
+while explicitly retaining 30 Tier-C deferred blocks as NOT verified. These
+checks do not execute models or close Swift/Unity/Godot hardware/toolchain
+gates. Record publication and fresh required PR CI remain pending at this
+dated observation, not presumed successful from these static results.
+
 ## Execution and finish conditions
 
 1. Work on the dependency batch and desktop reconciliation in separate owned
