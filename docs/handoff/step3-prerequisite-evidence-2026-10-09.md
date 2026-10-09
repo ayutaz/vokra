@@ -4,6 +4,15 @@
 完了記録ではありません。参照baselineは受理済みmain
 `7025f17f8d18883bec5a3d3a8c1494a2e81b0993`です。
 
+> **2026-10-09 03:42:53 UTC acceptance supersession:** #220は通常のsquash
+> mergeで受理され、mainは `2c9702d4b2dc602c0afc60ab6c75a442003a3d59` に
+> 進みました。fresh exact-head CIは69 SUCCESS / 1 SKIPPED、failed/pendingなし。
+> strictな16 required context/application pairsとadmin保護を確認しました。
+> reviewed head `e0b9108de100ba6af1052149297591338160bb21` とaccepted mainの
+> treeはともに `fc23c1003a1337f5ac68eb154f9085a74af4c993`。root mainは
+> fast-forward後cleanです。以下の「#220 pending」は取得時点の履歴であり、
+> 現在の未受理状態ではありません。#152の更新・実weight/owner gatesは別途未完です。
+
 ## PR acceptance and current CI
 
 - [#218](https://github.com/ayutaz/vokra/pull/218)は2026-10-09 03:05:11 UTCに
@@ -75,6 +84,27 @@ stdlib urllibのHEADはHTTP403、同じprimary URLへの通常curl HEADは200で
   scopeはcurrent 2.13.0/2.11.0を承認しません。旧4/4 CPU結果もcurrentへ流用しません。
 
 ## Consequence for step 3
+
+### Source and archive delta clarification
+
+公式PyTorch release source `cf30153c4c131c8164ee7798e5022d810682e2cb` の
+gitlinkから、Kineto `094d3c1d072362d0a919a77299459eee94f97931`、Dynolog
+`d2ffe0a4e3acace628db49974246b66fc3e85fb1`、cpr
+`871ed52d350214a034f6ef8a3b8f51c5ce1bd400` を追跡しました。
+そのcpr sourceではruntimeとtestが分離され、test/LICENSEはtest subtreeへの
+GPLv3適用を明記します。これは公開source境界の確定であり、4 wheelのbuild identityや
+native linkageの証明ではありません。上のsource/build未確定事項をこの範囲だけ補足します。
+
+XCodec2の[Draft #152 dated archive disposition](https://github.com/ayutaz/vokra/blob/fe1f5fe27fe4016d6a6fd76fe131fa3d62e1f307/docs/handoff/xcodec2-dependency-license-disposition-2026-10-04.md)
+は同一Linux Torch wheel/native digestについて過去のELF NEEDED結果を記録しています。
+今回の新archive report自身はELF/Mach-O解析を実行していません。過去の観測を新しい
+installed closure、build provenance、policy approvalへ昇格させません。
+
+#152候補とA7 lockの行別比較では、Linux external archive 62行のうち60行が
+version/source/URL/hash/size/upload-time一致、変更はmultidict 6.7.1→6.9.1と
+urllib3 2.7.0→2.8.0の2行です。不変archive factsの再利用を検討し、全62行を
+盲目的に再取得しません。ただしcurrent clean HEADへのbinding、installed RECORD、
+native/build reviewとowner approvalは別の未完gateです。
 
 最新metadata-only inventoryは194 repositories / 193 GGUF-bearing / 198 files、
 136 code/artifact-full / 58 unresolved（43 partial / 14 no-runtime-binder /
