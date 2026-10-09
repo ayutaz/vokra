@@ -21,11 +21,18 @@ LOCK = PROJECT / "uv.lock"
 PYPI_REGISTRY = "https://pypi.org/simple"
 PYPI_EVIDENCE_PREFIX = "https://pypi.org/pypi/"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-LOCK_SHA256 = "747057f4e8596d801d5d0450e6e10a33fc467ab9e9a6cf2063460d1ea019919d"
-PACKAGE_ROWS_SHA256 = "ecc622c63e8a487c4440cdc838f22af7b31fae783cca41f693b0f870dd9a1819"
+LOCK_SHA256 = "37583dee0556529c3047741f8887141794b6a5ffb84f4fb7e668beafcd8ee1e6"
+PACKAGE_ROWS_SHA256 = "4122e4869c4eb5fd18bf1c20bc3afa4433cf48c0bc99b0af02b7e6b1d91b8a37"
 RESOLUTION_MARKERS_SHA256 = "70a0c0d228b605430c8219bfc8e4ed66652a5f06d64cab841fee543266f3bffa"
-LICENSE_ROWS_SHA256 = "2afebac3c079863d28415885412c11fd2acf7e3f3b9a686e2c855455da8eedec"
+LICENSE_ROWS_SHA256 = "94c9d96039172bc799b955dd40eab3b9cb5b9f00c42a5dd464202bf71e981b70"
 PACKAGE_COUNT = 40
+
+# These are the previous RMVPE bindings.  Keeping them in the self-test makes
+# the dependency-only refresh causal: the old review receipt must reject the
+# new urllib3 lock rather than silently accepting a different graph.
+LEGACY_LOCK_SHA256 = "747057f4e8596d801d5d0450e6e10a33fc467ab9e9a6cf2063460d1ea019919d"
+LEGACY_PACKAGE_ROWS_SHA256 = "ecc622c63e8a487c4440cdc838f22af7b31fae783cca41f693b0f870dd9a1819"
+LEGACY_LICENSE_ROWS_SHA256 = "2afebac3c079863d28415885412c11fd2acf7e3f3b9a686e2c855455da8eedec"
 
 UPSTREAM_REPOSITORY = "https://github.com/yxlllc/RMVPE"
 UPSTREAM_REVISION = "0aabafba18289ca938a73af0b0297686abf4922d"
@@ -111,7 +118,7 @@ LICENSE_ROWS = [
     {"name": "torchaudio", "version": "2.7.1", "license": "BSD-2-Clause_PLUS_BUNDLED_NOTICES", "source": "https://download.pytorch.org/whl/cpu/torchaudio-2.7.1-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_BUNDLED_NOTICES"},
     {"name": "torchaudio", "version": "2.7.1+cpu", "license": "BSD-2-Clause_PLUS_BUNDLED_NOTICES", "source": "https://download.pytorch.org/whl/cpu/torchaudio-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_BUNDLED_NOTICES"},
     {"name": "typing-extensions", "version": "4.16.0", "license": "PSF-2.0", "source": "https://pypi.org/pypi/typing-extensions/4.16.0/json", "status": "BLOCKED_POLICY"},
-    {"name": "urllib3", "version": "2.7.0", "license": "MIT", "source": "https://pypi.org/pypi/urllib3/2.7.0/json", "status": "UNREVIEWED"},
+    {"name": "urllib3", "version": "2.8.0", "license": "MIT", "source": "https://pypi.org/pypi/urllib3/2.8.0/json", "status": "UNREVIEWED"},
 ]
 
 BLOCKERS = [
@@ -177,20 +184,28 @@ def canonical_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["name"], row["version"], json.dumps(row["source"], sort_keys=True)))
 
 
-def audit_lock() -> dict[str, Any]:
-    if not LOCK.is_file() or hashlib.sha256(LOCK.read_bytes()).hexdigest() != LOCK_SHA256:
+def _audit_lock(
+    *,
+    lock_path: Path = LOCK,
+    lock_sha256: str = LOCK_SHA256,
+    package_rows_sha256: str = PACKAGE_ROWS_SHA256,
+    resolution_markers_sha256: str = RESOLUTION_MARKERS_SHA256,
+    license_rows: list[dict[str, Any]] = LICENSE_ROWS,
+    license_rows_sha256: str = LICENSE_ROWS_SHA256,
+) -> dict[str, Any]:
+    if not lock_path.is_file() or hashlib.sha256(lock_path.read_bytes()).hexdigest() != lock_sha256:
         raise ValueError("dedicated RMVPE uv.lock is absent or identity drifted")
-    document = tomllib.loads(LOCK.read_text(encoding="utf-8"))
+    document = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     if document.get("requires-python") != "==3.12.*":
         raise ValueError("lock is not Python 3.12-only")
     markers = document.get("resolution-markers")
-    if digest(sorted(markers)) != RESOLUTION_MARKERS_SHA256:
+    if digest(sorted(markers)) != resolution_markers_sha256:
         raise ValueError("resolution marker digest drifted")
     rows = canonical_rows(document)
-    if len(rows) != PACKAGE_COUNT or digest(rows) != PACKAGE_ROWS_SHA256:
+    if len(rows) != PACKAGE_COUNT or digest(rows) != package_rows_sha256:
         raise ValueError("package/dependency row digest drifted")
-    evidence = sorted(LICENSE_ROWS, key=lambda row: (row["name"], row["version"], row["source"]))
-    if len(evidence) != PACKAGE_COUNT or digest(evidence) != LICENSE_ROWS_SHA256:
+    evidence = sorted(license_rows, key=lambda row: (row["name"], row["version"], row["source"]))
+    if len(evidence) != PACKAGE_COUNT or digest(evidence) != license_rows_sha256:
         raise ValueError("license evidence digest or row count drifted")
     for row in rows:
         name = row["name"]
@@ -213,16 +228,20 @@ def audit_lock() -> dict[str, Any]:
         raise ValueError("license evidence does not cover every lock name/version")
     return {
         "package_count": len(rows),
-        "lock_sha256": LOCK_SHA256,
-        "package_rows_sha256": PACKAGE_ROWS_SHA256,
-        "resolution_markers_sha256": RESOLUTION_MARKERS_SHA256,
-        "license_rows_sha256": LICENSE_ROWS_SHA256,
+        "lock_sha256": lock_sha256,
+        "package_rows_sha256": package_rows_sha256,
+        "resolution_markers_sha256": resolution_markers_sha256,
+        "license_rows_sha256": license_rows_sha256,
         "source_manifest": SOURCE_MANIFEST,
         "release_archive": RELEASE_ARCHIVE,
         "model_artifact": MODEL_ARTIFACT,
         "public_target": PUBLIC_TARGET,
         "blockers": BLOCKERS,
     }
+
+
+def audit_lock() -> dict[str, Any]:
+    return _audit_lock()
 
 
 def main() -> int:
@@ -232,6 +251,41 @@ def main() -> int:
     args = parser.parse_args()
     if args.self_test:
         audit_lock()
+        try:
+            _audit_lock(
+                lock_sha256=LEGACY_LOCK_SHA256,
+                package_rows_sha256=LEGACY_PACKAGE_ROWS_SHA256,
+                license_rows_sha256=LEGACY_LICENSE_ROWS_SHA256,
+            )
+        except ValueError as error:
+            assert str(error) == "dedicated RMVPE uv.lock is absent or identity drifted"
+        else:
+            raise AssertionError("legacy RMVPE bindings unexpectedly accepted the urllib3 refresh")
+
+        wrong_rows = [dict(row) for row in LICENSE_ROWS]
+        for row in wrong_rows:
+            if row["name"] == "urllib3":
+                row["version"] = "2.7.0"
+                row["source"] = "https://pypi.org/pypi/urllib3/2.7.0/json"
+        try:
+            _audit_lock(license_rows=wrong_rows)
+        except ValueError as error:
+            assert str(error) == "license evidence digest or row count drifted"
+        else:
+            raise AssertionError("wrong urllib3 license binding unexpectedly passed")
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            drifted = Path(directory) / "uv.lock"
+            drifted.write_bytes(LOCK.read_bytes().replace(b'version = "2.8.0"', b'version = "2.8.1"', 1))
+            try:
+                _audit_lock(lock_path=drifted)
+            except ValueError as error:
+                assert str(error) == "dedicated RMVPE uv.lock is absent or identity drifted"
+            else:
+                raise AssertionError("drifted RMVPE lock unexpectedly passed")
+
         assert all(len(value) == 40 for value in (UPSTREAM_REVISION,))
         assert RELEASE_ARCHIVE["bytes_sha256"] is None
         assert MODEL_ARTIFACT["bytes_sha256"] is None
