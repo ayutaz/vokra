@@ -1,5 +1,225 @@
 # PR review and disposition plan — 2026-10-08
 
+## 「3まで」の現行実行計画と実測 — 2026-10-09 11:24 JST
+
+この節は現在の実行範囲を記録します。下記「2まで」の完了は前の凍結済みbatchの
+結果であり、今回の「3まで」が完了したという意味ではありません。履歴は保持します。
+
+1. 新着 Dependabot #218/#219 の依存差分をレビューし、必要な契約・manifest・
+   証拠の整合修正を別候補としてレビューする。候補HEADのfresh CIと通常の
+   protected acceptanceを確認してからmainへ取り込む。
+2. Draft #152/#169/#182/#191/#198 の独立に進められるsource/依存/reference/法務
+   factsを進める。変化のない外部待ちはスキップし、未完条件は消さない。
+3. unresolved rowごとにsource・依存/license・exact owner scope・独立referenceを
+   確認し、VAST_READYの行だけ実weight変換・独立reference・CPU parityを実行する。
+   小さい証拠を回収し、今回のowned workerと保存データをdestroy/readbackする。
+
+最終clean HEAD/Apple packet再生成とScaleway CPU/Metal/no-fallbackは後段です。
+model-freeの成功、過去の別lockのCPU結果、PRのsource CIを実weight完了へ昇格しません。
+
+### この継続で確認した事実
+
+- GitHubとローカルmainは `2c7b5836ebda4a2a18d49500862718f1cdc40890`。
+  OPENは7件（#218/#219とDraft5件）。新着両PRの元HEADは各69 SUCCESS /
+  1 SKIPPEDですが、まだマージしていません。Lunaの限定reviewで追加の
+  dependency self-test失敗を発見しました。#218のHydra契約固定値と古いclosure
+  evidence、#219のYuE manifest lock hash/versionと既存self-test fixture問題を
+  診断し、古いinstalled/owner evidenceを新しいものと偽らず修正・検証します。
+- VAST CLIの旧設定による401は、承認済み既存 `.env` の `VAST_API_KEY` を
+  CLI既定の環境変数経由で渡すことで解消しました。キー値・末尾・生の診断を
+  出力せず、永続credentialsを書き換えていません。実際のinventory応答は
+  非Vokraの2件（running 1 / stopped 1）と非Vokraのvolume 1件でした。
+  scope外なので操作せず、他projectの識別情報はこの公開記録へ転記しません。
+  新しいVokra workerはまだ作成していません。
+- Qwen3-TTSのcurrent manifest scopeは
+  `c98c156466fed7fefa54d90c7036b7d7b21e5fb957e9387607d404d50af82f38`。
+  実測compact auditは55 active / 4 inactive、missing/unexpectedなし、clean
+  `e474cae44baef3c4bf01ef7f7fc2eb8bf072f5ab` のfactual inventoryです。
+  4つのTorch 2.13.0/TorchAudio 2.11.0 platform rowsは
+  `BLOCKED_UNRESOLVED_REVIEW`。operator evidenceのTorch/TorchAudio approvalsは
+  2.7.1の旧rowsで、scope
+  `a28b5d9014f1dc311c8600ad229d99eea27a062b0c4cadbd575946f7b2fadb6b`
+  もcurrentとは異なります。これはfresh audit未取得ではなく、取得済みfactual
+  evidenceに対するcurrent license/native reviewとexact decisionの未完です。
+  旧PR #109の4/4 real-weight CPU成功をcurrent lockへ流用しません。
+- BigVGANのcurrent scope
+  `34260560ecf18c1bcb06c1c97481140ed9be3b1d9ac22f4b6a8f8ab527a5d7a1`
+  は `OWNER_SIGNOFF_REQUIRED`。他familyもcurrent gateとlater supersessionを
+  行別確認中であり、この2familyだけから全58行がblockedとは結論していません。
+
+この節追加時点のローカル差分はこの管理文書だけです。保護manifestには
+閲覧・hash・編集・stage・discardを行っていません。モデル件数は記録済み
+metadata-onlyの136 code/artifact-full / 58 unresolvedのままで、新しいApple結果、
+owner/legal approval、公開artifact更新はありません。
+
+### 限定修正のmanager review — 2026-10-09 JST
+
+RootはLunaの依存review全129行、implementation handoff全78行とactual8-file
+diffを読み、元#218/#219の全3-file diffも独立に確認しました。YuEの追加変更は
+既にmain lockにあるWerkzeug 3.1.9に古いpending review rowを合わせたもので、
+新しい依存追加や承認ではありません。元PRのgraph/markers/override境界を維持し、
+Canaryの旧closure JSONは未改変、YuEの各pending/null approvalとNO_UPLOADを維持します。
+
+Root自身のfresh再実行でCanary dependency-audit self-test、YuE dependency-auditと
+preflight self-tests、YuE wrapper self-test、両projectのoffline `uv lock --check`、
+zero-deps、forbidden-symbols、staged/unstaged diff checksがPASS。
+管理文書のdoc-referencesとrunbook-path-citationsもPASSです。root workspaceの
+Rust/Cargo/compiler inputsは記録済みVAST `0a11d8d9` と一致し、tests-tree差分は
+READMEだけ、release-tool inputsは `3468a48c` と一致します。root外の独立integration
+testとCI workflowの既存差分はこの同一性に含めません。fresh whole-HEAD VASTや
+installed closureを実行したとは主張せず、対応する既存Rust evidenceと今回の
+model-free検証を区別します。通常commit/lineage/PR/required CI/acceptanceは後段です。
+
+## 「2まで」の実行結果 — 2026-10-09 JST
+
+今回の frozen scope は、Canary #215〜#217 のレビュー・統合・通常受理と、
+Draft #152/#169/#182/#191/#198 の独立に進められる調査・限定修正の delivery です。
+58モデル全体の完了や、Draft全件のマージではありません。
+
+- #217 はマージ済み。accepted main/tree はレビュー済み候補と一致し、
+  #215/#216 の取り込みを確認して両方 CLOSED / unmerged を確認しました。
+  #217 本文には actual acceptance と source disposition を追記し、旧本文を
+  保持した readback も確認済みです。任意 CoreML の runner未取得は NOT_RUN
+  のまま区別し、required 16 context/application identity の成功と混同しません。
+- ローカル main は `2c7b5836ebda4a2a18d49500862718f1cdc40890` に同期済み。
+  同期直後のclean状態を確認してから、別途依頼された最新計画の追記を再適用しました。
+  現在の未コミット差分はこの管理文書だけで、accepted履歴の本文は完全保存しています。
+- #182 の README-only `df55826527e46a46d74be4d5da15a7a9c448e149` の
+  fresh hosted CI は **105 SUCCESS / 13 SKIPPED / 失敗・待機0**。
+  REST check-runs を2ページから全118件収集し、ID重複・ページ欠落がないことを
+  確認しました。CI run `37810858415` と最後のUnity package job
+  `113447104753` は SUCCESS。結果を
+  [既存の限定調査・deliveryコメント](https://github.com/ayutaz/vokra/pull/182#issuecomment-6064711352)
+  に追記し、過去の証拠を保存しました。
+- Draft 5件の primary artifact/source/reference-contract/access facts は
+  各PR本文または証拠コメントに記録済み。すべて OPEN / Draft のままです。
+  #169 は #182 の actual main acceptance 前には閉じません。
+  source CI成功・部分的archive調査を、installed closure、法務判断、実weight parity、
+  Apple結果、公開承認へ昇格させていません。
+- 新着bot #218/#219 は別バッチです。今回の凍結済みscopeへ追加して
+  完了条件を際限なく増やしません。
+
+次の優先順位は「新着PRの別バッチreview」と「下記Draftの残るmodel-free条件」です。
+外部条件が変わらない待ちをスキップし、各eligible rowの前提解消 → VAST実weight/CPU →
+最終clean HEAD/packet → Scaleway CPU/Metal/no-fallback → 結果PRの順序を維持します。
+モデル件数・owner decision・Apple結果の新しい完了判定はありません。
+最新計画の追記は未コミットで保持しています。新しい有料worker、ローカルモデル実行、
+広域Cargo、HF upload、保護manifestへの操作は行っていません。
+
+> **2026-10-09 continuation supersession:** GitHub confirms #215 and #216
+> CLOSED with `merged=false` and `merged_at=null`; both were incorporated
+> through #217, not individually merged. Local `main` was safely fast-forwarded
+> to `2c7b5836ebda4a2a18d49500862718f1cdc40890`, with a verified clean index
+> and worktree before reapplying the separately requested latest-plan edit.
+> The only current local delta is that preserved management-only update.
+> #182's iOS build has succeeded; its exact `df558265` head now has 104
+> SUCCESS / 13 SKIPPED and one live `unity-package` job (`113447104753`).
+> These facts supersede the pending #215 closure, old local HEAD and live
+> iOS observations in the dated 02:27 plan below; Draft holds remain intact.
+
+## 最新計画 — 2026-10-09 02:27 JST / 2026-10-08 17:27 UTC
+
+この節が現行計画です。以降の準備中・未コミット・未マージという記述は、
+各時点の履歴として保存します。今回の依頼は計画の更新であり、以下の残件を
+実行済みと扱いません。
+
+### 確認済みの進捗と残件
+
+- Canary の #215・#216・#217 は、レビュー済み統合 HEAD
+  `57a1a1047114049ec89776c15bd0f1e00f16afc2` を #217 経由で通常マージしました。
+  GitHub main は `2c7b5836ebda4a2a18d49500862718f1cdc40890`。
+  accepted tree `d8e640471bde4ad05e7e18616bb22a0f6f898176` は候補 tree と一致し、
+  3件の対象 package block がすべて main に取り込まれたことを確認済みです。
+- 統合 HEAD の CI は 68 SUCCESS / 1 SKIPPED / 1 CANCELLED。
+  protected required 16 context は成功しています。キャンセルは任意 CoreML job
+  の hosted runner 未取得であり、NOT_RUN です。変更のない CoreML 入力には
+  元の #217 HEAD の実行成功を対応付けていますが、統合 HEAD の新しい CoreML
+  成功や実モデル Apple 検証とは呼びません。保護の緩和や admin merge はしていません。
+- #216 は CLOSED / merged=false、#215 はまだ OPEN です。
+  #215 の取り込み後クローズが残っています。両方を個別マージ済みとは表記しません。
+- ローカルは `main` の `04eeabb5c723d9b3fe2e4fa3557680a22e83f416` で、
+  accepted main より1コミット遅れています。変更はこの管理文書だけです。
+  この節の追加前の内容は accepted main の同文書と SHA-256 が一致していました。
+  今回の更新を保持した安全な main 同期が残っています。
+- #182 の README の現在値 31 → 33 は、README-only commit
+  `df55826527e46a46d74be4d5da15a7a9c448e149` として既存 Draft に push 済みです。
+  過去の31件の実測記録は保存しています。依存 wheel/native/RECORD の限定的な
+  調査と mdurl の固定 source commit / LICENSE 照合も記録済みです。
+  これは installed closure、owner承認、実weight parity の完了ではありません。
+
+現在 OPEN は6件（#215 と Draft 5件）。#217 のマージでモデル残件が解消した
+わけではありません。HF を今回再照会していないため、モデル件数は最新の
+**記録済み metadata-only baseline** を維持します：194 repositories、
+193 GGUF-bearing repositories / 198 files、136 code/artifact-full /
+58 unresolved（43 CPU partial / 14 missing runtime binders / 1 non-artifact）。
+136 は Apple hardware-pass 件数ではありません。63-row owner ledger は
+別の固定された承認範囲として保存します。
+
+### 優先順位1 — 今回の PR delivery を閉じる
+
+1. #215 の then-current HEAD と main の取り込みを再確認し、#217 への取り込みを
+   理由として閉じる。#216 の closed / unmerged 状態も readback する。
+   不要な branch 削除や source PR の個別マージは行わない。
+2. accepted main・ローカルの変更・対象文書を照合し、この最新計画を失わずに
+   ローカル main を同期する。無関係な差分や保護 manifest を stage/discard しない。
+3. #217 の actual acceptance と取り込み結果を記録する。新しい bot PR が
+   到着しても、この frozen batch に際限なく追加せず、別の review batch とする。
+4. #182 の最新 HEAD の残る CI を確認する。現在は 103 SUCCESS /
+   13 SKIPPED / ios-build 1 IN_PROGRESS、失敗0です。HEAD が変われば
+   この値を再確認する。成功しても Draft の model/legal holds は解除しない。
+
+この段階の exit は「Canary取り込み後のPR整理・main同期・#182の限定変更の
+CI確認と記録」であり、Draft 5件のマージや58モデルの完了ではありません。
+
+### 優先順位2 — 外部待ちを避けて進める model-free 作業
+
+| Draft | こちらで進める作業 | 解除していない条件 |
+|---|---|---|
+| #182 VibeVoice | 残る41 dependency rows の固定 artifact/source/build/native/vendor/license facts を整理し、実行可能な collector の条件を確定する。既に確認した wheel・mdurl を無変更で再調査しない。 | secure installed closure、過去の Torch full GET の失敗解消、exact owner/voice-rights scope、独立実weight reference とCPU parity。 |
+| #169 VibeVoice preparation | #182 に collector/security duties と追加 regression が保持されていることを、最終責務・HEADに結び付ける。 | #182 の actual main acceptance と fresh responsibility coverage がないため、まだ閉じない。 |
+| #152 XCodec2 | publisher の Torch 2.5.0 / TorchAudio 2.5.0 / VQ 1.17.8 contract と、候補 override の差を exact source/archive/native/build/RECORD/checkpoint evidence で整理する。 | unsupported override の解決、LGPL/GPL等の owner/legal disposition、checkpoint equivalence、実weight parity。 |
+| #191 Kyutai DSM | 認証済み固定 source packet を再利用し、PCM frame / LM call / RingKV reset・eviction の独立reference capture契約を確定する。 | upstream Torch ceiling と patched floor、modern/legacy sphn差、secure native/license route、owner scope、実PCM/weight evidence。 |
+| #198 legal documents | 現在のアクセス不能と source-version/current-law/EU applicability/owner判断を分けた残件記録を維持する。 | official AB2713 の403/challenge、primary source/version と counsel/owner判断。citation削除・global accepted403・mirror代用では解消しない。 |
+
+#152 は 69 SUCCESS / 1 SKIPPED。#169・#191・#198 はそれぞれ
+documentation-links 1 FAILURE が残ります（#169: 68 SUCCESS / 1 SKIPPED、
+#191: 76 SUCCESS / 5 SKIPPED、#198: 55 SUCCESS / 1 SKIPPED）。
+これらは各公開 HEAD の source CI snapshot であり、依存/legal/model approval
+ではありません。リンク失敗は保存済みの原因と入力変化を確認して対応し、
+外部条件が変わらない場合は同じ再実行を繰り返しません。
+
+実装上の修正が証拠から必要になった場合のみ、限定された非重複範囲を Luna に
+委譲し、manager が actual diff と検証をレビューします。外部待ちは
+実行キューからスキップしますが、未完了の条件として残します。
+
+### 優先順位3以降 — Scalewayは最後
+
+1. 各 eligible row の source・dependency/license・binder/native/CLI・
+   独立reference prerequisites を閉じ、exact scope の owner/upstream/legal
+   disposition（実行承認または withholding 等）を記録する。
+2. 条件がそろった行だけ、disposable VAST で実weight変換、独立reference、
+   CPU parity、必要な heavy repository verification を実施する。
+   小さい evidence を回収し、不要な owned instance/storage は破棄する。
+3. 最終 reviewed clean HEAD と live inventory を固定し、Apple packet を再生成する。
+   対象行に必要な BF16 / HiFTNet / BigVGAN 等の共通課題も含める。
+4. Scaleway で Apple CPU/reference・Metal/reference・Metal/CPU・
+   explicit no-fallback を登録済み bounds で実測する。
+5. 結果を follow-up PR に記録し、fresh CI と通常レビュー後にマージする。
+   公開artifactの更新は、その exact repository/scope の別個の公開権限と
+   publication gate を満たす場合に限る。
+
+per-row authority は [remaining ledger](mac-pre-scaleway-remaining-tasks-2026-09-05.md)、
+[execution gates](mac-cpu-metal-execution-plan-2026-09-07.md)、
+[owner packet](mac-cpu-metal-owner-disposition-packet-2026-09-07.md) です。
+外部条件の解消時期と各行の実weight結果が未確定なので、全体完了の日時は
+現時点で確約しません。次の報告単位は優先順位1の closeout、次いで
+各 Draft の新しい事実・修正・残る blocker です。
+
+この計画更新では commit/push/PR変更/CI再実行、model download/load/forward、
+広域ローカル Cargo、VAST/Scaleway allocation、HF upload は行いません。
+保護 manifest は閲覧・変更・stage・discard の対象外です。provider inventory は
+再照会していないため、現在の全instance不在も主張しません。
+
 ## Step 1 delivery review — 2026-10-09 JST
 
 Root independently accepts the Canary lock-only candidate review, not a PR
