@@ -1,0 +1,41 @@
+{
+  "schema": "vokra-xcodec2-dependency-audit-v1",
+  "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+  "publication": "NO_UPLOAD",
+  "python": "==3.12.*",
+  "platform": "linux-x86_64",
+  "pyproject_sha256": "8ab3bed941e2f77a04b6311f8ba0e27363274507dfc0dcef41e97358e9b6e2c5",
+  "uv_lock_sha256": "a3b843c2e26c601260c48a900e060a6a93c909d8bee0cf6ac99d30db7db1c335",
+  "source_digests": {
+    "dependency_audit.py": "6a6c96beaadbf5b9db6bcfefd7c40f238b8f679a9598a292e6515a8ca765eb9a",
+    "dependency_guard.py": "c180ea5338f492fbb8cde5ff03eadf077a92edf68a3f5823fcd80f52285d10b2",
+    "collect_dependency_evidence.py": "b8754c2946de03a346539a5f77e4e78b08ee71e9591fac769fae65363f604407",
+    "inspect_locked_sdist_sources.py": "a17ef3fb4b124bff5a53f22d2ee67afb353ed85e3c1016e8a1392a0dfaae1958",
+    "build_derived_locked_sdists.py": "b0712410a1cc28d67aeaa8629e2ba5ffb559362964457e386e154fad76b8b98f",
+    "dump_reference.py": "0be4854099243e85725f6acc912d010387f2d260cd3bb667608021f15461b2d9"
+  },
+  "expected_linux_closure_rows": 63,
+  "expected_linux_external_rows": 62,
+  "setuptools_devendoring": {
+    "distribution": "setuptools",
+    "version": "84.0.0",
+    "locked_wheel_sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+    "locked_wheel_bytes": 818216,
+    "upstream_contract_url": "https://setuptools.pypa.io/en/latest/history.html",
+    "upstream_contract_release": "71.0.0",
+    "vendor_root": "setuptools/_vendor",
+    "status": "CANDIDATE_NOT_BUILT"
+  },
+  "package_rows": [],
+  "license_rows": [],
+  "native_rows": [],
+  "blockers": [
+    "primary LICENSE/NOTICE bytes and hashes are not collected for the 62 external Linux closure distributions",
+    "xcodec2==0.1.5 has no verified primary LICENSE bytes in the candidate evidence",
+    "NumPy wheel GPL/GCC/LGPL runtime components remain explicitly unresolved until the selected Linux artifact and ELF dependencies are inspected",
+    "native payloads and readelf NEEDED results require owner review",
+    "setuptools 84 remains a reachable Linux edge; its upstream de-vendoring contract is recorded but no derived wheel or runtime compatibility proof exists",
+    "the locked setuptools wheel's vendored license members must be independently retained and reviewed; metadata alone is insufficient",
+    "owner/legal approval and publication remain absent"
+  ]
+}

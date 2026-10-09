@@ -1,0 +1,56 @@
+{
+  "schema": "vokra-xcodec2-license-gate-v1",
+  "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+  "publication": "NO_UPLOAD",
+  "project": {
+    "path": "tools/parity/xcodec2",
+    "python": "==3.12.*",
+    "platform": "linux-x86_64",
+    "pyproject_sha256": "8ab3bed941e2f77a04b6311f8ba0e27363274507dfc0dcef41e97358e9b6e2c5",
+    "uv_lock_sha256": "a3b843c2e26c601260c48a900e060a6a93c909d8bee0cf6ac99d30db7db1c335",
+    "dependency_audit_sha256": "e3a09e9bc712191dc92c79dd866cae5c5f031e7ed96a1852f921af8768657976",
+    "source_digests": {
+      "dependency_audit.py": "6a6c96beaadbf5b9db6bcfefd7c40f238b8f679a9598a292e6515a8ca765eb9a",
+      "dependency_guard.py": "c180ea5338f492fbb8cde5ff03eadf077a92edf68a3f5823fcd80f52285d10b2",
+      "collect_dependency_evidence.py": "b8754c2946de03a346539a5f77e4e78b08ee71e9591fac769fae65363f604407",
+      "inspect_locked_sdist_sources.py": "a17ef3fb4b124bff5a53f22d2ee67afb353ed85e3c1016e8a1392a0dfaae1958",
+      "build_derived_locked_sdists.py": "b0712410a1cc28d67aeaa8629e2ba5ffb559362964457e386e154fad76b8b98f",
+      "dump_reference.py": "0be4854099243e85725f6acc912d010387f2d260cd3bb667608021f15461b2d9"
+    }
+  },
+  "dependency_audit": {
+    "rows_file": "dependency_audit.json",
+    "collector": "collect_dependency_evidence.py",
+    "status": "BLOCKED_PENDING_PRIMARY_BYTES",
+    "owner_review_required": true
+  },
+  "setuptools_devendoring": {
+    "distribution": "setuptools",
+    "version": "84.0.0",
+    "locked_wheel": {
+      "url": "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl",
+      "sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+      "bytes": 818216
+    },
+    "upstream_contract": {
+      "source_url": "https://setuptools.pypa.io/en/latest/history.html",
+      "release": "71.0.0",
+      "vendor_root": "setuptools/_vendor",
+      "operation": "downstream_devendor_by_removing_vendor_root"
+    },
+    "status": "CANDIDATE_NOT_BUILT",
+    "owner_review_required": true
+  },
+  "policy": {
+    "license_classification": "UNRESOLVED_PRIMARY_BYTES",
+    "native_payload": "UNRESOLVED_PRIMARY_BYTES_AND_NEEDED",
+    "numpy_runtime": "UNRESOLVED_GPL_GCC_LGPL_OR_OTHER",
+    "automatic_exceptions": false,
+    "no_upload": true
+  },
+  "blockers": [
+    "clean expected HEAD must be supplied at collection time as an exact lowercase 40-hex value",
+    "all 62 external Linux closure artifacts must be bound to installed versions and locked archive SHA-256 values",
+    "literal LICENSE/NOTICE bytes and native ELF NEEDED evidence are candidate facts only until owner/legal review"
+  ]
+}

@@ -947,6 +947,16 @@ jobs:
           python-version: '3.12'
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: XCodec2 stdlib evidence regression suites
+        # These suites use synthetic distributions and never import the
+        # official runtime, load a model, or install project dependencies.
+        # Keep them on the hosted runner: the maintainer Mac's model-execution
+        # guard intentionally refuses the same unittest commands locally.
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python -m unittest discover -s tools/parity/xcodec2 -p test_dependency_audit.py -v
+          uv run --no-project --python 3.12 python -m unittest discover -s tools/parity/xcodec2 -p test_inspect_locked_sdist_sources.py -v
+          uv run --no-project --python 3.12 python -m unittest discover -s tools/parity/xcodec2 -p test_build_derived_locked_sdists.py -v
       - name: Create isolated venv and install pytest
         # Zero-dep envelope: pytest and its transitive deps live ONLY inside
         # /tmp/vokra-py-parity; nothing in the Vokra runtime graph gains a
