@@ -5,6 +5,16 @@
 //! Mimi needs a portable representation of its time-major RVQ codes. Neither
 //! contract can be represented honestly by printing a Rust debug array.
 
+mod vibevoice_realtime_noise;
+pub(crate) use vibevoice_realtime_noise::{
+    VibeVoiceRealtimeNoiseTape, load_vibevoice_realtime_noise_tape,
+};
+
+mod vibevoice_realtime_owner;
+pub(crate) use vibevoice_realtime_owner::{
+    VibeVoiceRealtimeOwnerContract, VibeVoiceRealtimeOwnerInputs,
+};
+
 /// Version marker required as the first line of a CT-Punc token file.
 pub(crate) const CT_PUNC_TSV_V1: &str = "vokra-ct-punc-tsv-v1";
 
@@ -1276,60 +1286,71 @@ const SHA256_H0: [u32; 8] = [
     0x5be0_cd19,
 ];
 
+fn sha256_compress(h: &mut [u32; 8], block: &[u8]) {
+    debug_assert_eq!(block.len(), 64);
+    let mut w = [0u32; 64];
+    for (i, word) in block.chunks_exact(4).take(16).enumerate() {
+        w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let t1 = hh
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(SHA256_K[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+    }
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
+    h[5] = h[5].wrapping_add(f);
+    h[6] = h[6].wrapping_add(g);
+    h[7] = h[7].wrapping_add(hh);
+}
+
 #[must_use]
 pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h = SHA256_H0;
     let bit_len = (data.len() as u64) * 8;
-    let mut buf = Vec::with_capacity(data.len() + 72);
-    buf.extend_from_slice(data);
-    buf.push(0x80);
-    while buf.len() % 64 != 56 {
-        buf.push(0);
+    for block in data.chunks_exact(64) {
+        sha256_compress(&mut h, block);
     }
-    buf.extend_from_slice(&bit_len.to_be_bytes());
-    for block in buf.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for (i, word) in block.chunks_exact(4).take(16).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(SHA256_K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+
+    // The original input is never copied: only the final one or two padded
+    // blocks are staged in this fixed-size buffer.
+    let remainder = data.chunks_exact(64).remainder();
+    let mut final_blocks = [0u8; 128];
+    final_blocks[..remainder.len()].copy_from_slice(remainder);
+    final_blocks[remainder.len()] = 0x80;
+    let final_len = if remainder.len() < 56 { 64 } else { 128 };
+    final_blocks[final_len - 8..final_len].copy_from_slice(&bit_len.to_be_bytes());
+    for block in final_blocks[..final_len].chunks_exact(64) {
+        sha256_compress(&mut h, block);
     }
+
     let mut digest = [0u8; 32];
     for (i, word) in h.iter().enumerate() {
         digest[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
@@ -1657,5 +1678,74 @@ mod tests {
             0xf2, 0x00, 0x15, 0xad,
         ];
         assert_eq!(got, want);
+    }
+
+    fn assert_sha256_hex(data: &[u8], expected: &str) {
+        assert_eq!(expected.len(), 64);
+        let want: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&expected[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        assert_eq!(sha256(data), want.as_slice());
+    }
+
+    #[test]
+    fn sha256_matches_empty_nist_multiblock_and_all_byte_vectors() {
+        assert_sha256_hex(
+            b"",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        );
+        assert_sha256_hex(
+            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        );
+        let all_bytes: Vec<u8> = (0..=u8::MAX).collect();
+        assert_sha256_hex(
+            &all_bytes,
+            "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880",
+        );
+    }
+
+    #[test]
+    fn sha256_matches_padding_boundary_vectors_without_input_copy() {
+        for (len, expected) in [
+            (
+                55,
+                "f9e3ac6e56363ff68f01e0642921f38b53a23ee735f35bbfc6fed6c25d10f9ec",
+            ),
+            (
+                56,
+                "16d5189ddf169a234580076802cc1130ab264fb05288c507711eed0ea3813609",
+            ),
+            (
+                63,
+                "7a0886d9e7c1910452c62a1045761c2e9c20bb9dc23f0eef8940b070438f87b5",
+            ),
+            (
+                64,
+                "0baca70e52ced8beea55d8aec7889e8ddd5ee512bb8e331c2f60e99170a3809b",
+            ),
+            (
+                65,
+                "836203944f4c0280461ad73d31457c22ba19d1d99e232dc231000085899e00a2",
+            ),
+            (
+                119,
+                "5cb9d9eeda0eeba3057bb19aa8593c99781938f5acbb23c33f90bdf475b6ac11",
+            ),
+            (
+                120,
+                "13f05a0b594787f5ecd315edc96141bd3243203d1b7d4f0836f37308b276ba98",
+            ),
+            (
+                127,
+                "8b0213ab6545582a3f64b70d214d3a742c47481c6b9628eede3f7af384970e3a",
+            ),
+            (
+                128,
+                "b7effd43ee5016021d067dd32ade04f37a347efe942297070e5cc56f47fddfbb",
+            ),
+        ] {
+            assert_sha256_hex(&vec![len as u8; len], expected);
+        }
     }
 }

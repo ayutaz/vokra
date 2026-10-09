@@ -29,6 +29,9 @@ pub const VIBEVOICE_REALTIME_TRAIN_STEPS: usize = 1_000;
 /// Authenticated scheduler inference-step count.
 pub const VIBEVOICE_REALTIME_INFERENCE_STEPS: usize = 20;
 
+type DiffusionObserver<'observer> =
+    dyn FnMut(usize, usize, &[f32], &[f32]) -> Result<()> + 'observer;
+
 /// Runs the bounded Realtime diffusion CFG loop on an authenticated head.
 ///
 /// `positive_condition` and `negative_condition` are the two 896-wide hidden
@@ -38,11 +41,11 @@ pub const VIBEVOICE_REALTIME_INFERENCE_STEPS: usize = 20;
 /// applies `uncond + guidance_scale * (cond - uncond)` before the scheduler
 /// advances it.
 ///
-/// The sampler is deliberately CPU-only at present.  Passing a head selected
-/// for Metal, CUDA, or another backend returns an explicit error instead of
-/// moving scheduler state or tensors to CPU implicitly.  This function stops
-/// at the final 64-wide latent and makes no full-synthesis, real-weight parity,
-/// or Apple backend claim.
+/// The learned prediction head runs on its selected backend.  The DPM
+/// scheduler is an explicit host-control stage over the 64-wide latent; it
+/// does not bind learned weights and never migrates the head or its tensors to
+/// CPU.  Realtime currently composes this path only with CPU or Metal heads;
+/// other backends fail closed rather than becoming an implicit fallback.
 pub fn sample_vibevoice_realtime_cfg(
     head: &VibeVoiceStreamingDiffusionHead,
     positive_condition: &[f32],
@@ -50,13 +53,38 @@ pub fn sample_vibevoice_realtime_cfg(
     initial_noise: &[f32],
     guidance_scale: f32,
 ) -> Result<Vec<f32>> {
-    ensure_cpu_backend(head.backend())?;
+    ensure_realtime_head_backend(head.backend())?;
     sample_with_predictor(
         positive_condition,
         negative_condition,
         initial_noise,
         guidance_scale,
         |sample, condition, timestep| head.forward(sample, condition, timestep),
+    )
+}
+
+/// Diagnostic-only variant of [`sample_vibevoice_realtime_cfg`]. The callback
+/// receives the two native prediction arrays before CFG combination at every
+/// scheduler step; it does not alter either array or the scheduler state.
+pub(crate) fn sample_vibevoice_realtime_cfg_with_observer<F>(
+    head: &VibeVoiceStreamingDiffusionHead,
+    positive_condition: &[f32],
+    negative_condition: &[f32],
+    initial_noise: &[f32],
+    guidance_scale: f32,
+    observe: F,
+) -> Result<Vec<f32>>
+where
+    F: FnMut(usize, usize, &[f32], &[f32]) -> Result<()>,
+{
+    ensure_realtime_head_backend(head.backend())?;
+    sample_with_predictor_observed(
+        positive_condition,
+        negative_condition,
+        initial_noise,
+        guidance_scale,
+        |sample, condition, timestep| head.forward(sample, condition, timestep),
+        observe,
     )
 }
 
@@ -74,6 +102,49 @@ fn sample_with_predictor<P>(
 where
     P: FnMut(&[f32], &[f32], f32) -> Result<Vec<f32>>,
 {
+    sample_with_predictor_optional(
+        positive_condition,
+        negative_condition,
+        initial_noise,
+        guidance_scale,
+        &mut predict,
+        None,
+    )
+}
+
+fn sample_with_predictor_observed<P, F>(
+    positive_condition: &[f32],
+    negative_condition: &[f32],
+    initial_noise: &[f32],
+    guidance_scale: f32,
+    mut predict: P,
+    mut observe: F,
+) -> Result<Vec<f32>>
+where
+    P: FnMut(&[f32], &[f32], f32) -> Result<Vec<f32>>,
+    F: FnMut(usize, usize, &[f32], &[f32]) -> Result<()>,
+{
+    sample_with_predictor_optional(
+        positive_condition,
+        negative_condition,
+        initial_noise,
+        guidance_scale,
+        &mut predict,
+        Some(&mut observe),
+    )
+}
+
+fn sample_with_predictor_optional<P>(
+    positive_condition: &[f32],
+    negative_condition: &[f32],
+    initial_noise: &[f32],
+    guidance_scale: f32,
+    mut predict: P,
+    mut observe: Option<&mut DiffusionObserver<'_>>,
+) -> Result<Vec<f32>>
+where
+    P: FnMut(&[f32], &[f32], f32) -> Result<Vec<f32>>,
+{
     validate_inputs(
         positive_condition,
         negative_condition,
@@ -86,26 +157,28 @@ where
     )?;
     scheduler.reset();
     let mut sample = initial_noise.to_vec();
-    for timestep in scheduler.timesteps().to_vec() {
+    for (diffusion_step, timestep) in scheduler.timesteps().to_vec().into_iter().enumerate() {
         // Both predictions deliberately receive the same unchanged sample.
         // Do not mutate or replace it between branches: that would alter the
         // upstream CFG contract and make the two predictions asymmetric.
         let conditional = predict(&sample, positive_condition, timestep as f32)?;
         let unconditional = predict(&sample, negative_condition, timestep as f32)?;
         let guided = combine_cfg(&conditional, &unconditional, guidance_scale)?;
+        if let Some(observe) = observe.as_deref_mut() {
+            observe(diffusion_step, timestep, &conditional, &unconditional)?;
+        }
         sample = scheduler.step(&guided, timestep, &sample)?.sample;
     }
     Ok(sample)
 }
 
-fn ensure_cpu_backend(backend: BackendKind) -> Result<()> {
-    if backend != BackendKind::Cpu {
-        return Err(VokraError::UnsupportedOp(
-            "vibevoice realtime CFG scheduler is CPU-only; non-CPU backend would require an explicit scheduler implementation"
-                .to_owned(),
-        ));
+fn ensure_realtime_head_backend(backend: BackendKind) -> Result<()> {
+    match backend {
+        BackendKind::Cpu | BackendKind::Metal => Ok(()),
+        _ => Err(VokraError::UnsupportedOp(format!(
+            "vibevoice realtime CFG head backend {backend:?} is not covered by the composite; no CPU fallback"
+        ))),
     }
-    Ok(())
 }
 
 fn validate_inputs(
@@ -248,6 +321,106 @@ mod tests {
     }
 
     #[test]
+    fn observed_loop_is_borrowed_ordered_and_error_stops_later_events() {
+        let positive = vec![0.0_f32; VIBEVOICE_REALTIME_CONDITION_WIDTH];
+        let negative = vec![1.0_f32; VIBEVOICE_REALTIME_CONDITION_WIDTH];
+        let initial = vec![0.125_f32; VIBEVOICE_REALTIME_LATENT_WIDTH];
+        let baseline = sample_with_predictor(
+            &positive,
+            &negative,
+            &initial,
+            2.0,
+            |sample, condition, timestep| {
+                Ok(vec![
+                    condition[0] + sample[0] * 0.25 + timestep * 0.001;
+                    VIBEVOICE_REALTIME_LATENT_WIDTH
+                ])
+            },
+        )
+        .unwrap();
+        let mut observations = Vec::new();
+        let mut prediction_calls = Vec::new();
+        let output = sample_with_predictor_observed(
+            &positive,
+            &negative,
+            &initial,
+            2.0,
+            |sample, condition, timestep| {
+                prediction_calls.push((sample[0], condition[0], timestep));
+                Ok(vec![
+                    condition[0] + sample[0] * 0.25 + timestep * 0.001;
+                    VIBEVOICE_REALTIME_LATENT_WIDTH
+                ])
+            },
+            |diffusion_step, timestep, conditional, unconditional| {
+                observations.push((diffusion_step, timestep, conditional[0], unconditional[0]));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(output, baseline, "observation must not alter native output");
+        assert_eq!(observations.len(), VIBEVOICE_REALTIME_INFERENCE_STEPS);
+        assert_eq!(
+            prediction_calls.len(),
+            VIBEVOICE_REALTIME_INFERENCE_STEPS * 2
+        );
+        for pair in prediction_calls.chunks_exact(2) {
+            assert_eq!(pair[0].0, pair[1].0, "CFG branches share current sample");
+            assert_eq!(pair[0].2, pair[1].2, "CFG branches share timestep");
+        }
+        assert!(
+            observations
+                .iter()
+                .all(|(_, _, conditional, unconditional)| conditional != unconditional),
+            "observed branches must carry distinct deterministic predictions"
+        );
+        assert!(
+            observations
+                .windows(2)
+                .all(|pair| pair[0].0 + 1 == pair[1].0)
+        );
+
+        let mut callback_count = 0;
+        let error = sample_with_predictor_observed(
+            &positive,
+            &negative,
+            &initial,
+            2.0,
+            |_sample, condition, _timestep| Ok(vec![condition[0]; VIBEVOICE_REALTIME_LATENT_WIDTH]),
+            |diffusion_step, _timestep, _conditional, _unconditional| {
+                callback_count += 1;
+                if diffusion_step == 3 {
+                    Err(VokraError::ModelLoad(
+                        "synthetic observer failure".to_owned(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(error.is_err());
+        assert_eq!(callback_count, 4, "observer failure must stop later steps");
+
+        let mut malformed_callbacks = 0;
+        let malformed = sample_with_predictor_observed(
+            &positive,
+            &negative,
+            &initial,
+            2.0,
+            |_sample, _condition, _timestep| Ok(vec![0.0; VIBEVOICE_REALTIME_LATENT_WIDTH - 1]),
+            |_diffusion_step, _timestep, _conditional, _unconditional| {
+                malformed_callbacks += 1;
+                Ok(())
+            },
+        );
+        assert!(malformed.is_err());
+        assert_eq!(
+            malformed_callbacks, 0,
+            "malformed prediction emits no observation"
+        );
+    }
+
+    #[test]
     fn scheduler_is_reset_and_runs_exactly_twenty_steps() {
         let mut scheduler = VibeVoiceDpmSolverMultistep::new(
             VIBEVOICE_REALTIME_TRAIN_STEPS,
@@ -298,9 +471,14 @@ mod tests {
     }
 
     #[test]
-    fn non_cpu_backend_is_rejected_explicitly() {
-        let error = ensure_cpu_backend(BackendKind::Metal).unwrap_err();
+    fn metal_head_keeps_learned_ops_on_selected_backend() {
+        assert!(ensure_realtime_head_backend(BackendKind::Metal).is_ok());
+    }
+
+    #[test]
+    fn uncovered_head_backend_is_rejected_without_fallback() {
+        let error = ensure_realtime_head_backend(BackendKind::Cuda).unwrap_err();
         assert!(matches!(error, VokraError::UnsupportedOp(_)));
-        assert!(error.to_string().contains("CPU-only"));
+        assert!(error.to_string().contains("no CPU fallback"));
     }
 }

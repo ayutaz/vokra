@@ -22,9 +22,20 @@ use vokra_core::{Result, VokraError};
 
 /// Authenticated Realtime acoustic latent-to-PCM streaming boundary.
 pub mod acoustic;
+/// Native source-authenticated Realtime acoustic latent connector.
+pub mod connector;
 /// Native single-step AdaLN diffusion prediction head.
 pub mod diffusion;
-/// Deterministic CPU-only classifier-free guidance diffusion sampler.
+/// Source-authenticated, model-free Realtime generation control plane.
+pub mod generation;
+/// Native staged text/TTS language-model path.
+pub mod language;
+/// Strict native bridge for the official four-output voice-preset cache.
+pub mod preset;
+/// Native composition of the authenticated language, diffusion, connector,
+/// and causal acoustic stages.
+pub mod runtime;
+/// Backend-dispatched classifier-free guidance with an explicit host scheduler.
 pub mod sampler;
 /// Cached-prompt input and bookkeeping state for the staged streaming path.
 pub mod state;
@@ -35,7 +46,29 @@ pub use acoustic::{
     REALTIME_ACOUSTIC_CHUNK_SAMPLES, REALTIME_ACOUSTIC_LATENT_WIDTH,
     VibeVoiceRealtimeAcousticDecoder, VibeVoiceRealtimeAcousticDecoderStream,
 };
+pub use connector::{
+    VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_HOT_OPS,
+    VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_INPUT_WIDTH,
+    VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH,
+    VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_RMS_EPS, VibeVoiceRealtimeAcousticConnector,
+};
 pub use diffusion::{VIBEVOICE_STREAMING_DIFFUSION_HOT_OPS, VibeVoiceStreamingDiffusionHead};
+pub use generation::{
+    VibeVoiceRealtimeGenerationControl, VibeVoiceRealtimeGenerationSession,
+    VibeVoiceRealtimeGenerationStopReason,
+};
+pub use language::{
+    VIBEVOICE_REALTIME_LANGUAGE_HOT_OPS, VibeVoiceRealtimeLanguage, VibeVoiceRealtimeLmOutput,
+    VibeVoiceRealtimeTtsOutput,
+};
+pub use preset::{
+    VibeVoiceRealtimePresetBranch, VibeVoiceRealtimePresetCache, VibeVoiceRealtimePresetCacheLayer,
+    VibeVoiceRealtimePresetOutput,
+};
+pub use runtime::{
+    VibeVoiceRealtimeAudioChunk, VibeVoiceRealtimeRuntime, VibeVoiceRealtimeSynthesisConfig,
+    VibeVoiceRealtimeSynthesisSession, VibeVoiceRealtimeSynthesisStep,
+};
 pub use sampler::{
     VIBEVOICE_REALTIME_CONDITION_WIDTH, VIBEVOICE_REALTIME_INFERENCE_STEPS,
     VIBEVOICE_REALTIME_LATENT_WIDTH, VIBEVOICE_REALTIME_TRAIN_STEPS, sample_vibevoice_realtime_cfg,
@@ -117,6 +150,20 @@ const KEY_HEAD_STEPS: &str = "vokra.vibevoice.diffusion_head.ddpm_num_steps";
 const KEY_HEAD_INFERENCE_STEPS: &str = "vokra.vibevoice.diffusion_head.ddpm_num_inference_steps";
 const KEY_HEAD_BETA: &str = "vokra.vibevoice.diffusion_head.ddpm_beta_schedule";
 const KEY_HEAD_BATCH_MUL: &str = "vokra.vibevoice.diffusion_head.ddpm_batch_mul";
+
+const ACOUSTIC_CONNECTOR_PREFIX: &str = "model.acoustic_connector.";
+const ACOUSTIC_CONNECTOR_FC1_WEIGHT: &str = "model.acoustic_connector.fc1.weight";
+const ACOUSTIC_CONNECTOR_FC1_BIAS: &str = "model.acoustic_connector.fc1.bias";
+const ACOUSTIC_CONNECTOR_NORM_WEIGHT: &str = "model.acoustic_connector.norm.weight";
+const ACOUSTIC_CONNECTOR_FC2_WEIGHT: &str = "model.acoustic_connector.fc2.weight";
+const ACOUSTIC_CONNECTOR_FC2_BIAS: &str = "model.acoustic_connector.fc2.bias";
+const ACOUSTIC_CONNECTOR_TENSOR_NAMES: [&str; 5] = [
+    ACOUSTIC_CONNECTOR_FC1_WEIGHT,
+    ACOUSTIC_CONNECTOR_FC1_BIAS,
+    ACOUSTIC_CONNECTOR_NORM_WEIGHT,
+    ACOUSTIC_CONNECTOR_FC2_WEIGHT,
+    ACOUSTIC_CONNECTOR_FC2_BIAS,
+];
 
 /// Immutable Realtime topology read from a GGUF's converter metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -279,6 +326,51 @@ impl VibeVoiceStreamingWeights {
         }
         require_layer_stack(file, "model.language_model", LANGUAGE_LAYERS)?;
         require_layer_stack(file, "model.tts_language_model", TTS_LAYERS)?;
+        let connector_names: BTreeSet<&str> = names
+            .iter()
+            .filter_map(|name| name.strip_prefix(ACOUSTIC_CONNECTOR_PREFIX))
+            .collect();
+        let expected_connector_names: BTreeSet<&str> = ACOUSTIC_CONNECTOR_TENSOR_NAMES
+            .iter()
+            .filter_map(|name| name.strip_prefix(ACOUSTIC_CONNECTOR_PREFIX))
+            .collect();
+        if connector_names != expected_connector_names {
+            return Err(VokraError::ModelLoad(format!(
+                "vibevoice-realtime: acoustic connector tensor names {:?}, expected {:?}",
+                connector_names, expected_connector_names
+            )));
+        }
+        require_dense_tensor(
+            file,
+            ACOUSTIC_CONNECTOR_FC1_WEIGHT,
+            &[
+                VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH as u64,
+                VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_INPUT_WIDTH as u64,
+            ],
+        )?;
+        require_dense_tensor(
+            file,
+            ACOUSTIC_CONNECTOR_FC1_BIAS,
+            &[VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH as u64],
+        )?;
+        require_dense_tensor(
+            file,
+            ACOUSTIC_CONNECTOR_NORM_WEIGHT,
+            &[VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH as u64],
+        )?;
+        require_dense_tensor(
+            file,
+            ACOUSTIC_CONNECTOR_FC2_WEIGHT,
+            &[
+                VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH as u64,
+                VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH as u64,
+            ],
+        )?;
+        require_dense_tensor(
+            file,
+            ACOUSTIC_CONNECTOR_FC2_BIAS,
+            &[VIBEVOICE_REALTIME_ACOUSTIC_CONNECTOR_OUTPUT_WIDTH as u64],
+        )?;
         require_tensor_shape(file, "model.tts_input_types.weight", &[2, HIDDEN as u64])?;
         require_tensor_shape(
             file,
@@ -390,6 +482,27 @@ fn require_tensor_shape(file: &GgufFile, name: &str, expected: &[u64]) -> Result
         return Err(VokraError::ModelLoad(format!(
             "vibevoice-realtime: `{name}` shape {:?}, expected {expected:?}",
             info.dimensions,
+        )));
+    }
+    Ok(())
+}
+
+fn require_dense_tensor(file: &GgufFile, name: &str, expected: &[u64]) -> Result<()> {
+    let Some(info) = file.tensor_info(name) else {
+        return Err(VokraError::ModelLoad(format!(
+            "vibevoice-realtime: missing `{name}` tensor"
+        )));
+    };
+    if info.dimensions != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "vibevoice-realtime: `{name}` shape {:?}, expected {expected:?}",
+            info.dimensions
+        )));
+    }
+    if !matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
+        return Err(VokraError::ModelLoad(format!(
+            "vibevoice-realtime: `{name}` uses {:?}; expected dense F32/F16/BF16",
+            info.dtype
         )));
     }
     Ok(())
@@ -579,6 +692,42 @@ mod tests {
             .unwrap();
         builder
             .add_tensor(
+                "model.acoustic_connector.fc1.weight",
+                GgmlType::F16,
+                vec![HIDDEN as u64, ACOUSTIC_VAE_DIM as u64],
+                vec![0; HIDDEN * ACOUSTIC_VAE_DIM * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "model.acoustic_connector.fc1.bias",
+                GgmlType::F16,
+                vec![HIDDEN as u64],
+                vec![0; HIDDEN * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "model.acoustic_connector.norm.weight",
+                GgmlType::F16,
+                vec![HIDDEN as u64],
+                vec![0; HIDDEN * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "model.acoustic_connector.fc2.weight",
+                GgmlType::F16,
+                vec![HIDDEN as u64, HIDDEN as u64],
+                vec![0; HIDDEN * HIDDEN * 2],
+            )
+            .unwrap()
+            .add_tensor(
+                "model.acoustic_connector.fc2.bias",
+                GgmlType::F16,
+                vec![HIDDEN as u64],
+                vec![0; HIDDEN * 2],
+            )
+            .unwrap();
+        builder
+            .add_tensor(
                 "tts_eos_classifier.fc1.weight",
                 GgmlType::F16,
                 vec![HIDDEN as u64, HIDDEN as u64],
@@ -622,7 +771,7 @@ mod tests {
         assert_eq!(checkpoint.config().tts_backbone_layers, TTS_LAYERS);
         assert_eq!(
             checkpoint.tensor_count(),
-            2 * (LANGUAGE_LAYERS + TTS_LAYERS) + 7
+            2 * (LANGUAGE_LAYERS + TTS_LAYERS) + 12
         );
     }
 

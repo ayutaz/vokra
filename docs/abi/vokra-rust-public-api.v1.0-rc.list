@@ -466,6 +466,7 @@ FN vokra-core::gguf::quant::decode_bf16_bits|pub fn decode_bf16_bits(
 FN vokra-core::gguf::quant::dequantize|pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Vec<f32>, GgufError> {
 FN vokra-core::gguf::quant::f16_to_f32|pub fn f16_to_f32(h: u16) -> f32 {
 FN vokra-core::gguf::reader::alignment|pub fn alignment(&self) -> u64 {
+FN vokra-core::gguf::reader::file_bytes|pub fn file_bytes(&self) -> &[u8] {
 FN vokra-core::gguf::reader::from_external|pub fn from_external(src: Box<dyn AsBytes>) -> Result<Self, GgufError> {
 FN vokra-core::gguf::reader::get|pub fn get(&self, key: &str) -> Option<&GgufMetadataValue> {
 FN vokra-core::gguf::reader::metadata|pub fn metadata(&self) -> &[(String, GgufMetadataValue)] {

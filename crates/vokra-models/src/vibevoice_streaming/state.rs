@@ -26,6 +26,19 @@ use super::tokenizer::SPEECH_START_ID;
 use super::tokenizer::{VOCAB_SIZE, VibeVoiceRealtimeTokenizer};
 use vokra_core::{Result, VokraError};
 
+/// Number of text tokens consumed by one upstream Realtime text window.
+///
+/// Source: `vibevoice/modular/modeling_vibevoice_streaming_inference.py` at
+/// `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, lines 25 and 667-669.
+pub const TTS_TEXT_WINDOW_SIZE: usize = 5;
+
+/// Maximum number of speech iterations interleaved after each upstream text
+/// window before the upstream loop evaluates the next text window.
+///
+/// Source: `vibevoice/modular/modeling_vibevoice_streaming_inference.py` at
+/// `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, lines 26 and 705-706.
+pub const TTS_SPEECH_WINDOW_SIZE: usize = 6;
+
 /// Lengths of the two cached prompt hidden-state sequences.
 ///
 /// The upstream processor reads these lengths from
@@ -120,11 +133,7 @@ pub struct VibeVoiceStreamingInput {
 impl VibeVoiceStreamingInput {
     fn from_text_ids(prompt: VibeVoiceStreamingPrompt, text_ids: Vec<u32>) -> Result<Self> {
         prompt.validate()?;
-        if text_ids.len() > MAX_POSITIONS {
-            return Err(VokraError::InvalidArgument(format!(
-                "vibevoice-realtime streaming text IDs must not exceed {MAX_POSITIONS}"
-            )));
-        }
+        validate_text_capacity(prompt, text_ids.len())?;
         validate_text_ids(&text_ids, prompt.streaming_pad_id)?;
         Ok(Self {
             input_ids: vec![prompt.streaming_pad_id; prompt.lm_cached_len],
@@ -134,6 +143,125 @@ impl VibeVoiceStreamingInput {
             tts_text_ids: text_ids,
             speech_input_mask: vec![false; prompt.tts_lm_cached_len],
         })
+    }
+}
+
+/// One source-authenticated text window in the Realtime generation loop.
+///
+/// This is a finite text-plan descriptor only. It does not mean that
+/// generation terminates after this window, and it does not contain a
+/// Transformer KV cache, hidden states, speech latents, or audio. The caller
+/// must still run the corresponding positive/negative LM, diffusion, EOS, and
+/// acoustic stages with the correct backend and explicit error handling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VibeVoiceStreamingTextWindow {
+    index: usize,
+    text_ids: Vec<u32>,
+    next_text_window_size: usize,
+}
+
+impl VibeVoiceStreamingTextWindow {
+    /// Zero-based text-window index in the upstream generation loop.
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Authenticated text IDs consumed by this window.
+    #[must_use]
+    pub fn text_ids(&self) -> &[u32] {
+        &self.text_ids
+    }
+
+    /// Number of text IDs consumed by this window.
+    #[must_use]
+    pub const fn text_window_size(&self) -> usize {
+        self.text_ids.len()
+    }
+
+    /// Number of text IDs in the next window, or zero for the final window.
+    ///
+    /// The upstream loop uses this value when updating the next text cache
+    /// position; it is exposed as data and is not interpreted as a cache.
+    #[must_use]
+    pub const fn next_text_window_size(&self) -> usize {
+        self.next_text_window_size
+    }
+
+    /// Maximum number of speech iterations in the upstream loop after this
+    /// text window, before the next loop condition is evaluated.
+    #[must_use]
+    pub const fn max_speech_steps_after_text(&self) -> usize {
+        TTS_SPEECH_WINDOW_SIZE
+    }
+
+    /// Whether this is the last text window in the supplied script.
+    ///
+    /// This is not a generation-complete signal. The upstream `while True`
+    /// loop may execute further zero-text speech iterations after this window.
+    #[must_use]
+    pub const fn is_last_text_window(&self) -> bool {
+        self.next_text_window_size == 0
+    }
+}
+
+/// The termination condition for the zero-text continuation after text IDs
+/// are exhausted.
+///
+/// Source: the pinned upstream loop checks external stop and finished/EOS
+/// state before slicing the next text window, and separately enforces the
+/// model maximum length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VibeVoiceStreamingZeroTextContinuation {
+    /// Continue up to six speech-only iterations until EOS, max length, or
+    /// external stop.
+    UntilEosMaxLengthOrExternalStop,
+}
+
+impl VibeVoiceStreamingZeroTextContinuation {
+    /// Maximum number of speech iterations in each zero-text continuation
+    /// loop.
+    #[must_use]
+    pub const fn max_speech_steps_per_iteration(self) -> usize {
+        TTS_SPEECH_WINDOW_SIZE
+    }
+}
+
+/// Source-authenticated, model-free text-window plan for one Realtime script.
+///
+/// This plan is intentionally finite because it describes text windows only.
+/// [`Self::zero_text_continuation`] records the separate runtime phase that
+/// can follow the last text window; it is not expanded into an invented number
+/// of speech steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VibeVoiceStreamingTextPlan {
+    windows: Vec<VibeVoiceStreamingTextWindow>,
+    zero_text_continuation: VibeVoiceStreamingZeroTextContinuation,
+}
+
+impl VibeVoiceStreamingTextPlan {
+    /// Returns text windows in the exact order consumed by the upstream loop.
+    #[must_use]
+    pub fn text_windows(&self) -> &[VibeVoiceStreamingTextWindow] {
+        &self.windows
+    }
+
+    /// Number of text windows in this schedule.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.windows.len()
+    }
+
+    /// Whether the schedule has no windows.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.windows.is_empty()
+    }
+
+    /// Returns the explicit post-text continuation condition.
+    #[must_use]
+    pub const fn zero_text_continuation(&self) -> VibeVoiceStreamingZeroTextContinuation {
+        self.zero_text_continuation
     }
 }
 
@@ -189,6 +317,38 @@ impl VibeVoiceStreamingState {
         self.prepare_text_ids(text_ids)
     }
 
+    /// Plans the upstream text windows for authenticated text IDs without
+    /// executing either language model.
+    ///
+    /// The pinned upstream implementation slices `tts_text_ids` into windows
+    /// of five IDs and runs six speech iterations after each window. This
+    /// method records that ordering and the next-window size only. After the
+    /// last window, callers must honor the explicit zero-text continuation
+    /// condition; this method does not claim to update a KV cache or provide
+    /// synthesis/parity.
+    pub fn plan_text_windows(&self, text_ids: &[u32]) -> Result<VibeVoiceStreamingTextPlan> {
+        self.prompt.validate()?;
+        validate_text_capacity(self.prompt, text_ids.len())?;
+        validate_text_ids(text_ids, self.prompt.streaming_pad_id)?;
+
+        let mut windows = Vec::with_capacity(text_ids.len().div_ceil(TTS_TEXT_WINDOW_SIZE));
+        for (index, current) in text_ids.chunks(TTS_TEXT_WINDOW_SIZE).enumerate() {
+            let next_text_window_size = text_ids
+                .get((index + 1) * TTS_TEXT_WINDOW_SIZE..)
+                .map_or(0, |remaining| remaining.len().min(TTS_TEXT_WINDOW_SIZE));
+            windows.push(VibeVoiceStreamingTextWindow {
+                index,
+                text_ids: current.to_vec(),
+                next_text_window_size,
+            });
+        }
+        Ok(VibeVoiceStreamingTextPlan {
+            windows,
+            zero_text_continuation:
+                VibeVoiceStreamingZeroTextContinuation::UntilEosMaxLengthOrExternalStop,
+        })
+    }
+
     fn prepare_text_ids(&mut self, text_ids: Vec<u32>) -> Result<VibeVoiceStreamingInput> {
         let input = VibeVoiceStreamingInput::from_text_ids(self.prompt, text_ids)?;
         let next_steps = self.text_steps.checked_add(1).ok_or_else(|| {
@@ -206,6 +366,28 @@ impl VibeVoiceStreamingState {
         self.text_tokens = next_tokens;
         Ok(input)
     }
+}
+
+fn validate_text_capacity(prompt: VibeVoiceStreamingPrompt, text_len: usize) -> Result<()> {
+    let lm_total = prompt.lm_cached_len.checked_add(text_len).ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "vibevoice-realtime streaming prompt + text length overflow".into(),
+        )
+    })?;
+    let tts_lm_total = prompt
+        .tts_lm_cached_len
+        .checked_add(text_len)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "vibevoice-realtime streaming prompt + text length overflow".into(),
+            )
+        })?;
+    if lm_total > MAX_POSITIONS || tts_lm_total > MAX_POSITIONS {
+        return Err(VokraError::InvalidArgument(format!(
+            "vibevoice-realtime streaming prompt plus text must not exceed {MAX_POSITIONS} positions"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_text_ids(text_ids: &[u32], streaming_pad_id: u32) -> Result<()> {
@@ -233,6 +415,11 @@ fn validate_text_ids(text_ids: &[u32], streaming_pad_id: u32) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn synthetic_generation_test_state() -> VibeVoiceStreamingState {
+    VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(1, 1, 7))
 }
 
 #[cfg(test)]
@@ -314,8 +501,96 @@ mod tests {
         let error = state
             .prepare_text_ids(vec![1; MAX_POSITIONS + 1])
             .unwrap_err();
-        assert!(error.to_string().contains("text IDs must not exceed"));
+        assert!(error.to_string().contains("prompt plus text"));
         assert_eq!(state.text_steps(), 0);
+    }
+
+    #[test]
+    fn source_text_plan_slices_text_and_marks_speech_steps() {
+        let state = VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(1, 1, 7));
+        let text_ids: Vec<u32> = (101..=112).collect();
+        let plan = state.plan_text_windows(&text_ids).unwrap();
+
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan.text_windows()[0].index(), 0);
+        assert_eq!(
+            plan.text_windows()[0].text_ids(),
+            &[101, 102, 103, 104, 105]
+        );
+        assert_eq!(plan.text_windows()[0].text_window_size(), 5);
+        assert_eq!(plan.text_windows()[0].next_text_window_size(), 5);
+        assert_eq!(plan.text_windows()[0].max_speech_steps_after_text(), 6);
+        assert!(!plan.text_windows()[0].is_last_text_window());
+
+        assert_eq!(plan.text_windows()[1].index(), 1);
+        assert_eq!(
+            plan.text_windows()[1].text_ids(),
+            &[106, 107, 108, 109, 110]
+        );
+        assert_eq!(plan.text_windows()[1].next_text_window_size(), 2);
+
+        assert_eq!(plan.text_windows()[2].index(), 2);
+        assert_eq!(plan.text_windows()[2].text_ids(), &[111, 112]);
+        assert_eq!(plan.text_windows()[2].next_text_window_size(), 0);
+        assert!(plan.text_windows()[2].is_last_text_window());
+
+        // A last text window is not generation completion: the upstream loop
+        // can continue with zero text until EOS, max length, or external stop.
+        assert_eq!(
+            plan.zero_text_continuation(),
+            VibeVoiceStreamingZeroTextContinuation::UntilEosMaxLengthOrExternalStop
+        );
+        assert_eq!(
+            plan.zero_text_continuation()
+                .max_speech_steps_per_iteration(),
+            6
+        );
+
+        // Planning is model-free and does not consume the input state.
+        assert_eq!(state.text_steps(), 0);
+        assert_eq!(state.text_tokens(), 0);
+    }
+
+    #[test]
+    fn source_text_plan_preserves_short_last_window() {
+        let state = VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(1, 1, 7));
+        let plan = state.plan_text_windows(&[1, 2, 3, 4, 5]).unwrap();
+
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan.text_windows()[0].text_window_size(), 5);
+        assert_eq!(plan.text_windows()[0].next_text_window_size(), 0);
+        assert_eq!(plan.text_windows()[0].max_speech_steps_after_text(), 6);
+        assert_eq!(
+            plan.zero_text_continuation(),
+            VibeVoiceStreamingZeroTextContinuation::UntilEosMaxLengthOrExternalStop
+        );
+        assert_eq!(
+            plan.zero_text_continuation()
+                .max_speech_steps_per_iteration(),
+            6
+        );
+    }
+
+    #[test]
+    fn source_text_plan_rejects_invalid_text_without_advancing_state() {
+        let state = VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(1, 1, 7));
+        let error = state.plan_text_windows(&[1, SPEECH_START_ID]).unwrap_err();
+
+        assert!(error.to_string().contains("reserved speech boundary"));
+        assert_eq!(state.text_steps(), 0);
+        assert_eq!(state.text_tokens(), 0);
+    }
+
+    #[test]
+    fn source_text_plan_checks_prompt_plus_text_capacity() {
+        let state = VibeVoiceStreamingState::new(VibeVoiceStreamingPrompt::new(
+            MAX_POSITIONS,
+            MAX_POSITIONS,
+            7,
+        ));
+        let error = state.plan_text_windows(&[1]).unwrap_err();
+
+        assert!(error.to_string().contains("prompt plus text"));
     }
 
     #[test]

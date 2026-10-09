@@ -643,6 +643,187 @@ observations and add a supersession note when refreshing them.
    owner checklist. Never claim full catalog completion from code reachability
    alone.
 
+> **2026-10-04 integration reading boundary:** the following dated Realtime
+> records were retained from the unmerged #163–#182 stack. Their named heads,
+> counts, cloud outcomes and pending states remain historical observations;
+> they are not current-main verification, live security totals, approval or
+> completion claims. The later main-ledger records below are preserved intact.
+
+## 2026-09-30 catalog and security readback (05:35 UTC)
+
+The read-only HF audit on clean `main`
+`869cf6bda5ed103aa2174c0435d43b3ba2077d35` still reports 194 public
+repositories, 193 with GGUFs and 198 GGUF files. CPU code/artifact
+reachability remains 136 full, 43 partial, 14 without a runtime binder and
+one non-artifact. Metal remains 136 full, 57 blocked by CPU and one
+non-artifact. All 58 unresolved rows remain in scope; this classification
+does not establish independent real-weight or Apple parity.
+
+The current GitHub open-alert API reports 217 Dependabot alerts: 189 with a
+named patched version and 28 without one; severity is 3 critical, 32 high,
+85 medium and 97 low. This supersedes the older alert totals above as a
+current queue size. The open code-scanning API reports three Scorecard
+findings: `CIIBestPracticesID`, `CodeReviewID` and `VulnerabilitiesID`.
+Closed findings and alerts must still be reconciled with their individual
+GitHub records rather than attributed to an unmerged candidate.
+
+[PR #177](https://github.com/ayutaz/vokra/pull/177) merged at that main
+commit. [PR #175](https://github.com/ayutaz/vokra/pull/175) was updated
+to main and awaits its new CI with auto-merge enabled.
+[PR #138](https://github.com/ayutaz/vokra/pull/138) was also updated to
+that main at `e8abcec7c7b86e4ab6a365a4a14ee20da0dee755`; its new CI is
+pending, so it is not recorded as merged or as closing alerts.
+[Draft PR #179](https://github.com/ayutaz/vokra/pull/179) adds independently
+owned positive/negative Realtime language cache pairs.
+[Draft PR #180](https://github.com/ayutaz/vokra/pull/180) records the Dia
+Torch 2.13.0 / TorchAudio 2.11.0 CPU candidate: model-free source imports
+pass, while upstream-version compatibility, owner review and real-weight
+parity remain open. These changes do not promote a public model row.
+
+## 2026-09-30 Realtime native composition review (06:20 UTC)
+
+[Draft PR #181](https://github.com/ayutaz/vokra/pull/181), at
+`378329a6bc7d72ca7b2ef73d330067b1d254be3f`, authenticated the four-output
+preset import boundary. Its disposable VAST replay recorded 8,129 workspace
+tests passed, zero failed and 107 ignored; workspace Clippy, cargo-deny and
+cargo-audit passed. The separate ignored real-preset parser test passed.
+This was cache inspection/parser evidence, not model-forward or waveform
+parity. Instance `53475665` was destroyed with its storage after small-log
+recovery; its individual readback returned `instances: null`.
+
+The native composition candidate at `a0babe96415c5596ac217457fdb4404151bc5ec3`
+now connects authenticated preset import, incremental positive text LM/TTS,
+independent negative TTS, CFG sampling, causal acoustic decode and the original
+scaled-latent connector input. Manager review corrected both next-step CFG
+conditions, repeated-EOS audio suppression, six-step cache draining and the
+strict maximum-length boundary. Caller stop/control limits remain explicit;
+operation failures reset mutable state and poison the session. Model-free
+regressions were added, but this candidate's Rust tests have not yet run.
+Formatting, diff checks, forbidden-symbol and zero-dependency gates passed.
+
+The complete composition currently rejects Metal/CUDA before binding because
+the sampler and acoustic decoder are CPU-only. The independent official
+streaming caller is being reviewed separately. It must preserve exact source,
+weights, tokenizer, preset, dependency and execution-scope identities and use
+the same initial noise for CPU/CUDA comparison. A faster GPU may be selected
+only after its correctness guard passes; this does not waive native CPU,
+Apple CPU/Metal or no-fallback evidence. Voice consent, dependency/license
+closure, independent real-weight waveform reference and native CPU parity
+remain open. No model execution, upload, CLI promotion or public-row completion
+is claimed by this candidate. The public code/artifact baseline remains
+136 full and 58 unresolved.
+
+## 2026-09-30 Realtime Metal and cache-API continuation (07:04 UTC)
+
+The earlier CPU-only composition note is superseded at source level by
+`6f8d89cff231d02669f79dfbabcc03b101bce068`. The Realtime wrapper now
+selects the existing Metal learned-operation paths for language, diffusion,
+connector and causal acoustic decode. A complete operation-registry preflight
+runs before tensor binding; unavailable Metal and unsupported CUDA remain loud
+errors, never an implicit CPU fallback. ConvTranspose is the established
+host layout transformation followed by the selected backend's Conv1d, and the
+64-element DPM scheduler is an explicit host-control stage. This is not an
+all-device-resident implementation, measured acceleration, Apple hardware pass,
+or real-weight parity verdict.
+
+The independent streaming caller at
+`9e9ff425a04d7ae26a89a8ff0a515f69227a6ccc` replaces the incomplete legacy
+cache wrapper with Transformers' public `DynamicCache(ddp_cache_data=...)`
+constructor. The pinned wheel SHA-256 is
+`8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e`;
+its `cache_utils.py` SHA-256 is
+`7827cec593e6e6fa2ea123abce94eb422424d30a3391f15b38414684d0bbcd33`.
+Both were checked against the primary wheel. The new model-free probe checks
+the installed source identity and exercises the production migration/cast
+helpers on four tiny synthetic official cache objects. It does not acquire a
+checkpoint, preset or voice, and its VAST result is still pending at this
+snapshot. Full official generation, voice rights, dependency disposition,
+native real-weight CPU parity and Apple CPU/Metal/no-fallback remain open.
+
+A fresh read-only HF audit on `main`
+`166dc18ec47ab06e1c130d9b70e64948a517e156` still reports 194 public
+repositories, 193 GGUF-bearing repositories and 198 files, with 136 full,
+43 partial, 14 without a runtime binder and one non-artifact. The GitHub API
+reports 215 open Dependabot alerts (187 patched-version available, 28 without)
+and three open Scorecard findings: `CIIBestPracticesID`, `CodeReviewID` and
+`VulnerabilitiesID`. PRs #138 and #139 await fresh CI with auto-merge enabled;
+no alert closure is attributed to them here. VAST's instance-list readback was
+empty before allocating any new verification worker. All 58 unresolved public
+rows remain in the completion queue, and publication remains separate.
+
+## 2026-09-30 Cache API pass and compile correction (07:13 UTC)
+
+The disposable VAST replay of `961d24db8e00ae617d4d0987e2ea2d93178898a8`
+passed the model-free DynamicCache probe using the patched CPU environment
+at `b690f93ad9a476bc102dbb134c78043645ef9c52`. Its lock SHA-256 is
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e`.
+The installed Transformers source matched the previously recorded wheel and
+cache-utils hashes. All four generic official cache branches preserved values,
+dtype metadata, sequence positions and positive-length masks through the
+production migration/cast helpers; an actual cache update advanced length
+two to three. The result is strictly `API_ONLY_NO_MODEL_EXECUTION`:
+no checkpoint/preset/voice acquisition, model forward or publication occurred.
+The recovered API result SHA-256 is
+`70f2d2089f84b0cdbd94aff415bd5d1451a29ae363d8348dc69c6b0a082bdce1`.
+
+The streaming self-test and remote cargo-deny/cargo-audit passed, but workspace
+tests stopped at compile time: three regression-test module paths incorrectly
+resolved sibling modules through `super`. The workspace log SHA-256 is
+`d85985ae27eacf08bbe84a09edd491cdc2a37dadf589775ad10f8091fc86840b`.
+Clippy and the CUDA-feature test leg were not reached. The reviewed correction
+at `38279725ca3df5a429c8cd540eef7b98b4129ca4` uses absolute crate paths;
+formatting, diff, forbidden-symbol and zero-dependency gates pass, while its
+remote compile/test replay remains pending. No green workspace result is
+claimed for either candidate.
+
+Setup contract `53486809` was destroyed after an instance-response parser
+failure before verification. Verification contract `53487020` was destroyed
+after small-log recovery, including its storage; individual readback returned
+`instances: null`, and a subsequent instance-list readback was empty.
+No cloud resource is being retained merely to wait for CI.
+
+PRs #138/#139 still have auto-merge enabled and no observed failing checks:
+#138 has 52 successes, one skip and 16 pending checks; #139 has 53 successes,
+one skip and 15 pending checks. These are dated queue observations, not merge
+or alert-closure evidence. Real-weight native parity, whole-path CPU/GPU timing,
+Apple CPU/Metal/no-fallback and the remaining public rows stay open.
+
+## 2026-09-30 Corrected-HEAD replay setup disposition (07:30 UTC)
+
+The corrected candidate `47a4314532e7099e635732ce5cb4abbcefb24657`
+has not obtained a valid remote Cargo result. Four disposable setup attempts
+stopped before verification: `53488650` encountered an scp port-option error;
+`53489086` attempted to fetch a local work branch from origin; `53489463`
+assumed the wrong binary path inside the cargo-deny archive after validating
+its SHA-256; and `53489842` was interrupted during provisioning. Each was
+destroyed and its individual readback returned `instances: null`. Small setup
+logs were recovered into `/private/tmp/vokra-vast-47a-logs` and its `-2`, `-3`
+and `-4` counterparts. These are workflow/setup failures, not model-parity
+failures or valid test runs. The pass count for this replay is not available;
+test, Clippy and dependency gates must be rerun after reviewing the controller.
+Further automatic re-renting was stopped. An unrelated project instance was
+not operated on.
+
+The separately reviewed consumer candidate
+`b85c420e4252656fb75f32fe728c61ac2a2b51a5` authenticates an independent
+official streaming packet, the actual owner-scope file and externally reviewed
+digests, fixed inputs, strict native preset import and Qwen sidecars. It
+distinguishes NPY-file hashes from raw F32 noise-payload hashes, observes native
+logical positions rather than inventing counters, and distinguishes EOS drain
+and uncached max-length terminal chunks. It can diagnose native PCM differences
+when real authorized artifacts exist; no full-waveform bound has been supplied.
+Static formatting, diff, forbidden-symbol and zero-dependency gates passed,
+but remote compilation and real-packet execution are still pending. No hidden
+state/latent numerical parity, voice-rights approval or Apple pass is claimed.
+
+PR #139 merged at `06240fe9b95bbd9ff3837c2d012c63e1b4abd148` and the
+maintainer's clean `main` was fast-forwarded to it. A fresh Dependabot readback
+still contains 215 open alerts, so closure is not inferred merely from merging.
+PR #138 remains open with auto-merge enabled and its last three checks pending.
+The public code/artifact baseline remains 136 full and 58 unresolved.
+> **End of restored Realtime stack history.** The following main-ledger
+> continuation and later dated records retain their original evidence.
+
 ## 2026-09-30 continuation readback (2026-09-29 23:39 UTC)
 
 At clean `main` `4715e07f12a1e32247e848cdda4c99773d8800df`, the read-only HF
@@ -10051,6 +10232,36 @@ and independently verifies those byte hashes. No protected manifest or
 management-document change is staged into that implementation commit, and
 no push occurs. Remote source evidence remains bound to producer `48731912`
 and the fixed input hashes, not a claimed workspace replay of the new HEAD.
+
+## 2026-10-04 existing-PR integration work
+
+The owner prioritised existing PR disposition before adding new tasks or PRs.
+The read-only inventory began with 19 open draft PRs. PR #149 was closed as
+superseded without merging or deleting its branch: its explicit FireRed PCM
+beam seam and later source-fidelity corrections already landed through
+PR #186, merge commit `91a7ebcebf6a643a2235040e133c767a78b8f8b3`.
+The [disposition comment](https://github.com/ayutaz/vokra/pull/149#issuecomment-5978082294)
+binds the retired PR head and current-main review baseline.
+
+The eight Realtime drafts form a linear stack:
+#163 → #164 → #168 → #171 → #178 → #179 → #181 → #182.
+Their cumulative implementation is not already on current main
+`4d753d81b084f6d2369e330656035042fd00fb9f`. The existing #182 branch is being
+integrated with that main instead of creating another PR or repeatedly
+running eight serial integration waves. Earlier exact-head tests remain
+historical; fresh integrated-head repository and remote model-free checks
+are required before push/merge. The other seven drafts are not yet closed.
+
+PR #152 is separately being updated to the same main baseline. Its existing
+source/evidence/pre-import safeguards remain fail-closed. The undeveloped
+setuptools de-vendoring candidate is not mixed into this main-refresh wave;
+LGPL/native terms, primary license bytes, upstream-pin compatibility and
+execution approval remain unresolved. The PR stays draft independently of CI.
+
+These integration changes do not supply new real-weight reference, native
+CPU parity, Apple CPU/Metal/no-fallback, preset consent, publication or
+public-model completion evidence. No new model payload or paid worker has
+been acquired for this wave at this checkpoint.
 
 ## Final audit
 

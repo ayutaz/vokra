@@ -1179,6 +1179,42 @@ The historical MIT determination alone does not authorize an upload, and no
 public artifact was changed. See the
 [dated execution receipt](handoff/public-catalog-security-completion-2026-09-29.md#2026-09-30-vibevoice-realtime-real-weight-and-device-selection-readback).
 
+### 2026-09-30 Realtime Carter preset cache inspection
+
+A VAST-only, model-free inspection authenticated the fixed Microsoft source
+preset `demo/voices/streaming_model/en-Carter_man.pt` at source revision
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600`: 4,256,002 bytes, Git blob
+`1d795ef667e6641eecb8b22452bb853b089bfdbe`, payload SHA-256
+`a7bfdf1cd4939c22469bcfc6f427ae9c4467b3df46c2c14303a39c294cfc6897`.
+The official demo's `weights_only=True` loader with only
+`BaseModelOutputWithPast` and `DynamicCache` safe globals read the four
+BF16 hidden/KV branches. Their lengths are 108 (`lm`), 316 (`tts_lm`),
+one (`neg_lm`) and one (`neg_tts_lm`); cache layer counts are 4/20/4/20.
+The inspection exported 100 F32 tensors with an explicit cache-axis
+transpose for the native bridge. No model was constructed or forwarded,
+and no audio was generated, played or published.
+
+This establishes the cache schema and fixed preset byte identity only.
+Per-preset voice rights, consent, redistribution and preservation of the
+upstream disclaimer/watermark remain unresolved; the model-license MIT row
+does not settle them. The bridge record retains `INSPECTION_ONLY`,
+`voice_consent=UNPROVEN` and `NO_UPLOAD`. The Python reference closure,
+complete independent waveform reference, real-weight native CPU parity and
+Apple CPU/Metal/no-fallback gates also remain open.
+
+### 2026-09-30 Realtime native composition candidate
+
+The native composition candidate at
+`a0babe96415c5596ac217457fdb4404151bc5ec3` sequences the existing first-party
+language, diffusion, connector and acoustic components around the authenticated
+four-output preset. This implementation does not resolve the Carter voice
+consent/distribution questions above or approve the Python reference dependency
+closure. Complete independent waveform reference, real-weight native CPU
+parity and Apple CPU/Metal/no-fallback evidence remain open. The composite
+currently rejects unsupported GPU backends explicitly; no fallback or model
+execution is implied by its model-free sequencing tests. Existing MIT weight
+history is retained without a new sign-off. Publication remains `NO_UPLOAD`.
+
 ## 10. 定期監査
 
 - **四半期ごと**: 全依存の最新版でライセンス変更がないかチェック (Piper が MIT → GPL-3.0 化した precedent)

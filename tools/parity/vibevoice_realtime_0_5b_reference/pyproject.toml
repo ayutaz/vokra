@@ -7,7 +7,7 @@ dependencies = [
     "diffusers==0.32.2",
     "numpy==2.3.5",
     "safetensors==0.5.3",
-    "torch==2.7.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch==2.13.0 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
     "tqdm==4.67.1",
     "transformers==5.10.4",
 ]
@@ -17,14 +17,24 @@ package = false
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     # The runner is VAST-only; this marker keeps metadata tooling on the
-    # maintainer Mac from trying to resolve a nonexistent Torch 2.7.1 arm64
-    # wheel. The actual reference environment remains Linux-only in practice.
+    # maintainer Mac from trying to resolve a nonexistent Linux-only Torch
+    # reference wheel. The actual reference environment remains Linux-only in
+    # practice.
     "sys_platform == 'darwin' and platform_machine == 'aarch64'",
 ]
 
-# Keep the standard Linux Torch wheel so a VAST RTX 4090 can be measured.  A
-# CPU-only source here would make the CUDA leg impossible before the runner can
-# apply its measured faster-and-parity-passing selection rule.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# This security lock intentionally installs the CPU-only wheel.  It avoids
+# pulling any CUDA 13 native payload until the separate owner/legal dependency
+# review is complete.  A GPU timing run requires a separately approved lock;
+# this model-free API/closure gate must never infer that approval.
 
 [tool.vokra.reference]
 execution = "VAST_ONLY"
@@ -34,7 +44,14 @@ checkpoint_revision = "6bce5f06044837fe6d2c5d7a71a84f0416bd57e4"
 checkpoint_sha256 = "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"
 config_bytes = 2117
 config_sha256 = "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57"
-dependency_lock_status = "VAST_UV_SYNC_SUCCEEDED_OWNER_REVIEW_REQUIRED"
+dependency_lock_status = "IDENTITY_ENRICHED_VAST_NOT_RUN_OWNER_REVIEW_REQUIRED"
+torch_distribution = "2.13.0+cpu"
+torch_index = "https://download.pytorch.org/whl/cpu"
+dependency_lock_sha256 = "34f58e53b5c79ed96853c2a4b6f9b6b1eaf12066f010cd23ddffae2b816b3797"
+historical_compatibility_smoke_dependency_lock_sha256 = "cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e"
+historical_installed_closure_dependency_lock_sha256 = "cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e"
+cuda_native_payload = "EXCLUDED_UNREVIEWED"
+gpu_timing_status = "DEFERRED_CPU_ONLY_SECURITY_LOCK"
 source_import_closure = ["torch", "numpy", "tqdm", "transformers", "diffusers.DPMSolverMultistepScheduler"]
 excluded_upstream_optional = ["accelerate", "gradio", "av", "aiortc", "uvicorn", "fastapi", "pydub", "ml-collections", "absl-py"]
 excluded_unused_audio = ["librosa", "soundfile", "soxr", "scipy", "numba", "llvmlite"]
@@ -52,7 +69,7 @@ compatibility_smoke_publication = "NO_UPLOAD"
 compatibility_smoke_qwen2_fast_import = "COMPATIBILITY_SHIM"
 compatibility_smoke_registration = "SCOPED_VIBEVOICE_ACOUSTIC_TOKENIZER_OVERRIDE"
 installed_closure_audit_status = "OWNER_REVIEW_REQUIRED_NO_UPLOAD"
-installed_closure_audit_sha256 = "a2d2939ae7dddff33eade14b4eb70ccc6a7af2b732617c6de2531c43ec5bcfc6"
-installed_closure_audit_package_count = 56
-installed_closure_audit_missing_license_files = ["safetensors", "tokenizers", "tqdm", "triton"]
+installed_closure_audit_sha256 = "23bc546d7fcf47f1dc3b66f587c53d37b8025e5b418c185148f3201f1417e06e"
+installed_closure_audit_package_count = 41
+installed_closure_audit_missing_license_files = ["safetensors", "tokenizers", "tqdm"]
 reference_replay_status = "BLOCKED_OWNER_REVIEW_REQUIRED"

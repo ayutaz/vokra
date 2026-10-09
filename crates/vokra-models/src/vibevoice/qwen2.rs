@@ -76,6 +76,31 @@ impl Qwen2RuntimeConfig {
         }
     }
 
+    /// Authenticated Realtime text Qwen2 axes.
+    #[must_use]
+    pub(crate) const fn vibevoice_realtime_text() -> Self {
+        Self {
+            hidden_size: 896,
+            vocab_size: 151_936,
+            num_layers: 4,
+            num_attention_heads: 14,
+            num_key_value_heads: 2,
+            intermediate_size: 4_864,
+            rope_theta: 1_000_000.0,
+            rms_norm_eps: 1.0e-6,
+            max_position_embeddings: 8_192,
+        }
+    }
+
+    /// Authenticated Realtime TTS Qwen2 axes.
+    #[must_use]
+    pub(crate) const fn vibevoice_realtime_tts() -> Self {
+        Self {
+            num_layers: 20,
+            ..Self::vibevoice_realtime_text()
+        }
+    }
+
     fn validate(self) -> Result<()> {
         if self.hidden_size == 0
             || self.vocab_size == 0
@@ -153,7 +178,7 @@ struct Layer {
     down: Linear,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct LayerCache {
     keys: Vec<f32>,
     values: Vec<f32>,
@@ -173,13 +198,42 @@ impl LayerCache {
     }
 }
 
+/// One caller-owned Qwen2 KV-cache layer in the runtime's native layout.
+///
+/// Both buffers are flattened row-major `[position, kv-head, head-dim]`
+/// values; the key rows must already have RoPE applied, and the value rows are
+/// the corresponding runtime values.  This deliberately does not accept or
+/// reinterpret a framework cache layout such as PyTorch `DynamicCache`
+/// `[batch, kv-head, position, head-dim]`.  Since these are unannotated f32
+/// slices, a different ordering with the same element count is
+/// indistinguishable from a valid snapshot; the caller must satisfy this
+/// native-layout contract.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // consumed by the authenticated Realtime prefill branches
+pub(crate) struct Qwen2KvCacheLayer<'a> {
+    /// Post-RoPE keys in `[position, kv-head, head-dim]` order.
+    pub(crate) keys: &'a [f32],
+    /// Values in `[position, kv-head, head-dim]` order.
+    pub(crate) values: &'a [f32],
+}
+
+/// Caller-owned snapshot for transactional Qwen2 KV-cache import.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // consumed by the authenticated Realtime prefill branches
+pub(crate) struct Qwen2KvCacheSnapshot<'a> {
+    /// Number of cached positions represented by every layer.
+    pub(crate) position: usize,
+    /// Exactly one layer entry per configured Qwen2 decoder layer.
+    pub(crate) layers: &'a [Qwen2KvCacheLayer<'a>],
+}
+
 /// Tied Qwen2 weights bound to the fixed VibeVoice tensor layout.
 #[derive(Debug)]
 pub(crate) struct Qwen2Weights {
     config: Qwen2RuntimeConfig,
-    embedding: Vec<f32>,
+    embedding: Arc<Vec<f32>>,
     layers: Vec<Layer>,
-    final_norm: Vec<f32>,
+    final_norm: Option<Vec<f32>>,
 }
 
 impl Qwen2Weights {
@@ -191,19 +245,83 @@ impl Qwen2Weights {
     pub(crate) fn from_gguf(file: &GgufFile) -> Result<Self> {
         let config = Qwen2RuntimeConfig::vibevoice_1_5b();
         config.validate()?;
-        let embedding = load_raw(
-            file,
-            "model.language_model.embed_tokens.weight",
-            &[config.vocab_size, config.hidden_size],
-        )?;
-        let final_norm = load_raw(
-            file,
-            "model.language_model.norm.weight",
-            &[config.hidden_size],
-        )?;
+        Self::from_gguf_section(file, "model.language_model", config, true, None)
+    }
+
+    /// Loads one of the authenticated Realtime Qwen2 roles.
+    ///
+    /// Realtime's text stack is constructed with an identity final norm,
+    /// while its TTS stack has the regular Qwen2 RMSNorm.  The role prefix
+    /// and this policy are explicit so a 1.5B tensor cannot be accepted by
+    /// accident and the text path cannot gain an unrequested normalization.
+    pub(crate) fn from_gguf_section(
+        file: &GgufFile,
+        role_prefix: &str,
+        config: Qwen2RuntimeConfig,
+        with_final_norm: bool,
+        shared_embedding: Option<Arc<Vec<f32>>>,
+    ) -> Result<Self> {
+        if !matches!(
+            role_prefix,
+            "model.language_model" | "model.tts_language_model"
+        ) {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice Qwen2 role prefix is not an authenticated Realtime role".to_owned(),
+            ));
+        }
+        let expected_config = if role_prefix == "model.language_model" {
+            Qwen2RuntimeConfig::vibevoice_realtime_text()
+        } else {
+            Qwen2RuntimeConfig::vibevoice_realtime_tts()
+        };
+        let realtime_role = config == expected_config
+            && with_final_norm == (role_prefix == "model.tts_language_model");
+        let legacy_role = role_prefix == "model.language_model"
+            && config == Qwen2RuntimeConfig::vibevoice_1_5b()
+            && with_final_norm
+            && shared_embedding.is_none();
+        if !realtime_role && !legacy_role {
+            return Err(VokraError::InvalidArgument(format!(
+                "vibevoice Qwen2 role `{role_prefix}` has an unauthenticated axes/final-norm policy"
+            )));
+        }
+        config.validate()?;
+        let embedding = match shared_embedding {
+            Some(embedding) => {
+                require_tensor_shape(
+                    file,
+                    "vibevoice Qwen2",
+                    &format!("{role_prefix}.embed_tokens.weight"),
+                    &[config.vocab_size, config.hidden_size],
+                )?;
+                embedding
+            }
+            None => Arc::new(load_raw(
+                file,
+                &format!("{role_prefix}.embed_tokens.weight"),
+                &[config.vocab_size, config.hidden_size],
+            )?),
+        };
+        let final_norm = if with_final_norm {
+            Some(load_raw(
+                file,
+                &format!("{role_prefix}.norm.weight"),
+                &[config.hidden_size],
+            )?)
+        } else {
+            if file
+                .tensor_info(&format!("{role_prefix}.norm.weight"))
+                .is_some()
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "vibevoice Qwen2 role `{role_prefix}` unexpectedly carries a final norm"
+                )));
+            }
+            None
+        };
         let mut layers = Vec::with_capacity(config.num_layers);
         for index in 0..config.num_layers {
-            let prefix = format!("model.language_model.layers.{index}");
+            let prefix = format!("{role_prefix}.layers.{index}");
             layers.push(Layer {
                 q: load_linear(
                     file,
@@ -301,6 +419,52 @@ impl Qwen2Runtime {
         })
     }
 
+    /// Binds one authenticated Realtime Qwen2 role on the selected backend.
+    pub(crate) fn from_gguf_section_with_backend(
+        file: &GgufFile,
+        role_prefix: &str,
+        config: Qwen2RuntimeConfig,
+        backend: BackendKind,
+        with_final_norm: bool,
+    ) -> Result<Self> {
+        Self::from_gguf_section_with_backend_and_embedding(
+            file,
+            role_prefix,
+            config,
+            backend,
+            with_final_norm,
+            None,
+        )
+    }
+
+    /// Same as [`Self::from_gguf_section_with_backend`] while reusing the
+    /// authenticated base embedding.  The Realtime TTS forward calls the
+    /// base model's embedding lookup, so loading a second 151936x896 table
+    /// would be both unnecessary and an avoidable resident-memory cost.
+    pub(crate) fn from_gguf_section_with_backend_and_embedding(
+        file: &GgufFile,
+        role_prefix: &str,
+        config: Qwen2RuntimeConfig,
+        backend: BackendKind,
+        with_final_norm: bool,
+        shared_embedding: Option<Arc<Vec<f32>>>,
+    ) -> Result<Self> {
+        Self::new(
+            Qwen2Weights::from_gguf_section(
+                file,
+                role_prefix,
+                config,
+                with_final_norm,
+                shared_embedding,
+            )?,
+            backend,
+        )
+    }
+
+    pub(crate) fn shared_embedding(&self) -> Arc<Vec<f32>> {
+        Arc::clone(&self.weights.embedding)
+    }
+
     /// Loads and binds the Qwen2 section of an authenticated VibeVoice GGUF.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         // Authentication is enforced here rather than delegated to callers.
@@ -318,6 +482,11 @@ impl Qwen2Runtime {
     #[must_use]
     pub fn config(&self) -> Qwen2RuntimeConfig {
         self.weights.config
+    }
+
+    /// Returns the current number of committed KV-cache positions.
+    pub(crate) const fn position(&self) -> usize {
+        self.position
     }
 
     /// Clears the KV cache and starts a new sequence at position zero.
@@ -342,6 +511,116 @@ impl Qwen2Runtime {
             cache,
             position: 0,
         }
+    }
+
+    /// Imports a caller-owned post-RoPE KV snapshot transactionally.
+    ///
+    /// The snapshot must contain exactly the configured layer count, and each
+    /// layer must contain equal key/value buffers of exactly
+    /// `position * (num_key_value_heads * head_dim)` elements in this
+    /// runtime's flattened `[position, kv-head, head-dim]` row layout.  The
+    /// method never transposes, batches, or otherwise guesses a framework
+    /// cache layout.  Because the buffers carry no dimension/order metadata,
+    /// a caller-supplied layout with the same element count cannot be detected
+    /// here; the native-layout/post-RoPE contract is explicit at this boundary.
+    /// All inputs are validated before the runtime cache or position is
+    /// replaced; an error therefore leaves the existing generation state
+    /// unchanged.  The caller retains ownership of the input buffers, which
+    /// are copied only after validation succeeds.
+    #[allow(dead_code)] // consumed by the authenticated Realtime prefill branches
+    pub(crate) fn import_kv_cache_snapshot(
+        &mut self,
+        snapshot: Qwen2KvCacheSnapshot<'_>,
+    ) -> Result<()> {
+        let config = self.config();
+        if snapshot.layers.len() != config.num_layers {
+            return Err(VokraError::InvalidArgument(format!(
+                "vibevoice Qwen2 KV snapshot layer count {} does not match configured {}",
+                snapshot.layers.len(),
+                config.num_layers
+            )));
+        }
+        if snapshot.position > config.max_position_embeddings {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice Qwen2 KV snapshot position exceeds max_position_embeddings".to_owned(),
+            ));
+        }
+        let kv_width = config
+            .num_key_value_heads
+            .checked_mul(config.head_dim())
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "vibevoice Qwen2 KV snapshot kv width overflows usize".to_owned(),
+                )
+            })?;
+        let expected_len = snapshot.position.checked_mul(kv_width).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "vibevoice Qwen2 KV snapshot position/width product overflows usize".to_owned(),
+            )
+        })?;
+
+        // Validate every layer before allocating or mutating self.  Length
+        // checks establish the flat buffer shape only; they cannot identify a
+        // different ordering with the same element count, so ordering remains
+        // the caller's explicit native-layout contract.
+        for (layer_index, layer) in snapshot.layers.iter().enumerate() {
+            if layer.keys.len() != layer.values.len() {
+                return Err(VokraError::InvalidArgument(format!(
+                    "vibevoice Qwen2 KV snapshot layer {layer_index} key/value lengths differ"
+                )));
+            }
+            if layer.keys.len() != expected_len {
+                return Err(VokraError::InvalidArgument(format!(
+                    "vibevoice Qwen2 KV snapshot layer {layer_index} has {} elements, expected {expected_len}",
+                    layer.keys.len()
+                )));
+            }
+            if layer.keys.iter().any(|value| !value.is_finite())
+                || layer.values.iter().any(|value| !value.is_finite())
+            {
+                return Err(VokraError::InvalidArgument(format!(
+                    "vibevoice Qwen2 KV snapshot layer {layer_index} contains non-finite values"
+                )));
+            }
+        }
+
+        let staged = snapshot
+            .layers
+            .iter()
+            .map(|layer| LayerCache {
+                keys: layer.keys.to_vec(),
+                values: layer.values.to_vec(),
+            })
+            .collect();
+        self.cache = staged;
+        self.position = snapshot.position;
+        Ok(())
+    }
+
+    /// Imports a native-layout snapshot supplied as borrowed key/value pairs.
+    ///
+    /// This narrow bridge keeps the authenticated Qwen2 snapshot validator as
+    /// the single implementation while allowing sibling composite modules to
+    /// keep their own pair/snapshot types.  It never infers or transposes a
+    /// framework layout; the slices must already be post-RoPE and flattened as
+    /// `[position, kv-head, head-dim]`.
+    #[allow(dead_code)] // consumed by the staged Realtime four-output bridge
+    pub(crate) fn import_kv_cache_snapshot_parts(
+        &mut self,
+        position: usize,
+        layers: &[(&[f32], &[f32])],
+    ) -> Result<()> {
+        let snapshot_layers: Vec<_> = layers
+            .iter()
+            .map(|layer| Qwen2KvCacheLayer {
+                keys: layer.0,
+                values: layer.1,
+            })
+            .collect();
+        self.import_kv_cache_snapshot(Qwen2KvCacheSnapshot {
+            position,
+            layers: &snapshot_layers,
+        })
     }
 
     /// Runs a complete causal prompt matrix and returns one hidden row per
@@ -552,12 +831,7 @@ impl Qwen2Runtime {
             add_assign(&mut hidden, &projected)?;
         }
         self.position += 1;
-        rms(
-            &compute,
-            &hidden,
-            &self.weights.final_norm,
-            self.config().rms_norm_eps,
-        )
+        self.finalize_hidden(&compute, hidden)
     }
 
     fn empty_cache(&self) -> Vec<LayerCache> {
@@ -695,14 +969,40 @@ impl Qwen2Runtime {
             add_assign(&mut hidden, &projected)?;
         }
         self.position = rows;
-        rms_rows(
-            &compute,
-            &hidden,
-            &self.weights.final_norm,
-            rows,
-            d,
-            config.rms_norm_eps,
-        )
+        self.finalize_hidden_rows(&compute, hidden, rows, d)
+    }
+
+    fn finalize_hidden(&self, compute: &Compute, hidden: Vec<f32>) -> Result<Vec<f32>> {
+        match self.weights.final_norm.as_deref() {
+            Some(weight) => rms(compute, &hidden, weight, self.config().rms_norm_eps),
+            None => {
+                finite("Qwen2 final hidden", &hidden)?;
+                Ok(hidden)
+            }
+        }
+    }
+
+    fn finalize_hidden_rows(
+        &self,
+        compute: &Compute,
+        hidden: Vec<f32>,
+        rows: usize,
+        width: usize,
+    ) -> Result<Vec<f32>> {
+        match self.weights.final_norm.as_deref() {
+            Some(weight) => rms_rows(
+                compute,
+                &hidden,
+                weight,
+                rows,
+                width,
+                self.config().rms_norm_eps,
+            ),
+            None => {
+                finite("Qwen2 final hidden rows", &hidden)?;
+                Ok(hidden)
+            }
+        }
     }
 
     fn attend(
@@ -806,7 +1106,10 @@ fn load_linear(
 fn validate_weight_shapes(weights: &Qwen2Weights) -> Result<()> {
     let config = weights.config;
     if weights.embedding.len() != config.vocab_size * config.hidden_size
-        || weights.final_norm.len() != config.hidden_size
+        || weights
+            .final_norm
+            .as_ref()
+            .is_some_and(|norm| norm.len() != config.hidden_size)
         || weights.layers.len() != config.num_layers
     {
         return Err(VokraError::ModelLoad(
@@ -938,9 +1241,77 @@ fn apply_rope(values: &mut [f32], position: usize, theta: f32, head_dim: usize) 
 }
 
 #[cfg(test)]
+/// Small model-free runtime shared by the Qwen2 and Realtime language tests.
+pub(crate) fn test_fixture_runtime() -> Qwen2Runtime {
+    let config = Qwen2RuntimeConfig {
+        hidden_size: 4,
+        vocab_size: 8,
+        num_layers: 1,
+        num_attention_heads: 2,
+        num_key_value_heads: 1,
+        intermediate_size: 8,
+        rope_theta: 1.0e6,
+        rms_norm_eps: 1.0e-6,
+        max_position_embeddings: 16,
+    };
+    let layer = Layer {
+        q: test_identity_linear(4, 4, true),
+        k: test_identity_linear(4, 2, true),
+        v: test_identity_linear(4, 2, true),
+        o: test_identity_linear(4, 4, false),
+        input_norm: vec![1.0; 4],
+        post_norm: vec![1.0; 4],
+        gate: test_identity_linear(4, 8, false),
+        up: test_identity_linear(4, 8, false),
+        down: test_identity_linear(8, 4, false),
+    };
+    let embedding = (0..config.vocab_size * config.hidden_size)
+        .map(|index| (index % config.hidden_size) as f32 * 0.1 + 0.1)
+        .collect();
+    Qwen2Runtime::new(
+        Qwen2Weights {
+            config,
+            embedding: Arc::new(embedding),
+            layers: vec![layer],
+            final_norm: Some(vec![1.0; 4]),
+        },
+        BackendKind::Cpu,
+    )
+    .expect("test Qwen2 fixture must bind")
+}
+
+#[cfg(test)]
+fn test_identity_linear(input: usize, output: usize, with_bias: bool) -> Linear {
+    let mut weight = vec![0.0; input * output];
+    for index in 0..input.min(output) {
+        weight[index * output + index] = 1.0;
+    }
+    Linear {
+        weight,
+        bias: with_bias.then(|| vec![0.0; output]),
+        in_features: input,
+        out_features: output,
+    }
+}
+
+#[cfg(test)]
+impl Qwen2Runtime {
+    /// Shares the module-level model-free fixture with sibling tests.
+    pub(crate) fn test_fixture_runtime() -> Self {
+        test_fixture_runtime()
+    }
+
+    /// Exposes only the cache position for model-free composite tests.
+    pub(crate) fn test_position(&self) -> usize {
+        self.position()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use super::test_fixture_runtime as fixture_runtime;
     use super::*;
 
     #[test]
@@ -1067,6 +1438,144 @@ mod tests {
     }
 
     #[test]
+    fn kv_snapshot_import_matches_prefilled_runtime_on_next_step() {
+        let mut original = fixture_runtime();
+        let prompt = [0.1_f32, 0.2, 0.3, 0.4, 0.4, 0.3, 0.2, 0.1];
+        original.prefill_embeddings(&prompt, 2).unwrap();
+        let snapshot_layers: Vec<_> = original
+            .cache
+            .iter()
+            .map(|layer| Qwen2KvCacheLayer {
+                keys: &layer.keys,
+                values: &layer.values,
+            })
+            .collect();
+        let snapshot = Qwen2KvCacheSnapshot {
+            position: original.position,
+            layers: &snapshot_layers,
+        };
+        let mut imported = original.fork_empty_cache();
+        imported.import_kv_cache_snapshot(snapshot).unwrap();
+
+        let next = [0.6_f32, -0.5, 0.4, -0.3];
+        let expected = original.step_embedding(&next).unwrap();
+        let actual = imported.step_embedding(&next).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(imported.position, original.position);
+        assert_eq!(imported.cache, original.cache);
+    }
+
+    #[test]
+    fn kv_snapshot_rejects_invalid_inputs_without_mutating_state() {
+        let mut runtime = fixture_runtime();
+        runtime
+            .prefill_embeddings(&[0.1, 0.2, 0.3, 0.4], 1)
+            .unwrap();
+
+        let empty_layers: [Qwen2KvCacheLayer<'_>; 0] = [];
+        assert_snapshot_rejected(
+            &mut runtime,
+            Qwen2KvCacheSnapshot {
+                position: 1,
+                layers: &empty_layers,
+            },
+        );
+
+        let valid_keys = [0.1_f32, 0.2];
+        let valid_values = [0.3_f32, 0.4];
+        let valid_layers = [Qwen2KvCacheLayer {
+            keys: &valid_keys,
+            values: &valid_values,
+        }];
+        let max_position = runtime.config().max_position_embeddings;
+        assert_snapshot_rejected(
+            &mut runtime,
+            Qwen2KvCacheSnapshot {
+                position: max_position + 1,
+                layers: &valid_layers,
+            },
+        );
+
+        let wrong_shape_layers = [Qwen2KvCacheLayer {
+            keys: &[0.1_f32],
+            values: &[0.2_f32],
+        }];
+        assert_snapshot_rejected(
+            &mut runtime,
+            Qwen2KvCacheSnapshot {
+                position: 1,
+                layers: &wrong_shape_layers,
+            },
+        );
+
+        let mismatched_layers = [Qwen2KvCacheLayer {
+            keys: &[0.1_f32],
+            values: &valid_values,
+        }];
+        assert_snapshot_rejected(
+            &mut runtime,
+            Qwen2KvCacheSnapshot {
+                position: 1,
+                layers: &mismatched_layers,
+            },
+        );
+
+        let nonfinite_keys = [f32::NAN, 0.2_f32];
+        let nonfinite_layers = [Qwen2KvCacheLayer {
+            keys: &nonfinite_keys,
+            values: &valid_values,
+        }];
+        assert_snapshot_rejected(
+            &mut runtime,
+            Qwen2KvCacheSnapshot {
+                position: 1,
+                layers: &nonfinite_layers,
+            },
+        );
+    }
+
+    fn assert_snapshot_rejected(runtime: &mut Qwen2Runtime, snapshot: Qwen2KvCacheSnapshot<'_>) {
+        let before_cache = runtime.cache.clone();
+        let before_position = runtime.position;
+        assert!(runtime.import_kv_cache_snapshot(snapshot).is_err());
+        assert_eq!(runtime.position, before_position);
+        assert_eq!(runtime.cache, before_cache);
+    }
+
+    #[test]
+    fn cloned_cache_branches_append_without_mutating_each_other() {
+        let mut runtime = fixture_runtime();
+        runtime.step_embedding(&[0.1, 0.2, 0.3, 0.4]).unwrap();
+        let mut branch = runtime.clone();
+        branch.step_embedding(&[0.4, 0.3, 0.2, 0.1]).unwrap();
+
+        assert_eq!(runtime.position, 1);
+        assert_eq!(branch.position, 2);
+        assert_eq!(runtime.cache[0].keys.len(), 2);
+        assert_eq!(branch.cache[0].keys.len(), 4);
+    }
+
+    #[test]
+    fn independently_prefilled_branches_keep_prompt_specific_context() {
+        let mut positive = fixture_runtime();
+        let mut negative = fixture_runtime();
+        positive
+            .prefill_embeddings(&[0.1, 0.2, 0.3, 0.4], 1)
+            .unwrap();
+        negative
+            .prefill_embeddings(&[0.4, 0.3, 0.2, 0.1, 0.2, 0.3, 0.4, 0.5], 2)
+            .unwrap();
+
+        positive.step_embedding(&[0.5, 0.6, 0.7, 0.8]).unwrap();
+        negative.step_embedding(&[0.5, 0.6, 0.7, 0.8]).unwrap();
+
+        assert_eq!(positive.position, 2);
+        assert_eq!(negative.position, 3);
+        assert_eq!(positive.cache[0].keys.len(), 4);
+        assert_eq!(negative.cache[0].keys.len(), 6);
+    }
+
+    #[test]
     fn prefill_error_restores_previous_cache_without_cloning_it() {
         let mut runtime = fixture_runtime();
         runtime.step_embedding(&[0.1, 0.2, 0.3, 0.4]).unwrap();
@@ -1105,57 +1614,6 @@ mod tests {
                 .iter()
                 .all(|layer| { layer.keys.is_empty() && layer.values.is_empty() })
         );
-    }
-
-    fn fixture_runtime() -> Qwen2Runtime {
-        let config = Qwen2RuntimeConfig {
-            hidden_size: 4,
-            vocab_size: 8,
-            num_layers: 1,
-            num_attention_heads: 2,
-            num_key_value_heads: 1,
-            intermediate_size: 8,
-            rope_theta: 1.0e6,
-            rms_norm_eps: 1.0e-6,
-            max_position_embeddings: 16,
-        };
-        let layer = Layer {
-            q: identity_linear(4, 4, true),
-            k: identity_linear(4, 2, true),
-            v: identity_linear(4, 2, true),
-            o: identity_linear(4, 4, false),
-            input_norm: vec![1.0; 4],
-            post_norm: vec![1.0; 4],
-            gate: identity_linear(4, 8, false),
-            up: identity_linear(4, 8, false),
-            down: identity_linear(8, 4, false),
-        };
-        let embedding = (0..config.vocab_size * config.hidden_size)
-            .map(|index| (index % config.hidden_size) as f32 * 0.1 + 0.1)
-            .collect();
-        Qwen2Runtime::new(
-            Qwen2Weights {
-                config,
-                embedding,
-                layers: vec![layer],
-                final_norm: vec![1.0; 4],
-            },
-            BackendKind::Cpu,
-        )
-        .unwrap()
-    }
-
-    fn identity_linear(input: usize, output: usize, with_bias: bool) -> Linear {
-        let mut weight = vec![0.0; input * output];
-        for index in 0..input.min(output) {
-            weight[index * output + index] = 1.0;
-        }
-        Linear {
-            weight,
-            bias: with_bias.then(|| vec![0.0; output]),
-            in_features: input,
-            out_features: output,
-        }
     }
 
     // Deliberately independent scalar oracle: unlike `prefill`, this walks a
@@ -1229,11 +1687,12 @@ mod tests {
                     *dst += src;
                 }
             }
-            output.extend(reference_rms(
-                &hidden,
-                &runtime.weights.final_norm,
-                config.rms_norm_eps,
-            ));
+            let final_norm = runtime
+                .weights
+                .final_norm
+                .as_deref()
+                .expect("legacy 1.5B Qwen2 oracle requires a final norm");
+            output.extend(reference_rms(&hidden, final_norm, config.rms_norm_eps));
         }
         output
     }

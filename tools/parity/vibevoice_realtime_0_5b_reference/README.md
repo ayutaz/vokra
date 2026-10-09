@@ -16,6 +16,121 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## 2026-10-06 PR #169 security-closure integration
+
+This PR #182 preparation integrates the reviewed PR #169 installed-closure
+collector, its focused regression tests, and its CPU-only project lock at
+`b3e9d5c1cd2c75bcc0b2cbe81ce8b115f00e3690`. The lock pins
+`torch==2.13.0+cpu` through the explicit PyTorch CPU index, excludes CUDA and
+`nvidia-*` payload rows, and remains
+`IDENTITY_ENRICHED_VAST_NOT_RUN_OWNER_REVIEW_REQUIRED`. The collector is an
+evidence collector only: it does not install, import, download, execute, or
+publish a model, and unresolved license/native-payload facts remain
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`.
+
+## 2026-10-07 strict JSON hardening supersession
+
+The current collector now has 33 local regression tests covering fail-closed
+duplicate JSON object keys at the top level, in the platform object, and in
+selected artifact identity objects, for both equal and differing values. The
+regressions also cover malformed-manifest stderr, no report or sidecar creation,
+and preservation of pre-existing report/sidecar bytes. This is stdlib-only,
+synthetic-input evidence; it does not establish that the current 41 locked
+distributions were audited or installed.
+
+The earlier 31-test collector originated in PR #169; the V16 actual model-free
+run at exact source HEAD `3f82c214` is a separate historical scope. Neither
+must be combined with this new 33-test local proof. Owner, license, runtime,
+numerical-parity, and Apple CPU/Metal review remain unresolved, and the
+collector remains `OWNER_REVIEW_REQUIRED_NO_UPLOAD`.
+
+The PR #182 streaming/native reference responsibility is retained. This
+integration does not alter `NATIVE_PARITY.md`, `STREAMING_REFERENCE.md`,
+`export_preset_cache.py`, `probe_dynamic_cache_compat.py`, `run_reference.py`,
+or `run_streaming_reference.py`; the broader streaming and runtime sections
+below remain historical/current contract documentation as previously scoped.
+
+Model-free focused checks (stdlib only; no package sync or model execution):
+
+```text
+uv run --no-project --no-sync --python 3.12 python -B -S \
+  tools/parity/vibevoice_realtime_0_5b_reference/test_audit_installed_closure.py
+uv run --no-project --no-sync --python 3.12 python -B -S \
+  tools/parity/vibevoice_realtime_0_5b_reference/test_lock_contract.py
+```
+
+The first command exercises the 33 collector tests and the second exercises
+the five CPU-lock contract tests. These checks do not establish installed
+closure, license sign-off, real-weight parity, Apple CPU/Metal parity,
+publication eligibility, or authority to run upstream.
+
+## 2026-10-09 runtime invocation-boundary supersession
+
+The current collector adds two fail-closed runtime checks and one production
+entry regression, bringing the current synthetic collector suite to 35 tests.
+`audit()` rejects a target interpreter missing either `-S`
+(`sys.flags.no_site`) or `-B` (`sys.flags.dont_write_bytecode`) before reading
+any project, lock, manifest, venv, or source input. The successful report records
+the observed flags and retains `REQUIRED_EXTERNAL_CLEAN_BOOTSTRAP`.
+
+The external clean-bootstrap invocation remains mandatory:
+`env -u VIRTUAL_ENV -u CONDA_PREFIX -u PYTHONHOME -u PYTHONPATH -u
+PYTHONSTARTUP` and an approved UV-managed interpreter are still required
+because environment variables can affect interpreter startup before the
+collector runs. The runtime flag check cannot retroactively protect such
+earlier startup imports. The 2026-10-07 33-test result above remains historical
+evidence and is not rewritten.
+
+## Fixed Carter preset cache bridge (inspection-only)
+
+`export_preset_cache.py` is a VAST/Linux x86_64-only exporter for the fixed
+official demo preset `demo/voices/streaming_model/en-Carter_man.pt`. Before
+importing `torch` or `safetensors`, it requires the clean Microsoft source
+checkout at `94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, the authenticated
+4,256,002-byte Git blob
+`1d795ef667e6641eecb8b22452bb853b089bfdbe`, and payload SHA-256
+`a7bfdf1cd4939c22469bcfc6f427ae9c4467b3df46c2c14303a39c294cfc6897`.
+The sparse VAST source checkout may use a separately staged fixed file through
+`--preset-path`; its filename, size, Git blob, and payload hash remain fixed.
+
+The load is exactly the upstream demo's `weights_only=True` operation with
+only `BaseModelOutputWithPast` and `DynamicCache` safe globals. The exporter
+does not construct a model, run a forward pass, decode audio, download, or
+upload. It writes a new `cache.safetensors` and deterministic `manifest.json`
+with classification `INSPECTION_ONLY` / `NO_UPLOAD`, preserving all four
+outputs (`lm`, `tts_lm`, `neg_lm`, `neg_tts_lm`). Source KV tensors are checked
+as `[batch,kv_head,position,head_dim]` (the observed source tensors are
+BFLOAT16) and explicitly transposed to native
+`[position,kv_head,head_dim]`; the observed hidden/cache lengths are
+`lm=108/108`, `tts_lm=316/316`, and both negative branches `1/1`. These are
+schema facts, not synthesis or voice-consent evidence. A
+historical `DynamicCache` shape/API that cannot be inspected through these
+explicit lists is a loud refusal, not a compatibility shim.
+
+The native `vokra_models::vibevoice_streaming::preset` parser requires an
+external expected manifest SHA-256, checks exact tensor names/shapes/F32
+payload hashes/finiteness, and stages positive and negative paired imports on
+empty language branches. This is a structural cache bridge only: voice
+consent/redistribution rights, independent waveform CPU/Metal gates, and
+production synthesis/parity remain unproved.
+
+Model-free self-test (stdlib-only):
+
+```text
+uv run --no-project --python 3.12 python \
+  tools/parity/vibevoice_realtime_0_5b_reference/export_preset_cache.py --self-test
+```
+
+Controlled VAST export (source-only inspection; no model construction or
+forward):
+
+```text
+VOKRA_PUBLISH_ON_VAST=1 uv run --frozen --project tools/parity/vibevoice_realtime_0_5b_reference python \
+  tools/parity/vibevoice_realtime_0_5b_reference/export_preset_cache.py \
+  --source-root /root/VibeVoice --preset-path /root/en-Carter_man.pt \
+  --output-dir /root/realtime-carter-preset
+```
+
 ## 2026-09-30 VAST narrow-reference receipts
 
 Both runs used the exact checkpoint/source contract above and three timed
@@ -60,9 +175,12 @@ acoustic-connector calls do not invoke the acoustic-tokenizer encoder. This is
 not evidence for acoustic encoding, synthesis, or complete checkpoint binding.
 
 The fixed probe uses token IDs `[1, 2, 3, 4]`, a four-token attention mask, and
-a deterministic `[1, 1, 64]` acoustic latent. It writes the EOS logits, TTS
-hidden state, acoustic-connector output, and a JSON packet containing source,
-checkpoint, input, runtime, timing, shape, finiteness, and SHA-256 metadata.
+a deterministic `[1, 1, 64]` acoustic latent. It writes the independent
+official `forward_lm` `lm_last_hidden_state`, EOS logits, TTS hidden state,
+acoustic-connector output, and a JSON packet containing source, checkpoint,
+input, runtime, timing, shape, finiteness, and SHA-256 metadata. The LM hidden
+state is captured directly from the official `forward_lm` return before it is
+spliced into `forward_tts_lm`; it is not reconstructed from the TTS output.
 When CUDA is available, the packet also contains separate CPU and CUDA copies
 of each small output plus per-output diagnostics: absolute difference, relative
 difference with a `1e-6` denominator floor, differing-element count, shape, and
@@ -113,6 +231,77 @@ uv run --frozen --python 3.12 --project tools/parity/vibevoice_realtime_0_5b_ref
   --dtype float32 \
   --output /root/realtime-reference
 ```
+
+#### 2026-10-07 current-lock supersession
+
+The preceding 56-package receipt is historical evidence for the earlier VAST
+tree and lock (`7e11e027` and the superseded lock identity); it is not proof for
+the current lock. The current source records lock SHA-256
+`34f58e53b5c79ed96853c2a4b6f9b6b1eaf12066f010cd23ddffae2b816b3797`, with 42
+package rows: one repository-root virtual row and 41 registry rows. The lock
+contains 63 candidate wheel artifacts across the approved PyPI and explicit
+PyTorch CPU indexes. A fresh selected-wheel manifest must choose exactly one
+Linux x86_64 / CPython 3.12 wheel for each of the 41 registry rows and bind its
+absolute archive path, filename, byte count, and SHA-256 to the current lock.
+Manifest preparation is a separate mechanical archive step; this collector
+does not download, install, import, or select wheels.
+
+On a disposable Linux x86_64 VAST worker, first provide an already existing
+CPython 3.12 venv and the separately prepared selected-wheel manifest. Do not
+let this command create a venv, synchronize a project, resolve dependencies,
+or acquire packages. Bind every path explicitly before running the stdlib-only
+collector:
+
+```text
+REFERENCE_VENV=/root/realtime-reference-venv
+REFERENCE_PY="$REFERENCE_VENV/bin/python"
+REFERENCE_PROJECT=/root/vokra-reference-source/tools/parity/vibevoice_realtime_0_5b_reference/pyproject.toml
+REFERENCE_LOCK=/root/vokra-reference-source/tools/parity/vibevoice_realtime_0_5b_reference/uv.lock
+REFERENCE_COLLECTOR=/root/vokra-reference-source/tools/parity/vibevoice_realtime_0_5b_reference/audit_installed_closure.py
+REFERENCE_SITE="$REFERENCE_VENV/lib/python3.12/site-packages"
+REFERENCE_SCRIPTS="$REFERENCE_VENV/bin"
+REFERENCE_MANIFEST=/root/realtime-selected-wheel-manifest.json
+REFERENCE_SOURCE=/root/VibeVoice
+REFERENCE_OUTPUT=/root/realtime-reference-dependency-audit.json
+REFERENCE_BOOTSTRAP_DIR=/root/approved-clean-uv-bootstrap
+UV_BOOTSTRAP_PY=/absolute/path/to/approved-clean-uv-managed-cpython312
+
+cd "$REFERENCE_BOOTSTRAP_DIR"
+env -u VIRTUAL_ENV -u CONDA_PREFIX -u PYTHONHOME -u PYTHONPATH \
+  -u PYTHONSTARTUP VOKRA_PUBLISH_ON_VAST=1 uv run --offline --no-project --no-sync \
+  --python "$UV_BOOTSTRAP_PY" "$REFERENCE_PY" -B -S "$REFERENCE_COLLECTOR" \
+  --project "$REFERENCE_PROJECT" \
+  --lock "$REFERENCE_LOCK" \
+  --site-packages "$REFERENCE_SITE" \
+  --venv-root "$REFERENCE_VENV" \
+  --scripts-root "$REFERENCE_SCRIPTS" \
+  --selected-wheel-manifest "$REFERENCE_MANIFEST" \
+  --source-root "$REFERENCE_SOURCE" \
+  --output "$REFERENCE_OUTPUT"
+```
+
+The `UV_BOOTSTRAP_PY` value must be an approved clean UV-managed CPython 3.12
+interpreter, not the target venv interpreter, and `REFERENCE_BOOTSTRAP_DIR` must
+be outside the target venv/project (with no implicit `.venv` selected). The
+environment is scrubbed before invoking UV so inherited virtualenv/conda and
+Python path/startup hooks cannot redirect interpreter discovery. UV initializes
+the interpreter used for `--python` discovery before launching the requested
+command, so the target venv must be passed only as the explicit command with
+`-B -S`; otherwise an unreviewed `.pth` can execute before the collector. This
+behavior is visible in the pinned UV interpreter path (see
+<https://raw.githubusercontent.com/astral-sh/uv/0.12.5/crates/uv-python/src/interpreter.rs>).
+
+The collector requires Linux x86_64 CPython 3.12, checks that the explicitly
+invoked interpreter is the venv interpreter, and consumes only the pre-existing
+selected wheel archives and installed files. It records exact locked
+distribution Name/Version/source, project and lock identities, official
+VibeVoice Git revision and clean-tree state, metadata/license files, and native
+payload inventory/hashes where the bounded hash policy permits. It performs no
+third-party import, dependency acquisition, model download, or model
+execution. Its result intentionally remains `OWNER_REVIEW_REQUIRED_NO_UPLOAD`,
+not an approval; independent primary-source license/native-payload review and
+owner decision remain required before replay evidence can be treated as
+execution-authorizing.
 
 The command is intentionally not a local verification command. The full
 checkpoint is larger than the 2 GB VAST threshold and must never be downloaded
@@ -275,7 +464,24 @@ staged model execution, EOS/diffusion/acoustic decoding, and output numerical
 parity are not implemented by this gate. The state module must not be read as
 evidence that synthesis or real-weight parity is complete.
 
-## Native prediction-head boundary
+## 2026-10-07 source capability supersession
+
+At the current source, the production Realtime composite, sampler, acoustic
+connector, and causal decoder select CPU or Metal through the first-party
+`Compute` registry and reject uncovered backends before binding. The legacy
+model-free generation control plane remains CPU-only. The learned head and
+decoder stages use the selected backend; the DPM scheduler remains explicit
+host control and is not described as a GPU kernel. This source capability is
+not Apple hardware execution or CPU/Metal numerical parity; those remain
+separate authorized gates.
+
+## Native prediction-head boundary (historical 6a baseline wording)
+
+The CPU-only wording preserved in this section is historical documentation
+from exact source HEAD `6a937b7782a5bd0b0d4aa3f28298c7942578a048`; it is stale
+relative to that same HEAD's production CPU/Metal dispatch and must not be read
+as a claim that the source lacked Metal support. The current source capability
+and host-controlled scheduler distinction are recorded above.
 
 The native `vibevoice_streaming::diffusion` module implements one
 source-derived prediction-head forward step on an explicitly selected
@@ -333,6 +539,48 @@ checkpoint identity by the 2026-09-30 full-payload and conversion/binder
 evidence. No real-weight waveform parity, independent acoustic waveform
 reference, Metal parity, or complete synthesis claim follows from this
 boundary.
+
+## Native composite execution boundary (unpromoted)
+
+`vokra_models::vibevoice_streaming::runtime` now composes the authenticated
+language stages, diffusion CFG sampler, acoustic connector, and causal
+acoustic decoder into a borrow-scoped
+`VibeVoiceRealtimeSynthesisSession`. The runtime imports the four official
+`lm`, `tts_lm`, `neg_lm`, and `neg_tts_lm` preset branches first. After import,
+text uses only incremental LM/TTS-LM steps; the negative text LM is not
+advanced. Each source five-token text window is followed by up to six speech
+steps, including the source zero-text continuation.
+
+For every speech step the caller supplies a fresh finite 64-wide noise vector.
+The native order is CFG sampling, acoustic decoding, and then the acoustic
+connector receives the original sampled scaled latent (not the decoder's
+unscaled latent). The connector result is sent to both positive and negative
+TTS branches with token `1` and `is_text = false`; both hidden rows are kept as
+the next independent CFG conditions, and the positive EOS classifier is
+checked afterwards.
+
+The session keeps the source's terminal details explicit. A decoded final
+chunk is retained before the strict `max_length` check; when appending the
+next TTS position would exceed the bounded `max_new_tokens` budget, neither
+TTS cache is advanced. After positive EOS, the remaining source six-step
+inner-loop cache updates are drained while their audio chunks are suppressed;
+the caller receives `Draining` steps until the session reports `Finished`.
+`max_new_tokens`, a separate finite speech control budget, and an external stop
+are distinct terminal conditions. An explicit external stop or exhausted
+caller speech budget takes precedence over an incomplete EOS drain and is
+reported consistently by both the step result and `stop_reason()`. Any
+operational error resets the positive, negative, and acoustic mutable state and
+poisons the session so a partial cache cannot be reused.
+
+The composite is currently CPU-only because its sampler and causal acoustic
+decoder do not have a GPU implementation. Unsupported Metal/CUDA requests are
+rejected before weight binding; there is no silent CPU fallback. This historical
+6a baseline section records source-ordered native composition and model-free
+sequencing tests only; the current source capability is recorded above.
+Independent real-weight CPU parity, an independent waveform reference, a
+caller noise packet, Apple CPU/Metal parity, voice rights/consent and other
+owner/legal decisions remain open. The CLI and public model status must not be
+promoted from this boundary, and no completion or publication claim follows.
 
 ## Verification boundary
 
