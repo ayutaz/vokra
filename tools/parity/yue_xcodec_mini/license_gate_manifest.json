@@ -1,5 +1,5 @@
 {
-  "approval_scope_sha256": "6f8378213db1ef19924c42cb76a194ed013093c048aba910808eb14e2dcef262",
+  "approval_scope_sha256": "5f1e3d9f6f1be71b8a2d1b698fe2b791e9497db5a09d10e9326a913a955310a4",
   "component_reviews": [
     {
       "approval_digest": null,
@@ -703,7 +703,7 @@
     },
     {
       "bundled_review": null,
-      "id": "urllib3@2.7.0",
+      "id": "urllib3@2.8.0",
       "license": null,
       "name": "urllib3",
       "native_review": null,
@@ -712,7 +712,7 @@
         "registry": "https://pypi.org/simple"
       },
       "status": "PENDING_REVIEW",
-      "version": "2.7.0"
+      "version": "2.8.0"
     },
     {
       "bundled_review": null,
@@ -742,7 +742,7 @@
     },
     {
       "bundled_review": null,
-      "id": "werkzeug@3.1.8",
+      "id": "werkzeug@3.1.9",
       "license": null,
       "name": "werkzeug",
       "native_review": null,
@@ -751,10 +751,10 @@
         "registry": "https://pypi.org/simple"
       },
       "status": "PENDING_REVIEW",
-      "version": "3.1.8"
+      "version": "3.1.9"
     }
   ],
-  "dependency_reviews_sha256": "e41f4b37869736c58d70a397f653f85c6901e6b6a52e4774c61ab5af60845867",
+  "dependency_reviews_sha256": "4395308071314f2028a503e3f25ccc4964a92f5278149b780d739411a4e6b53d",
   "fixed_identities": {
     "checkpoints": {
       "codec": {
@@ -871,13 +871,13 @@
     }
   },
   "gate_version": 1,
-  "lock_sha256": "5a05395c04e3c047714e4c3e6fa1f7849520c83e4343c3d07aaea23b3f1bf754",
+  "lock_sha256": "709da6982da18f368cd9a40aa5439712307d2220255c1372d4f8cb99a357e040",
   "no_upload": "NO_UPLOAD",
   "operator_approval": {
     "decision": "PENDING_REVIEW",
     "digest": null,
     "signer": null
   },
-  "package_rows_sha256": "700c84daa85f4bef2846987af992246dca305853be3f8d3b8e5965228d670c61",
+  "package_rows_sha256": "d6d16cc753c25d6ba3345bd53956d2a118d021b935df386c4c811b1205a050fe",
   "pyproject_sha256": "05ee8513b32d3bec6e9205c352363602177d7a52f3db525d3eb8bf1081181fb1"
 }

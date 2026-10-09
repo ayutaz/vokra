@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 import tomllib
 
-LOCK_SHA256 = "5a05395c04e3c047714e4c3e6fa1f7849520c83e4343c3d07aaea23b3f1bf754"
+LOCK_SHA256 = "709da6982da18f368cd9a40aa5439712307d2220255c1372d4f8cb99a357e040"
 PYPROJECT_SHA256 = "05ee8513b32d3bec6e9205c352363602177d7a52f3db525d3eb8bf1081181fb1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -82,7 +82,14 @@ def rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         markers = item.get("resolution-markers", [])
         dependencies = item.get("dependencies", [])
         if not isinstance(markers, list) or not all(isinstance(v, str) for v in markers): raise ValueError("malformed resolution markers")
-        if not isinstance(dependencies, list) or not all(isinstance(v, dict) and set(v) == {"name", "marker"} and isinstance(v["name"], str) and v["name"].strip() and isinstance(v["marker"], str) and v["marker"].strip() for v in dependencies): raise ValueError("malformed dependency list")
+        if not isinstance(dependencies, list) or not all(
+            isinstance(v, dict)
+            and set(v) in ({"name"}, {"name", "marker"})
+            and isinstance(v["name"], str)
+            and v["name"].strip()
+            and ("marker" not in v or (isinstance(v["marker"], str) and v["marker"].strip()))
+            for v in dependencies
+        ): raise ValueError("malformed dependency list")
         sdist = item.get("sdist")
         wheels = item.get("wheels", [])
         if sdist is not None and not isinstance(sdist, dict): raise ValueError("malformed sdist row")
@@ -218,14 +225,46 @@ def self_test() -> int:
             if accepted or not actual:
                 print(f"tamper self-test failed ({label}): {actual}", file=sys.stderr)
                 return 1
-        package_rows = rows(tomllib.loads((project / "uv.lock").read_bytes().decode()))
+        lock_doc = tomllib.loads((project / "uv.lock").read_bytes().decode())
+        package_rows = rows(lock_doc)
+        if not any(
+            "marker" not in dependency
+            for package in lock_doc["package"]
+            for dependency in package.get("dependencies", [])
+        ):
+            print("lock parser regression self-test lost markerless dependency coverage", file=sys.stderr)
+            return 1
+        valid_marker = load_json(json.dumps(lock_doc))
+        marker_package = next(package for package in valid_marker["package"] if package.get("dependencies"))
+        marker_package["dependencies"] = [{"name": "demo"}, {"name": "demo", "marker": "python_version >= '3.12'"}]
+        try:
+            rows(valid_marker)
+        except ValueError as exc:
+            print(f"valid dependency shape self-test failed: {exc}", file=sys.stderr)
+            return 1
+        for invalid_dependency in (
+            {"name": "demo", "marker": None},
+            {"name": "demo", "marker": ""},
+            {"name": "demo", "marker": 1},
+            {"name": "demo", "extra": "unexpected"},
+            {"name": ""},
+            {"marker": "python_version >= '3.12'"},
+        ):
+            invalid_lock = load_json(json.dumps(lock_doc))
+            invalid_package = next(package for package in invalid_lock["package"] if package.get("dependencies"))
+            invalid_package["dependencies"] = [invalid_dependency]
+            try:
+                rows(invalid_lock)
+            except ValueError:
+                continue
+            print(f"invalid dependency shape self-test accepted: {invalid_dependency}", file=sys.stderr)
+            return 1
         artifact_tamper = load_json(json.dumps(package_rows))
         first_artifact = artifact_tamper[0]["sdist"] or artifact_tamper[0]["wheels"][0]
         first_artifact["size"] = None
         if artifact_blocker(artifact_tamper) is None:
             print("artifact metadata tamper self-test failed", file=sys.stderr)
             return 1
-        lock_doc = tomllib.loads((project / "uv.lock").read_bytes().decode())
         for label, mutate in (
             ("duplicate package", lambda p: p.extend([dict(p[0])])),
             ("malformed wheels", lambda p: p[0].__setitem__("wheels", {})),

@@ -578,10 +578,16 @@ def self_test() -> int:
     # Production contract must remain blocked and must never be promoted by a
     # self-test that uses synthetic approvals.
     try:
-        load_contract(project)
+        _, _, manifest, _, _, _ = load_contract(project)
     except AuditError as exc:
-        if "dependency review" not in str(exc) and "canonical lock" not in str(exc):
-            print(f"unexpected production contract result: {exc}", file=sys.stderr)
+        print(f"unexpected production contract result: {exc}", file=sys.stderr)
+        return 1
+    else:
+        # A byte-accurate contract is expected here, but its committed review
+        # rows must remain pending until owner/legal evidence is supplied.
+        reviews = manifest.get("dependency_reviews", [])
+        if not any(isinstance(row, dict) and row.get("status") != "REVIEWED" for row in reviews):
+            print("unexpected production contract result: dependency reviews are approved", file=sys.stderr)
             return 1
     for candidate in ("../escape", "/absolute", "a//b", "a/../b", ""):
         try:

@@ -45,7 +45,7 @@ uv run --project tools/parity/canary_1b_reference --frozen --python 3.12 \
   --project-sha256 <64-hex> --lock-sha256 <64-hex> --audit-sha256 <64-hex>
 ```
 
-The dedicated direct contract is `hydra-core==1.3.6`,
+The dedicated direct contract is `hydra-core==1.3.7`,
 `nemo-toolkit[asr]==3.0.0`, and `torch==2.13.0` from the explicit PyTorch CPU
 index.  The auditor also checks the frozen lock's root requirements and the
 resolved CPU row (`2.13.0+cpu`) against those pins, so a future dependency
@@ -108,6 +108,14 @@ The virtual first-party project is bound separately to the committed
 bundled copyleft notices, missing license bytes, and native payloads remain
 explicit blockers; no row is treated as an approval.
 
+As of 2026-10-09, the counts and captured files in this ledger are
+HISTORICAL evidence from the older lock whose Hydra row was `hydra-core==1.3.2`:
+134 active rows, 133 installed distributions, and 200 publisher
+license/notice files. They are not current closure evidence for the patched
+`hydra-core==1.3.7` lock. The archived JSON and its bound digests remain
+unchanged for provenance; a fresh collector run is required before any
+1.3.7 closure or owner/legal decision can use those rows.
+
 The gate is intentionally fail-closed and model-free:
 
 ```bash
@@ -128,10 +136,10 @@ witnessed audit commit and are recorded as
 provenance, not as an unresolved blocker; the actual license/native and
 owner/legal blockers remain fail-closed.
 
-The direct `hydra-core==1.3.6` requirement is intentional. NeMo 3.0.0's
+The direct `hydra-core==1.3.7` requirement is intentional. NeMo 3.0.0's
 published extra metadata leaves `hydra-core` unconstrained; the old lock had
 selected 1.3.2. The dedicated uv project now directly pins a current patched
-release (1.3.6; the first patched version is 1.3.4) and
+release (1.3.7; the first patched version is 1.3.4) and
 records the same resolution in
 `tool.uv.override-dependencies`. This is a dependency decision for the
 owner's review, not an advisory allowlist.
