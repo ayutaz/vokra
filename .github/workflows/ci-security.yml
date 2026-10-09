@@ -174,6 +174,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check Markdown links
+        id: lychee
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
           # Three requirement/ADR targets are intentionally gitignored-local
@@ -201,3 +202,89 @@ jobs:
             --exclude '^https://leginfo\.legislature\.ca\.gov/faces/billVersionsCompareClient\.xhtml\?bill_id=202320240SB942$'
             README.md CONTRIBUTING.md .github docs
           fail: true
+      - name: Diagnose fixed GitHub blob failures
+        if: ${{ always() && steps.lychee.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set -u
+          set -o pipefail
+
+          # This is deliberately a fixed six-request probe. Do not replace
+          # these literals with PR, ref, or workflow inputs.
+          max_probes=6
+          probes=0
+          summary_file="${GITHUB_STEP_SUMMARY:-${RUNNER_TEMP}/vokra-link-diagnostic-summary.md}"
+          mkdir -p "$(dirname "${summary_file}")"
+
+          {
+            printf '\n### Fixed GitHub blob failure diagnostic\n\n'
+            printf '~~~text\n'
+            printf 'endpoint\tcurl_exit\thttp_status\tcontent_type\n'
+          } >>"${summary_file}"
+
+          probe() {
+            local label="$1"
+            local accept="$2"
+            local url="$3"
+            local headers output record curl_exit
+            probes=$((probes + 1))
+            if (( probes > max_probes )); then
+              printf 'probe limit exceeded\n' >&2
+              return 1
+            fi
+            headers="${RUNNER_TEMP}/vokra-link-diagnostic-${probes}.headers"
+            output="${RUNNER_TEMP}/vokra-link-diagnostic-${probes}.result"
+            record="${RUNNER_TEMP}/vokra-link-diagnostic-${probes}.record"
+            set +e
+            curl -q \
+              --silent --show-error --location \
+              --connect-timeout 5 --max-time 10 --max-filesize 1048576 \
+              --max-redirs 3 --fail --proto '=https' --proto-redir '=https' \
+              --netrc-file /dev/null \
+              --header 'User-Agent: vokra-ci-link-diagnostic/1' \
+              --header "Accept: ${accept}" \
+              --dump-header "${headers}" \
+              --output /dev/null \
+              --write-out 'http=%{http_code}\tcontent_type=%{content_type}' \
+              "${url}" >"${output}" 2>"${output}.err"
+            curl_exit=$?
+            set -e
+
+            # Emit the actual shell exit code. Never print cookies,
+            # authorization material, URLs, or an arbitrary response body.
+            : >"${record}"
+            printf '%s\tcurl_exit=%s\t' "${label}" "${curl_exit}" >>"${record}"
+            if [[ -s "${output}" ]]; then
+              cat "${output}" >>"${record}"
+            else
+              printf 'http=000\tcontent_type=' >>"${record}"
+            fi
+            printf '\n' >>"${record}"
+            cat "${record}" >>"${summary_file}"
+            # Only this fixed response-header allowlist is copied; location
+            # is intentionally omitted so a redirect cannot expose a query
+            # credential in the diagnostic summary.
+            awk 'BEGIN { IGNORECASE=1 }
+              /^HTTP\/[0-9.]+ / ||
+              /^(content-type|x-github-request-id):[[:space:]]/ { print }' \
+              "${headers}" | sed 's/^/  header: /' >>"${summary_file}"
+          }
+
+          probe 'blob-contributing' 'text/html' \
+            'https://github.com/ayutaz/vokra/blob/main/CONTRIBUTING.md'
+          probe 'raw-contributing' 'application/vnd.github.raw+json' \
+            'https://raw.githubusercontent.com/ayutaz/vokra/main/CONTRIBUTING.md'
+          probe 'api-contributing' 'application/vnd.github+json' \
+            'https://api.github.com/repos/ayutaz/vokra/contents/CONTRIBUTING.md?ref=main'
+          probe 'blob-architecture' 'text/html' \
+            'https://github.com/ayutaz/vokra/blob/main/docs/architecture.md'
+          probe 'raw-architecture' 'application/vnd.github.raw+json' \
+            'https://raw.githubusercontent.com/ayutaz/vokra/main/docs/architecture.md'
+          probe 'api-architecture' 'application/vnd.github+json' \
+            'https://api.github.com/repos/ayutaz/vokra/contents/docs/architecture.md?ref=main'
+
+          printf '~~~\n' >>"${summary_file}"
+
+          # Do not turn a diagnostic observation into a second gate. The
+          # failed lychee action above remains the authoritative failure.
+          exit 0
