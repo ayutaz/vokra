@@ -1,5 +1,13 @@
 # PR review and disposition plan — 2026-10-08
 
+> **2026-10-09 acceptance and prerequisite supersession:** #218 is accepted
+> at main `7025f17f`; #219 is incorporated/CLOSED, not individually merged.
+> #182's current `a3afc1ec` CI is 105 SUCCESS / 13 SKIPPED. Four authentic
+> Qwen software wheel archives were inspected and cleaned, without model
+> execution or license/operator promotion. See the [dated step-3 evidence](step3-prerequisite-evidence-2026-10-09.md)
+> for exact hashes, retained blockers, new #220 preparation and the still
+> uncompleted real-weight CPU leg. The pending snapshots below are historical.
+
 ## 「3まで」の現行実行計画と実測 — 2026-10-09 11:24 JST
 
 この節は現在の実行範囲を記録します。下記「2まで」の完了は前の凍結済みbatchの

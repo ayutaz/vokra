@@ -1,5 +1,11 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-09 prerequisite evidence:** the [new dated record](step3-prerequisite-evidence-2026-10-09.md)
+> records accepted dependency PRs and authenticated Qwen software-wheel facts,
+> not model execution. Preserve the metadata-only 136 full / 58 unresolved
+> classification, frozen 63-row owner scope, and historical CPU/Apple results.
+> Current native/license/operator gates remain open; no new row is promoted.
+
 > **2026-10-08 current-readback boundary:** the root-owned
 > [documentation refresh](documentation-refresh-2026-10-08.md) records the
 > latest exact metadata/security/PR readback at `main`
