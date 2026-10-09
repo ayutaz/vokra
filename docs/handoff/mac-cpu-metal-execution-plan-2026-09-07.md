@@ -1,5 +1,11 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-09 prerequisite supersession:** see the [dated step-3 evidence](step3-prerequisite-evidence-2026-10-09.md)
+> for dependency acceptance and current software archive/native/license facts.
+> This advances prerequisites only: current real-weight CPU parity, final
+> clean-HEAD packets and Apple CPU/Metal/no-fallback remain outstanding.
+> No owner approval or inventory promotion is inferred; Scaleway stays last.
+
 > **2026-10-08 current-readback boundary:** the root-owned
 > [documentation refresh](documentation-refresh-2026-10-08.md) is the current
 > metadata/security/PR source at `main`
