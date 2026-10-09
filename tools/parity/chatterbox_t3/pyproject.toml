@@ -8,8 +8,8 @@ dependencies = [
     "huggingface-hub==1.27.0",
     "einops==0.8.2",
     "safetensors==0.5.3",
-    "torch==2.6.0",
-    "torchaudio==2.6.0",
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
     "tqdm==4.67.1",
     "transformers==5.10.4",
 ]
@@ -34,6 +34,11 @@ torchaudio = [{ index = "pytorch-cpu" }]
 # The pinned upstream source metadata declares transformers==5.2.0.  The
 # advisory patched minimum is 5.10.0; this isolated environment pins the
 # current non-yanked 5.10.4 release above that floor (GHSA-xrqw-3rrv-vx5w).
+# The source's exact Torch/TorchAudio declarations remain recorded below for
+# provenance.  The isolated CPU oracle uses the authenticated official CPU
+# index pair 2.13.0/2.11.0 instead; the fixed source/API compatibility probe
+# and independent VAST reference run are separate gates and are not inferred
+# from lock resolution alone.
 #
 # `huggingface-hub`, `einops`, and `tqdm` are direct import requirements of
 # the selected loader; their exact versions, plus all transitive versions and
@@ -55,6 +60,10 @@ isolated_transformers_security_floor = "5.10.0"
 isolated_transformers_pin = "5.10.4"
 transformers_security_advisory = "GHSA-xrqw-3rrv-vx5w"
 transformers_security_policy = "REJECT_VERSIONS_BELOW_ISOLATED_FLOOR"
+isolated_torch_pin = "2.13.0"
+isolated_torchaudio_pin = "2.11.0"
+isolated_torch_index_policy = "OFFICIAL_PYTORCH_CPU_INDEX_ONLY"
+isolated_torch_api_policy = "SOURCE_API_AND_VAST_REFERENCE_REQUIRED"
 isolated_loader_dependencies = [
     "numpy==1.26.4",
     "huggingface-hub==1.27.0",
@@ -69,8 +78,8 @@ excluded_mutable_or_full_pipeline = [
 ]
 lock_status = "AUTHENTICATED_CPU_INDEX_METADATA_LOCKED"
 torch_index = "https://download.pytorch.org/whl/cpu"
-torch_distribution = "2.6.0+cpu"
-torchaudio_distribution = "2.6.0+cpu"
+torch_distribution = "2.13.0+cpu"
+torchaudio_distribution = "2.11.0+cpu"
 
 [tool.vokra.chatterbox_t3_reference.license_audit]
 # The CPU-only lock avoids CUDA/NVIDIA and Triton packages.  The remaining

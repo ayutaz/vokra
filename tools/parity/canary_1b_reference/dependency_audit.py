@@ -36,12 +36,12 @@ PYPI = "https://pypi.org/simple"
 PYTORCH_CPU = "https://download.pytorch.org/whl/cpu"
 REGISTRIES = {PYPI, PYTORCH_CPU}
 DIRECT_DEPENDENCIES = (
-    "hydra-core==1.3.6",
+    "hydra-core==1.3.7",
     "nemo-toolkit[asr]==3.0.0",
     "torch==2.13.0",
 )
 DIRECT_LOCK_DEPENDENCIES = (
-    {"name": "hydra-core", "specifier": "==1.3.6"},
+    {"name": "hydra-core", "specifier": "==1.3.7"},
     {"name": "nemo-toolkit", "extras": ["asr"], "specifier": "==3.0.0"},
     {"name": "torch", "specifier": "==2.13.0", "index": PYTORCH_CPU},
 )
@@ -820,7 +820,7 @@ def self_test() -> None:
         "project": {
             **project_data["project"],
             "dependencies": [
-                "hydra-core==1.3.6",
+                "hydra-core==1.3.7",
                 "nemo-toolkit[asr]==3.0.0",
                 "torch==2.7.1",
             ],

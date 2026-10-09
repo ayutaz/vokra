@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Pinned CPU-only BigVGAN upstream oracle and safe checkpoint bridge; VAST-only"
 requires-python = "==3.12.*"
 dependencies = [
-    "torch==2.7.1",
+    "torch==2.13.0",
 ]
 
 [tool.uv]
@@ -14,13 +14,13 @@ environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.vokra.bigvgan_reference]
 status = "BLOCKED_UNTIL_AUTHENTICATED_SOURCE_AND_CHECKPOINT_IDENTITY"

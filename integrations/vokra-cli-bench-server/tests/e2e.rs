@@ -11,10 +11,10 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vokra_cli_bench_server::{
     Args, HttpTarget,
@@ -158,14 +158,147 @@ fn fake_wav(n_bytes: usize) -> Vec<u8> {
 
 /// A running mock server that answers `target_requests` connections
 /// (round-robin over `responses`) before shutting down.
+struct CompletionGate {
+    response_done: Arc<(Mutex<bool>, Condvar)>,
+    allow_count: Arc<(Mutex<bool>, Condvar)>,
+    observer_entered: Arc<(Mutex<bool>, Condvar)>,
+    claimed: Arc<AtomicBool>,
+    release_on_drop: bool,
+}
+
+impl Clone for CompletionGate {
+    fn clone(&self) -> Self {
+        Self {
+            response_done: Arc::clone(&self.response_done),
+            allow_count: Arc::clone(&self.allow_count),
+            observer_entered: Arc::clone(&self.observer_entered),
+            claimed: Arc::clone(&self.claimed),
+            // Only the test-owned gate is an emergency-unwind releaser.
+            // Handler/accept-thread clones must not release the gate merely
+            // because their local clone goes out of scope.
+            release_on_drop: false,
+        }
+    }
+}
+
+impl CompletionGate {
+    fn new() -> Self {
+        Self {
+            response_done: Arc::new((Mutex::new(false), Condvar::new())),
+            allow_count: Arc::new((Mutex::new(false), Condvar::new())),
+            observer_entered: Arc::new((Mutex::new(false), Condvar::new())),
+            claimed: Arc::new(AtomicBool::new(false)),
+            release_on_drop: true,
+        }
+    }
+
+    /// Hold one handler after the response has been written, but before the
+    /// completion counter is published. This gives the race regression an
+    /// exact, scheduler-independent point at which to inspect the server.
+    fn hold_first_count(&self) {
+        if self.claimed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        let (lock, cv) = &*self.response_done;
+        *lock.lock().expect("response gate poisoned") = true;
+        cv.notify_all();
+
+        let (lock, cv) = &*self.allow_count;
+        let mut released = lock.lock().expect("count gate poisoned");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !*released {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "completion gate release timed out");
+            let (next, result) = cv
+                .wait_timeout(released, remaining)
+                .expect("count gate poisoned");
+            released = next;
+            assert!(!result.timed_out(), "completion gate release timed out");
+        }
+    }
+
+    fn wait_for_response(&self) {
+        let (lock, cv) = &*self.response_done;
+        let mut done = lock.lock().expect("response gate poisoned");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !*done {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "response completion timed out");
+            let (next, result) = cv
+                .wait_timeout(done, remaining)
+                .expect("response gate poisoned");
+            done = next;
+            assert!(!result.timed_out(), "response completion timed out");
+        }
+    }
+
+    fn mark_observer_entered(&self) {
+        let (lock, cv) = &*self.observer_entered;
+        *lock.lock().expect("observer gate poisoned") = true;
+        cv.notify_all();
+    }
+
+    fn wait_for_observer(&self) {
+        let (lock, cv) = &*self.observer_entered;
+        let mut entered = lock.lock().expect("observer gate poisoned");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !*entered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "served observer did not enter");
+            let (next, result) = cv
+                .wait_timeout(entered, remaining)
+                .expect("observer gate poisoned");
+            entered = next;
+            assert!(!result.timed_out(), "served observer did not enter");
+        }
+    }
+
+    fn release(&self) {
+        let (lock, cv) = &*self.allow_count;
+        *lock.lock().expect("count gate poisoned") = true;
+        cv.notify_all();
+    }
+}
+
+impl Drop for CompletionGate {
+    fn drop(&mut self) {
+        // Also release during unwinding so a failed assertion cannot leave a
+        // deliberately blocked handler behind while the test binary exits.
+        if self.release_on_drop {
+            self.release();
+        }
+    }
+}
+
 struct MockServer {
     addr: SocketAddr,
-    handle: Option<JoinHandle<()>>,
+    handle: Option<JoinHandle<Vec<JoinHandle<()>>>>,
     served: Arc<AtomicUsize>,
+    observation_gate: Option<CompletionGate>,
 }
 
 impl MockServer {
     fn spawn(responses: Vec<Response>, target_requests: usize) -> Self {
+        Self::spawn_inner(responses, target_requests, None)
+    }
+
+    fn spawn_with_completion_gate(
+        responses: Vec<Response>,
+        target_requests: usize,
+    ) -> (Self, CompletionGate) {
+        let gate = CompletionGate::new();
+        (
+            Self::spawn_inner(responses, target_requests, Some(gate.clone())),
+            gate,
+        )
+    }
+
+    fn spawn_inner(
+        responses: Vec<Response>,
+        target_requests: usize,
+        completion_gate: Option<CompletionGate>,
+    ) -> Self {
         assert!(
             !responses.is_empty(),
             "mock must have at least one response"
@@ -174,29 +307,37 @@ impl MockServer {
         let addr = listener.local_addr().expect("local_addr");
         let served = Arc::new(AtomicUsize::new(0));
         let served_clone = Arc::clone(&served);
+        let observation_gate = completion_gate.clone();
 
         let handle = thread::spawn(move || {
+            let mut handlers = Vec::with_capacity(target_requests);
             for i in 0..target_requests {
                 let (stream, _) = match listener.accept() {
                     Ok(x) => x,
-                    Err(_) => return,
+                    Err(_) => return handlers,
                 };
                 let resp = responses[i % responses.len()].clone();
                 let served_bg = Arc::clone(&served_clone);
-                thread::spawn(move || {
+                let completion_gate = completion_gate.clone();
+                handlers.push(thread::spawn(move || {
                     if drain_request(&stream).is_err() {
                         return;
                     }
                     let _ = resp.write_to(stream);
+                    if let Some(gate) = completion_gate {
+                        gate.hold_first_count();
+                    }
                     served_bg.fetch_add(1, Ordering::AcqRel);
-                });
+                }));
             }
+            handlers
         });
 
         MockServer {
             addr,
             handle: Some(handle),
             served,
+            observation_gate,
         }
     }
 
@@ -204,16 +345,29 @@ impl MockServer {
         format!("http://{}", self.addr)
     }
 
-    fn served(&self) -> usize {
+    fn wait_for_handlers(&mut self) {
+        let handlers = self
+            .handle
+            .take()
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        for handler in handlers {
+            let _ = handler.join();
+        }
+    }
+
+    fn served(&mut self) -> usize {
+        if let Some(gate) = &self.observation_gate {
+            gate.mark_observer_entered();
+        }
+        self.wait_for_handlers();
         self.served.load(Ordering::Acquire)
     }
 }
 
 impl Drop for MockServer {
     fn drop(&mut self) {
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        self.wait_for_handlers();
     }
 }
 
@@ -269,7 +423,7 @@ fn small_body_args(base: &str, iters: usize, concurrent: usize) -> Args {
 #[test]
 fn single_worker_all_2xx() {
     let n = 8;
-    let mock = MockServer::spawn(vec![Response::Ok200Wav { body_bytes: 128 }], n);
+    let mut mock = MockServer::spawn(vec![Response::Ok200Wav { body_bytes: 128 }], n);
     let args = small_body_args(&mock.base_url(), n, 1);
     let summary = run_bench(&args).expect("bench runs");
     assert_eq!(summary.ok_2xx, n);
@@ -277,6 +431,43 @@ fn single_worker_all_2xx() {
     assert_eq!(summary.transport_errors, 0);
     assert!(summary.ttfa_ms.p95 >= 0.0);
     assert_eq!(mock.served(), n);
+}
+
+#[test]
+fn served_waits_for_response_handlers() {
+    // The first handler reports that it wrote the complete response, then
+    // pauses before publishing the served counter. The observer must remain
+    // blocked until that handler is joined; the old detached-handler design
+    // returned a stale count at this exact point.
+    let n = 8;
+    let (mock, gate) =
+        MockServer::spawn_with_completion_gate(vec![Response::Ok200Wav { body_bytes: 128 }], n);
+    let args = small_body_args(&mock.base_url(), n, 1);
+    let summary = run_bench(&args).expect("bench runs");
+    assert_eq!(summary.ok_2xx, n);
+
+    gate.wait_for_response();
+    let (served_tx, served_rx) = std::sync::mpsc::channel();
+    let observer = thread::spawn(move || {
+        let mut mock = mock;
+        served_tx.send(mock.served()).expect("served observer");
+    });
+    gate.wait_for_observer();
+
+    // This is a synchronization assertion, not a retry: the gate guarantees
+    // that the response is complete while the counter publication is held.
+    assert!(
+        served_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        "served() returned before its response handler completed"
+    );
+    gate.release();
+    assert_eq!(
+        served_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("served observer completion"),
+        n
+    );
+    observer.join().expect("served observer thread");
 }
 
 #[test]

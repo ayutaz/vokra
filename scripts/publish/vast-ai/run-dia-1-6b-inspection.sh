@@ -9,27 +9,153 @@ SOURCE_URL="https://github.com/nari-labs/dia.git"
 SOURCE_REVISION="2811af1c5f476b1f49f4744fabf56cf352be21e5"
 INSPECTOR="$ROOT/tools/parity/dia_1_6b_inspect.py"
 SOURCE_CONTRACT="$ROOT/tools/parity/dia_1_6b_source_contract.py"
+COMPAT_PROBE="$ROOT/tools/parity/dia_1_6b_reference/upstream_compat_probe.py"
 REFERENCE_PROJECT="$ROOT/tools/parity/dia_1_6b_reference"
 DEPENDENCY_AUDIT="$REFERENCE_PROJECT/dependency_audit.py"
 DEPENDENCY_AUDIT_WRAPPER="$ROOT/scripts/publish/vast-ai/audit-dia-1-6b-dependencies.sh"
 DEPENDENCY_APPROVAL="$REFERENCE_PROJECT/dependency_approval.py"
-REFERENCE_LOCK_SHA256="58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-REFERENCE_PYPROJECT_SHA256="fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+REFERENCE_LOCK_SHA256="06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+REFERENCE_PYPROJECT_SHA256="4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 # dedicated locked-reference project; its uv.lock is a hard pre-download gate
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_SHM_KIB=$((40 * 1024 * 1024))
 die(){ echo "dia-vast: ERROR: $*" >&2; exit 2; }
+
+require_clean_expected_head() {
+  local root="$1" expected_head="$2" actual_head='' status=''
+  if ! actual_head="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null)"; then
+    echo 'dia-vast: checkout HEAD could not be established' >&2
+    return 1
+  fi
+  [[ "$actual_head" =~ ^[0-9a-f]{40}$ ]] || {
+    echo 'dia-vast: checkout HEAD output is malformed' >&2
+    return 1
+  }
+  [[ "$actual_head" == "$expected_head" ]] || {
+    echo 'dia-vast: checkout HEAD does not match --expected-head' >&2
+    return 1
+  }
+  if ! status="$(git -C "$root" status --porcelain --untracked-files=all 2>/dev/null)"; then
+    echo 'dia-vast: checkout status could not be established' >&2
+    return 1
+  fi
+  [[ -z "$status" ]] || {
+    echo 'dia-vast: checkout must be clean' >&2
+    return 1
+  }
+}
+
+source_only_clean_contract_self_test() {
+  local temp_root fake_root fake_bin fake_git expected_head original status=0
+  temp_root="$(mktemp -d "${TMPDIR:-/tmp}/dia-source-clean-contract.XXXXXXXX")" || return 1
+  (
+    set -euo pipefail
+    fake_root="$temp_root/repo"
+    mkdir "$fake_root" || exit 1
+    git -C "$fake_root" init -q || exit 1
+    git -C "$fake_root" config user.email codex-self-test@example.invalid || exit 1
+    git -C "$fake_root" config user.name codex-self-test || exit 1
+    original='clean fixture'
+    printf '%s\n' "$original" >"$fake_root/tracked.txt" || exit 1
+    git -C "$fake_root" add tracked.txt || exit 1
+    git -C "$fake_root" commit -qm 'self-test fixture' || exit 1
+    expected_head="$(git -C "$fake_root" rev-parse --verify HEAD)" || exit 1
+    require_clean_expected_head "$fake_root" "$expected_head" || exit 1
+
+    if require_clean_expected_head "$fake_root" 0000000000000000000000000000000000000000; then
+      echo 'source-only clean contract accepted a wrong HEAD' >&2
+      exit 1
+    fi
+    printf '%s\n' 'unstaged fixture' >"$fake_root/tracked.txt" || exit 1
+    if require_clean_expected_head "$fake_root" "$expected_head"; then
+      echo 'source-only clean contract accepted an unstaged change' >&2
+      exit 1
+    fi
+    printf '%s\n' "$original" >"$fake_root/tracked.txt" || exit 1
+    printf '%s\n' 'staged fixture' >"$fake_root/tracked.txt" || exit 1
+    git -C "$fake_root" add tracked.txt || exit 1
+    if require_clean_expected_head "$fake_root" "$expected_head"; then
+      echo 'source-only clean contract accepted a staged change' >&2
+      exit 1
+    fi
+    printf '%s\n' "$original" >"$fake_root/tracked.txt" || exit 1
+    git -C "$fake_root" restore --staged --worktree tracked.txt || exit 1
+    printf '%s\n' 'untracked fixture' >"$fake_root/untracked.txt" || exit 1
+    if require_clean_expected_head "$fake_root" "$expected_head"; then
+      echo 'source-only clean contract accepted an untracked file' >&2
+      exit 1
+    fi
+    rm "$fake_root/untracked.txt" || exit 1
+    require_clean_expected_head "$fake_root" "$expected_head" || exit 1
+    mkdir "$temp_root/invalid" || exit 1
+    if require_clean_expected_head "$temp_root/invalid" "$expected_head"; then
+      echo 'source-only clean contract accepted an invalid repository' >&2
+      exit 1
+    fi
+
+    fake_bin="$temp_root/fake-bin"
+    fake_git="$fake_bin/git"
+    mkdir "$fake_bin" || exit 1
+    # The generated helper intentionally contains literal parameter expansions.
+    # shellcheck disable=SC2016
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      'case "${3:-}" in' \
+      '  rev-parse)' \
+      '    case "${FAKE_GIT_MODE:-}" in' \
+      '      revparse-empty) exit 0 ;;' \
+      '      revparse-malformed) printf "%s\\n" malformed-head ;;' \
+      '      *) printf "%s\\n" "${FAKE_GIT_HEAD:?}" ;;' \
+      '    esac' \
+      '    ;;' \
+      '  status)' \
+      '    [[ "${FAKE_GIT_MODE:-}" != status-fail ]] || exit 42' \
+      '    ;;' \
+      '  *) exit 127 ;;' \
+      'esac' >"$fake_git" || exit 1
+    chmod 700 "$fake_git" || exit 1
+    PATH="$fake_bin:$PATH"
+    FAKE_GIT_HEAD="$expected_head"
+    export PATH FAKE_GIT_HEAD
+    FAKE_GIT_MODE='status-fail'
+    export FAKE_GIT_MODE
+    if require_clean_expected_head "$fake_root" "$expected_head"; then
+      echo 'source-only clean contract accepted a failed git status' >&2
+      exit 1
+    fi
+    FAKE_GIT_MODE='revparse-malformed'
+    export FAKE_GIT_MODE
+    if require_clean_expected_head "$fake_root" "$expected_head"; then
+      echo 'source-only clean contract accepted malformed HEAD output' >&2
+      exit 1
+    fi
+    FAKE_GIT_MODE='revparse-empty'
+    export FAKE_GIT_MODE
+    if require_clean_expected_head "$fake_root" "$expected_head"; then
+      echo 'source-only clean contract accepted empty HEAD output' >&2
+      exit 1
+    fi
+  ) || status=$?
+  rm -rf "$temp_root" || return 1
+  (( status == 0 )) || return "$status"
+  echo 'source-only clean contract self-test: PASS'
+}
+
 self_test(){
  local fail=0 token
  for token in "$HF_REPOSITORY" "$HF_REVISION" "$PUBLIC_REPOSITORY" "$PUBLIC_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" "$REFERENCE_LOCK_SHA256" "$REFERENCE_PYPROJECT_SHA256"   'list_repo_tree' 'recursive_file_only' 'git_blob_sha1' 'lfs_sha256'   'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'PARTIAL_RUNTIME_FAIL_CLOSED'   'CPU_UNSUPPORTED_FULL_TTS' 'BLOCKED_BY_CPU' 'NO_UPLOAD' 'weights_only=True'   'lfs_pointer_sha1' 'PTH↔safetensors mapping evidence unavailable' '40 * 1024 * 1024' 'cargo metadata --locked --no-deps --format-version 1' 'uv.lock' 'dependency_license_audit' 'BLOCKED_UNREVIEWED_TRANSITIVE' 'dependency_approval.py' 'dependency scope' '--dependency-scope' '--dependency-approval-evidence' '--dependency-approval-sha256' 'sha256sum' '--no-project' 'dedicated locked-reference project' '--validate-approval' 'exit 2'; do
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { echo "missing contract $token" >&2; fail=1; }
  done
  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$SOURCE_CONTRACT" || { echo 'missing source-only contract marker' >&2; fail=1; }
+ [[ -f "$COMPAT_PROBE" && ! -L "$COMPAT_PROBE" ]] || { echo 'Dia upstream compatibility probe missing or symlinked' >&2; fail=1; }
  [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || { echo 'Dia dependency auditor missing or symlinked' >&2; fail=1; }
  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || { echo 'Dia dependency audit wrapper missing or symlinked' >&2; fail=1; }
  [[ -f "$DEPENDENCY_APPROVAL" && ! -L "$DEPENDENCY_APPROVAL" ]] || { echo 'Dia dependency approval validator missing or symlinked' >&2; fail=1; }
  grep -Fq 'O_NOFOLLOW' "$INSPECTOR" "$SOURCE_CONTRACT" || { echo 'missing no-follow artifact publication gate' >&2; fail=1; }
  grep -Fq -- '--source-only' "$0" || { echo 'missing source-only worker mode' >&2; fail=1; }
+ grep -Fq 'BLOCKED_UPSTREAM_PINNED_COMPATIBILITY' "$COMPAT_PROBE" || { echo 'missing fail-closed compatibility decision' >&2; fail=1; }
+ grep -Fq 'VAST model-free API probe' "$0" || { echo 'missing compatibility probe rationale' >&2; fail=1; }
  grep -Fq -- '--expected-head' "$0"; grep -Fq -- '--approval-sha256' "$0"; grep -Fq -- '--dependency-scope' "$0"; grep -Fq -- '--dependency-approval-evidence' "$0"; grep -Fq -- '--dependency-approval-sha256' "$0"; grep -Fq -- '--validate-approval' "$INSPECTOR"
  grep -Fq 'canonical_existing_path' "$0"; grep -Fq 'canonical_absent_path' "$0"; grep -Fq 'inspection WORK path has invalid' "$0"
  if "$0" --expected-head 0000000000000000000000000000000000000000 --expected-head 1111111111111111111111111111111111111111 >/dev/null 2>&1; then echo 'duplicate expected-head accepted' >&2; fail=1; fi
@@ -57,18 +183,21 @@ self_test(){
  cargo_line="$(grep -n '^ cargo fmt --all' "$0" | head -n1 | cut -d: -f1)"
  [[ -n "$dependency_gate_line" && -n "$acquisition_line" && "$dependency_gate_line" -lt "$acquisition_line" ]] || { echo 'dependency approval gate is not before model acquisition' >&2; fail=1; }
  [[ -n "$cargo_line" && "$dependency_gate_line" -lt "$cargo_line" ]] || { echo 'dependency approval gate is not before Cargo' >&2; fail=1; }
+ source_only_clean_contract_self_test || fail=1
  (( fail == 0 )) || return 1
  echo 'run-dia-1-6b-inspection.sh self-test: OK'
 }
 
 source_only(){
+ # VAST model-free API probe: no checkpoint, weight, or forward is allowed.
  local expected_head='' seen_head=0
  while (($#)); do case "$1" in
   --expected-head) (( seen_head == 0 )) || die 'duplicate --expected-head'; [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die '--expected-head requires lowercase 40-hex'; expected_head="$2"; seen_head=1; shift 2 ;;
   *) die "unexpected source-only argument: $1" ;;
  esac; done
  (( seen_head == 1 )) || die 'source-only mode requires --expected-head'
- [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_head" ]] || die 'checkout HEAD does not match --expected-head'
+ [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'source-only compatibility probe is VAST-only'
+ require_clean_expected_head "$ROOT" "$expected_head" || die 'source-only checkout is not clean at the expected HEAD'
  [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'source-only worker requires Linux x86_64'
  [[ -f "$REFERENCE_PROJECT/uv.lock" ]] || die 'dedicated Dia reference uv.lock is absent; refuse source-only execution'
  [[ "$(sha256sum "$REFERENCE_PROJECT/uv.lock" | awk '{print $1}')" == "$REFERENCE_LOCK_SHA256" ]] || die 'Dia uv.lock identity mismatch'
@@ -83,13 +212,24 @@ source_only(){
  UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$SOURCE_CONTRACT" --source "$work/source" --rust-root "$ROOT" --output "$work/evidence/source-contract.json" >>"$work/evidence/validation.log" 2>&1
  grep -Fq 'SOURCE_CONTRACT_COMPLETE_MODEL_FREE' "$work/evidence/source-contract.json" || die 'source-only contract did not complete'
  grep -Fq 'NO_UPLOAD' "$work/evidence/source-contract.json" || die 'source-only contract lost NO_UPLOAD marker'
- echo "Dia source-only contract is complete; evidence preserved at $work/evidence" >&2
+ set +e
+ VOKRA_PUBLISH_ON_VAST=1 UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python "$COMPAT_PROBE" --source "$work/source" --project "$REFERENCE_PROJECT" --output "$work/evidence/upstream-compatibility.json" >>"$work/evidence/validation.log" 2>&1
+ compat_status=$?
+ set -e
+ [[ "$compat_status" == 2 ]] || die "upstream compatibility probe returned $compat_status, expected fail-closed 2"
+ grep -Fq 'BLOCKED_UPSTREAM_PINNED_COMPATIBILITY' "$work/evidence/upstream-compatibility.json" || die 'compatibility probe did not preserve blocked decision'
+ require_clean_expected_head "$ROOT" "$expected_head" || die 'source-only checkout changed or became dirty during execution'
+ echo "Dia source-only contract is complete; upstream compatibility remains blocked; evidence preserved at $work/evidence" >&2
+ return 2
 }
 
 if [[ "${1:-}" == --source-only ]]; then
  shift
+ set +e
  source_only "$@"
- exit 0
+ source_only_status=$?
+ set -e
+ exit "$source_only_status"
 fi
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
 usage(){ echo 'usage: run-dia-1-6b-inspection.sh --expected-head <40-hex> --approval-evidence <model/source-file> --approval-sha256 <64-hex> --dependency-scope <scope-file> --dependency-approval-evidence <dependency-approval-file> --dependency-approval-sha256 <64-hex>' >&2; }

@@ -5,7 +5,7 @@ description = "VAST-only official CLAP HTSAT reference inspector"
 requires-python = "==3.12.*"
 dependencies = [
     "numpy==2.3.5",
-    "torch==2.7.1",
+    "torch==2.13.0",
     "transformers==5.10.4",
 ]
 
@@ -29,6 +29,8 @@ source_revision = "365dea6ef167def6676140ed93bbc43f84dabb28"
 reference_entrypoint = "tools/parity/clap_dump_reference.py"
 isolated_transformers_pin = "5.10.4"
 transformers_wheel_sha256 = "8c5b99b141b53619435a76629b0284f04d27ff46d788b463fc0ecb23b8ff130e"
+isolated_torch_pin = "2.13.0"
+torch_wheel_sha256 = "4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2"
 license_status = "OWNER_REVIEW_PENDING"
 license_evidence = "HF cardData reports apache-2.0 at the pinned revision; no owner approval is inferred here."
 dependency_audit_status = "PENDING_VAST_AUDIT"

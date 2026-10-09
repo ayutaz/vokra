@@ -18,6 +18,20 @@ from urllib.parse import urlparse
 TARGET_MARKER = "platform_machine == 'x86_64' and sys_platform == 'linux'"
 FORBIDDEN = frozenset({"soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"})
 REQUIRED_LICENSE_KEYS = frozenset({"name", "version", "license", "primary_source"})
+BUNDLED_LICENSE_EVIDENCE_KEYS = frozenset({
+    "package",
+    "version",
+    "artifact_url",
+    "artifact_sha256",
+    "artifact_bytes",
+    "metadata_path",
+    "metadata_declared",
+    "license_member_path",
+    "license_member_path_status",
+    "license_sha256",
+    "spdx_status",
+    "disposition",
+})
 ARTIFACT_KEYS = frozenset({"url", "hash", "size", "upload-time"})
 APPROVAL_KEYS = frozenset({"manifest_sha256", "scope_sha256", "signer", "digest", "decision", "evidence_sha256"})
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -50,9 +64,36 @@ EXPECTED_IDENTITIES: dict[str, dict[str, Any]] = {
 # Replaced with the final policy byte hashes below.  A mutable policy cannot
 # authenticate itself; this code-bound value is intentionally fail-closed.
 EXPECTED_PROJECT_SHA256: dict[str, str] = {
-    "magnet-medium-30secs": "c2d5d0a5202599b73ce8c69f351533690887683a6c42aa8aa99b50b0d0fee51d",
-    "magnet-small-10secs": "f281f2d024b6853d43906d3b59ddb2556d34904cc69df30762a417758f2bfdf7",
+    "magnet-medium-30secs": "16ad4067c23b93f00299d27b7ee3015fe7e6ec4ec9ecaecf056beffbd468d155",
+    "magnet-small-10secs": "8210133b677626f16031a080e04e5f2d56aa47341a3e9b3e95c307c308343b1f",
     "melodyflow-t24-30secs": "d1d77d6aae82dd886c09bf27ee75598cc93cf577f761d1dab73fdcf29f5b407b",
+}
+
+# MAGNeT's reviewed CPU security pin is newer than the legacy MelodyFlow
+# baseline.  Keep the mapping explicit so a lock cannot choose an arbitrary
+# Torch version while preserving the older contract for the other target.
+EXPECTED_TORCH_BY_PROJECT: dict[str, tuple[str, str]] = {
+    "vokra-magnet-medium-30secs-reference": ("2.13.0", "2.13.0+cpu"),
+    "vokra-magnet-small-10secs-reference": ("2.13.0", "2.13.0+cpu"),
+    "vokra-melodyflow-t24-30secs-reference": ("2.7.1", "2.7.1+cpu"),
+}
+MAGNET_MODELS = frozenset({"facebook/magnet-medium-30secs", "facebook/magnet-small-10secs"})
+
+SETUPTOOLS_WHEEL_URL = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl"
+SETUPTOOLS_LICENSE = "UNRESOLVED_VENDORED_LGPLV3"
+SETUPTOOLS_BUNDLED_LICENSE_EVIDENCE: dict[str, Any] = {
+    "package": "setuptools",
+    "version": "84.0.0",
+    "artifact_url": SETUPTOOLS_WHEEL_URL,
+    "artifact_sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670",
+    "artifact_bytes": 818216,
+    "metadata_path": "setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA",
+    "metadata_declared": "LGPLv3",
+    "license_member_path": "UNKNOWN_RETAINED_PRIMARY_EVIDENCE",
+    "license_member_path_status": "UNKNOWN",
+    "license_sha256": "ade78d04982d69972d444a8e14a94f87a2334dd3855cc80348ea8e240aa0df2d",
+    "spdx_status": "UNKNOWN_LGPLV3_SUFFIX",
+    "disposition": "BLOCKED_UNRESOLVED_VENDORED_LICENSE",
 }
 
 
@@ -77,7 +118,7 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
 
 
-def _package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
+def _package_rows(lock: dict[str, Any], expected_torch_version: str = "2.7.1+cpu") -> list[dict[str, Any]]:
     if set(lock) != LOCK_KEYS or lock.get("version") != 1 or type(lock.get("version")) is not int or lock.get("revision") != 3 or type(lock.get("revision")) is not int:
         raise ValueError("uv.lock top-level schema drifted")
     if lock.get("requires-python") != "==3.12.*" or lock.get("resolution-markers") != [TARGET_MARKER] or lock.get("supported-markers") != [TARGET_MARKER]:
@@ -101,7 +142,7 @@ def _package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             # These are the only registry-row variants emitted by all three
             # committed locks.  Keeping the variants explicit prevents a
             # future resolver from silently adding an unreviewed field.
-            if name == "torch" and version == "2.7.1+cpu":
+            if name == "torch" and version == expected_torch_version:
                 expected_keys = {"name", "version", "source", "dependencies", "wheels"}
             elif "dependencies" in package:
                 expected_keys = {"name", "version", "source", "dependencies", "sdist", "wheels"}
@@ -150,7 +191,7 @@ def _package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             expected_requirements = [
                 {"name": "huggingface-hub", "specifier": "==1.27.0"},
                 {"name": "safetensors", "specifier": "==0.7.0"},
-                {"name": "torch", "specifier": "==2.7.1", "index": "https://download.pytorch.org/whl/cpu"},
+                {"name": "torch", "specifier": f"=={expected_torch_version.removesuffix('+cpu')}", "index": "https://download.pytorch.org/whl/cpu"},
             ]
             if metadata["requires-dist"] != expected_requirements:
                     raise ValueError("virtual requires-dist metadata malformed")
@@ -161,9 +202,9 @@ def _package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row["name"].lower(), row["version"], _canonical(row)))
 
 
-def _lock_artifacts_complete(lock: dict[str, Any]) -> bool:
+def _lock_artifacts_complete(lock: dict[str, Any], expected_torch_version: str = "2.7.1+cpu") -> bool:
     try:
-        rows = _package_rows(lock)
+        rows = _package_rows(lock, expected_torch_version)
     except ValueError:
         return False
     for package in rows:
@@ -200,7 +241,24 @@ def _approval_scope(policy: dict[str, Any], project_sha: str, lock_sha: str, row
     # ``project_sha`` is bound by the external evidence's manifest_sha256.  It
     # is intentionally not inside this digest because the scope is stored in
     # the project policy itself (which would otherwise be self-referential).
-    return _sha256(_canonical({"lock_sha256": lock_sha, "package_rows": rows, "license_records": sorted(records, key=_canonical), "identities": {"model": policy.get("model_identity"), "source": policy.get("source_identity")}, "dependencies": policy.get("dependencies"), "forbidden_packages": policy.get("forbidden_packages"), "owner_clearance": policy.get("owner_clearance"), "publication": policy.get("publication"), "status": policy.get("status"), "runtime_status": policy.get("runtime_status"), "expected_operator_decision": "APPROVED", "expected_operator_status": "APPROVED", "expected_owner_clearance": "APPROVED_OWNER_SIGNOFF", "decision": "APPROVE_OWNER_CLEARANCE_FOR_VAST_ONLY"}))
+    scope = {"lock_sha256": lock_sha, "package_rows": rows, "license_records": sorted(records, key=_canonical), "identities": {"model": policy.get("model_identity"), "source": policy.get("source_identity")}, "dependencies": policy.get("dependencies"), "forbidden_packages": policy.get("forbidden_packages"), "owner_clearance": policy.get("owner_clearance"), "publication": policy.get("publication"), "status": policy.get("status"), "runtime_status": policy.get("runtime_status"), "expected_operator_decision": "APPROVED", "expected_operator_status": "APPROVED", "expected_owner_clearance": "APPROVED_OWNER_SIGNOFF", "decision": "APPROVE_OWNER_CLEARANCE_FOR_VAST_ONLY"}
+    if policy.get("model") in MAGNET_MODELS:
+        scope["bundled_license_evidence"] = policy.get("bundled_license_evidence")
+    return _sha256(_canonical(scope))
+
+
+def _validate_bundled_license_evidence(policy: dict[str, Any]) -> None:
+    evidence = policy.get("bundled_license_evidence")
+    if not isinstance(evidence, dict) or set(evidence) != BUNDLED_LICENSE_EVIDENCE_KEYS:
+        raise ValueError("setuptools bundled-license evidence schema is not exact")
+    if evidence != SETUPTOOLS_BUNDLED_LICENSE_EVIDENCE:
+        raise ValueError("setuptools bundled-license evidence identity drifted")
+
+
+def _validate_setuptools_license_record(records: list[dict[str, Any]]) -> None:
+    matches = [r for r in records if r.get("name") == "setuptools" and r.get("version") == "84.0.0"]
+    if len(matches) != 1 or matches[0].get("license") != SETUPTOOLS_LICENSE or matches[0].get("primary_source") != SETUPTOOLS_WHEEL_URL:
+        raise ValueError("setuptools license record must remain the exact unresolved vendored-LGPL evidence row")
 
 
 def _read_approval(path: Path, manifest_sha: str, scope_sha: str, expected_signer: str) -> tuple[bool, str]:
@@ -249,6 +307,8 @@ def _validate_pyproject_schema(pyproject: dict[str, Any]) -> None:
         raise ValueError("pyproject vokra schema is not exact")
     policy = vokra["audiocraft_reference"]
     expected_policy = {"operator_approval", "model", "source_license", "weight_license", "source_repository", "source_revision", "source_license_evidence", "weight_license_evidence", "status", "publication", "runtime_status", "lock_policy", "forbidden_packages", "license_blocker", "owner_clearance", "dependencies", "model_identity", "source_identity", "license_records", "lock_sha256", "package_rows_sha256", "approval_scope_sha256", "license_rows_sha256"}
+    if policy.get("model") in MAGNET_MODELS:
+        expected_policy = expected_policy | {"bundled_license_evidence"}
     if set(policy) != expected_policy:
         raise ValueError("AudioCraft policy schema is not exact")
     if not isinstance(policy.get("operator_approval"), dict) or set(policy["operator_approval"]) != {"decision", "signer", "digest"}:
@@ -261,6 +321,8 @@ def _validate_pyproject_schema(pyproject: dict[str, Any]) -> None:
     source_keys = set(policy["source_identity"])
     if source_keys not in ({"repo", "revision", "license_spdx", "license_path", "license_bytes", "license_sha256", "roles"}, {"repo", "revision", "license_spdx", "license_path", "license_bytes", "license_sha256", "license_weights_path", "license_weights_bytes", "license_weights_sha256", "roles"}):
         raise ValueError("source identity schema is not exact")
+    if policy.get("model") in MAGNET_MODELS:
+        _validate_bundled_license_evidence(policy)
 
 
 def inspect_project(project: Path, approval_evidence: Path | None = None) -> tuple[int, str]:
@@ -269,13 +331,15 @@ def inspect_project(project: Path, approval_evidence: Path | None = None) -> tup
         return 2, "dedicated pyproject.toml + uv.lock are required before acquisition"
     try:
         pyproject_bytes, lock_bytes = pyproject_path.read_bytes(), lock_path.read_bytes()
-        pyproject = tomllib.loads(pyproject_bytes.decode("utf-8")); lock = tomllib.loads(lock_bytes.decode("utf-8")); _validate_pyproject_schema(pyproject); rows = _package_rows(lock)
+        pyproject = tomllib.loads(pyproject_bytes.decode("utf-8")); lock = tomllib.loads(lock_bytes.decode("utf-8")); _validate_pyproject_schema(pyproject)
+        project_name = pyproject.get("project", {}).get("name")
+        torch_specifier, torch_version = EXPECTED_TORCH_BY_PROJECT.get(project_name, ("2.7.1", "2.7.1+cpu"))
+        rows = _package_rows(lock, torch_version)
     except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError) as exc:
         return 2, f"lock metadata is invalid: {exc}"
     policy = pyproject.get("tool", {}).get("vokra", {}).get("audiocraft_reference")
     if not isinstance(policy, dict):
         return 2, "AudioCraft reference policy metadata is missing"
-    project_name = pyproject.get("project", {}).get("name")
     model_key = next((key for key, identity in EXPECTED_IDENTITIES.items() if identity["model"]["repo"] == policy.get("model")), None)
     if model_key is None or project_name != f"vokra-{model_key}-reference":
         return 2, "model/project identity is not one of the fixed AudioCraft targets"
@@ -292,13 +356,13 @@ def inspect_project(project: Path, approval_evidence: Path | None = None) -> tup
         return 2, "operator approval must be APPROVED with canonical signer/digest"
     if lock.get("requires-python") != "==3.12.*" or lock.get("resolution-markers") != [TARGET_MARKER] or lock.get("supported-markers") != [TARGET_MARKER]:
         return 2, "uv.lock does not cover exactly Linux x86_64 Python 3.12"
-    expected_dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+    expected_dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", f"torch=={torch_specifier}"]
     if pyproject.get("project", {}).get("dependencies") != expected_dependencies or policy.get("dependencies") != expected_dependencies:
         return 2, "dedicated project dependency closure drifted"
     virtual = [row for row in rows if row["source"] == {"virtual": "."}]
     if len(virtual) != 1 or (virtual[0]["name"], virtual[0]["version"]) != (project_name, pyproject.get("project", {}).get("version")):
         return 2, "uv.lock virtual package does not match pyproject"
-    if virtual[0]["metadata"] != {"requires-dist": [{"name": "huggingface-hub", "specifier": "==1.27.0"}, {"name": "safetensors", "specifier": "==0.7.0"}, {"name": "torch", "specifier": "==2.7.1", "index": "https://download.pytorch.org/whl/cpu"}]}:
+    if virtual[0]["metadata"] != {"requires-dist": [{"name": "huggingface-hub", "specifier": "==1.27.0"}, {"name": "safetensors", "specifier": "==0.7.0"}, {"name": "torch", "specifier": f"=={torch_specifier}", "index": "https://download.pytorch.org/whl/cpu"}]}:
         return 2, "uv.lock virtual requires-dist metadata drifted"
     names = {row["name"].lower() for row in rows}
     if names & FORBIDDEN:
@@ -307,7 +371,7 @@ def inspect_project(project: Path, approval_evidence: Path | None = None) -> tup
         return 2, "CUDA/NVIDIA packages are forbidden in uv.lock"
     if "https://download.pytorch.org/whl/cpu" not in lock_bytes.decode("utf-8"):
         return 2, "torch is not bound to the official CPU index"
-    if not _lock_artifacts_complete(lock):
+    if not _lock_artifacts_complete(lock, torch_version):
         return 2, "uv.lock artifact URL/hash/size/source rows are incomplete or malformed"
     expected = EXPECTED_IDENTITIES[model_key]
     if policy.get("model_identity") != expected["model"] or policy.get("source_identity") != expected["source"]:
@@ -321,10 +385,20 @@ def inspect_project(project: Path, approval_evidence: Path | None = None) -> tup
     records = policy.get("license_records")
     if not isinstance(records, list):
         return 2, "version-keyed license records are missing"
+    if policy.get("model") in MAGNET_MODELS:
+        try:
+            _validate_bundled_license_evidence(policy)
+        except ValueError as exc:
+            return 2, f"bundled license evidence is invalid: {exc}"
     nonvirtual = {(row["name"], row["version"]) for row in rows if row["source"] != {"virtual": "."}}
     record_ids = {(r.get("name"), r.get("version")) for r in records if isinstance(r, dict)}
     if record_ids != nonvirtual or len(record_ids) != len(records) or any(not isinstance(r, dict) or set(r) != REQUIRED_LICENSE_KEYS for r in records):
         return 2, "license records do not exactly cover the locked packages"
+    if policy.get("model") in MAGNET_MODELS:
+        try:
+            _validate_setuptools_license_record(records)
+        except ValueError as exc:
+            return 2, str(exc)
     project_sha, lock_sha = _sha256(pyproject_bytes), _sha256(lock_bytes)
     if EXPECTED_PROJECT_SHA256[model_key] != project_sha:
         return 2, "pyproject SHA-256 is not the code-bound project identity"
@@ -345,6 +419,8 @@ def inspect_project(project: Path, approval_evidence: Path | None = None) -> tup
         return 2, f"BLOCKED: {detail}"
     if policy.get("owner_clearance") != "APPROVED_OWNER_SIGNOFF":
         return 2, "BLOCKED: CC-BY-NC-4.0 owner clearance is unresolved"
+    if policy.get("model") in MAGNET_MODELS:
+        return 2, "BLOCKED: setuptools 84.0.0 contains unresolved vendored LGPLv3 evidence"
     return 0, f"APPROVED VAST-only AudioCraft closure signer={detail}"
 
 
@@ -366,7 +442,10 @@ def self_test() -> int:
     # involved and every malformed copy must fail closed rather than raising.
     for project_dir in ("magnet_medium_30secs", "magnet_small_10secs", "melodyflow_t24_30secs"):
         committed = tomllib.loads((Path(__file__).resolve().parent / project_dir / "uv.lock").read_bytes().decode())
-        assert _lock_artifacts_complete(committed), project_dir
+        committed_project = tomllib.loads((Path(__file__).resolve().parent / project_dir / "pyproject.toml").read_bytes().decode())
+        committed_name = committed_project["project"]["name"]
+        _, committed_torch_version = EXPECTED_TORCH_BY_PROJECT.get(committed_name, ("2.7.1", "2.7.1+cpu"))
+        assert _lock_artifacts_complete(committed, committed_torch_version), project_dir
         registry_indexes = [i for i, row in enumerate(committed["package"]) if row.get("source", {}).get("registry")]
         assert registry_indexes
         for index in registry_indexes:
@@ -407,6 +486,37 @@ def self_test() -> int:
         pass
     else:
         raise AssertionError("unknown pyproject field accepted")
+    melody_dir = Path(__file__).resolve().parent / "melodyflow_t24-30secs"
+    if not melody_dir.exists():
+        melody_dir = Path(__file__).resolve().parent / "melodyflow_t24_30secs"
+    melody_project = tomllib.loads((melody_dir / "pyproject.toml").read_bytes().decode())
+    melody_lock = tomllib.loads((melody_dir / "uv.lock").read_bytes().decode())
+    _validate_pyproject_schema(melody_project)
+    melody_policy = melody_project["tool"]["vokra"]["audiocraft_reference"]
+    assert "bundled_license_evidence" not in melody_policy
+    melody_rows = _package_rows(melody_lock, "2.7.1+cpu")
+    assert melody_policy["approval_scope_sha256"] == _approval_scope(melody_policy, _sha256((melody_dir / "pyproject.toml").read_bytes()), _sha256((melody_dir / "uv.lock").read_bytes()), melody_rows, melody_policy["license_records"])
+    for project_dir in ("magnet_medium_30secs", "magnet_small_10secs"):
+        rc, reason = inspect_project(Path(__file__).resolve().parent / project_dir)
+        assert rc == 2 and "pending" in reason, (project_dir, rc, reason)
+    policy = schema_project["tool"]["vokra"]["audiocraft_reference"]
+    _validate_bundled_license_evidence(policy)
+    tampered_evidence = copy.deepcopy(policy)
+    tampered_evidence["bundled_license_evidence"]["artifact_sha256"] = "0" * 64
+    try:
+        _validate_bundled_license_evidence(tampered_evidence)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("bundled license evidence tamper was accepted")
+    tampered_records = copy.deepcopy(policy["license_records"])
+    next(row for row in tampered_records if row["name"] == "setuptools")["license"] = "MIT"
+    try:
+        _validate_setuptools_license_record(tampered_records)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("MIT-only setuptools record was accepted")
     with tempfile.TemporaryDirectory() as directory:
         evidence = Path(directory) / "approval.json"
         base = {"manifest_sha256": "a" * 64, "scope_sha256": "b" * 64, "signer": "owner@example.invalid", "decision": "APPROVE_OWNER_CLEARANCE_FOR_VAST_ONLY"}
@@ -423,7 +533,7 @@ def self_test() -> int:
         project_text = source_project.read_text(encoding="utf-8")
         project_text = project_text.replace('operator_approval = { decision = "PENDING_OWNER_SIGNOFF", signer = "", digest = "" }', 'operator_approval = { decision = "APPROVED", signer = "owner@example.invalid", digest = "' + "0" * 64 + '" }').replace('owner_clearance = "UNRESOLVED_OWNER_SIGNOFF"', 'owner_clearance = "APPROVED_OWNER_SIGNOFF"')
         project_path.write_text(project_text, encoding="utf-8"); lock_path.write_bytes(lock_source.read_bytes())
-        parsed_project = tomllib.loads(project_path.read_bytes().decode()); parsed_lock = tomllib.loads(lock_path.read_bytes().decode()); policy = parsed_project["tool"]["vokra"]["audiocraft_reference"]; approved_rows = _package_rows(parsed_lock); records = policy["license_records"]; project_sha = _sha256(project_path.read_bytes()); lock_sha = _sha256(lock_path.read_bytes()); scope_sha = _approval_scope(policy, project_sha, lock_sha, approved_rows, records)
+        parsed_project = tomllib.loads(project_path.read_bytes().decode()); parsed_lock = tomllib.loads(lock_path.read_bytes().decode()); policy = parsed_project["tool"]["vokra"]["audiocraft_reference"]; approved_rows = _package_rows(parsed_lock, "2.13.0+cpu"); records = policy["license_records"]; project_sha = _sha256(project_path.read_bytes()); lock_sha = _sha256(lock_path.read_bytes()); scope_sha = _approval_scope(policy, project_sha, lock_sha, approved_rows, records)
         project_text = re.sub(r'approval_scope_sha256 = "[0-9a-f]{64}"', f'approval_scope_sha256 = "{scope_sha}"', project_text).replace('digest = "' + "0" * 64 + '"', f'digest = "{scope_sha}"')
         project_path.write_text(project_text, encoding="utf-8")
         parsed_project = tomllib.loads(project_path.read_bytes().decode()); policy = parsed_project["tool"]["vokra"]["audiocraft_reference"]; scope_sha = _approval_scope(policy, _sha256(project_path.read_bytes()), lock_sha, approved_rows, records)
@@ -432,8 +542,8 @@ def self_test() -> int:
         previous = EXPECTED_PROJECT_SHA256["magnet-medium-30secs"]; EXPECTED_PROJECT_SHA256["magnet-medium-30secs"] = _sha256(project_path.read_bytes())
         try:
             rc, reason = inspect_project(root, evidence)
-            if rc != 0:
-                print(f"approved temporary baseline was rejected: {reason}", file=sys.stderr); return 1
+            if rc == 0 or "unresolved vendored LGPLv3" not in reason:
+                print(f"approved temporary baseline was not blocked by bundled license evidence: {reason}", file=sys.stderr); return 1
             for label, mutate in (("owner-clearance", lambda text: text.replace("APPROVED_OWNER_SIGNOFF", "UNRESOLVED_OWNER_SIGNOFF")), ("model-identity", lambda text: text.replace("readme_sha256 = \"85f191c1d886dc8e907986a100f0415751cb86479d18268d2cfacd614b5fd6db\"", "readme_sha256 = \"" + "0" * 64 + "\""))):
                 original = project_path.read_text(encoding="utf-8"); project_path.write_text(mutate(original), encoding="utf-8"); changed_rc, _ = inspect_project(root, evidence)
                 if changed_rc == 0:

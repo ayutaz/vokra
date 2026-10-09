@@ -7,10 +7,10 @@
     "python": "==3.12.*",
     "platform": "linux-x86_64",
     "pyproject_sha256": "8ab3bed941e2f77a04b6311f8ba0e27363274507dfc0dcef41e97358e9b6e2c5",
-    "uv_lock_sha256": "bcc3ea222df56026684a1f2810cf80b7e1b6ff7cabd7d8052fa235de72f5bc98",
-    "dependency_audit_sha256": "2e5322154d50eb21f627290918fc23f358b85e14c06951c7d23586008e4f588a",
+    "uv_lock_sha256": "a3b843c2e26c601260c48a900e060a6a93c909d8bee0cf6ac99d30db7db1c335",
+    "dependency_audit_sha256": "e3a09e9bc712191dc92c79dd866cae5c5f031e7ed96a1852f921af8768657976",
     "source_digests": {
-      "dependency_audit.py": "9c12f57f1a31588b25fb5da2d658894e73b8092ecf298fe0d8e48c11bf2710f3",
+      "dependency_audit.py": "6a6c96beaadbf5b9db6bcfefd7c40f238b8f679a9598a292e6515a8ca765eb9a",
       "dependency_guard.py": "c180ea5338f492fbb8cde5ff03eadf077a92edf68a3f5823fcd80f52285d10b2",
       "collect_dependency_evidence.py": "b8754c2946de03a346539a5f77e4e78b08ee71e9591fac769fae65363f604407",
       "inspect_locked_sdist_sources.py": "a17ef3fb4b124bff5a53f22d2ee67afb353ed85e3c1016e8a1392a0dfaae1958",

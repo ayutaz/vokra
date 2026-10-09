@@ -84,7 +84,7 @@ EXPECTED_LINUX_CLOSURE = frozenset({
     ("requests", "2.34.2"), ("safetensors", "0.8.0"), ("sentencepiece", "0.2.2"), ("setuptools", "84.0.0"),
     ("six", "1.17.0"), ("sympy", "1.14.0"), ("tiktoken", "0.14.0"), ("torch", "2.13.0+cpu"),
     ("torchao", "0.5.0"), ("torchaudio", "2.11.0+cpu"), ("torchtune", "0.3.1"), ("tqdm", "4.70.0"),
-    ("typing-extensions", "4.16.0"), ("urllib3", "2.7.0"), ("vector-quantize-pytorch", "1.17.8"),
+    ("typing-extensions", "4.16.0"), ("urllib3", "2.8.0"), ("vector-quantize-pytorch", "1.17.8"),
     ("vokra-xcodec2-parity", "0.1.0"), ("xcodec2", "0.1.5"), ("xxhash", "4.0.1"), ("yarl", "1.24.5"),
 })
 EXPECTED_PROJECT_NAME = "vokra-xcodec2-parity"
