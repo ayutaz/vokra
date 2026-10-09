@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 import zipfile
 from pathlib import Path
@@ -63,6 +64,33 @@ class CollectorTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_runtime_requires_no_site_and_no_bytecode_flags(self) -> None:
+        AUDIT.validate_runtime_flags(SimpleNamespace(no_site=True, dont_write_bytecode=True))
+        with self.assertRaisesRegex(AUDIT.AuditError, "-S"):
+            AUDIT.validate_runtime_flags(SimpleNamespace(no_site=False, dont_write_bytecode=True))
+        with self.assertRaisesRegex(AUDIT.AuditError, "-B"):
+            AUDIT.validate_runtime_flags(SimpleNamespace(no_site=True, dont_write_bytecode=False))
+
+    def test_audit_rejects_missing_runtime_flags_before_input_reads(self) -> None:
+        args = argparse.Namespace(
+            project=self.root / "missing-project.toml",
+            lock=self.root / "missing-lock.toml",
+            site_packages=self.root / "missing-site",
+            venv_root=self.root / "missing-venv",
+            scripts_root=self.root / "missing-bin",
+            selected_wheel_manifest=self.root / "missing-manifest.json",
+            source_root=self.root / "missing-source",
+            output=self.root / "missing-output.json",
+        )
+        for flags, expected in (
+            (SimpleNamespace(no_site=False, dont_write_bytecode=True), "-S"),
+            (SimpleNamespace(no_site=True, dont_write_bytecode=False), "-B"),
+        ):
+            with self.subTest(expected=expected), mock.patch.object(AUDIT.sys, "flags", flags), mock.patch.object(
+                AUDIT, "read_with_identity", side_effect=AssertionError("input read occurred before runtime gate")
+            ), self.assertRaisesRegex(AUDIT.AuditError, expected):
+                AUDIT.audit(args)
 
     def test_positive_record_license_and_archive_binding(self) -> None:
         selected = AUDIT.verify_selected_artifacts(
@@ -604,6 +632,11 @@ class CollectorTests(unittest.TestCase):
             report = AUDIT.audit(args)
         self.assertEqual(report["status"], "OWNER_REVIEW_REQUIRED_NO_UPLOAD")
         self.assertEqual(report["execution"]["publication"], "NO_UPLOAD")
+        self.assertEqual(report["runtime_flags"], {
+            "no_site": True,
+            "dont_write_bytecode": True,
+            "environment_scrub": "REQUIRED_EXTERNAL_CLEAN_BOOTSTRAP",
+        })
         self.assertEqual(report["packages"][0]["lock"]["name"], "demo")
         original_inspect = AUDIT.inspect_installed_package
         def run_mutation(mutator: object) -> None:

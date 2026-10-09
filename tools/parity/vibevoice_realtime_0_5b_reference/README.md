@@ -64,6 +64,23 @@ the five CPU-lock contract tests. These checks do not establish installed
 closure, license sign-off, real-weight parity, Apple CPU/Metal parity,
 publication eligibility, or authority to run upstream.
 
+## 2026-10-09 runtime invocation-boundary supersession
+
+The current collector adds two fail-closed runtime checks and one production
+entry regression, bringing the current synthetic collector suite to 35 tests.
+`audit()` rejects a target interpreter missing either `-S`
+(`sys.flags.no_site`) or `-B` (`sys.flags.dont_write_bytecode`) before reading
+any project, lock, manifest, venv, or source input. The successful report records
+the observed flags and retains `REQUIRED_EXTERNAL_CLEAN_BOOTSTRAP`.
+
+The external clean-bootstrap invocation remains mandatory:
+`env -u VIRTUAL_ENV -u CONDA_PREFIX -u PYTHONHOME -u PYTHONPATH -u
+PYTHONSTARTUP` and an approved UV-managed interpreter are still required
+because environment variables can affect interpreter startup before the
+collector runs. The runtime flag check cannot retroactively protect such
+earlier startup imports. The 2026-10-07 33-test result above remains historical
+evidence and is not rewritten.
+
 ## Fixed Carter preset cache bridge (inspection-only)
 
 `export_preset_cache.py` is a VAST/Linux x86_64-only exporter for the fixed

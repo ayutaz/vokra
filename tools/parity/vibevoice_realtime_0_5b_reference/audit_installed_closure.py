@@ -94,6 +94,21 @@ def fail(message: str) -> None:
     raise AuditError(message)
 
 
+def validate_runtime_flags(flags: Any | None = None) -> None:
+    """Require the no-site/no-bytecode boundary promised by the runbook.
+
+    The clean-bootstrap launcher remains mandatory because PYTHONPATH and
+    PYTHONHOME can affect interpreter startup before this module runs. This
+    check closes the narrower, observable gap where the target interpreter is
+    reached without the explicit ``-S``/``-B`` flags.
+    """
+    active = sys.flags if flags is None else flags
+    if not getattr(active, "no_site", False):
+        fail("collector requires the target interpreter to run with -S (no site)")
+    if not getattr(active, "dont_write_bytecode", False):
+        fail("collector requires the target interpreter to run with -B (no bytecode)")
+
+
 def normalize_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
@@ -1301,6 +1316,7 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
     global _HASH_BYTES_USED, _READ_BYTES_USED
     _HASH_BYTES_USED = 0
     _READ_BYTES_USED = 0
+    validate_runtime_flags()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or sys.version_info[:2] != (3, 12):
         fail("installed closure audit requires Linux x86_64 CPython 3.12")
     if os.environ.get("VOKRA_PUBLISH_ON_VAST") != "1":
@@ -1386,6 +1402,11 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
         "packages": packages,
         "license_evidence_summary": {"missing_license_distribution_count": len(missing), "missing_license_distributions": missing},
         "execution": {"model_download": "NO_MODEL_DOWNLOAD", "model_execution": "NO_MODEL_EXECUTION", "publication": "NO_UPLOAD"},
+        "runtime_flags": {
+            "no_site": bool(sys.flags.no_site),
+            "dont_write_bytecode": bool(sys.flags.dont_write_bytecode),
+            "environment_scrub": "REQUIRED_EXTERNAL_CLEAN_BOOTSTRAP",
+        },
         "approval": {"owner": "UNAPPROVED", "license": "UNRESOLVED", "native": "UNRESOLVED_FOR_RELEASE", "runtime_compatibility": "UNPROVEN"},
         "blockers": [
             "Selected wheel and installed RECORD bytes are bound, but package license/native review and owner approval remain unresolved.",
