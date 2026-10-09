@@ -15,6 +15,8 @@ use crate::compute::Compute;
 use crate::mimi::{MimiEncoder, MimiEncoderState, MimiNeuralConfig};
 use crate::strict_checkpoint::sha256_bytes;
 
+#[cfg(test)]
+use super::KyutaiSttStreamingLmStep;
 use super::{
     KYUTAI_STT_MIMI_BYTES, KYUTAI_STT_MIMI_SHA256, KyutaiSttAsr, KyutaiSttConfig,
     KyutaiSttStreamingContract, KyutaiSttStreamingLm, KyutaiSttTextLogits, KyutaiSttTokenizer,
@@ -188,9 +190,9 @@ impl KyutaiSttPcmSession<'_> {
         self.push_pcm_with_callbacks(samples)
     }
 
-    /// Appends exactly the prescribed right padding once, drains complete
-    /// frames, and drops any final partial frame.  EOS is retained as a raw
-    /// sampled token; it never stops this schedule early.
+    /// Appends exactly the evaluator's prescribed right padding once, drains
+    /// complete frames, and zero-pads any final partial frame. EOS is retained
+    /// as a raw sampled token; it never stops this schedule early.
     pub(crate) fn finish(&mut self) -> Result<()> {
         self.finish_with_callbacks()
     }
@@ -228,35 +230,168 @@ impl KyutaiSttPcmSession<'_> {
     }
 
     fn push_pcm_with_callbacks(&mut self, samples: &[f32]) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.push_pcm_observed(samples, None)
+        }
+        #[cfg(not(test))]
+        {
+            self.push_pcm_observed(samples)
+        }
+    }
+
+    fn finish_with_callbacks(&mut self) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.finish_observed(None)
+        }
+        #[cfg(not(test))]
+        {
+            self.finish_observed()
+        }
+    }
+
+    fn push_pcm_observed(
+        &mut self,
+        samples: &[f32],
+        #[cfg(test)] observer: Option<&mut dyn PcmObserver>,
+    ) -> Result<()> {
         let contract = self.engine.contract;
         let mimi = &self.engine.mimi;
         let mimi_state = &mut self.mimi_state;
         let lm = &mut self.lm;
+        #[cfg(test)]
+        let observer = std::cell::RefCell::new(observer);
         self.control.push(
             contract,
             samples,
-            |frame, codes| mimi.encode_into(mimi_state, frame, codes),
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                #[cfg(test)]
+                notify_frame(&observer, frame, codes)?;
+                Ok(())
+            },
             |previous, codes| {
                 let step = lm.step_frame(previous, codes)?;
+                #[cfg(test)]
+                notify_lm_call(&observer, previous, codes, &step, lm)?;
                 greedy_token(step.logits(), contract.text_card())
             },
         )
     }
 
-    fn finish_with_callbacks(&mut self) -> Result<()> {
+    fn finish_observed(
+        &mut self,
+        #[cfg(test)] observer: Option<&mut dyn PcmObserver>,
+    ) -> Result<()> {
         let contract = self.engine.contract;
         let mimi = &self.engine.mimi;
         let mimi_state = &mut self.mimi_state;
         let lm = &mut self.lm;
+        #[cfg(test)]
+        let observer = std::cell::RefCell::new(observer);
         self.control.finish(
             contract,
-            |frame, codes| mimi.encode_into(mimi_state, frame, codes),
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                #[cfg(test)]
+                notify_frame(&observer, frame, codes)?;
+                Ok(())
+            },
             |previous, codes| {
                 let step = lm.step_frame(previous, codes)?;
+                #[cfg(test)]
+                notify_lm_call(&observer, previous, codes, &step, lm)?;
                 greedy_token(step.logits(), contract.text_card())
             },
         )
     }
+
+    #[cfg(test)]
+    fn reset_probe_first_padded_frame_with_observer(
+        &mut self,
+        observer: &mut dyn PcmObserver,
+    ) -> Result<()> {
+        let contract = self.engine.contract;
+        let mimi = &self.engine.mimi;
+        let mimi_state = &mut self.mimi_state;
+        let lm = &mut self.lm;
+        let observer = std::cell::RefCell::new(Some(observer));
+        let result = self.control.probe_reset_first_frame(
+            contract,
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                notify_frame(&observer, frame, codes)?;
+                Ok(())
+            },
+            |previous, codes| {
+                let step = lm.step_frame(previous, codes)?;
+                notify_lm_call(&observer, previous, codes, &step, lm)?;
+                greedy_token(step.logits(), contract.text_card())
+            },
+        );
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => self.control.poison(error),
+        }
+    }
+
+    #[cfg(test)]
+    fn push_pcm_with_observer(
+        &mut self,
+        samples: &[f32],
+        observer: &mut dyn PcmObserver,
+    ) -> Result<()> {
+        self.push_pcm_observed(samples, Some(observer))
+    }
+
+    #[cfg(test)]
+    fn finish_with_observer(&mut self, observer: &mut dyn PcmObserver) -> Result<()> {
+        self.finish_observed(Some(observer))
+    }
+}
+
+/// Test-only synchronous observation of the existing production PCM callback
+/// seam. Implementations receive borrowed views and must consume them before
+/// returning; the seam itself retains no KV data, while each consumer must
+/// enforce its own bounded retention/export policy.
+#[cfg(test)]
+trait PcmObserver {
+    fn on_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()>;
+
+    fn on_lm_call(
+        &mut self,
+        previous_text_token: Option<u32>,
+        codes: &[u32],
+        step: &KyutaiSttStreamingLmStep,
+        lm: &KyutaiSttStreamingLm<'_>,
+    ) -> Result<()>;
+}
+
+#[cfg(test)]
+fn notify_frame(
+    observer: &std::cell::RefCell<Option<&mut dyn PcmObserver>>,
+    frame: &[f32],
+    codes: &[u32],
+) -> Result<()> {
+    if let Some(observer) = observer.borrow_mut().as_deref_mut() {
+        observer.on_frame(frame, codes)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn notify_lm_call(
+    observer: &std::cell::RefCell<Option<&mut dyn PcmObserver>>,
+    previous_text_token: Option<u32>,
+    codes: &[u32],
+    step: &KyutaiSttStreamingLmStep,
+    lm: &KyutaiSttStreamingLm<'_>,
+) -> Result<()> {
+    if let Some(observer) = observer.borrow_mut().as_deref_mut() {
+        observer.on_lm_call(previous_text_token, codes, step, lm)?;
+    }
+    Ok(())
 }
 
 /// The exact PCM carry/padding state machine is kept separate from the model
@@ -357,7 +492,9 @@ impl PcmFrameBuffer {
                 self.drain(contract, &mut encode, &mut decode)?;
             }
         }
-        self.pcm.truncate((self.pcm.len() / hop) * hop);
+        if !self.pcm.is_empty() {
+            self.pcm.resize(hop, 0.0);
+        }
         self.drain(contract, &mut encode, &mut decode)
     }
 
@@ -394,20 +531,73 @@ impl PcmFrameBuffer {
         Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
         Decode: FnMut(&[u32]) -> Result<()>,
     {
+        while self.drain_one(contract, encode, decode)? {}
+        Ok(())
+    }
+
+    fn drain_one<Encode, Decode>(
+        &mut self,
+        contract: KyutaiSttStreamingContract,
+        encode: &mut Encode,
+        decode: &mut Decode,
+    ) -> Result<bool>
+    where
+        Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
+        Decode: FnMut(&[u32]) -> Result<()>,
+    {
         let hop = contract.frame_hop_samples();
-        while self.pcm.len() >= hop {
-            self.frame.copy_from_slice(&self.pcm[..hop]);
-            let remaining = self.pcm.len() - hop;
-            self.pcm.copy_within(hop.., 0);
-            self.pcm.truncate(remaining);
-            encode(&self.frame, &mut self.codes)?;
-            contract.validate_mimi_codes(&self.codes)?;
-            decode(&self.codes)?;
-            self.encoded_frames = self.encoded_frames.checked_add(1).ok_or_else(|| {
-                VokraError::InvalidArgument(
-                    "kyutai STT PCM frame buffer: encoded frame count overflow".to_owned(),
-                )
-            })?;
+        if self.pcm.len() < hop {
+            return Ok(false);
+        }
+        self.frame.copy_from_slice(&self.pcm[..hop]);
+        let remaining = self.pcm.len() - hop;
+        self.pcm.copy_within(hop.., 0);
+        self.pcm.truncate(remaining);
+        encode(&self.frame, &mut self.codes)?;
+        contract.validate_mimi_codes(&self.codes)?;
+        decode(&self.codes)?;
+        self.encoded_frames = self.encoded_frames.checked_add(1).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kyutai STT PCM frame buffer: encoded frame count overflow".to_owned(),
+            )
+        })?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    fn probe_reset_first_frame<Encode, Decode>(
+        &mut self,
+        contract: KyutaiSttStreamingContract,
+        mut encode: Encode,
+        mut decode: Decode,
+    ) -> Result<()>
+    where
+        Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
+        Decode: FnMut(&[u32]) -> Result<()>,
+    {
+        if self.finished || self.encoded_frames != 0 {
+            return Err(VokraError::InvalidArgument(
+                "kyutai STT PCM frame buffer: reset probe requires a fresh reset".to_owned(),
+            ));
+        }
+        if self.pcm.len() != contract.silence_prefix_samples() {
+            return Err(VokraError::InvalidArgument(
+                "kyutai STT PCM frame buffer: reset probe prefix is not fresh".to_owned(),
+            ));
+        }
+        if !self
+            .pcm
+            .iter()
+            .all(|sample| sample.is_finite() && *sample == 0.0)
+        {
+            return Err(VokraError::InvalidArgument(
+                "kyutai STT PCM frame buffer: reset probe prefix is not zero silence".to_owned(),
+            ));
+        }
+        if !self.drain_one(contract, &mut encode, &mut decode)? {
+            return Err(VokraError::InvalidArgument(
+                "kyutai STT PCM frame buffer: reset probe has no complete prefix frame".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -556,6 +746,54 @@ impl PcmSessionControl {
         })
     }
 
+    #[cfg(test)]
+    fn probe_reset_first_frame<Encode, Step>(
+        &mut self,
+        contract: KyutaiSttStreamingContract,
+        mut encode: Encode,
+        mut step: Step,
+    ) -> Result<()>
+    where
+        Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
+        Step: FnMut(Option<u32>, &[u32]) -> Result<u32>,
+    {
+        self.ensure_live("reset probe")?;
+        if self.finished
+            || self.schedule != TextSchedule::default()
+            || !self.raw_text_tokens.is_empty()
+            || !self.emitted_text_tokens.is_empty()
+        {
+            return self.poison(VokraError::InvalidArgument(
+                "kyutai STT PCM session: reset probe requires a fresh reset".to_owned(),
+            ));
+        }
+        let result = self.probe_reset_first_frame_inner(contract, &mut encode, &mut step);
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => self.poison(error),
+        }
+    }
+
+    #[cfg(test)]
+    fn probe_reset_first_frame_inner<Encode, Step>(
+        &mut self,
+        contract: KyutaiSttStreamingContract,
+        encode: &mut Encode,
+        step: &mut Step,
+    ) -> Result<()>
+    where
+        Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
+        Step: FnMut(Option<u32>, &[u32]) -> Result<u32>,
+    {
+        let buffer = &mut self.buffer;
+        let schedule = &mut self.schedule;
+        let raw = &mut self.raw_text_tokens;
+        let emitted = &mut self.emitted_text_tokens;
+        buffer.probe_reset_first_frame(contract, encode, |codes| {
+            drive_sampled_code_row(contract, codes, schedule, raw, emitted, &mut *step)
+        })
+    }
+
     fn poison<T>(&mut self, error: VokraError) -> Result<T> {
         self.poisoned = true;
         self.raw_text_tokens.clear();
@@ -574,7 +812,11 @@ fn checked_frame_capacity(
     let total = pcm_len.checked_add(additional_samples).ok_or_else(|| {
         VokraError::InvalidArgument("kyutai STT PCM sample count overflow".to_owned())
     })?;
-    let possible = total / hop;
+    let possible = total.checked_add(hop - 1).ok_or_else(|| {
+        VokraError::InvalidArgument(
+            "kyutai STT PCM frame buffer: projected frame count overflows usize".to_owned(),
+        )
+    })? / hop;
     let projected = encoded_frames.checked_add(possible).ok_or_else(|| {
         VokraError::InvalidArgument("kyutai STT PCM frame count overflow".to_owned())
     })?;
@@ -603,11 +845,8 @@ where
     let result = (|| {
         if schedule.frames == 0 {
             let first_token = step(None, codes)?;
-            record_sampled_token(contract, raw, emitted, first_token, false)?;
+            record_sampled_token(contract, raw, emitted, first_token, true)?;
             schedule.accept(first_token);
-            let second_token = step(schedule.previous, codes)?;
-            record_sampled_token(contract, raw, emitted, second_token, true)?;
-            schedule.accept(second_token);
         } else {
             let token = step(schedule.previous, codes)?;
             record_sampled_token(contract, raw, emitted, token, true)?;
@@ -656,7 +895,7 @@ fn record_sampled_token(
         )));
     }
     raw.push(token);
-    if expose && contract.emits_text_token(token) {
+    if expose && contract.emits_evaluator_text_token(token) {
         emitted.push(token);
     }
     Ok(())
@@ -777,6 +1016,9 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
+mod independent_reference;
+
+#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -788,6 +1030,75 @@ mod tests {
     fn contract() -> KyutaiSttStreamingContract {
         KyutaiSttStreamingContract::from_config(&super::super::KyutaiSttConfig::stt_2_6b_en())
             .unwrap()
+    }
+
+    #[derive(Default)]
+    struct ObserverProbe {
+        frames: usize,
+        frame_lengths: Vec<usize>,
+        code_rows: Vec<Vec<u32>>,
+        calls: Vec<(usize, usize, Option<u32>, usize, usize)>,
+    }
+
+    impl PcmObserver for ObserverProbe {
+        fn on_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()> {
+            self.frames += 1;
+            self.frame_lengths.push(frame.len());
+            self.code_rows.push(codes.to_vec());
+            Ok(())
+        }
+
+        fn on_lm_call(
+            &mut self,
+            previous_text_token: Option<u32>,
+            codes: &[u32],
+            step: &KyutaiSttStreamingLmStep,
+            lm: &KyutaiSttStreamingLm<'_>,
+        ) -> Result<()> {
+            let last_codes = self.code_rows.last().ok_or_else(|| {
+                VokraError::ModelLoad("observer saw LM call before Mimi frame".to_owned())
+            })?;
+            if last_codes != codes {
+                return Err(VokraError::ModelLoad(
+                    "observer saw a different LM code row".to_owned(),
+                ));
+            }
+            let layer_count = KyutaiSttConfig::stt_2_6b_en().backbone.n_layer;
+            for layer in 0..layer_count {
+                let (positions, keys, values) = lm.layer_cache_view(layer).ok_or_else(|| {
+                    VokraError::ModelLoad(format!("observer missing KV layer {layer}"))
+                })?;
+                let _borrowed_lengths = (positions.len(), keys.len(), values.len());
+            }
+            let frame_call_ordinal = self
+                .calls
+                .iter()
+                .rev()
+                .find(|call| call.0 + 1 == self.frames)
+                .map_or(0, |call| call.1 + 1);
+            self.calls.push((
+                self.frames - 1,
+                frame_call_ordinal,
+                previous_text_token,
+                step.logits().as_slice().len(),
+                layer_count,
+            ));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observer_dispatch_borrows_frame_and_code_rows_without_kv_retention() {
+        let mut probe = ObserverProbe::default();
+        let frame = [0.25_f32; 1_920];
+        let codes = [7_u32; 32];
+        {
+            let observer = std::cell::RefCell::new(Some(&mut probe as &mut dyn PcmObserver));
+            notify_frame(&observer, &frame, &codes).unwrap();
+        }
+        assert_eq!(probe.frames, 1);
+        assert_eq!(probe.frame_lengths, [1_920]);
+        assert_eq!(probe.code_rows, vec![codes.to_vec()]);
     }
 
     #[test]
@@ -809,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_schedule_matches_first_double_step_and_current_rows() {
+    fn shared_schedule_matches_one_step_per_evaluator_frame() {
         let contract = contract();
         let mut schedule = TextSchedule::default();
         let mut raw = Vec::new();
@@ -831,11 +1142,11 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(calls, [(None, 0), (Some(11), 0), (Some(2), 1)]);
-        assert_eq!(raw, [11, 2, 3]);
-        assert_eq!(emitted, [2]);
+        assert_eq!(calls, [(None, 0), (Some(11), 1)]);
+        assert_eq!(raw, [11, 2]);
+        assert_eq!(emitted, [11]);
         assert_eq!(schedule.frames, 2);
-        assert_eq!(schedule.previous, Some(3));
+        assert_eq!(schedule.previous, Some(2));
 
         schedule = TextSchedule::default();
         raw.clear();
@@ -854,7 +1165,306 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(calls, [(None, 7), (Some(19), 7)]);
+        assert_eq!(calls, [(None, 7)]);
+    }
+
+    #[test]
+    fn trace_schedule_records_one_call_per_frame_and_reset() {
+        #[derive(Default)]
+        struct Probe {
+            generation: usize,
+            frame: usize,
+            frame_call_ordinal: usize,
+            calls: Vec<(usize, usize, usize, Option<u32>)>,
+        }
+
+        let contract = contract();
+        let mut control =
+            PcmSessionControl::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        let probe = std::cell::RefCell::new(Probe::default());
+
+        let encode = |_: &[f32], codes: &mut [u32]| {
+            let mut probe = probe.borrow_mut();
+            codes.fill(0);
+            probe.frame += 1;
+            probe.frame_call_ordinal = 0;
+            Ok(())
+        };
+        let step = |previous: Option<u32>, _codes: &[u32]| {
+            let mut probe = probe.borrow_mut();
+            let frame = probe.frame - 1;
+            let ordinal = probe.frame_call_ordinal;
+            let generation = probe.generation;
+            probe.calls.push((generation, frame, ordinal, previous));
+            probe.frame_call_ordinal += 1;
+            Ok(if previous.is_none() { 11 } else { 2 })
+        };
+        control.push(contract, &[0.0], encode, step).unwrap();
+
+        {
+            let probe = probe.borrow();
+            assert_eq!(probe.calls[0], (0, 0, 0, None));
+            assert_eq!(probe.calls[1], (0, 1, 0, Some(11)));
+        }
+
+        control.reset(&contract, || {}, || {});
+        {
+            let mut probe = probe.borrow_mut();
+            probe.generation = 1;
+            probe.frame = 0;
+            probe.frame_call_ordinal = 0;
+        }
+        let encode = |_: &[f32], codes: &mut [u32]| {
+            let mut probe = probe.borrow_mut();
+            codes.fill(0);
+            probe.frame += 1;
+            probe.frame_call_ordinal = 0;
+            Ok(())
+        };
+        let step = |previous: Option<u32>, _codes: &[u32]| {
+            let mut probe = probe.borrow_mut();
+            let frame = probe.frame - 1;
+            let ordinal = probe.frame_call_ordinal;
+            let generation = probe.generation;
+            probe.calls.push((generation, frame, ordinal, previous));
+            probe.frame_call_ordinal += 1;
+            Ok(if previous.is_none() { 11 } else { 2 })
+        };
+        control.finish(contract, encode, step).unwrap();
+        let probe = probe.borrow();
+        let reset_calls: Vec<_> = probe
+            .calls
+            .iter()
+            .copied()
+            .filter(|call| call.0 == 1)
+            .collect();
+        assert_eq!(reset_calls[0], (1, 0, 0, None));
+        assert_eq!(reset_calls.len(), contract.padded_frame_count(0).unwrap());
+        for (frame, call) in reset_calls.iter().enumerate() {
+            assert_eq!((call.1, call.2), (frame, 0));
+            let expected_previous = match frame {
+                0 => None,
+                1 => Some(11),
+                _ => Some(2),
+            };
+            assert_eq!(call.3, expected_previous);
+        }
+    }
+
+    #[test]
+    fn reset_probe_replays_one_prefix_frame_without_discarding_tail() {
+        let contract = contract();
+        let mut control =
+            PcmSessionControl::new(&contract, contract.padded_frame_count(1_920).unwrap()).unwrap();
+        let mut warmup_calls = 0;
+        control
+            .push(
+                contract,
+                &[0.25; 1_920],
+                |_frame, codes| {
+                    codes.fill(0);
+                    Ok(())
+                },
+                |_previous, _codes| {
+                    warmup_calls += 1;
+                    Ok(11)
+                },
+            )
+            .unwrap();
+        assert_eq!(control.buffer.encoded_frames, 13);
+        assert_eq!(control.schedule.frames, 13);
+        assert_eq!(warmup_calls, 13);
+        let mut mimi_resets = 0;
+        let mut lm_resets = 0;
+        control.reset(&contract, || mimi_resets += 1, || lm_resets += 1);
+        assert_eq!((mimi_resets, lm_resets), (1, 1));
+        assert_eq!(control.buffer.encoded_frames, 0);
+        assert_eq!(control.buffer.pcm.len(), contract.silence_prefix_samples());
+        assert_eq!(control.schedule, TextSchedule::default());
+        assert!(control.raw_text_tokens.is_empty() && control.emitted_text_tokens.is_empty());
+        assert!(!control.finished && !control.poisoned);
+        let frames = std::cell::RefCell::new(Vec::new());
+        let calls = std::cell::RefCell::new(Vec::new());
+        control
+            .probe_reset_first_frame(
+                contract,
+                |frame, codes| {
+                    assert!(frame.iter().all(|value| *value == 0.0));
+                    frames.borrow_mut().push(frame.to_vec());
+                    codes.fill(0);
+                    Ok(())
+                },
+                |previous, _codes| {
+                    calls.borrow_mut().push(previous);
+                    Ok(11)
+                },
+            )
+            .unwrap();
+        assert_eq!(frames.borrow().len(), 1);
+        assert_eq!(frames.borrow()[0].len(), contract.frame_hop_samples());
+        assert_eq!(calls.borrow().as_slice(), [None]);
+        assert_eq!(control.buffer.encoded_frames, 1);
+        assert_eq!(
+            control.buffer.pcm.len(),
+            contract.silence_prefix_samples() - contract.frame_hop_samples()
+        );
+        assert_eq!(control.schedule.frames, 1);
+        assert_eq!(control.schedule.previous, Some(11));
+        assert_eq!(control.raw_text_tokens, [11]);
+        assert!(!control.finished && !control.poisoned);
+        let repeated_callbacks = std::cell::Cell::new(0);
+        assert!(
+            control
+                .probe_reset_first_frame(
+                    contract,
+                    |_frame, codes| {
+                        repeated_callbacks.set(repeated_callbacks.get() + 1);
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_previous, _codes| {
+                        repeated_callbacks.set(repeated_callbacks.get() + 1);
+                        Ok(11)
+                    }
+                )
+                .is_err()
+        );
+        assert!(control.poisoned);
+        assert_eq!(repeated_callbacks.get(), 0);
+        assert!(control.raw_text_tokens.is_empty() && control.emitted_text_tokens.is_empty());
+
+        let mut normal =
+            PcmSessionControl::new(&contract, contract.padded_frame_count(1_920).unwrap()).unwrap();
+        let mut normal_calls = 0;
+        normal
+            .push(
+                contract,
+                &[0.25; 1_920],
+                |_frame, codes| {
+                    codes.fill(0);
+                    Ok(())
+                },
+                |_previous, _codes| {
+                    normal_calls += 1;
+                    Ok(11)
+                },
+            )
+            .unwrap();
+        assert_eq!(normal.buffer.encoded_frames, 13);
+        assert_eq!(normal.schedule.frames, 13);
+        assert_eq!(normal_calls, 13);
+        let non_reset_callbacks = std::cell::Cell::new(0);
+        assert!(
+            normal
+                .probe_reset_first_frame(
+                    contract,
+                    |_frame, codes| {
+                        non_reset_callbacks.set(non_reset_callbacks.get() + 1);
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_previous, _codes| {
+                        non_reset_callbacks.set(non_reset_callbacks.get() + 1);
+                        Ok(11)
+                    },
+                )
+                .is_err()
+        );
+        assert!(normal.poisoned);
+        assert_eq!(non_reset_callbacks.get(), 0);
+
+        for tampered in [1.0_f32, f32::NAN] {
+            let mut tampered_reset = PcmSessionControl::new(&contract, 51).unwrap();
+            tampered_reset.buffer.pcm[0] = tampered;
+            let tampered_callbacks = std::cell::Cell::new(0);
+            assert!(
+                tampered_reset
+                    .probe_reset_first_frame(
+                        contract,
+                        |_frame, codes| {
+                            tampered_callbacks.set(tampered_callbacks.get() + 1);
+                            codes.fill(0);
+                            Ok(())
+                        },
+                        |_previous, _codes| {
+                            tampered_callbacks.set(tampered_callbacks.get() + 1);
+                            Ok(11)
+                        },
+                    )
+                    .is_err()
+            );
+            assert!(tampered_reset.poisoned);
+            assert_eq!(tampered_callbacks.get(), 0);
+        }
+
+        let mut encode_error = PcmSessionControl::new(&contract, 51).unwrap();
+        assert!(
+            encode_error
+                .probe_reset_first_frame(
+                    contract,
+                    |_frame, _codes| {
+                        Err(VokraError::ModelLoad("probe encode failure".to_owned()))
+                    },
+                    |_previous, _codes| Ok(11),
+                )
+                .is_err()
+        );
+        assert!(encode_error.poisoned);
+        assert!(
+            encode_error.raw_text_tokens.is_empty() && encode_error.emitted_text_tokens.is_empty()
+        );
+        let encode_next_push = std::cell::Cell::new(0);
+        assert!(
+            encode_error
+                .push(
+                    contract,
+                    &[0.0],
+                    |_frame, _codes| {
+                        encode_next_push.set(encode_next_push.get() + 1);
+                        Ok(())
+                    },
+                    |_previous, _codes| {
+                        encode_next_push.set(encode_next_push.get() + 1);
+                        Ok(11)
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(encode_next_push.get(), 0);
+
+        let mut step_error = PcmSessionControl::new(&contract, 51).unwrap();
+        assert!(
+            step_error
+                .probe_reset_first_frame(
+                    contract,
+                    |_frame, codes| {
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_previous, _codes| Err(VokraError::ModelLoad("probe step failure".to_owned())),
+                )
+                .is_err()
+        );
+        assert!(step_error.poisoned);
+        assert!(step_error.raw_text_tokens.is_empty() && step_error.emitted_text_tokens.is_empty());
+        let step_next_push = std::cell::Cell::new(0);
+        assert!(
+            step_error
+                .push(
+                    contract,
+                    &[0.0],
+                    |_frame, _codes| {
+                        step_next_push.set(step_next_push.get() + 1);
+                        Ok(())
+                    },
+                    |_previous, _codes| {
+                        step_next_push.set(step_next_push.get() + 1);
+                        Ok(11)
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(step_next_push.get(), 0);
     }
 
     #[test]
@@ -873,7 +1483,7 @@ mod tests {
             &mut emitted,
             |_previous, _codes| {
                 calls += 1;
-                if calls == 2 {
+                if calls == 1 {
                     Err(VokraError::ModelLoad("injected LM failure".to_owned()))
                 } else {
                     Ok(11)
@@ -881,7 +1491,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert_eq!(calls, 2);
+        assert_eq!(calls, 1);
         assert_eq!(schedule, TextSchedule::default());
         assert!(raw.is_empty() && emitted.is_empty());
 
@@ -911,7 +1521,7 @@ mod tests {
     fn lifecycle_control_poison_finish_retry_and_reset_are_transactional() {
         let contract = contract();
         let mut control =
-            PcmSessionControl::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+            PcmSessionControl::new(&contract, contract.padded_frame_count(1).unwrap()).unwrap();
         let encoder_error = control.push(
             contract,
             &[0.0; 1],
@@ -1060,7 +1670,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(rows, contract.padded_frame_count(0).unwrap() + 1);
+        assert_eq!(rows, contract.padded_frame_count(0).unwrap());
         assert_eq!(control.raw_text_tokens.len(), rows);
         assert!(
             control
@@ -1164,6 +1774,43 @@ mod tests {
             )
             .is_err()
         );
+        let near_rounding_overflow = usize::MAX - (contract.frame_hop_samples() - 2);
+        assert!(
+            checked_frame_capacity(
+                near_rounding_overflow,
+                0,
+                0,
+                contract.frame_hop_samples(),
+                usize::MAX,
+            )
+            .is_err()
+        );
+
+        let mut finish_over_cap =
+            PcmFrameBuffer::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        finish_over_cap
+            .push(
+                contract,
+                &[0.5],
+                |_frame, codes| {
+                    codes.fill(0);
+                    Ok(())
+                },
+                |_codes| Ok(()),
+            )
+            .unwrap();
+        let before_finish = finish_over_cap.pcm.clone();
+        assert!(
+            finish_over_cap
+                .finish(
+                    contract,
+                    |_frame, _codes| panic!("capacity must reject before encoding"),
+                    |_codes| panic!("capacity must reject before decoding"),
+                )
+                .is_err()
+        );
+        assert!(!finish_over_cap.finished);
+        assert_eq!(finish_over_cap.pcm, before_finish);
     }
 
     #[test]
@@ -1236,6 +1883,70 @@ mod tests {
         assert_eq!(partitioned_rows, one_rows);
         assert_eq!(partitioned_codes, one_codes);
         assert_eq!(partitioned.pcm, one_chunk.pcm);
+        assert_eq!(
+            one_rows.len(),
+            contract.padded_frame_count(input.len()).unwrap()
+        );
+        let mut expected_pcm = vec![0.0; contract.silence_prefix_samples()];
+        expected_pcm.extend_from_slice(&input);
+        expected_pcm.extend(std::iter::repeat_n(0.0, contract.right_padding_samples()));
+        expected_pcm.resize(
+            contract.padded_frame_count(input.len()).unwrap() * contract.frame_hop_samples(),
+            0.0,
+        );
+        let captured_pcm: Vec<f32> = one_rows.iter().flatten().copied().collect();
+        assert_eq!(captured_pcm, expected_pcm);
+        let input_last = contract.silence_prefix_samples() + input.len() - 1;
+        assert_eq!(captured_pcm[input_last], *input.last().unwrap());
+        assert!(
+            captured_pcm[contract.silence_prefix_samples()
+                + input.len()
+                + contract.right_padding_samples()..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+    }
+
+    #[test]
+    fn pcm_buffer_retains_boundary_inputs_and_only_invents_zero_tail() {
+        let contract = contract();
+        for sample_count in [1, 1_919, 1_920, 1_921] {
+            let mut input = vec![0.0; sample_count];
+            input[sample_count - 1] = 7.0;
+            let cap = contract.padded_frame_count(sample_count).unwrap();
+            let mut buffer = PcmFrameBuffer::new(&contract, cap).unwrap();
+            let mut frames = Vec::new();
+            buffer
+                .push(
+                    contract,
+                    &input,
+                    |frame, codes| {
+                        frames.push(frame.to_vec());
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_codes| Ok(()),
+                )
+                .unwrap();
+            buffer
+                .finish(
+                    contract,
+                    |frame, codes| {
+                        frames.push(frame.to_vec());
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_codes| Ok(()),
+                )
+                .unwrap();
+            let captured: Vec<f32> = frames.iter().flatten().copied().collect();
+            let input_last = contract.silence_prefix_samples() + sample_count - 1;
+            assert_eq!(captured[input_last], 7.0);
+            let padded_end =
+                contract.silence_prefix_samples() + sample_count + contract.right_padding_samples();
+            assert!(captured[padded_end..].iter().all(|sample| *sample == 0.0));
+            assert_eq!(captured.len(), cap * contract.frame_hop_samples());
+        }
     }
 
     #[test]
@@ -1325,15 +2036,17 @@ mod tests {
     }
 
     #[test]
-    fn suppression_keeps_raw_eos_but_hides_zero_and_padding() {
+    fn evaluator_suppression_keeps_all_raw_padding_rows_but_emits_only_ids_above_three() {
         let contract = contract();
         let mut raw = Vec::new();
         let mut emitted = Vec::new();
         record_sampled_token(contract, &mut raw, &mut emitted, 0, true).unwrap();
+        record_sampled_token(contract, &mut raw, &mut emitted, 1, true).unwrap();
         record_sampled_token(contract, &mut raw, &mut emitted, 2, true).unwrap();
         record_sampled_token(contract, &mut raw, &mut emitted, 3, true).unwrap();
-        assert_eq!(raw, [0, 2, 3]);
-        assert_eq!(emitted, [2]);
+        record_sampled_token(contract, &mut raw, &mut emitted, 4, true).unwrap();
+        assert_eq!(raw, [0, 1, 2, 3, 4]);
+        assert_eq!(emitted, [4]);
     }
 
     #[test]
@@ -1355,12 +2068,28 @@ mod tests {
     }
 
     #[test]
-    fn padding_arithmetic_is_exact_and_drops_partial_tail() {
+    fn padding_arithmetic_uses_evaluator_right_margin_and_ceils_tail() {
         let contract =
             KyutaiSttStreamingContract::from_config(&super::super::KyutaiSttConfig::stt_2_6b_en())
                 .unwrap();
-        assert_eq!(contract.padded_frame_count(0).unwrap(), 56);
-        assert_eq!(contract.padded_frame_count(1_920).unwrap(), 57);
-        assert_eq!(contract.padded_frame_count(1_921).unwrap(), 57);
+        for (samples, expected_frames) in [
+            (0, 50),
+            (1, 51),
+            (1_919, 51),
+            (1_920, 51),
+            (1_921, 52),
+            (24_000, 63),
+        ] {
+            assert_eq!(
+                contract.padded_frame_count(samples).unwrap(),
+                expected_frames
+            );
+        }
+        let near_rounding_overflow = usize::MAX
+            .checked_sub(contract.silence_prefix_samples())
+            .and_then(|value| value.checked_sub(contract.right_padding_samples()))
+            .and_then(|value| value.checked_sub(contract.frame_hop_samples() - 2))
+            .expect("test input must fit the checked additions");
+        assert!(contract.padded_frame_count(near_rounding_overflow).is_err());
     }
 }

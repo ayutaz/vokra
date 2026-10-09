@@ -30,6 +30,43 @@ lineage, weight rights, and publication decision remain separate authenticated
 records. If the conversion metadata or external packet is absent, construction
 fails closed.
 
+## Supplemental dependency declaration evidence
+
+The authenticated Moshi `moshi/pyproject.toml` blob
+(`0a99f52ea834cdcfe1b07ec3cfcbb7e96083fb61`, 1305 bytes) directly declares the
+seven source-graph candidate distributions: `bitsandbytes`, `einops`,
+`huggingface-hub` (the distribution spelling for the `huggingface_hub` import),
+`numpy`, `safetensors`, `sentencepiece`, and `torch`. The supplemental metadata
+auditor records these as deterministic `SOURCE_DECLARATIONS_ONLY` rows after
+authenticating the commit, complete tree, and blob bytes. This is source
+evidence only: it is not an installed dependency closure, wheel/RECORD or
+native-payload audit, version selection, license approval, or runtime import
+result. The existing `CANDIDATE_UNKNOWN` statuses, empty reviewed closure,
+owner/legal gates, and `NO_UPLOAD` boundary remain unchanged. In particular,
+the Linux `bitsandbytes` marker and the conflicting `sphn` declarations in
+`pyproject.toml` versus `requirements.txt` remain raw facts requiring a
+separately authorized environment decision.
+
+The eight packaging paths outside the CPU `moshi/` subtree (MLX, development,
+script, and Rust/PyO3/server metadata) remain explicitly unassessed. They are
+not silently treated as part of this Python CPU PCM declaration evidence and
+must be revisited if the execution design switches to an MLX or Rust/server
+transport path.
+
+> **2026-10-07 source-schedule supersession:** relative to source baseline
+> `2043fc7c2aa8f6aca4557478e2344d997b65f1bc`, the current source contract is
+> recorded by
+> [`KyutaiSttStreamingContract`](../../crates/vokra-models/src/kyutai_stt/mod.rs)
+> and the shared PCM buffer in
+> [`pcm_session.rs`](../../crates/vokra-models/src/kyutai_stt/pcm_session.rs).
+> It uses 72,000 right-padding samples (three seconds), ceilings the complete
+> padded input to a 1,920-sample frame, zero-pads a final residual frame, and
+> performs one LM step per encoded row. The earlier 84,000-sample,
+> partial-frame-drop, and first-row-double-step wording from that prior design
+> version is superseded and remains available in Git history. This correction
+> is source documentation, not an upstream execution, numerical-parity,
+> owner/legal, or publication result.
+
 ## Runtime schedule
 
 The engine uses the existing `MimiEncoder`, `KyutaiSttAsr`,
@@ -39,13 +76,14 @@ Mimi and decoder backend capability sets before returning a session. No
 unsupported backend operation falls back to CPU.
 
 Each session prepends 24,000 zero samples once, buffers only incomplete PCM
-frames, and appends 84,000 zero samples exactly once at `finish`. Complete
-frames are encoded immediately; any final partial frame is dropped. The first
-Mimi row is passed to the LM twice: the first greedy sample seeds the next
-call and is retained only in the raw diagnostic stream; the second and later
-samples are externally emitted after suppressing text IDs `0` and `3`. EOS ID
-`2` is retained in the raw stream and does not stop processing. Argmax is
-finite-checked and first-index on ties.
+frames, and appends 72,000 zero samples exactly once at `finish`. Complete
+frames are encoded immediately; any final residual is zero-padded to a
+complete frame. Each encoded Mimi row makes exactly one LM step: the first
+step receives no previous text token, and later steps receive the preceding
+sampled token. Raw sampled tokens are retained, while the evaluator emission
+view forwards only text IDs greater than `3`. EOS ID `2` is retained in the
+raw stream and does not stop processing. Argmax is finite-checked and
+first-index on ties.
 
 Any invalid/non-finite PCM, shape, token, overflow, backend, encoder, or LM
 operation poisons the session. `reset` clears both causal states, PCM carry,
@@ -58,7 +96,7 @@ The tests in `pcm_session.rs` are model-free control tests for digest parsing,
 whole-file mmap authentication failures, measured Mimi provenance metadata,
 backend preflight rejection, exact padding/carry chunking, overflow and cap
 handling, transactional callback failure, reset, greedy tie behavior, the
-first-double-step schedule, and raw-token suppression. The scheduling and
+one-step-per-frame schedule, and raw-token suppression. The scheduling and
 buffering helpers used by those tests are the same private helpers used by the
 production session callbacks. They do not execute learned weights, establish
 ASR quality, or provide numerical parity. A future independent packet must
