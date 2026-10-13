@@ -16,6 +16,127 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## 2026-10-06 locked-sdist primary-license supplement
+
+This dated supplement starts from the clean PR #169 source candidate
+`312369da7886f680cd708fea91b14818b4a5eb9d`, which includes main
+`5ccde239ec261cbd8c3b5ac8a23fe2ee32fdddeb`. Its CPU-only lock remains
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e`.
+The earlier installed-environment audit below remains bound to its original
+HEAD and evidence hash. A license found in an sdist does **not** disprove a
+missing bundled-license finding for a different, installed wheel.
+
+Two independent read-only reviews authenticated the following exact lock-listed
+publisher sdists by full size and SHA-256. Regular archive members were read
+in memory with bounded reads; no archive was extracted to disk, dependency
+installed/imported, build script run, model acquired/executed, or token used.
+
+| Publisher sdist | Bytes | SHA-256 |
+| --- | ---: | --- |
+| [safetensors 0.5.3](https://files.pythonhosted.org/packages/71/7e/2d5d6ee7b40c0682315367ec7475693d110f512922d582fef1bd4a63adc3/safetensors-0.5.3.tar.gz) | 67,210 | `b6b0d6ecacec39a4fdd99cc19f4576f5219ce858e6fd8dbe7609df0b8dc56965` |
+| [tokenizers 0.22.2](https://files.pythonhosted.org/packages/73/6f/f80cfef4a312e1fb34baf7d85c72d4411afde10978d4657f8cdd811d3ccc/tokenizers-0.22.2.tar.gz) | 372,115 | `473b83b915e547aa366d1eee11806deaf419e17be16310ac0a14077f1e28f917` |
+| [tqdm 4.67.1](https://files.pythonhosted.org/packages/a8/4b/29b4ef32e036bb34e4ab51796dd745cdba7ed47ad142a9f4a1eb8e0c744d/tqdm-4.67.1.tar.gz) | 169,737 | `f8aef9c52c08c13a65f30ea34f4e5aac3fd1a34959879d7e59e63027286627f2` |
+
+Located primary license members:
+
+- `safetensors-0.5.3/safetensors/LICENSE` and
+  `tokenizers-0.22.2/tokenizers/LICENSE` are each 11,357 bytes, SHA-256
+  `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
+- `tqdm-4.67.1/LICENCE` is 1,985 bytes, SHA-256
+  `dc33252e829015e3b150086fb9b3a40f6ad6fb32c2f4610ce812fa677d35986a`.
+  The spelling is `LICENCE`, not an absent `LICENSE` member.
+
+Each sdist's `PKG-INFO` matches its locked Name and Version. Safetensors and
+tokenizers have Apache license classifiers but no explicit `License` header;
+their respective `PKG-INFO` digests are
+`fe7d581363ed20b204701623da8f90dd8a3b9995e9a9290b616788d80356adbf`
+(3,823 bytes) and
+`15a5ddaf489f592b77e0a934c0eeb46b51130a94064ca129232afdb0a3868efc`
+(7,254 bytes). Both tqdm `PKG-INFO` members are byte-identical:
+57,675 bytes, SHA-256
+`688a1632df525a198fec52dcfefb1246d31eacee9c035aacac2d7eaf8d8ff669`.
+They declare `License: MPL-2.0 AND MIT` and `License-File: LICENCE`;
+this must not be reduced to MIT-only or treated as a blanket MPL approval.
+
+Disposition is **SDIST_PRIMARY_LICENSE_LOCATED / INSTALLED_BINDING_UNPROVEN**.
+Exact selected-wheel/build/installed RECORD and native-library closure,
+compatibility, package/license and operator owner review still need their
+own evidence. Existing `OWNER_REVIEW_REQUIRED` and `NO_UPLOAD` gates are
+unchanged. No real-weight replay, numerical/Apple parity, publication, or
+whole-catalog completion is authorized or established by this supplement.
+
+## 2026-10-06 selected-wheel primary-license supplement
+
+Two independent bounded, in-memory reviews also authenticated these exact
+artifacts from the same unchanged CPU-only lock. The native-package scope is
+**glibc/manylinux Linux x86_64**, not every Linux wheel: the lock also lists
+musllinux candidates, which were not fetched for this review.
+
+| Selected publisher wheel | Bytes | SHA-256 |
+| --- | ---: | --- |
+| [safetensors 0.5.3 manylinux](https://files.pythonhosted.org/packages/a6/f8/dae3421624fcc87a89d42e1898a798bc7ff72c61f38973a65d60df8f124c/safetensors-0.5.3-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl) | 471,642 | `cead1fa41fc54b1e61089fa57452e8834f798cb1dc7a09ba3524f1eb08e0317a` |
+| [tokenizers 0.22.2 manylinux](https://files.pythonhosted.org/packages/2e/76/932be4b50ef6ccedf9d3c6639b056a967a86258c6d9200643f01269211ca/tokenizers-0.22.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl) | 3,274,982 | `369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67` |
+| [tqdm 4.67.1 platform-independent](https://files.pythonhosted.org/packages/d0/30/dc54f88dd4a2b5dc8a0279bdd7270e735851848b762aeb1c1184ed1f6b14/tqdm-4.67.1-py3-none-any.whl) | 78,540 | `26445eca388f82e72884e0d580d5464cd801a3ea01e63e5601bdff9ba6a48de2` |
+
+Each wheel has one `METADATA` member with the expected Name/Version; its
+content matches the corresponding sdist `PKG-INFO` digest above. Safetensors
+and tokenizers have neither a regular LICENSE/LICENCE/COPYING/NOTICE member
+nor License/License-Expression/License-File headers. Their native members are
+`safetensors/_safetensors_rust.abi3.so` and `tokenizers/tokenizers.abi3.so`;
+these were enumerated, not loaded or executed. Located sdist licenses do not
+automatically prove the source/build binding of these native members.
+
+The tqdm wheel does contain `tqdm-4.67.1.dist-info/LICENCE`: 1,985 bytes,
+the same `dc33252e...` digest as its sdist above. Its metadata declares
+`MPL-2.0 AND MIT` and `License-File: LICENCE`, and no native member was found.
+Thus "tqdm has no bundled license" must not be generalized to this selected
+wheel. The older installed-environment receipt remains historical evidence,
+not a newly revalidated installation or RECORD binding.
+
+No archive was extracted or saved, package installed/imported, native code
+executed, or model acquired. Disposition remains **PRIMARY_ARTIFACT_FACTS_BOUND /
+INSTALLED_NATIVE_CLOSURE_UNPROVEN**. Owner review, execution restrictions and
+NO_UPLOAD are unchanged; this is not numerical or Apple verification.
+
+## 2026-09-30 PR #167 dependency-security boundary
+
+The security review of the Torch 2.7.1 to 2.13.0 Dependabot update uses the
+explicit CPU-only PyTorch index and locks `torch==2.13.0+cpu` for Linux x86_64.
+The lock contains no `nvidia-*`, CUDA, cuDNN, cuBLAS, cuFFT, NCCL, or NVJITLINK
+package/native payload. The lock SHA-256 is recorded in the project metadata
+and was verified by the VAST sync receipt. This is intentional: the CUDA 13
+closure has not received the required owner/legal review and must not enter the
+model-free API/license gate implicitly.
+
+This CPU-only security lock does not make a GPU performance claim. If an
+approved future run shows that GPU is faster while meeting the fixed numerical
+guard, it must use a separately reviewed GPU lock and record that evidence;
+neither the current API smoke nor this lock authorizes a real-weight replay or
+publication.
+
+The fresh VAST receipt for this lock used disposable instance `53407724` and
+implementation HEAD `c7dc975c`. `uv sync --frozen` installed 41 packages,
+including `torch==2.13.0+cpu`; the lock SHA-256 is
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e` and no
+`nvidia-*` package was present. The imported Torch runtime reported
+`2.13.0+cpu`, `torch.version.cuda=None`, and `cuda_available=false`; its
+`torch/lib` contained no CUDA/cuDNN/cuBLAS/cuFFT/NCCL/NVJITLINK-named native
+library. The model-free lock contract test passed with evidence SHA-256
+`70f593a0f94db5c51c05806dbd85fac295f1e223d135fc789848173dd98b3f8a`.
+
+Against the clean Microsoft source checkout at revision
+`94da20d98b2fa7688e9cbfaf7692ddb4954f7600`, the official import/API smoke
+returned `AUTHENTICATED_API_SMOKE` with evidence SHA-256
+`1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`.
+It reported `NO_MODEL_DOWNLOAD`, `NO_MODEL_EXECUTION`, and `NO_UPLOAD`.
+The installed closure audit covered 41 packages and returned
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`; bundled license files were missing for
+`safetensors`, `tokenizers`, and `tqdm`. The audit evidence SHA-256 is
+`23bc546d7fcf47f1dc3b66f587c53d37b8025e5b418c185148f3201f1417e06e`.
+
+The disposable instance was destroyed after evidence collection and its
+individual API readback returned `instances: null`.
+
 ## 2026-09-30 VAST narrow-reference receipts
 
 Both runs used the exact checkpoint/source contract above and three timed
@@ -87,22 +208,19 @@ authenticated checkpoint after exact state-dict binding, not a second fixture.
 The selected dtype is recorded in `reference.json`. CUDA is still selected only
 when the unchanged guard passes; changing dtype does not widen that guard.
 
-The dedicated `uv.lock` is generated and pinned. On the exact VAST tree, commit
-`7e11e027`, `uv sync --frozen` succeeded with 56 installed packages. A fresh
-model-free official-source API smoke on that same pinned source and environment
-also passed as `AUTHENTICATED_API_SMOKE`; its JSON evidence SHA-256 is
-`1d5f9d037ef15e8cded3db06d323d86de4ef5e08bd9fc52e00f96655e241a189`. The
-smoke imported and inspected the official API only: it did not download a
-model, construct a model, execute a checkpoint, generate parity numbers, or
-publish an artifact.
+The dedicated `uv.lock` is generated and pinned. The PR #167 security lock is
+CPU-only (`torch==2.13.0+cpu`) and its VAST sync, package inventory, and
+model-free official-source API smoke are recorded separately from the
+historical CUDA-enabled receipts above. The smoke imports and inspects the
+official API only: it does not download a checkpoint, construct a model,
+execute a checkpoint, generate parity numbers, or publish an artifact.
 
-The installed-closure audit for the same project and lock is recorded at
-`a2d2939ae7dddff33eade14b4eb70ccc6a7af2b732617c6de2531c43ec5bcfc6` and remains
-`OWNER_REVIEW_REQUIRED/NO_UPLOAD`. It covers 56 installed packages and reports
-missing bundled license files for `safetensors`, `tokenizers`, `tqdm`, and
-`triton`. Owner/primary-source review is therefore still required before any
-real-weight replay or publication. The command below is the controlled replay
-command, not an authorization or assertion that replay is currently cleared:
+The installed-closure audit for the CPU-only lock completed on VAST and remains
+`OWNER_REVIEW_REQUIRED/NO_UPLOAD` because the bundled license files for
+`safetensors`, `tokenizers`, and `tqdm` still require owner/primary-source
+review. That review is therefore still required before any real-weight replay
+or publication. The command below is the controlled replay command, not an
+authorization or assertion that replay is currently cleared:
 
 ```text
 uv run --frozen --python 3.12 --project tools/parity/vibevoice_realtime_0_5b_reference python \
@@ -174,12 +292,11 @@ before any model construction or checkpoint access. That historical failure is
 superseded by the exact-source, exact-lock smoke receipt above; the registration
 scope remains explicit and narrow.
 
-The earlier VAST `uv sync` and dependency audit were for Transformers 4.51.3
-and are invalidated by this lock change. The refreshed VAST sync and model-free
-smoke are now recorded, but the refreshed installed-closure audit remains
-`OWNER_REVIEW_REQUIRED/NO_UPLOAD` because the four bundled license files named
-above are missing. No model was downloaded or run for this compatibility
-update, and no publication is authorized.
+The earlier VAST `uv sync` and dependency audit were for a CUDA-enabled Torch
+lock and are historical only. The CPU-only lock audit is complete on VAST, but
+the installed closure remains `OWNER_REVIEW_REQUIRED/NO_UPLOAD` because no
+owner/legal approval has been granted for a real-weight replay or publication.
+No checkpoint may be downloaded or run for this compatibility update.
 
 ## Fixed upstream identities
 
@@ -349,3 +466,107 @@ real-weight packet is generated separately by `run_reference.py`. Independent
 native parity, full acoustic waveform parity, owner/legal approval, dataset
 provenance review, and public publication remain blocked and must not be
 inferred from this structural contract.
+
+## 2026-10-06 bounded installed-closure collector preparation
+
+`audit_installed_closure.py` and its stdlib-only regression tests are a
+source-only preparation for a future Linux x86_64 / CPython 3.12 audit. The
+collector accepts an explicit selected-wheel manifest and a trusted
+site-packages directory; it does not download, install, import, or execute
+third-party packages or models. Every selected archive is rebound to the
+current project and lock hashes, the lock-listed wheel URL/hash/filename/tag,
+archive bytes, wheel `RECORD`, and installed metadata. `LICENCE` and
+`License-File` spellings are resolved explicitly, and native members are
+reported only when their archive and installed bytes are equal. The audit also
+accepts wheel-declared `.data/purelib`/`.data/platlib` relocation and
+`console_scripts`/`gui_scripts` wrappers only through an explicit canonical
+venv root and scripts root. Relocated wrappers are hash-bound to the installed
+RECORD but are separately classified because installers may rewrite shebangs.
+Generated wrappers are classified as `UNPROVEN_INSTALLER_SOURCE`, and the
+report's RECORD status is logical binding rather than RECORD-file byte equality.
+Installer-only additions are limited to `INSTALLER`, `REQUESTED`,
+`direct_url.json`, and bounded bytecode paths. Unknown, out-of-root, or
+undeclared external RECORD paths fail closed.
+
+The selected-wheel manifest is untrusted input, not owner approval or a source
+provenance signature. Reports remain
+`OWNER_REVIEW_REQUIRED_NO_UPLOAD`, with package license, native payload,
+runtime compatibility, and owner/legal decisions unresolved. Missing bundled
+license files are reported as unresolved rather than approved. The historical
+installed-closure receipt is not rewritten or re-signed; a real collection
+still requires the reviewed VAST workflow and an independently authenticated
+source checkout.
+
+The bounded synthetic regression entry point is:
+
+```text
+UV_NO_SYNC=1 UV_OFFLINE=1 uv run --no-project --no-sync --offline --python 3.12 python -S tools/parity/vibevoice_realtime_0_5b_reference/audit_installed_closure.py --self-test
+```
+
+Real collection additionally requires explicit `--venv-root` and
+`--scripts-root` paths inside that same trusted environment; no implicit host
+path discovery is permitted. During the initial collector preparation, the
+pre-2026-10-06 lock had missing artifact hashes (for example `jinja2`). This
+historical condition is superseded for the current lock by the dated identity
+enrichment below: the selected lock artifact hashes and sizes are now recorded
+there, while no historical receipt is re-signed. The collector still blocks
+any run with a missing selected artifact identity; current collection remains
+VAST-not-run and owner/native/source/license/NO_UPLOAD gates remain unchanged.
+
+The collector's Metadata-Version 2.4+ `License-File` resolution follows
+PEP 639 exactly: a header value is relative to the wheel's
+`<dist-info>/licenses/` directory (so `LICENSE` and `licenses/LICENSE.MIT`
+resolve to distinct nested members). Metadata-Version 2.1 legacy resolution
+is retained separately. Project validation also binds the exact Linux CPU
+Torch declaration, explicit PyTorch CPU index, and `2.13.0+cpu` reference
+fact; a prefix match or alternate index is rejected. Venv `pyvenv.cfg`, the
+CPython 3.12 interpreter, complete site/scripts inventory, wheel WHEEL tags,
+installer-generated wrapper bytes, and bounded read/hash budgets are checked
+before an evidence report is produced. These checks strengthen collection
+integrity only; they do not establish license approval, native compatibility,
+owner sign-off, or upload eligibility.
+
+The venv boundary is strict: `pyvenv.cfg` must identify CPython 3.12 with
+`include-system-site-packages = false`, the running interpreter and
+`python`/`python3`/`python3.12` aliases must resolve to the same executable,
+and the canonical `lib/python3.12/site-packages` plus `bin` layout is required.
+Known activation and virtualenv bootstrap files are enumerated individually,
+captured with bytes/SHA and marked `UNPROVEN_INSTALLER_BOOTSTRAP`; arbitrary
+unregistered files are never ignored, and site `_virtualenv.py`/
+`_virtualenv.pth` bootstrap entries must be regular non-symlink files. Installed package and bootstrap file
+identities (inode, metadata, size, and SHA) are captured and revalidated after
+source inspection. Generated wrappers, relocated wrappers, generated pyc, and
+installer metadata carry their installed bytes/SHA and remain explicitly
+`UNPROVEN_INSTALLER_SOURCE` where installer provenance is not archive-bound.
+The initial installed inventory and clean source checkout are captured before
+package inspection, then both are revalidated after package and archive
+binding. WHEEL metadata may contain multiple distinct expanded platform tags,
+but duplicate tags or filename/tag disagreement remain blocked.
+
+## 2026-10-06 lock identity enrichment (VAST not run)
+
+The current lock adds bounded artifact identity only. The exact selected
+[`jinja2` wheel](https://download.pytorch.org/whl/jinja2-3.1.6-py3-none-any.whl)
+is 134,899 bytes with SHA-256
+`85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67`; the
+exact selected
+[`markupsafe` wheel](https://download.pytorch.org/whl/markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl)
+is 22,947 bytes with SHA-256
+`d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d`.
+The remaining eleven previously size-less wheel rows have bounded HTTP HEAD
+size metadata recorded in `uv.lock` (mpmath, four NumPy, three Pillow,
+SymPy, Torch, and typing-extensions); their bodies were not re-fetched by this
+change. URLs, versions, markers, dependency edges, and pre-existing hashes
+remain unchanged.
+
+`uv.lock` now hashes to
+`34f58e53b5c79ed96853c2a4b6f9b6b1eaf12066f010cd23ddffae2b816b3797`, and the
+reference status is
+`IDENTITY_ENRICHED_VAST_NOT_RUN_OWNER_REVIEW_REQUIRED`. The compatibility-smoke
+and installed-closure receipts remain historical and are explicitly bound to
+the prior lock SHA
+`cbf0ce675cdc8bc3c8cd32a4528f3a67f283b2e7b46841cb6dc32e4949af666e`; they are
+not evidence for this enriched lock. Package license, native closure, runtime
+compatibility, owner/legal review, real execution, and `NO_UPLOAD` gates remain
+unresolved/blocked. No dependency was installed or imported and no VAST
+collection was run.
