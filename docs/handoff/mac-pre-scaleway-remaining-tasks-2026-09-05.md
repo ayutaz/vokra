@@ -1,5 +1,7 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-14 plan pointer:** Use the [latest prioritized plan](next-steps-2026-10-14.md) for the next non-Apple tasks and Scaleway entry conditions. The 10/13 metadata-only 58 unresolved rows are not a new 10/14 all-row audit or a hardware verdict. Reconcile each exact current scope before promotion; keep the historical tables and 63-row owner packet intact.
+
 > **2026-10-13 current routing / supersession:** The latest [documentation readback](documentation-refresh-2026-10-13.md) records main `7d38061c`, 136 code/artifact-full / 58 unresolved, six open PRs and merged #199. The [single static closure audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) is complete and its owned worker/data destroyed; owner/legal/native/API/runtime gates remain open. It validated private candidate inputs, not main's reference environment. Earlier current-readback sections below are dated history. Preserve the frozen 63-row scope and all CPU/Apple/approval evidence; no row is promoted.
 
 > **2026-10-09 prerequisite evidence:** the [new dated record](step3-prerequisite-evidence-2026-10-09.md)

@@ -1,5 +1,11 @@
 # Vokra documentation
 
+**Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+The documentation refresh baseline is local commit `1a63a8d1`; the fresh GitHub
+branch readback after ordinary acceptance of PR #229 is `134eb9c7`.
+The dated metadata snapshot below retains
+its 2026-10-13 source boundary. Model and Apple completion are not implied.
+
 **Current-state review:** 2026-10-13 JST
 
 **Read-only external baseline:** GitHub `main` at
@@ -26,6 +32,7 @@ environment they name.
 
 | Need | Document |
 |---|---|
+| What to do next | [2026-10-14 prioritized plan](handoff/next-steps-2026-10-14.md): local safety changes and PRs first, exact non-Apple gates, VAST CPU, final packet, then Scaleway |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
 | Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
