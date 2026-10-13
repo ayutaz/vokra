@@ -1,5 +1,7 @@
 # Kill Switch C / K メトリクス計測 runbook
 
+> **2026-10-13 current routing / supersession:** The [latest snapshot](../handoff/documentation-refresh-2026-10-13.md) is the current main/release pointer. The one published v0.3.0 release is not an owner-approved substitute for v0.1.0/v0.5.0 milestone dates. No metrics collection, schedule, calendar decision or quarterly verdict is newly executed by this documentation refresh. Older readbacks below retain their dates.
+
 **文書 ID**: VOKRA-GOV-001
 **最終更新**: 2026-10-08（exact GitHub `main`、tag/release APIとtracked review recordの現況を再照合）
 **位置付け**: [`vokra-go-nogo-v0.5.md`](vokra-go-nogo-v0.5.md) の Kill switch 表

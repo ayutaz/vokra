@@ -1,5 +1,7 @@
 # Security remediation plan (2026-09-21)
 
+> **2026-10-13 current routing / supersession:** At main `7d38061c`, the [fresh all-pages readback](documentation-refresh-2026-10-13.md) has 199 open Dependabot alerts: 183 patched-version / 16 without; critical 3, high 67, medium 74, low 55. Eight Code Scanning findings remain: four Scorecard rules and four new CodeQL `rust/log-injection` alerts #68–#71 in `integrations/vokra-server/tests/wyoming_compat.rs`. Triage the exact findings rather than infer a false positive or runtime exploitability from their test location. Protection still has 16 strict required context/application pairs with admin enforcement. Six PRs remain open; #229 is green/mergeable at its recorded head, not merged by this task. Older queues below are historical; no alert dismissal or remediation is inferred.
+
 **Status:** active. This is the execution plan for the open Dependabot and
 OpenSSF Scorecard findings after the `v0.3.0` GitHub release. It records the
 current routing boundary; it is not evidence that an alert is fixed, and it

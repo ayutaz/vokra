@@ -1,5 +1,7 @@
 # Public catalog and security completion plan (2026-09-29)
 
+> **2026-10-13 current routing / supersession:** The [fresh snapshot](documentation-refresh-2026-10-13.md) supersedes older current-readback sections: main `7d38061c`, metadata-only 136 full / 58 unresolved, 199 open Dependabot alerts (183 patched-version / 16 without), eight Code Scanning findings (four CodeQL / four Scorecard), and six open PRs (five drafts). #199 and #220–#225 are merged; #219/#226–#228 are closed, not individually merged. The [private 41-wheel static audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) finished and its worker/data were destroyed, but license/native/owner/runtime and real-weight/Apple/publication gates remain open. All prior measurements and failures below are preserved.
+
 **Status: active.** This is the execution queue for the owner's request to
 finish the public Mac CPU/Apple Metal catalog, repair public artifacts, and
 resolve the dependency and OpenSSF findings. It is not a completion claim or

@@ -1,13 +1,15 @@
 # Vokra documentation
 
-**Current-state review:** 2026-10-08 JST
+**Current-state review:** 2026-10-13 JST
 
 **Read-only external baseline:** GitHub `main` at
-`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08). The
-documentation branch starts at that exact checkout; unmerged PRs and their CI
-are not part of this baseline. The detailed dated snapshot, including its
-source boundaries and historical evidence, is retained in the
-[documentation audit](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation).
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` (API read on 2026-10-13),
+matching local `main`. This documentation refresh preserves the existing
+dirty code changes; it is not a new clean release HEAD. Unmerged PRs and
+their CI are not part of this baseline. The [latest documentation audit](handoff/documentation-refresh-2026-10-13.md)
+records fresh metadata, security and PR facts, coverage and remaining gates.
+The [2026-10-08 index snapshot](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation)
+is retained as dated history.
 
 The public catalog is not fully Apple-complete. Conversion, binding, native
 forward, independent parity, Apple CPU/Metal/no-fallback verification, and
@@ -41,7 +43,8 @@ environment they name.
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 | Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
-| Whole-document refresh coverage and limitations | [2026-10-08 documentation audit](handoff/documentation-refresh-2026-10-08.md); the [2026-10-04 audit](handoff/documentation-refresh-2026-10-04.md) preserves the previous review |
+| Latest VibeVoice dependency evidence | [2026-10-13 static closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md): private 41-wheel scope, owner/legal/native/runtime unresolved, owned worker/data destroyed |
+| Whole-document refresh coverage and limitations | [2026-10-13 documentation audit](handoff/documentation-refresh-2026-10-13.md); [2026-10-08](handoff/documentation-refresh-2026-10-08.md) and [2026-10-04](handoff/documentation-refresh-2026-10-04.md) preserve earlier reviews |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

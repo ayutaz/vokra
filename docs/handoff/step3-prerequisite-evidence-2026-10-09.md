@@ -1,5 +1,7 @@
 # Step 3 prerequisite evidence — 2026-10-09
 
+> **2026-10-13 current routing / supersession:** The [latest readback](documentation-refresh-2026-10-13.md) records accepted dependency PRs #220–#225 and main `7d38061c`; earlier preparation queues below are historical. The [VibeVoice 41-wheel static audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) has finished, but is a separate private candidate scope, not Qwen wheel evidence, main reference compatibility or real-weight CPU parity. Existing hashes, current-lock blockers and old-lock approval boundaries below are unchanged.
+
 この記録は「3まで」の進捗であり、実weight変換・独立reference・CPU parityの
 完了記録ではありません。参照baselineは受理済みmain
 `7025f17f8d18883bec5a3d3a8c1494a2e81b0993`です。

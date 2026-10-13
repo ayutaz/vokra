@@ -15,13 +15,32 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Development status (2026-10-08):** the workspace is `0.3.0` development;
+> **Current audit snapshot (2026-10-13):** the workspace is `0.3.0` development;
+> the latest VibeVoice Realtime-0.5B closure audit was a static-only VAST
+> audit on disposable worker `55648877`. It authenticated the selected source,
+> lock, collector, and provenance inputs, then verified recovery and destruction
+> of the worker. It did not download or execute model weights, run a model,
+> invoke a package/native API, or upload an artifact.
+> The collector verdict is `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; the controller
+> completed separately. Owner/legal approval, license review,
+> provenance review, native runtime status, and runtime parity are unresolved.
+> The audit found missing bundled license files for `safetensors` 0.5.3 and
+> `tokenizers` 0.22.2, plus ten native packages requiring review. See the
+> [VibeVoice static-closure audit](docs/handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md)
+> and [documentation refresh record](docs/handoff/documentation-refresh-2026-10-13.md).
+> At exact `main` HEAD `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`, the fresh
+> metadata/card-only audit reports 194 repositories, 193 GGUF-bearing
+> repositories, 198 GGUF files, CPU `136/43/14/1`, and Metal `136/57/1`,
+> leaving 58 unresolved public rows. This audit does not claim Apple
+> CPU/Metal/no-fallback verification.
+>
+> **Historical catalog snapshot (2026-10-08):** the workspace is `0.3.0` development;
 > this documentation review and the read-only public audit use exact GitHub
 > `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`. The
 > metadata/card-only public audit on 2026-10-08 reports 194 repositories, 193
 > GGUF-bearing repositories and 198
 > GGUF files: CPU code status is 136 full, 43 partial, 14 without a runtime binder and
-> 1 non-artifact. The audit confirms these current counts; it did not download
+> 1 non-artifact. That dated audit recorded these counts; it did not download
 > or execute model weights.
 > Apple Metal is 136 full, 57 blocked by CPU and 1
 > non-artifact. VibeVoice Realtime-0.5B now has a strict structural
@@ -37,7 +56,8 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 > pending. The bounded Apple Silicon batch recorded
 > in the [Apple results](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
 > passed only for its named scopes, and four explicitly approved artifacts
-> were subsequently published. There are still 58 unresolved public rows.
+> were subsequently published. That snapshot recorded 58 unresolved public rows;
+> refresh live metadata before treating these counts as current.
 > On 2026-10-04, a corrected VAST source-only audit authenticated its fixed
 > Kyutai source inputs and independently verified worker cleanup. It did not
 > acquire or execute model weights, and it does not advance CPU parity, Apple

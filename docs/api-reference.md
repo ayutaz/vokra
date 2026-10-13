@@ -65,12 +65,24 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 The current release line is workspace version `0.3.0`.
 
-**2026-10-08 current snapshot:** this documentation review and the read-only
+**2026-10-13 metadata snapshot:** the exact GitHub `main` checkout is
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`. The fresh metadata/card-only
+audit reports 194 repositories, 193 GGUF-bearing repositories and 198 GGUF
+files: CPU `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`;
+Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`. These are catalog
+metadata counts, not a new API/header or Apple hardware verification. The
+separate 2026-10-13 VibeVoice VAST audit was static-only and private: it did
+not execute models or APIs, and it does not establish CPU/Metal/no-fallback
+parity or publication eligibility. See the [documentation refresh record](handoff/documentation-refresh-2026-10-13.md)
+and [VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md).
+
+**2026-10-08 historical snapshot:** this documentation review and the read-only
 metadata/card-only public audit use exact GitHub `main` checkout
 `d100d93778191ccab77bd1c37fe3552e3d889758`. The audit reports 194 repositories,
 193 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`, `partial=43`,
 `no-runtime-binder=14`, `not-artifact=1`; Metal status is `full=136`,
-`blocked-by-cpu=57`, `not-artifact=1`, leaving 58 unresolved public rows. The
+`blocked-by-cpu=57`, `not-artifact=1`, recording 58 unresolved public rows in
+that historical snapshot. The
 authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback batch
 passed only for its named scopes; four separately approved artifacts were then
 published through the gated workflow. VibeVoice Realtime-0.5B now has a strict
