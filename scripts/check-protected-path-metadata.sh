@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 GUARD="$ROOT/.codex/hooks/guard-protected-path.sh"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/private/tmp}/vokra-protected-path-regression.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vokra-protected-path-regression.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 git -C "$TEST_ROOT" init -q
 ln -s "$ROOT" "$TEST_ROOT/repo-link"

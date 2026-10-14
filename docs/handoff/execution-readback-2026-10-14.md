@@ -128,6 +128,33 @@ been exhaustively proved unready; the protected CosyVoice2 row remains
 `UNKNOWN_EXCLUDED`. Full code/artifact candidates outside that denominator
 are recorded separately rather than silently added to the 58.
 
+## Actual workspace run and Linux shell-gate diagnosis
+
+At 02:38:46 UTC, offer `51326867` qualified at USD 0.195/hour including
+150 GiB storage (bandwidth separate). The unchanged reviewed controller rented
+owned instance `55851188` for exact clean HEAD
+`005ac12626f58f1b343203d52452a92fa9a9d2f3`; source bundle SHA-256 was
+`6bbdc83e46ae72505e36bc014a4ba88c3c913c9e8493ce463bd1ba77c3e0b763`.
+Existing-key direct SSH, bootstrap, checkout, fmt and all-target/all-feature
+Clippy succeeded. The recovered complete test log contains 323 successful
+test-result lines: 8,218 passed, zero failed and 105 ignored. This is workspace
+test evidence, not external-weight CPU parity or Apple hardware evidence.
+
+The overall result remains **FAIL / shell-gates**. Zero-dependency and
+forbidden-symbol checks passed; the hook-contract gate then failed because
+`check-protected-path-metadata.sh` used `/private/tmp` when `TMPDIR` was unset.
+That directory does not exist on the Linux worker. The bounded fix changes
+only the fallback to portable `/tmp`, preserving guard rules and expected
+return codes. The corrected source requires a new exact-head remote pass;
+the failed run is not push/merge approval.
+
+Small result and log recovery succeeded, and cleanup ended at 02:54:23 UTC.
+The owned instance and storage were destroyed; individual readback returned
+explicit `instances: null`. Recovered log SHA-256 is
+`d297ae25ec4b96857781726fe2a14c5e493b9de6e01e459b7b3157d7e2017c26`.
+Other pre-existing account instances were outside this run's ownership and
+were not changed. No HF token or external model weight was transferred.
+
 ## Remaining gates
 
 The WeSpeaker static collector is a temporary candidate, not acquired-wheel
