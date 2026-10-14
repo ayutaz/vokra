@@ -1,5 +1,13 @@
 # Kyutai STT PCM composite boundary
 
+> **2026-10-14 source reconciliation:** The schedule below records the
+> original candidate, not an authenticated PyTorch PCM reference contract.
+> [Fixed-source comparison](../handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md)
+> found MLX-style padding mixed with PyTorch-style LM inputs and an unjustified
+> first double call. The correction targets the private DSM/PyTorch PCM path;
+> the public MLX padding contract remains separate. No real-weight parity or
+> public loader enablement follows from this review.
+
 This design records the first native PCM-to-text composition seam for the
 authenticated Kyutai STT-2.6B-EN components. It is crate-private and does not
 enable the existing public `from_gguf`, `from_path`, or `transcribe` routes.
@@ -30,7 +38,7 @@ lineage, weight rights, and publication decision remain separate authenticated
 records. If the conversion metadata or external packet is absent, construction
 fails closed.
 
-## Runtime schedule
+## Original runtime schedule (retained)
 
 The engine uses the existing `MimiEncoder`, `KyutaiSttAsr`,
 `KyutaiSttStreamingLm`, and `KyutaiSttTokenizer` components. It validates the
@@ -52,13 +60,36 @@ operation poisons the session. `reset` clears both causal states, PCM carry,
 schedule, and outputs together. A successful `finish` is terminal and cannot
 be repeated.
 
+## 2026-10-14 private PyTorch correction
+
+The private PCM implementation now targets the fixed DSM/PyTorch caller,
+not the separate MLX preparation convention above. It prepends 13 complete
+Mimi silence frames (24,960 samples), right-pads the caller audio itself to
+the next 1,920-sample boundary, and appends 32 complete silence frames
+(61,440 samples). Empty audio has 45 padding frames. Each encoded row,
+including the first, makes one native LM call; its sampled token enters the
+raw stream and is emitted unless it is ID 0 or 3. EOS does not stop the
+schedule. The public MLX `KyutaiSttStreamingContract` is unchanged.
+
+Focused callback tests cover the exact expected padded PCM sequence,
+partition-independent framing, the first single call and feedback, empty
+audio, finish capacity failure before callbacks, poison/reset and suppression.
+These are source/mechanism checks, not independent framework or real-weight
+parity. At the correction's source commit, Rust compilation/test execution
+were still pending. The [subsequent exact-head VAST replay](../handoff/execution-readback-2026-10-14.md#exact-source-replay-passed-and-owned-worker-destroyed)
+at `4263f416` passed Clippy and workspace tests, including all 20 private PCM
+tests; the owned worker/storage were destroyed. Independent full-PCM and
+real-weight parity remain absent.
+
 ## Evidence boundary
 
 The tests in `pcm_session.rs` are model-free control tests for digest parsing,
 whole-file mmap authentication failures, measured Mimi provenance metadata,
 backend preflight rejection, exact padding/carry chunking, overflow and cap
 handling, transactional callback failure, reset, greedy tie behavior, the
-first-double-step schedule, and raw-token suppression. The scheduling and
+original first-double-step schedule, and raw-token suppression. The current
+correction replaces the double-step test with the single-step schedule and
+adds private PyTorch padding/cap coverage. The scheduling and
 buffering helpers used by those tests are the same private helpers used by the
 production session callbacks. They do not execute learned weights, establish
 ASR quality, or provide numerical parity. A future independent packet must

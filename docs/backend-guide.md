@@ -144,6 +144,18 @@ the meta block below).
 
 ## 6. Owner / contributor boundary
 
+A fresh **2026-10-13 metadata snapshot** uses exact GitHub `main`
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` and reports 194 repositories,
+193 GGUF-bearing repositories and 198 GGUF files: CPU
+`full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal
+`full=136`, `blocked-by-cpu=57`, `not-artifact=1`.
+These are catalog metadata counts, not new backend implementation or Apple
+hardware verification. The separate 2026-10-13 VibeVoice VAST audit was
+private and static-only; it did not execute a model or API and does not
+establish CPU/Metal/no-fallback parity or publication eligibility. See the
+[documentation refresh record](handoff/documentation-refresh-2026-10-13.md)
+and [VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md).
+
 The current CPU and Metal compute seams also expose generic dilated Conv1d,
 ConvTranspose1d, Conv2d and ConvTranspose2d kernels. Model routes must preflight
 their complete learned-op inventory before selecting Metal; these seams do not
@@ -159,12 +171,12 @@ In the current 0.3.0 line, the 2026-09-11 Apple batch passed the exact
 approval-bound CPU/Metal checks for the named GigaAM v3, GigaAM Multilingual,
 OmniASR, ReazonSpeech, BiCodec and Voice Gender scopes. Those verdicts apply
 only to their exact heads and contracts; source-level route completeness does
-not generalize to the catalog. The 2026-10-08 metadata/card-only public audit
+not generalize to the catalog. The historical 2026-10-08 metadata/card-only public audit
 at exact GitHub `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`
 reports CPU `full=136`, `partial=43`,
 `no-runtime-binder=14`,
 `not-artifact=1`, and Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`,
-with source-level CPU-only coverage at 0, leaving 58 unresolved public rows.
+with source-level CPU-only coverage at 0, recording 58 unresolved public rows in that snapshot.
 The `v0.3.0` release tag and GitHub release
 are published. On 2026-10-04, a corrected VAST source-only audit authenticated
 fixed Kyutai source inputs and independently verified cleanup; it did not

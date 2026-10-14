@@ -1,5 +1,9 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-14 plan supersession:** The [new prioritized plan](next-steps-2026-10-14.md) fixes the next sequence and per-stage exit conditions after local documentation commit `1a63a8d1`: safe local cleanup / permanent hook review, PR acceptance preparation, exact dependency/license/upstream/owner gates, VAST real-weight CPU, final clean HEAD/packet, then Scaleway. The completed private 41-wheel static audit is not repeated or promoted to runtime approval. Older results and signed scopes below remain unchanged.
+
+> **2026-10-13 current routing / supersession:** Use the [2026-10-13 snapshot](documentation-refresh-2026-10-13.md) and [static closure verdict](vibevoice-realtime-static-closure-audit-2026-10-13.md) for current routing. The private 41-wheel static audit is done, with `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; repeating it is not the next step. Resolve exact dependency/license/native/upstream/owner gates, then approved compatibility work and VAST real-weight/reference/CPU parity, freeze clean HEAD/packet, run Scaleway CPU/Metal/no-fallback, record results and obtain separate publication approval. Earlier queues are historical, not completed gates.
+
 > **2026-10-09 prerequisite supersession:** see the [dated step-3 evidence](step3-prerequisite-evidence-2026-10-09.md)
 > for dependency acceptance and current software archive/native/license facts.
 > This advances prerequisites only: current real-weight CPU parity, final

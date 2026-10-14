@@ -1,13 +1,21 @@
 # Vokra documentation
 
-**Current-state review:** 2026-10-08 JST
+**Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+The documentation refresh baseline is local commit `1a63a8d1`; the fresh GitHub
+branch readback after ordinary acceptance of PR #229 is `134eb9c7`.
+The dated metadata snapshot below retains
+its 2026-10-13 source boundary. Model and Apple completion are not implied.
+
+**Current-state review:** 2026-10-13 JST
 
 **Read-only external baseline:** GitHub `main` at
-`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08). The
-documentation branch starts at that exact checkout; unmerged PRs and their CI
-are not part of this baseline. The detailed dated snapshot, including its
-source boundaries and historical evidence, is retained in the
-[documentation audit](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation).
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` (API read on 2026-10-13),
+matching local `main`. This documentation refresh preserves the existing
+dirty code changes; it is not a new clean release HEAD. Unmerged PRs and
+their CI are not part of this baseline. The [latest documentation audit](handoff/documentation-refresh-2026-10-13.md)
+records fresh metadata, security and PR facts, coverage and remaining gates.
+The [2026-10-08 index snapshot](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation)
+is retained as dated history.
 
 The public catalog is not fully Apple-complete. Conversion, binding, native
 forward, independent parity, Apple CPU/Metal/no-fallback verification, and
@@ -24,6 +32,13 @@ environment they name.
 
 | Need | Document |
 |---|---|
+| What to do next | [2026-10-14 prioritized plan](handoff/next-steps-2026-10-14.md): local safety changes and PRs first, exact non-Apple gates, VAST CPU, final packet, then Scaleway |
+| Latest execution readback | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): exact `4263f416` source gates green (8,223 passed), earlier failed attempts retained, owned VAST worker/storage destroyed, and remaining gates |
+| All unresolved public rows | [2026-10-14 58-row prerequisite inventory](handoff/current-58-prerequisite-inventory-2026-10-14.md): exact metadata denominator, per-row first prerequisites, and protected-input exclusion; not an execution approval |
+| Current versus historical gates | [2026-10-14 reference binding readback](handoff/reference-gate-binding-readback-2026-10-14.md): Qwen current probes, Dia active-contract mismatch and Canary historical closure; no approval carryover |
+| WeSpeaker dependency admission | [2026-10-14 exact setuptools finding](handoff/wespeaker-setuptools84-static-finding-2026-10-14.md): actual vendored LGPL payload, no paid repeat of the known-blocked closure, and next source-only route investigation |
+| WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |
+| Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
 | Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
@@ -41,7 +56,9 @@ environment they name.
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 | Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
-| Whole-document refresh coverage and limitations | [2026-10-08 documentation audit](handoff/documentation-refresh-2026-10-08.md); the [2026-10-04 audit](handoff/documentation-refresh-2026-10-04.md) preserves the previous review |
+| Latest VibeVoice dependency evidence | [2026-10-13 static closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md): private 41-wheel scope, owner/legal/native/runtime unresolved, owned worker/data destroyed |
+| VibeVoice dependency source-license follow-up | [2026-10-14 exact source LICENSE identities](handoff/vibevoice-source-license-reconciliation-2026-10-14.md): official safetensors repository move, pinned source licenses, retained wheel/native gates and missing old local receipts |
+| Whole-document refresh coverage and limitations | [2026-10-13 documentation audit](handoff/documentation-refresh-2026-10-13.md); [2026-10-08](handoff/documentation-refresh-2026-10-08.md) and [2026-10-04](handoff/documentation-refresh-2026-10-04.md) preserve earlier reviews |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

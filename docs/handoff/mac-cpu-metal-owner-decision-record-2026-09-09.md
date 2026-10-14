@@ -1,5 +1,7 @@
 # Mac CPU / Metal owner and legal decision record (2026-09-09)
 
+> **2026-10-13 current routing / supersession:** The [2026-10-13 static audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) supplies facts for seven frozen private inputs only. Its collector remains owner-unapproved/license-unresolved/native-unresolved; the operational PASS does not extend any decision below to a new lock, payload, source, execution scope or upload. See the [latest routing snapshot](documentation-refresh-2026-10-13.md). All existing signed scopes remain unchanged.
+
 This record is the exact-scope owner/legal disposition for the post-PR #79
 campaign.  It is separate from model execution evidence, VAST results,
 publication approval, and any public-repository withdrawal.  A decision below

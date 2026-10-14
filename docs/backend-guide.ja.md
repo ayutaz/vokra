@@ -137,6 +137,17 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 
 ## 6. owner / contributor 境界
 
+新しい **2026-10-13 metadata snapshot** は exact GitHub `main` の
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` を基準にし、repository 194、
+GGUF repository 193、GGUF file 198 を報告する。CPU は `full=136`、
+`partial=43`、`no-runtime-binder=14`、`not-artifact=1`、Metal は
+`full=136`、`blocked-by-cpu=57`、`not-artifact=1` である。
+これは catalog metadata の値であり、backend 実装や Apple 実機を新たに
+検証した結果ではない。2026-10-13 の VibeVoice VAST audit は private な
+static-only audit で、model/API を実行せず、CPU/Metal/no-fallback parity や
+公開可否を確立しない。[documentation refresh record](handoff/documentation-refresh-2026-10-13.md)
+と [VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) を参照すること。
+
 現行の CPU / Metal compute seam は、汎用の dilated Conv1d、
 ConvTranspose1d、Conv2d、ConvTranspose2d kernel も公開する。モデル経路は Metal
 選択前に learned-op inventory 全体を preflight しなければならず、これらの seam
@@ -152,10 +163,10 @@ GigaAM v3、GigaAM Multilingual、OmniASR、ReazonSpeech、BiCodec、Voice Gende
 について approval-bound CPU/Metal check を合格した。これらは exact head と契約に
 限った verdict であり、source-level route の complete を catalog 全体の Apple device
 結果へ一般化しない。
-2026-10-08 の metadata/card-only public audit（GitHub の exact `main` checkout
+historical な 2026-10-08 の metadata/card-only public audit（GitHub の exact `main` checkout
 `d100d93778191ccab77bd1c37fe3552e3d889758`）は CPU `full=136`、`partial=43`、
 `no-runtime-binder=14`、`not-artifact=1`、Metal `full=136`、
-`blocked-by-cpu=57`、`not-artifact=1`、source-level CPU-only は 0 で、未解決の public row は58件である。
+`blocked-by-cpu=57`、`not-artifact=1`、source-level CPU-only は 0 で、この snapshot の未解決 public row は58件である。
 `v0.3.0` release tag と GitHub Release は公開済みである。2026-10-04 の修正済み VAST
 source-only audit は固定した Kyutai source input を認証し、worker cleanup を独立に確認した。
 model weight は実行しておらず、CPU parity、Apple hardware、公開 status は進展していない。

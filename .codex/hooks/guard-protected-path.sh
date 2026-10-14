@@ -123,6 +123,148 @@ segment_is_broad_git_mutation() {
     return 1
 }
 
+
+# Formal PreToolUse envelope routing. A present tool_name is authoritative and
+# malformed/unknown metadata fails closed; absent tool_name retains legacy Bash.
+guard_metadata_kind() {
+    local payload="$1" name
+    command -v jq >/dev/null 2>&1 || return 1
+    printf '%s' "$payload" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
+    if printf '%s' "$payload" | jq -e 'has("tool_name")' >/dev/null 2>&1; then
+        printf '%s' "$payload" | jq -e '
+            (.tool_name | type) == "string"
+            and (.tool_name == "Bash" or .tool_name == "apply_patch" or .tool_name == "Edit" or .tool_name == "Write")
+        ' >/dev/null 2>&1 || return 1
+        name="$(printf '%s' "$payload" | jq -r '.tool_name' 2>/dev/null)" || return 1
+        printf '%s' "$name"
+    else
+        printf '%s' legacy
+    fi
+}
+
+guard_metadata_cwd() {
+    local payload="$1"
+    printf '%s' "$payload" | jq -er '
+        if has("cwd") then
+            if (.cwd | type) != "string" or (.cwd | length) == 0 then error("cwd")
+            elif ((.cwd | startswith("/")) | not) then error("cwd")
+            elif any(.cwd | explode[]; . < 32 or . == 127) then error("cwd")
+            else .cwd end
+        else "" end
+    ' 2>/dev/null
+}
+
+guard_metadata_command() {
+    local payload="$1"
+    printf '%s' "$payload" | jq -er '
+        if (.tool_input | type) != "object" then error("tool_input") else .tool_input end
+        | if (.command | type) != "string" then error("command")
+          elif (.command | length) == 0 then error("command")
+          elif any(.command | explode[]; . == 0) then error("command")
+          else .command end
+    ' 2>/dev/null
+}
+
+guard_metadata_target() {
+    local payload="$1"
+    printf '%s' "$payload" | jq -er '
+        if (.tool_input | type) != "object" then error("tool_input")
+        elif (.tool_input | has("file_path")) then
+            if (.tool_input.file_path | type) != "string" then error("file_path")
+            elif (.tool_input.file_path | length) == 0 then error("file_path")
+            elif any(.tool_input.file_path | explode[]; . < 32 or . == 127) then error("file_path")
+            else .tool_input.file_path end
+        elif (.tool_input | has("path")) then
+            if (.tool_input.path | type) != "string" then error("path")
+            elif (.tool_input.path | length) == 0 then error("path")
+            elif any(.tool_input.path | explode[]; . < 32 or . == 127) then error("path")
+            else .tool_input.path end
+        else error("target") end
+    ' 2>/dev/null
+}
+
+guard_normalize_target() {
+    local target="$1" component normalized="" part cr=$'\r' lf=$'\n'
+    case "$target" in ""|*"$cr"*|*"$lf"*) return 1;; esac
+    while IFS= read -r part || [ -n "$part" ]; do [ "$part" = .. ] && return 1; done < <(printf '%s' "$target" | tr / '\n')
+    case "$target" in /*) normalized=/;; esac
+    while IFS= read -r component || [ -n "$component" ]; do
+        [ -z "$component" ] || [ "$component" = . ] && continue
+        [ "$component" = .. ] && return 1
+        case "$component" in *:*\(*\)|*'\\'*) return 1;; esac
+        if [ "$normalized" = / ] || [ -z "$normalized" ]; then normalized="${normalized}${component}"; else normalized="$normalized/$component"; fi
+    done < <(printf '%s' "$target" | tr / '\n')
+    printf '%s' "${normalized:-.}"
+}
+
+guard_has_symlink_component() {
+    local base="$1" target="$2" absolute component prefix
+    case "$target" in /*) absolute="$target";; *) absolute="$base/$target";; esac
+    case "$absolute" in /*) prefix=/;; *) return 0;; esac
+    while IFS= read -r component || [ -n "$component" ]; do
+        [ -z "$component" ] && continue
+        [ "$prefix" = / ] && prefix="/$component" || prefix="$prefix/$component"
+        [ -L "$prefix" ] && return 0
+    done < <(printf '%s' "${absolute#/}" | tr / '\n')
+    return 1
+}
+
+guard_target_is_protected() {
+    local root="$1" base="$2" target="$3" absolute normalized root_norm rel rest first normalized_fold root_fold
+    case "$target" in /*) absolute="$target";; *) absolute="$base/$target";; esac
+    normalized="$(guard_normalize_target "$absolute")" || return 0
+    guard_has_symlink_component "$base" "$target" && return 0
+    root_norm="$(guard_normalize_target "$root")" || return 0
+    normalized_fold="$(printf '%s' "$normalized" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    root_fold="$(printf '%s' "$root_norm" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    rel="$normalized_fold"
+    case "$normalized_fold" in
+        "$root_fold") rel=.;; "$root_fold"/*) rel="${normalized_fold#"$root_fold"/}";; /*) return 1;;
+    esac
+    case "$rel" in
+        .|tools) return 0;;
+        tools/*)
+            rest="${rel#tools/}"
+            [ "$rest" = parity ] && return 0
+            case "$rest" in parity/*)
+                rest="${rest#parity/}"; [ -z "$rest" ] && return 0
+                first="${rest%%/*}"
+                case "$first" in cosyvoice2_llm_reference|\*|\*\*|\?|\[*|\{*) return 0;; esac
+                ;;
+            esac
+            ;;
+    esac
+    return 1
+}
+
+guard_patch_targets() {
+    local root="$1" base="$2" patch="$3" line target target_path normalized key seen='|' state=0 headers=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$state" -eq 2 ]; then [ -z "$(hook_trim "$line")" ] || return 1; continue; fi
+        if [ "$state" -eq 0 ]; then [ "$line" = '*** Begin Patch' ] || return 1; state=1; continue; fi
+        if [ "$line" = '*** End Patch' ]; then state=2; continue; fi
+        target=
+        case "$line" in
+            '*** Update File: '*) target="${line#*** Update File: }";;
+            '*** Add File: '*) target="${line#*** Add File: }";;
+            '*** Delete File: '*) target="${line#*** Delete File: }";;
+            '*** Move from: '*) target="${line#*** Move from: }";;
+            '*** Move to: '*) target="${line#*** Move to: }";;
+            '*** End of File') [ "$headers" -gt 0 ] || return 1; continue;;
+            '*** '*) return 1;; *) continue;;
+        esac
+        [ -n "$target" ] || return 1
+        [ "$target" = "$(hook_trim "$target")" ] || return 1
+        case "$target" in /*) target_path="$target";; *) target_path="$base/$target";; esac
+        normalized="$(guard_normalize_target "$target_path")" || return 1
+        key="|$normalized|"; case "$seen" in *"$key"*) return 1;; esac
+        seen="$seen$normalized|"
+        guard_target_is_protected "$root" "$base" "$target" && return 1
+        headers=$((headers + 1))
+    done < <(printf '%s\n' "$patch")
+    [ "$state" -eq 2 ] && [ "$headers" -gt 0 ]
+}
+
 analyse_command() {
     local root="$1" command="$2" dirty="$3" segment
 
@@ -270,28 +412,35 @@ if [ "${1:-}" = --self-test ]; then
 fi
 
 payload="$(cat)"
-cwd="$(hook_json_value "$payload" '.cwd // empty')"
+if ! metadata_kind="$(guard_metadata_kind "$payload")"; then
+    echo 'Blocked: malformed or unsupported PreToolUse metadata.' >&2; exit 2
+fi
+if ! cwd="$(guard_metadata_cwd "$payload")"; then
+    echo 'Blocked: missing or invalid cwd metadata.' >&2; exit 2
+fi
+owner_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+owner_root="${owner_root:-$(CDPATH= cd -P -- "$SCRIPT_DIR/../.." 2>/dev/null && pwd -P || pwd)}"
 if [ -n "$cwd" ]; then
+    [ -d "$cwd" ] || { echo 'Blocked: cwd is not an existing directory.' >&2; exit 2; }
     root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+    target_base="$cwd"
 else
     root=""
+    target_base="$PWD"
 fi
 root="${root:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-command="$(hook_command "$payload")"
-file_path="$(hook_file_path "$payload")"
-
-if protected_path_in_text "$file_path"; then
-    echo "Blocked: edits to the owner's dirty manifest are outside this task: $PROTECTED_REL" >&2
-    exit 2
-fi
-
-if reason="$(analyse_command "$root" "$command" "$(protected_path_dirty "$root" && echo dirty || echo clean)")"; then
-    {
-        echo "Blocked: $reason."
-        echo "The owner-owned dirty path is protected and must not be staged,"
-        echo "restored, reset, checked out, cleaned, removed, or overwritten."
-        echo "Read-only diff/status inspection remains allowed."
-    } >&2
-    exit 2
-fi
+case "$metadata_kind" in
+    legacy|Bash)
+        if ! command="$(guard_metadata_command "$payload")"; then echo 'Blocked: missing or invalid command metadata.' >&2; exit 2; fi
+        file_path="$(hook_file_path "$payload")"
+        if protected_path_in_text "$file_path"; then echo "Blocked: edits to the owner's dirty manifest are outside this task: $PROTECTED_REL" >&2; exit 2; fi
+        if reason="$(analyse_command "$root" "$command" "$(protected_path_dirty "$root" && echo dirty || echo clean)")"; then
+            { echo "Blocked: $reason."; echo "The owner-owned dirty path is protected and must not be staged, restored, reset, checked out, cleaned, removed, or overwritten."; echo "Read-only diff/status inspection remains allowed."; } >&2; exit 2
+        fi;;
+    apply_patch)
+        if ! command="$(guard_metadata_command "$payload")" || ! guard_patch_targets "$owner_root" "$target_base" "$command"; then echo 'Blocked: malformed patch envelope or protected/ambiguous patch target.' >&2; exit 2; fi;;
+    Edit|Write)
+        if ! file_path="$(guard_metadata_target "$payload")"; then echo 'Blocked: missing or invalid edit target metadata.' >&2; exit 2; fi
+        if guard_target_is_protected "$owner_root" "$target_base" "$file_path"; then echo "Blocked: edits to the owner's dirty manifest are outside this task: $PROTECTED_REL" >&2; exit 2; fi;;
+esac
 exit 0

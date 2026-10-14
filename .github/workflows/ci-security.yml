@@ -42,6 +42,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
+      - name: GitHub blob report gate stdlib self-test
+        run: uv run --no-project --offline --python 3.12 python scripts/test-check-github-blob-link-report.py
+
       - name: GigaAM v3 dependency quarantine self-test
         run: uv run --no-project --offline --python 3.12 python tools/parity/gigaam_v3/security_self_test.py
 
@@ -173,6 +176,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Check Markdown links
         id: lychee
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
@@ -201,9 +205,16 @@ jobs:
             --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/privacy/guidance/business-associates/index\.html$'
             --exclude '^https://leginfo\.legislature\.ca\.gov/faces/billVersionsCompareClient\.xhtml\?bill_id=202320240SB942$'
             README.md CONTRIBUTING.md .github docs
-          fail: true
+          # Keep the complete lychee v0.24.2 JSON report and its real exit
+          # code for the mandatory final gate below.  fail=false is only the
+          # collector mode; it is not an exemption from link checking.
+          format: json
+          output: lychee/report.json
+          jobSummary: false
+          token: ${{ github.token }}
+          fail: false
       - name: Diagnose fixed GitHub blob failures
-        if: ${{ always() && steps.lychee.outcome == 'failure' }}
+        if: ${{ always() && steps.lychee.outputs.exit_code != '0' }}
         shell: bash
         run: |
           set -u
@@ -286,5 +297,17 @@ jobs:
           printf '~~~\n' >>"${summary_file}"
 
           # Do not turn a diagnostic observation into a second gate. The
-          # failed lychee action above remains the authoritative failure.
+          # mandatory JSON final gate below remains authoritative.
           exit 0
+      - name: Enforce lychee report and narrow GitHub 503 recovery
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LYCHEE_EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --offline --python 3.12 python \
+            scripts/check-github-blob-link-report.py \
+            --report lychee/report.json \
+            --lychee-exit-code "${LYCHEE_EXIT_CODE:-255}"
