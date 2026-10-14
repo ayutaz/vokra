@@ -2,6 +2,23 @@
 
 ## ゴールと現在地
 
+> **09:03:54 UTCの受理readback:** PR #232はexact `89f0e2e5`の70 checks
+> （69 success / 1 skipped、失敗・pendingなし）と必須16 context/appの全成功を
+> 確認して通常squash mergeした。受理mainは`fa42f112`、ローカルmainもFF更新済み。
+> OWSM修正`c86f72ab`は保存し、最新mainを通常mergeした候補は`b92665f4`。
+> 以下のPR #232未受理記録は、その時点の履歴として保持する。
+> 新しいVAST source-metadata-only候補検索は64 quotesを返し、上限内3件は全て
+> RAM 65,536 MiB未満のため作成前停止。料金・RAM・削除条件は緩めず、新規leaseなし。
+> [Candle source-only admission記録](kyutai-candle-reference-readback-2026-10-14.md#source-metadata-only-offer-admission-readback)
+> を参照。実weight CPU・最終packet・58行の完了判定は未完了のまま。
+
+> **後続の受理と独立作業:** PR #233 は56 success / 1 skippedと必須16 context/app
+> の全成功を確認して08:24:33 UTCに通常受理され、mainは`46d2c9dd`。
+> PR #232の新候補`89f0e2e5`はこのmainを通常mergeしてfresh CI待ちで、未受理。
+> [OWSM admission修正](owsm-audit-admission-readback-2026-10-14.md)は、証拠に未束縛の
+> 監査フラグを拒否する。実際に使われるComplexTensorのlicense holdは解除しない。
+> この追加の静的作業も、58行の実weight CPU完了や最終packet生成とは区別する。
+
 > **PR受理後の最新readback:** PR #230 は 06:19:07 UTC に通常受理され、main は
 > `f8804b7429691bd90520aec801869262ba53573b`。以下のPR準備時点の記録は履歴として
 > 保持する。[Kyutai reference調査](kyutai-candle-reference-readback-2026-10-14.md)では

@@ -131,6 +131,41 @@ The 58 unresolved public rows remain unresolved. No CPU/Metal row promotion,
 owner sign-off, new parity bound, public transcription enablement, publication
 or final packet follows from this readback.
 
+## Source-metadata-only offer admission readback
+
+A separate temporary controller uses the reviewed, serial metadata collector
+to obtain an actual Linux CPU dependency graph and precise memmap2 candidate
+update, without compiling or running upstream/model code. Manager reviewed the
+profile's exact diff: effective CPU floor 16 to 2 and a search-only probe;
+RAM 65,536 MiB, storage 150 GiB, reliability 0.99, quoted total price at most
+USD 0.20/hour, bounded 30-minute lifetime, owned-instance destruction and
+explicit null readback remain unchanged. No real-weight run is authorized by
+this source-only profile.
+
+The frozen collector SHA-256 is
+`1dad1cb5649993648a1b0c7dae375f9d09a9093606936ccf66e5ce9c73e49cfd`;
+the frozen source-only controller is
+`e27b70843480041b938b2c3fbbc88f749b5022afa179b0cc2032acebf005a3c9`.
+Manager independently passed the full offline lifecycle harness, including
+actual collector-produced synthetic receipts, probe boundaries, GPU/host
+rejection, interruption, uncertain creation and cleanup failures. Synthetic
+success is not an actual upstream graph or audit result.
+
+The live `--probe-only` search saved its bounded readback under
+`/private/tmp/vokra-candle-source-probe-20261014.y1doPA`. It returned 64
+quotes, with three at or below USD 0.20/hour. All three fail the unchanged
+RAM floor: 64,444, 64,214 and 64,450 MiB respectively; their quoted hourly
+totals were 0.12166666666666667, 0.135 and 0.18833333333333332. The minimum
+price alone was therefore not an eligible offer. Selection exited 1 before
+inventory/create/SSH/source acquisition. No worker or storage was created,
+and no new compute/storage charge followed. Do not repeat the same live
+query blindly or lower the memory gate to label this capture complete.
+
+The actual Linux graph, patched-lock receipt, license/native/advisory review,
+official full-PCM observation contract, execution approval and real-weight
+CPU parity remain open. The earlier whole upstream lock finding is preserved;
+no package approval or model-row promotion follows from preparing this profile.
+
 ## Documentation verification
 
 The later [source-link transport reconciliation](pr233-source-link-transport-2026-10-14.md)
