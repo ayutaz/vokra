@@ -1,5 +1,11 @@
 # Qwen3-TTS current-lock reconciliation — 2026-10-14
 
+> Subsequent [probe-binding follow-up](reference-gate-binding-readback-2026-10-14.md)
+> reconciles the two current API probes and verifies their current/old/tampered
+> input cases with stdlib self-tests. The earlier intentionally untouched probe
+> state below is historical; this follow-up does not assert an actual API import,
+> model result, current owner approval or remote workspace green.
+
 ## Scope and cause
 
 The dependency refresh merged through PR #223 changed `tools/parity/qwen3_tts/uv.lock`,

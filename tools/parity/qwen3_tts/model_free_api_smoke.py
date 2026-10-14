@@ -89,7 +89,7 @@ COMMON_ASSETS = {
     "generation_config.json": (245, "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"),
 }
 PROJECT_SHA256 = "277ac9a2f414a6a41fa473c956c71bb6d7680c83c011afc53cff08276d102711"
-LOCK_SHA256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
+LOCK_SHA256 = "e03f60fb15066ed5efbcd4d682c8a2f61eefc5ca261f982d1943988e84f85fd6"
 REQUIRED_DEPENDENCIES = {
     "einops==0.8.2", "librosa==1.0.0", "numpy==2.5.2",
     "soundfile==0.14.0", "torch==2.13.0", "torchaudio==2.11.0",
@@ -704,6 +704,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def self_test() -> int:
+    global LOCK_SHA256
     try:
         assert all(HEX40.fullmatch(identity["revision"]) for identity in VARIANTS.values())
         assert all(HEX64.fullmatch(identity["config_sha256"]) for identity in VARIANTS.values())
@@ -719,6 +720,41 @@ def self_test() -> int:
         validate_patch_record(canonical_patch)
         self_test_filesystem()
         lock = tomllib.loads((Path(__file__).resolve().parent / "uv.lock").read_text(encoding="utf-8"))
+        project_dir = Path(__file__).resolve().parent
+        current_lock = project_dir / "uv.lock"
+        current_project = project_dir / "pyproject.toml"
+        current_lock_sha256 = sha256_file(current_lock)
+        if current_lock_sha256 != LOCK_SHA256:
+            raise ProbeError("self-test current uv.lock binding is stale")
+        if sha256_file(current_project) != PROJECT_SHA256:
+            raise ProbeError("self-test current pyproject.toml binding is stale")
+        historical_lock_sha256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
+        if historical_lock_sha256 == current_lock_sha256:
+            raise ProbeError("historical Qwen3-TTS lock binding unexpectedly matches current bytes")
+        with tempfile.TemporaryDirectory(prefix="qwen3-tts-lock-binding-self-test-") as binding_directory:
+            binding_project = Path(binding_directory)
+            (binding_project / "pyproject.toml").write_bytes(current_project.read_bytes())
+            (binding_project / "uv.lock").write_bytes(current_lock.read_bytes())
+            original_lock_sha256 = LOCK_SHA256
+            LOCK_SHA256 = historical_lock_sha256
+            try:
+                try:
+                    verify_project(binding_project)
+                except ProbeError as error:
+                    if "uv.lock SHA-256 drifted" not in str(error):
+                        raise ProbeError("historical lock binding failed for an unexpected reason") from error
+                else:
+                    raise ProbeError("historical lock binding accepted current bytes")
+            finally:
+                LOCK_SHA256 = original_lock_sha256
+            (binding_project / "uv.lock").write_bytes(current_lock.read_bytes() + b"\n")
+            try:
+                verify_project(binding_project)
+            except ProbeError as error:
+                if "uv.lock SHA-256 drifted" not in str(error):
+                    raise ProbeError("tampered lock fixture failed for an unexpected reason") from error
+            else:
+                raise ProbeError("tampered lock fixture was accepted")
         validate_cpu_torch_closure(lock["package"])
         for bad in (
             [{"name": "torch", "version": "2.13.0", "source": {"registry": "https://pypi.org/simple"}}] * 4,

@@ -11,6 +11,7 @@ check, then the historical dependency audit must refuse supersession.
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import redirect_stderr
 import hashlib
 import importlib.util
@@ -39,6 +40,23 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def literal_constant(path: Path, name: str) -> str:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    matches = [
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == name
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"{path.name}:{name} must have one top-level assignment")
+    value = ast.literal_eval(matches[0].value)
+    if not isinstance(value, str):
+        raise AssertionError(f"{path.name}:{name} is not a string")
+    return value
+
+
 def test_current_lock_then_historical_audit_rejects() -> None:
     gate = load_gate()
     lock = ROOT / "uv.lock"
@@ -48,6 +66,11 @@ def test_current_lock_then_historical_audit_rejects() -> None:
     operator_evidence = ROOT / "operator_approval_evidence.json"
 
     assert sha256(lock) == gate.LOCK_SHA256
+    current_lock_sha256 = sha256(lock)
+    for probe in (ROOT / "api_smoke.py", ROOT / "model_free_api_smoke.py"):
+        assert literal_constant(probe, "LOCK_SHA256") == current_lock_sha256
+    assert literal_constant(ROOT / "model_free_api_smoke.py", "PROJECT_SHA256") == sha256(project)
+    assert literal_constant(ROOT / "api_smoke.py", "LOCK_SHA256") != "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
     manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
     assert manifest_data["lock_sha256"] == gate.LOCK_SHA256
     assert manifest_data["dependency_audit_evidence"]["status"] == "PENDING_OWNER_APPROVAL"

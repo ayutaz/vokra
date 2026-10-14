@@ -35,6 +35,7 @@ environment they name.
 | What to do next | [2026-10-14 prioritized plan](handoff/next-steps-2026-10-14.md): local safety changes and PRs first, exact non-Apple gates, VAST CPU, final packet, then Scaleway |
 | Latest execution readback | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): fresh metadata, Qwen fail-closed repair, OpenMP provenance facts, stopped/deleted VAST worker, and remaining gates |
 | All unresolved public rows | [2026-10-14 58-row prerequisite inventory](handoff/current-58-prerequisite-inventory-2026-10-14.md): exact metadata denominator, per-row first prerequisites, and protected-input exclusion; not an execution approval |
+| Current versus historical gates | [2026-10-14 reference binding readback](handoff/reference-gate-binding-readback-2026-10-14.md): Qwen current probes, Dia active-contract mismatch and Canary historical closure; no approval carryover |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
 | Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
