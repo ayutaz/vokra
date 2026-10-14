@@ -4,9 +4,8 @@
 The VAST worker runs this with ``uv run --no-project --offline`` before the
 reference project is synchronized or any snapshot is acquired.  Every locked
 package is represented by an exact version/source/marker/dependency row.  The
-reviewed rows carry an exact owner sign-off, but the stale VAST audit still
-blocks evidence supersession and any weight acquisition until a fresh audit
-is recorded at the clean checkout.
+current lock refresh remains fail-closed until changed rows and the dependency
+audit receive a fresh review at the clean checkout.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "dependencies", "resolution-markers", "wheels"}),
 )
 REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "extras"}), frozenset({"name", "specifier", "marker"}), frozenset({"name", "specifier", "extras", "marker"}), frozenset({"name", "specifier", "index"}), frozenset({"name", "git"}))
-LOCK_SHA256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
+LOCK_SHA256 = "e03f60fb15066ed5efbcd4d682c8a2f61eefc5ca261f982d1943988e84f85fd6"
 PYPROJECT_SHA256 = "277ac9a2f414a6a41fa473c956c71bb6d7680c83c011afc53cff08276d102711"
 # setuptools is forbidden in this reference closure: torch declares it as a
 # transitive runtime dependency, but the fixed route never imports it and the
@@ -888,29 +887,17 @@ def self_test() -> None:
     assert production_manifest["review_rows_sha256"] == canonical_digest(production_reviews)
     assert production_manifest["component_rows_sha256"] == canonical_digest(production_components)
     for review in production_reviews:
+        assert review["approval_schema"] is None
+        assert review["approval_signer"] is None
+        assert review["approval_digest"] is None
         if review["status"] == "BLOCKED_UNRESOLVED_REVIEW":
             assert review["license"] == "UNRESOLVED"
             assert review["native_bundled"] == "UNRESOLVED"
             assert review["payload_sha256"] is None
-            assert review["approval_schema"] is None
-            assert review["approval_signer"] is None
-            assert review["approval_digest"] is None
-            continue
-        subject = fixed_approval_subject("package", {
-            "name": review["name"], "version": review["version"], "source": review["source"],
-            "license": review["license"], "native_bundled": review["native_bundled"],
-            "payload_sha256": review["payload_sha256"],
-        })
-        assert review["approval_signer"] == OWNER_SIGNER
-        assert review["approval_digest"] == fixed_approval_digest(subject)
     for component in production_components:
-        subject = fixed_approval_subject("component", {
-            "component": component["component"], "identity": component["identity"],
-            "license": component["license"], "native_bundled": component["native_bundled"],
-            "payload_sha256": component["payload_sha256"],
-        })
-        assert component["approval_signer"] == OWNER_SIGNER
-        assert component["approval_digest"] == fixed_approval_digest(subject)
+        assert component["approval_schema"] is None
+        assert component["approval_signer"] is None
+        assert component["approval_digest"] is None
     stable_scope = approval_scope(production_manifest)
     assert production_manifest["approval_scope_sha256"] == canonical_digest(stable_scope)
     assert production_manifest["dependency_audit_evidence"] == {

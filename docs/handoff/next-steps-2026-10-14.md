@@ -47,6 +47,13 @@ source-license factsの補完であり、wheel/native/owner/API gateの解除で
 tracked summaryと記録hashは保持し、回収済みの原本と主張しない。source LICENSEを
 見つけたことを理由に、同じ入力の有料再監査や実モデル実行を開始しない。
 
+[Qwen3-TTS current-lock reconciliation](qwen3-tts-current-lock-reconciliation-2026-10-14.md)
+では、PR #223後のlockと旧gate digestの不一致を修正した。旧audit/owner証拠は
+書き換えず、新scopeのapproval fieldsを未承認へ戻す。実際のgateを呼ぶ静的fixtureで、
+現行lockの入力確認後に旧dependency auditを拒否することを確認した。
+これは実weight実行やAPI importの許可ではない。source/LICENSE照合とこの修正は
+静的な前提整備であり、全58行のnon-Apple完了や最終packet固定とは区別する。
+
 | 順序 | 作業 | 完了条件／次段への条件 |
 |---|---|---|
 | 0 | 不要ローカルモデルの安全整理 | exact path・帰属・再取得／別コピー・未使用を確認したものだけ削除。fixture、未公開唯一成果物、receipt/owner証拠は保持。削除結果と空き容量を記録 |
