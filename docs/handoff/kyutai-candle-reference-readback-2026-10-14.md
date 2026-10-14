@@ -206,8 +206,19 @@ keeps the same rejection and output schema, emitting capped, redacted field
 differences to the existing log. Its SHA-256 is
 `8bc8fbf2be559264edc67bb49da44288d54c3c43d54cd44c4ccdbbc4cc94bc3d`;
 implementer and manager independently pass five model-free offline tests.
-It has not been transferred or executed on a worker. New controller freezing
-and lifecycle review are prerequisites to any separately authorized retry.
+It has not been transferred or executed on a worker. The new controller
+candidate SHA-256 is
+`455e659b507a330ef489455ab6be3abefa5ef51ef683427594d2f624252203be`;
+its exact diff changes only the collector digest and work deadline from
+1,620 to 480 seconds. Existing bounded recovery/destruction windows remain
+separate from that work budget. The adapted offline harness now exercises
+the diagnostics collector rather than the original; its SHA-256 is
+`c1f93c84c59bf4b1191f4a5f59d6c031df987ffc2c400cfbbb83940053a8c04e`.
+Implementer and manager independently pass the complete mock lifecycle
+harness. It uses shortened mock deadlines and does not prove a real
+480-second cloud timeout. Price/RAM/source/authority/output/cleanup gates
+are unchanged. A separately authorized retry remains distinct from these
+model-free candidate tests; no second paid capture occurred.
 
 Only public fixed source and tooling were used. No model/checkpoint/config/
 tokenizer payload, upstream API execution, compilation, independent PCM
