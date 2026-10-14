@@ -86,14 +86,47 @@ Corrections add raw create output and bounded cold-boot polling, including
 blocked-poll process supervision. Offline mock passes do not establish actual
 provider boot, SSH, bootstrap, or Cargo success. A later manager full-test attempt
 returned nonzero despite mock PASS/result recovery and null deletion readback;
-exit-status diagnosis remains open. Do not rent again or claim remote green
-until that cause and focused/full regressions are resolved.
+exit-status diagnosis was still open at that readback. The later resolution
+below is not a remote Cargo result.
 
 The default SSH public key was initially checked against the wrong API column.
 Correct `public_key` comparison and noninteractive private-to-public derivation
 confirmed the existing local key. No new key was created or registered, and no
 key values or private material were printed. That corrected diagnostic is not
 an actual SSH authentication result.
+
+### Subsequent controller resolution and no-lease admission
+
+The status receipt isolated the failing leg as
+`initial=0 recovery=1 cleanup=0 validation=pass exit_status=0`: the second
+offline log-recovery call crossed its one-second deadline despite successfully
+producing mock evidence. Successful offline recovery now has five seconds;
+failed/deadline fixtures retain their short causal budget, and production
+recovery remains bounded to 60 seconds. Both recovery-call statuses are
+recorded independently. Remote stages distinguish fmt, clippy, tests and
+shell gates. The implementer repeated the full offline suite three times;
+manager independent full regression, syntax and ShellCheck passed.
+
+- Controller SHA-256:
+  `f59a9000aaf7f1d018cf8d444e31b4e754f168753cf1bdb0caa0143db129e5d1`.
+- Causal test SHA-256:
+  `14b50a112461c89bed68a9e3d368818539dfbe30d9bce59f424e762e278758b8`.
+- Frozen subsequent source HEAD:
+  `d4ce1040b793fba1c75d7650caea503fac18fe29`; bundle SHA-256
+  `bbe1ab802f554157ebcb3a000ecb0565b38345f751f155d2ddff8e635ef4e6bd`.
+
+At 01:54 UTC the corrected controller ran a fresh admission. The cheapest
+otherwise qualifying offer was USD 0.2027778/hour including 150 GiB storage,
+above the unchanged USD 0.20/hour ceiling. It stopped before baseline inventory
+or creation; no new instance was rented. Provider availability remains external
+waiting, not a license to raise the ceiling, run Cargo locally, or claim green.
+
+The [58-row prerequisite inventory](current-58-prerequisite-inventory-2026-10-14.md)
+retains every non-full public row from the exact TSV and identifies the next
+row-specific prerequisite. `NOT_PROVEN` is not a verdict that every row has
+been exhaustively proved unready; the protected CosyVoice2 row remains
+`UNKNOWN_EXCLUDED`. Full code/artifact candidates outside that denominator
+are recorded separately rather than silently added to the 58.
 
 ## Remaining gates
 
@@ -104,8 +137,8 @@ cover streamed large native files, ELF32/64 linkage parsing, exact license-byte
 retention, and a shared interrupting deadline. Manager stdlib-only self-test and
 offline integration passed; live Linux fetch/native facts remain unmeasured.
 
-Next: resolve workspace-controller exit status, obtain exact-source remote green
-and PR acceptance, then perform the separately bounded current dependency/API
+Next: obtain exact-source remote green and PR acceptance when admission is
+available, while preparing the separately bounded current dependency/API
 work and only execution-approved real-weight CPU work. All 58 unresolved rows
 remain accounted for; none is generically withheld merely for being difficult.
 Final clean HEAD/Apple packet, Scaleway, and publication are still incomplete.
