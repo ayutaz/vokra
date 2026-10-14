@@ -18,6 +18,11 @@
 tools/parity/kyutai_candle_reference/pinned-asr.rs -filter -diff -merge -text
 tools/parity/kyutai_candle_reference/pinned-LICENSE -filter -diff -merge -text
 
+# WeSpeaker source/license fixtures are verified by SHA-256 and Git-blob
+# identity; preserve the exact upstream bytes across checkout platforms.
+tools/parity/wespeaker/source_fixture/LICENSE -filter -diff -merge -text
+tools/parity/wespeaker/source_fixture/wespeaker/models/*.py -filter -diff -merge -text
+
 # Whisper (and future model) parity f32 fixtures — see tests/parity/whisper_*/
 tests/parity/whisper_*/*.f32 -filter -diff -merge
 tests/parity/whisper_*/*.bin -filter -diff -merge
