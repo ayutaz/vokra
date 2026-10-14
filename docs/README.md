@@ -1,7 +1,11 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-The latest accepted main is `9ddc0da5` after the urllib3 update in PR #231;
+PR #232 was normally accepted at 09:03:54 UTC after 69 successful checks,
+one skip and all 16 required context/application pairs; its main snapshot is
+`fa42f112`. The [plan readback](handoff/next-steps-2026-10-14.md) records that
+acceptance and the source-only VAST admission result, not model completion.
+The recorded dependency baseline is `9ddc0da5` after the urllib3 update in PR #231;
 the accepted source-contract baseline is `f8804b74` from PR #230. See the
 [acceptance and Kyutai reference readback](handoff/kyutai-candle-reference-readback-2026-10-14.md).
 The earlier local documentation commit `1a63a8d1` is preserved on an archive
@@ -43,6 +47,7 @@ environment they name.
 | WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |
 | Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
 | Kyutai alternate reference admission | [2026-10-14 Candle readback](handoff/kyutai-candle-reference-readback-2026-10-14.md): identical declared checkpoint/Mimi/tokenizer identities, distinct execution scope and a fixed-lock memmap2 security hold; no real-weight run |
+| OWSM dependency admission | [2026-10-14 scalar-approval correction](handoff/owsm-audit-admission-readback-2026-10-14.md): unbound allow declarations are refused; the active ComplexTensor license and full-reference prerequisites remain open |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
 | Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |

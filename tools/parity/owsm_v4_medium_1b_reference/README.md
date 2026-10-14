@@ -9,6 +9,14 @@ has an owner-reviewed primary-source license audit. Its lock is metadata-only
 until a disposable VAST worker installs it. The CPU-only PyTorch index is
 explicit so a worker cannot resolve CUDA/Triton wheels.
 
+The `dependency_license_audit` value is only a pending/approval declaration;
+this gate does not treat the scalar `AUDITED_ALLOW` value as approval evidence.
+Until a separately reviewed, hash-bound approval format is implemented, any
+such scalar is reported as `BLOCKED_UNBOUND_AUDIT_APPROVAL` and the CLI exits
+2. A lock mutation likewise cannot create an allow path. The gate and its
+focused tests are stdlib-only and do not import torch, NumPy, model code, or
+weights.
+
 The direct packages are the statically authenticated import closure of the
 pinned ESPnet roles: `humanfriendly`, `librosa`, `numpy`, `packaging`,
 `torch`, `torch-complex`, `typeguard`, and `PyYAML`. Their exact versions are
@@ -42,5 +50,11 @@ this blocker must not be removed by inference.
 Run only the dependency-free self-test locally:
 
 ```text
-uv run --no-project --offline --python 3.12 python dependency_audit.py --self-test
+uv run --no-project --offline --python 3.12 python dependency_license_gate.py --self-test
+uv run --no-project --offline --python 3.12 python -m unittest discover -s . -p 'test_*.py'
 ```
+
+The self-test uses this checked-in 43-row fixture, verifies the pending result,
+flips only the scalar approval declaration, and mutates a transitive lock row;
+both changed cases remain blocked. `dependency_audit.py --self-test` remains a
+separate model-free factual-audit test.
