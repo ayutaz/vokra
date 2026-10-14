@@ -20,6 +20,14 @@ Apple CPU/Metal/no-fallbackの証拠で完了、またはexact owner-approved di
 説明可能にすること。公開artifactの更新と不要なowned cloud資源の破棄も個別に記録する。
 静的監査、synthetic test、ソースCIだけでは後段の完了としない。
 
+> **最新の継続結果:** FireRedの固定幅beam/cache/PAD-key修正は`3a7cc5c7`、
+> private helperのtest-only化は`9e5dc575`。公式proxy経由で実ソース受理まで進んだが、
+> 前者のVASTはClippyで停止し、テストは未開始。原因を修正した後者は料金上限内の
+> 候補がなく作成前停止。04:38 UTCのCPU floor 4を含むread-only調査も上限内0件。
+> owned worker/storageは削除確認済み。次は修正後clean HEADのremote greenを取得し、
+> 通常PR/CIへ進む。58行の実weight/owner前提・最終packet・Scalewayは未完了のまま。
+> 詳細は[継続readback](execution-readback-2026-10-14.md#corrected-helper-head-and-current-no-lease-boundary)。
+
 現在の「計画の4まで」という実行ゴールは、元の順序の4（最終clean HEADを固定して
 Apple packetを再生成）までを指す。以下の表は安全整理・PR準備を展開しているため、
 この到達点は表の工程5に相当する。工程4のCPU作業だけでゴール達成とせず、Scaleway

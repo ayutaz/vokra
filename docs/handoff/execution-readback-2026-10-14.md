@@ -291,6 +291,40 @@ without suppressing `dead_code` or changing the production driver/ranking.
 Its Rust replay remains required. No HF token, external model acquisition,
 real-weight CPU/Apple run or publication occurred in this attempt.
 
+### Corrected helper HEAD and current no-lease boundary
+
+The private-helper correction and preceding actual failure/cleanup receipt
+are committed at `9e5dc575f41de471a26cf88cee640f94e6f05a7f`. Its source bundle
+SHA-256 is
+`0fc752f937e5cb21080bf6650bc9a477dd59a7b53368eac41c7f4ab296cf3d70`.
+The worktree was clean. At 04:27:28 UTC a corrected-source admission stopped
+before baseline inventory/creation because no returned offer passed the
+unchanged USD 0.20/hour policy. This is not a Rust replay result.
+
+A later read-only query relaxed only the effective-CPU search floor to four
+and retained 64 GiB RAM, 150 GiB storage, reliability, architecture, numeric
+bandwidth and direct-port postfilters. The 64 returned offers at
+04:38:31 UTC contained no qualifying quote below the ceiling. The lowest
+returned eligible quote was offer `51587988`, USD 0.2827777778/hour including
+150 GiB storage, with 32 effective cores and 96,698 MiB reported RAM;
+bandwidth is separate. This is a dated returned-query minimum, not a
+guarantee about the entire market. The CPU floor of the execution controller
+was not changed, the price cap was not raised, and no lease was created.
+
+The first diagnostic attempt failed DNS under restricted networking; a
+network-permitted attempt then had a stdin aggregation error. Neither was
+treated as provider inventory evidence. Manager's final bounded query
+captured the safe-wrapper response before parsing it, used the CLI's RAM
+input of `64` with a `65,536`-MiB returned-data check, and printed only
+whitelisted offer facts. No key value was printed, and no model was acquired.
+
+Remote main was independently read at `134eb9c7` and remains protected.
+The source branch has not been pushed or merged. Source/static preparation
+advanced in this continuation; no current all-workspace green, real-weight
+CPU pass, all-row disposition or final Apple packet is inferred. No owned
+paid worker from these attempts remains after the explicit cleanup readbacks;
+unrelated account resources remain outside this campaign.
+
 ## Remaining gates
 
 The [TorchAudio archive inspection](wespeaker-torchaudio211-static-facts-2026-10-14.md)
