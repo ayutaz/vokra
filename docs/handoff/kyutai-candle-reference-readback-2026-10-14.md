@@ -145,3 +145,14 @@ The mandatory gate correctly failed; no new status acceptance, exclusion or
 protection override is introduced. The accepted PR #231 main was normally
 merged into the documentation branch, so subsequent CI must cover its new
 head, not relabel this failed job as passed.
+
+Both failed public pages returned HTTP 200 in the subsequent bounded
+credential-free readback. The normal push's compliance regression passed
+8/8, then the maintainer safety hook refused the deep Cargo path triggered
+by the already-accepted dependency lock merge; no Cargo compilation began.
+Manager verified that all Rust/crate/root Cargo/C-ABI test inputs remain
+identical to the recorded green VAST `4263f416` run, and that the diff from
+accepted main consists only of the four documentation files. The dependency
+lock itself already passed PR #231's exact-head CI. Use the established
+recorded-remote-green push procedure for this documentation update, without
+changing hooks or repeating the unchanged native run on a paid worker.
