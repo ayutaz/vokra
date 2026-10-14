@@ -1,6 +1,12 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+Latest accepted main is `ab653152` after PR #234's normal merge at 10:17:38 UTC
+(69 success, one skip, all 16 required context/application pairs successful).
+PR #235's scalar-approval correction was accepted at 09:39:44 UTC. The
+[observer preparation record](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md)
+records the separate source-only candidate and corrected read-only VAST search;
+no new worker or model result follows from either.
 PR #232 was normally accepted at 09:03:54 UTC after 69 successful checks,
 one skip and all 16 required context/application pairs; its main snapshot is
 `fa42f112`. The [plan readback](handoff/next-steps-2026-10-14.md) records that
@@ -47,6 +53,7 @@ environment they name.
 | WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |
 | Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
 | Kyutai alternate reference admission | [2026-10-14 Candle readback](handoff/kyutai-candle-reference-readback-2026-10-14.md): identical declared checkpoint/Mimi/tokenizer identities, distinct execution scope and a fixed-lock memmap2 security hold; no real-weight run |
+| Kyutai final-step observation preparation | [2026-10-14 source-only observer](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md): authenticated additive source patch and 17 stdlib tests; Rust/API, complete PCM oracle and real-weight parity remain unrun |
 | OWSM dependency admission | [2026-10-14 scalar-approval correction](handoff/owsm-audit-admission-readback-2026-10-14.md): unbound allow declarations are refused; the active ComplexTensor license and full-reference prerequisites remain open |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
