@@ -2,6 +2,21 @@
 
 ## ゴールと現在地
 
+> **17:46:55 UTCの統合受理readback（2026-10-15 JST）:** #247 exact
+> `50ea0dec`／base `0f6750fa`は全73 checks（71 success / 2 intentional skips）、
+> 必須16 context/appと開始した全10 workflowsのterminal successを確認して通常受理した。
+> 遅いUnity packagingも完了後に受理し、main／ローカルmainは`d1cbed72`でclean。
+> #243／#245は統合によるsupersededとしてcloseし、個別mergeとは記録しない。
+> Diaの無条件実行拒否、source/staticと実weight結果の境界、元の安全ルールは保持した。
+> #246の[API-smoke lock修正](moss-api-smoke-urllib3-reconciliation-2026-10-15.md)と
+> [bridgeの独立lock照合](moss-api-smoke-bridge-binding-2026-10-15.md)を同じ候補へまとめ、
+> 最新mainを通常mergeした`d039e4dd`でfocused metadata checksは成功した。
+> 45 full records／44 whole-lock registry rowsはinstalled active dependenciesではなく、
+> main MOSSの48 pending rowsとは別契約。新しいpublished HEADのfresh CI／通常受理は別に必要。
+> 次は#246受理と独立したsource前提の解決であり、旧承認の再刻印や未承認の有料監査はしない。
+> 58未解決行、凍結63-row owner scope、実weight CPU、最終clean HEAD／Apple packetは未完了。
+> 新規cloud／ローカルモデル実行／公開は開始していない。以下の受理snapshotは履歴。
+
 > **16:55:26 UTCのMOSS受理と検証集約（2026-10-15 JST）:** PR #242はexact
 > `934e61ac`／base `627a641f`の全70 checks（69 success / 1 skipped）、必須16
 > context/app成功、開始した全9 workflowsのterminal successを確認して通常受理した。

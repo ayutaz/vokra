@@ -1,16 +1,28 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main is `0f6750fa` after PR #242's normal merge at
+Latest accepted main is `d1cbed72` after PR #247's normal merge at
+17:46:55 UTC on 2026-10-14: all 73 checks completed (71 success, two intentional
+skips), all 16 required context/application pairs successful and all ten
+started workflows terminal success, including late Unity packaging. Local
+main is fast-forwarded and clean. The source/static integration accepts Dia's
+fail-closed current contract, the dated non-Apple readback and the stdlib-only
+pre-commit correction. #243 and #245 are closed as superseded, not individually
+merged. Real-weight CPU, owner/legal/API readiness and final Apple packets
+remain unfinished. [MOSS API-smoke lock reconciliation](handoff/moss-api-smoke-urllib3-reconciliation-2026-10-15.md)
+and [authoritative bridge binding](handoff/moss-api-smoke-bridge-binding-2026-10-15.md)
+are the next reviewed source-only #246 candidate, normally integrated with
+this main as `d039e4dd`; fresh published-head CI and acceptance remain separate.
+The preceding accepted main was `0f6750fa` after PR #242's normal merge at
 16:55:26 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
 skip), all 16 required context/application pairs successful and all nine
 started workflows terminal success. Current MOSS lock/schema/review inputs are
 accepted; 48 pending dependency rows, source/model grants, native/API/owner
 approval and real-weight parity remain unresolved. Local main is clean and
-synchronized. Dia #245, documentation #243 and the separate compile-free
-pre-commit correction are being consolidated into one reviewed candidate for
-fresh current-base CI. This avoids sequential base invalidation without
-dropping checks or treating the old heads as current evidence.
+synchronized. At that snapshot, Dia #245, documentation #243 and the separate
+compile-free pre-commit correction were being consolidated for fresh
+current-base CI. The subsequent #247 acceptance above supersedes that pending
+state without treating the old heads as current evidence.
 The preceding accepted main was `627a641f` after PR #241's normal merge at
 16:13:50 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
 skip), all 16 required context/application pairs successful and all nine
