@@ -182,7 +182,8 @@ write_apple_args() {
 }
 
 download_hf_file() {
-  local repository="$1" revision="$2" remote_filename="$3" output_dir="$4" local_filename="${5:-$remote_filename}"
+  local repository="$1" revision="$2" remote_filename="$3" output_dir="$4"
+  local local_filename="${5:-$remote_filename}"
   local output_path temporary token
   [[ "$remote_filename" =~ ^[A-Za-z0-9._/-]+$ && "$local_filename" =~ ^[A-Za-z0-9._-]+$ ]] || { die "invalid Hugging Face filename"; return 2; }
   mkdir -p "$output_dir"
@@ -390,6 +391,19 @@ EOF
   fi
   [[ "$(<"$download_dir/$UPSTREAM_CHECKPOINT")" == "$staged_before" ]] \
     || { log "self-test FAIL: existing staged input changed"; fail=1; }
+  local noauth_dir="$tmp/noauth-download" noauth_args="$tmp/noauth.args" noauth_stdin="$tmp/noauth.stdin" noauth_env="$tmp/noauth.env"
+  mkdir -p "$noauth_dir"
+  if ! CURL_ARGS_LOG="$noauth_args" CURL_STDIN_LOG="$noauth_stdin" CURL_ENV_LOG="$noauth_env" \
+    PATH="$fake_bin:$PATH" HF_TOKEN= HF= download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$noauth_dir" </dev/null; then
+    log "self-test FAIL: synthetic four-argument unauthenticated download failed"; fail=1
+  fi
+  if [[ "$(sed -n '1p' "$noauth_args")" != "-q" ]] \
+    || grep -q '[^[:space:]]' "$noauth_env" \
+    || [[ "$(grep -Fc -- "/$UPSTREAM_CHECKPOINT_REMOTE?download=true" "$noauth_args")" != 1 ]] \
+    || grep -Fq -- "/$UPSTREAM_CHECKPOINT?download=true" "$noauth_args" \
+    || [[ ! -f "$noauth_dir/$UPSTREAM_CHECKPOINT_REMOTE" ]]; then
+    log "self-test FAIL: four-argument no-auth remote/local contract drifted"; fail=1
+  fi
   local race_dir="$tmp/race-directory" race_link="$tmp/race-symlink" race_target="$tmp/race-target"
   mkdir -p "$race_dir" "$race_link" "$race_target"
   CURL_ARGS_LOG="$tmp/race-dir.args" CURL_STDIN_LOG="$tmp/race-dir.stdin" CURL_ENV_LOG="$tmp/race-dir.env" \
