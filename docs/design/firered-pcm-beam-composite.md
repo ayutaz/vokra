@@ -90,6 +90,42 @@ checkpoint, or model execution was performed.
 
 ## Open gates
 
+### 2026-10-14 fixed-source driver review
+
+Independent primary-source reinspection confirmed the exact decoder bytes
+above. The non-truncated 58-entry source tree identifies decoder Git blob
+`2088b0832b84da4421883e2dc7b518f734c3e0b2`. Its Apache-2.0 LICENSE is
+11,357 bytes, SHA-256
+`c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`,
+Git blob `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64`; no upstream NOTICE
+file is present. Source-code license facts do not approve the reference
+dependency closure or released checkpoint.
+
+The source requires fixed `B` decoder rows and `B * B` candidates, initial
+finite inactive scores of `-1e10`, decoder/cache updates even for finished
+rows, parent-index cache gathering, and EOS-only termination. PAD validity
+masks self-attention keys, not the query/residual row. The previous native
+driver compressed finished continuations and started with one beam. The
+reviewed correction routes production decoding through a fixed-width private
+driver, updates every selected parent's cache, preserves the finite inactive
+slots, and separates current-key validity from the all-valid query/residual
+path. Existing public layer behavior and loud-partial transcription remain
+unchanged. The authenticated PAD marker is the existing strict GGUF/config
+bound; generic upstream Python accepts `args.pad_id` rather than proving a
+universal token id.
+
+Three new synthetic mechanism tests cover six callbacks across three steps,
+branch-specific parent caches and finished-row continuation; invalid finished
+logits, oversized beam vocabulary and callback-error propagation; and the
+production private layer's masked-key invariance, residual-only exact
+preservation, public-wrapper compatibility and mask-length refusal. Static
+format, zero-dependency, forbidden-symbol and diff checks passed; Rust
+compilation/test execution is deferred to VAST, not run on the maintainer Mac.
+PyTorch's `topk` calls do not specify an equal-score ordering contract here;
+a deterministic native tie rule must not be presented as independently
+verified upstream parity. Focused synthetic tests cannot replace the pinned
+official real-weight reference.
+
 The ordinary transcription API remains loud-partial until a pinned official
 reference run and native CPU comparison agree at the frontend, encoder,
 decoder-logit, cache, beam-parent/order, token, score, EOS, and dictionary

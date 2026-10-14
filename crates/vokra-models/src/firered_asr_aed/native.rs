@@ -434,10 +434,10 @@ impl FireRedRuntimeWeights {
     }
 
     /// Runs the pinned FireRed `batch_beam_search` policy over one encoder
-    /// memory.  The implementation intentionally expands each active beam
-    /// serially, but every branch owns a clone of every decoder-layer cache;
-    /// this is the same cache boundary as the upstream decoder and avoids
-    /// sharing mutable state between competing hypotheses.
+    /// memory.  The fixed-width driver calls the decoder/cache seam for every
+    /// row, then globally prunes the B×B candidates; every branch owns a clone
+    /// of every decoder-layer cache, matching the upstream cache boundary and
+    /// avoiding shared mutable state between competing hypotheses.
     ///
     /// `decode_max_len == 0` has the source meaning from the upstream method:
     /// it selects `Ti`, the number of encoder-output rows (not the number of
@@ -524,36 +524,18 @@ impl FireRedRuntimeWeights {
             source_dim: d_model,
         };
 
-        let empty_cache =
-            FireRedDecoderCacheState::new(super::AUTHENTICATED_DECODER_N_LAYER as usize);
-        let mut beams = vec![FireRedRuntimeBeam {
-            state: FireRedBeamState::new(),
-            previous: sos_id,
-            cache: empty_cache,
-        }];
-
-        for step in 0..max_len {
-            let mut candidates = Vec::with_capacity(beam_size * beam_size);
-            for (parent, beam) in beams.iter().enumerate() {
-                if beam.state.finished {
-                    // `set_finished_beam_score_to_zero` and
-                    // `set_finished_beam_y_to_eos` in the source expose one
-                    // live EOS continuation and B-1 -INF continuations.
-                    // Keeping only that live continuation is equivalent and
-                    // avoids representing an artificial -1e10 score.
-                    candidates.push(FireRedRuntimeBeamCandidate {
-                        beam: FireRedRuntimeBeam {
-                            state: beam.state.advance(eos_id, 0.0, eos_id, max_len)?,
-                            previous: eos_id,
-                            cache: beam.cache.clone(),
-                        },
-                        parent,
-                        token: eos_id,
-                    });
-                    continue;
-                }
-
-                let (logits, next_cache) = self.decode_step(
+        run_fixed_width_beam(
+            beam_size,
+            max_len,
+            sos_id,
+            eos_id,
+            nbest,
+            softmax_smoothing,
+            length_penalty,
+            eos_penalty,
+            super::AUTHENTICATED_DECODER_N_LAYER as usize,
+            |beam, step| {
+                self.decode_step(
                     compute,
                     memory,
                     source_frames,
@@ -569,56 +551,9 @@ impl FireRedRuntimeWeights {
                     output_norm_gamma,
                     output_norm_beta,
                     projection,
-                )?;
-                let mut token_scores = log_softmax_row(&logits, softmax_smoothing, vocab_size)?;
-                apply_fire_red_eos_penalty(&mut token_scores, eos_id, eos_penalty)?;
-                let top = top_token_indices(&token_scores, beam_size)?;
-                for token in top {
-                    let state = beam
-                        .state
-                        .advance(token, token_scores[token], eos_id, max_len)?;
-                    candidates.push(FireRedRuntimeBeamCandidate {
-                        beam: FireRedRuntimeBeam {
-                            state,
-                            previous: token,
-                            cache: next_cache.clone(),
-                        },
-                        parent,
-                        token,
-                    });
-                }
-            }
-            candidates = prune_beam_candidates(candidates, beam_size)?;
-            beams = candidates
-                .into_iter()
-                .map(|candidate| candidate.beam)
-                .collect();
-            if beams.iter().all(|beam| beam.state.finished) {
-                break;
-            }
-        }
-
-        let mut ranked = Vec::with_capacity(beams.len());
-        for beam in beams {
-            let score = beam.state.ranked_score(eos_id, length_penalty)?;
-            let mut token_ids = beam.state.tokens;
-            if token_ids.last().copied() == Some(eos_id) {
-                token_ids.pop();
-            }
-            ranked.push(FireRedBeamHypothesis {
-                token_ids,
-                normalized_log_score: score,
-            });
-        }
-        ranked.sort_by(|left, right| {
-            right
-                .normalized_log_score
-                .partial_cmp(&left.normalized_log_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.token_ids.cmp(&right.token_ids))
-        });
-        ranked.truncate(nbest);
-        Ok(ranked)
+                )
+            },
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -655,9 +590,10 @@ impl FireRedRuntimeWeights {
         }
         let mut hidden = embedding_op.forward(&[previous], &[position], embedding, positional)?;
         let mut next_cache = FireRedDecoderCacheState::new(cache.keys.len());
+        let current_key_valid = previous != FIRERED_AUTHENTICATED_PAD_ID;
         for layer in 0..super::AUTHENTICATED_DECODER_N_LAYER as usize {
             let weights = self.decoder_layer_weights(layer)?;
-            let output = layer_op.forward(
+            let output = layer_op.forward_with_key_mask(
                 compute,
                 &hidden,
                 1,
@@ -668,6 +604,7 @@ impl FireRedRuntimeWeights {
                 &cache.keys[layer],
                 &cache.values[layer],
                 &cache.masks[layer],
+                &[current_key_valid],
                 weights,
             )?;
             hidden = output.output;
@@ -675,7 +612,7 @@ impl FireRedRuntimeWeights {
             next_cache.values[layer] = output.value_cache;
             next_cache.masks[layer] = {
                 let mut mask = cache.masks[layer].clone();
-                mask.push(true);
+                mask.push(current_key_valid);
                 mask
             };
         }
@@ -3035,10 +2972,50 @@ impl FireRedDecoderLayer {
         past_mask: &[bool],
         weights: FireRedDecoderLayerWeights<'_>,
     ) -> Result<FireRedDecoderLayerOutput> {
+        self.forward_with_key_mask(
+            compute,
+            input,
+            query_frames,
+            query_mask,
+            memory,
+            source_frames,
+            source_mask,
+            past_k,
+            past_v,
+            past_mask,
+            query_mask,
+            weights,
+        )
+    }
+
+    /// Runs the source decoder layer while keeping decoder query/residual
+    /// validity separate from self-attention key validity.  FireRed's
+    /// `ignored_target_position_is_0` mask is a key/padding mask: a PAD
+    /// history row is excluded as a key, but it is not used to zero the
+    /// current query or its residual path.  The public `forward` wrapper
+    /// preserves its existing all-valid query contract by using the query
+    /// mask for current keys as well.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_with_key_mask(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        query_frames: usize,
+        query_mask: &[bool],
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        past_k: &[f32],
+        past_v: &[f32],
+        past_mask: &[bool],
+        current_key_mask: &[bool],
+        weights: FireRedDecoderLayerWeights<'_>,
+    ) -> Result<FireRedDecoderLayerOutput> {
         self.validate(
             input,
             query_frames,
             query_mask,
+            current_key_mask,
             memory,
             source_frames,
             source_mask,
@@ -3068,7 +3045,7 @@ impl FireRedDecoderLayer {
             query_frames,
             past_k,
             past_v,
-            &combined_cache_mask(past_mask, query_mask)?,
+            &combined_cache_mask(past_mask, current_key_mask)?,
             weights.self_attention,
         )?;
         let mut residual = add_masked_residual(input, &self_output.output, query_mask, d)?;
@@ -3142,6 +3119,7 @@ impl FireRedDecoderLayer {
         input: &[f32],
         query_frames: usize,
         query_mask: &[bool],
+        current_key_mask: &[bool],
         memory: &[f32],
         source_frames: usize,
         source_mask: &[bool],
@@ -3156,6 +3134,7 @@ impl FireRedDecoderLayer {
             || query_frames == 0
             || query_mask.len() != query_frames
             || !query_mask.iter().all(|&valid| valid)
+            || current_key_mask.len() != query_frames
             || source_frames == 0
             || source_mask.len() != source_frames
             || !source_mask.iter().any(|&valid| valid)
@@ -3456,6 +3435,186 @@ struct FireRedRuntimeBeamCandidate {
     token: usize,
 }
 
+/// FireRed's source decoder uses a finite `-1e10` score for inactive and
+/// finished beam slots.  Preserve that exact finite score semantics instead
+/// of substituting negative infinity or another native-only approximation.
+const FIRERED_BEAM_INACTIVE_SCORE: f32 = -1.0e10;
+
+// The existing authenticated FireRed GGUF/config boundary strictly binds
+// `pad_id` to 2.  This private marker mirrors that already-validated bound;
+// the generic upstream Python source accepts `args.pad_id` and does not by
+// itself prove a universal value of 2.
+const FIRERED_AUTHENTICATED_PAD_ID: usize = 2;
+
+/// Run the source fixed-width `batch_beam_search` control flow.
+///
+/// The callback is deliberately shared by production `decode_beam` and the
+/// mechanism tests below.  It is called once for every row on every step,
+/// including inactive/finished rows; this preserves the upstream cache-call
+/// boundary before score/yseq replacement.  The callback returns the next
+/// cache for its parent row, which is cloned into each selected candidate so
+/// parent-cache selection remains observable and branch-local.
+#[allow(clippy::too_many_arguments)]
+fn run_fixed_width_beam<F>(
+    beam_size: usize,
+    max_len: usize,
+    sos_id: usize,
+    eos_id: usize,
+    nbest: usize,
+    softmax_smoothing: f32,
+    length_penalty: f32,
+    eos_penalty: f32,
+    cache_layers: usize,
+    mut decode_step: F,
+) -> Result<Vec<FireRedBeamHypothesis>>
+where
+    F: FnMut(&FireRedRuntimeBeam, usize) -> Result<(Vec<f32>, FireRedDecoderCacheState)>,
+{
+    if beam_size == 0
+        || max_len == 0
+        || nbest == 0
+        || nbest > beam_size
+        || !softmax_smoothing.is_finite()
+        || softmax_smoothing <= 0.0
+        || !length_penalty.is_finite()
+        || length_penalty < 0.0
+        || !eos_penalty.is_finite()
+        || eos_penalty <= 0.0
+        || eos_penalty > 1.0
+    {
+        return Err(VokraError::InvalidArgument(
+            "firered fixed-width beam policy is invalid".to_owned(),
+        ));
+    }
+
+    let candidate_capacity = beam_size.checked_mul(beam_size).ok_or_else(|| {
+        VokraError::InvalidArgument("firered fixed-width beam candidate count overflows".to_owned())
+    })?;
+
+    // The first row is live; the remaining rows are source-compatible finite
+    // inactive slots.  They still enter the callback on the first step.
+    let empty_cache = FireRedDecoderCacheState::new(cache_layers);
+    let mut beams = (0..beam_size)
+        .map(|slot| FireRedRuntimeBeam {
+            state: FireRedBeamState {
+                tokens: Vec::new(),
+                score: if slot == 0 {
+                    0.0
+                } else {
+                    FIRERED_BEAM_INACTIVE_SCORE
+                },
+                finished: false,
+            },
+            previous: sos_id,
+            cache: empty_cache.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    for step in 0..max_len {
+        let mut candidates = Vec::with_capacity(candidate_capacity);
+        for (parent, beam) in beams.iter().enumerate() {
+            // The upstream decoder executes the layer/cache callback before
+            // replacing a finished row with its finite EOS/sentinel scores.
+            let (logits, next_cache) = decode_step(beam, step)?;
+            if logits.is_empty()
+                || beam_size > logits.len()
+                || sos_id >= logits.len()
+                || eos_id >= logits.len()
+                || logits.iter().any(|value| !value.is_finite())
+            {
+                return Err(VokraError::InvalidArgument(
+                    "firered fixed-width beam callback vocabulary or logits are invalid".to_owned(),
+                ));
+            }
+            // Source decoding computes the row softmax before replacing
+            // finished rows with EOS/finite-sentinel options. Keep that
+            // validation shared across every row so a bad finished callback
+            // cannot be hidden by the replacement branch.
+            let mut token_scores = log_softmax_row(&logits, softmax_smoothing, logits.len())?;
+            apply_fire_red_eos_penalty(&mut token_scores, eos_id, eos_penalty)?;
+            let options = if beam.state.finished {
+                let mut finished = Vec::with_capacity(beam_size);
+                finished.push((eos_id, 0.0));
+                while finished.len() < beam_size {
+                    finished.push((eos_id, FIRERED_BEAM_INACTIVE_SCORE));
+                }
+                finished
+            } else {
+                top_token_indices(&token_scores, beam_size)?
+                    .into_iter()
+                    .map(|token| (token, token_scores[token]))
+                    .collect::<Vec<_>>()
+            };
+
+            for (token, delta) in options {
+                let mut state = beam.state.clone();
+                if !state.finished {
+                    state.tokens.push(token);
+                    state.score += delta;
+                    state.finished = token == eos_id;
+                } else {
+                    // Finished rows retain their content history and receive
+                    // only the source finite sentinel/zero score update.
+                    state.score += delta;
+                }
+                if !state.score.is_finite() {
+                    return Err(VokraError::ModelLoad(
+                        "firered fixed-width beam score became non-finite".to_owned(),
+                    ));
+                }
+                candidates.push(FireRedRuntimeBeamCandidate {
+                    beam: FireRedRuntimeBeam {
+                        state,
+                        previous: token,
+                        cache: next_cache.clone(),
+                    },
+                    parent,
+                    token,
+                });
+            }
+        }
+        if candidates.len() != candidate_capacity {
+            return Err(VokraError::ModelLoad(
+                "firered fixed-width beam did not produce B×B candidates".to_owned(),
+            ));
+        }
+        candidates = prune_beam_candidates(candidates, beam_size)?;
+        beams = candidates
+            .into_iter()
+            .map(|candidate| candidate.beam)
+            .collect();
+        if beams.iter().all(|beam| beam.state.finished) {
+            break;
+        }
+    }
+
+    let mut ranked = Vec::with_capacity(beams.len());
+    for beam in beams {
+        let score = beam.state.ranked_score(eos_id, length_penalty)?;
+        let mut token_ids = beam.state.tokens;
+        // The source output slice excludes the terminal EOS and any repeated
+        // EOS rows emitted while a finished slot is carried to fixed width.
+        while token_ids.last().copied() == Some(eos_id) {
+            token_ids.pop();
+        }
+        ranked.push(FireRedBeamHypothesis {
+            token_ids,
+            normalized_log_score: score,
+        });
+    }
+    ranked.sort_by(|left, right| {
+        right
+            .normalized_log_score
+            .partial_cmp(&left.normalized_log_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // `torch.topk` does not specify tie order.  This deterministic
+            // native order is a reproducibility policy, not parity evidence.
+            .then_with(|| left.token_ids.cmp(&right.token_ids))
+    });
+    ranked.truncate(nbest);
+    Ok(ranked)
+}
+
 impl FireRedBeamState {
     /// Creates an empty, unfinished beam with zero score.
     pub fn new() -> Self {
@@ -3596,9 +3755,9 @@ fn log_softmax_row(logits: &[f32], smoothing: f32, vocab_size: usize) -> Result<
 }
 
 /// Selects the top token ids with an explicit deterministic tie rule. The
-/// upstream source delegates ties to `torch.topk`; this stable order keeps the
-/// native result reproducible and is recorded in the reference trace for
-/// real-checkpoint parity review.
+/// upstream source delegates ties to `torch.topk` without specifying their
+/// order; this stable native order is only a reproducibility policy and is
+/// not itself numerical parity evidence.
 fn top_token_indices(scores: &[f32], count: usize) -> Result<Vec<usize>> {
     if scores.is_empty()
         || count == 0
@@ -3620,9 +3779,10 @@ fn top_token_indices(scores: &[f32], count: usize) -> Result<Vec<usize>> {
     Ok(ids)
 }
 
-/// Applies the source global B×B beam prune. Candidate generation supplies at
-/// most `beam_size` rows per live parent; pruning ranks the whole flattened
-/// candidate set, not each parent independently.
+/// Applies the source global B×B beam prune. Candidate generation supplies
+/// exactly `beam_size` rows for every parent, including finite sentinel rows
+/// for inactive/finished parents; pruning ranks the whole flattened set, not
+/// each parent independently.
 fn prune_beam_candidates(
     mut candidates: Vec<FireRedRuntimeBeamCandidate>,
     beam_size: usize,
@@ -5262,6 +5422,318 @@ mod tests {
         assert_eq!(original.keys[0], vec![1.0, 2.0]);
         assert_eq!(original.masks[0], vec![true]);
         assert_eq!(branch.values[1], original.values[1]);
+    }
+
+    #[test]
+    fn fixed_width_beam_driver_runs_finished_rows_and_gathers_parent_caches() {
+        let mut observations = Vec::new();
+        let hypotheses = run_fixed_width_beam(2, 3, 1, 3, 2, 1.0, 0.0, 1.0, 1, |beam, step| {
+            observations.push((
+                step,
+                beam.previous,
+                beam.state.score,
+                beam.state.finished,
+                beam.cache.keys[0].clone(),
+            ));
+            let mut cache = beam.cache.clone();
+            // Step one deliberately derives a different marker from each
+            // selected token. Seeing those markers at step two proves that
+            // the selected parent's cache was gathered per branch.
+            let marker = (step * 100 + beam.previous) as f32;
+            cache.keys[0] = vec![marker];
+            cache.values[0] = vec![marker];
+            cache.masks[0] = vec![beam.previous != FIRERED_AUTHENTICATED_PAD_ID];
+            let logits = match step {
+                0 => vec![0.0, -1.0, -2.0, 4.0],
+                1 => vec![4.0, 0.0, -1.0, -4.0],
+                _ => vec![0.0, -1.0, -2.0, 4.0],
+            };
+            Ok((logits, cache))
+        })
+        .unwrap();
+
+        assert_eq!(observations.len(), 6, "B rows must callback at every step");
+        assert!(observations.iter().any(|(step, _, score, _, _)| *step == 0
+            && (*score - FIRERED_BEAM_INACTIVE_SCORE).abs() < f32::EPSILON));
+        assert!(
+            observations
+                .iter()
+                .any(|(step, previous, _, finished, cache)| {
+                    *step == 1 && *previous == 3 && *finished && cache == &vec![1.0]
+                })
+        );
+        assert!(
+            observations
+                .iter()
+                .any(|(step, _, _, _, cache)| { *step == 2 && cache == &vec![103.0] })
+        );
+        assert!(
+            observations
+                .iter()
+                .any(|(step, previous, _, finished, cache)| {
+                    *step == 2 && *previous == 0 && !*finished && cache == &vec![100.0]
+                })
+        );
+        assert_eq!(hypotheses.len(), 2, "global prune must retain fixed B rows");
+        assert!(
+            hypotheses
+                .iter()
+                .all(|hypothesis| hypothesis.token_ids.last().copied() != Some(3))
+        );
+        assert!(
+            hypotheses
+                .iter()
+                .any(|hypothesis| hypothesis.token_ids == vec![0, 0])
+        );
+        assert!(
+            hypotheses
+                .iter()
+                .any(|hypothesis| hypothesis.token_ids.is_empty())
+        );
+    }
+
+    #[test]
+    fn fixed_width_beam_rejects_bad_finished_callback_logits_and_propagates_errors() {
+        let invalid_finished =
+            run_fixed_width_beam(2, 2, 1, 3, 1, 1.0, 0.0, 1.0, 1, |beam, step| {
+                if beam.state.finished {
+                    return Ok((
+                        vec![0.0, 0.0, f32::NAN, 0.0],
+                        FireRedDecoderCacheState::new(1),
+                    ));
+                }
+                let logits = if step == 0 {
+                    vec![0.0, 0.0, 0.0, 4.0]
+                } else {
+                    vec![4.0, 0.0, 0.0, -4.0]
+                };
+                Ok((logits, FireRedDecoderCacheState::new(1)))
+            });
+        assert!(matches!(
+            invalid_finished,
+            Err(VokraError::InvalidArgument(message))
+                if message.contains("callback vocabulary or logits")
+        ));
+
+        let too_wide = run_fixed_width_beam(5, 1, 1, 3, 1, 1.0, 0.0, 1.0, 1, |_beam, _step| {
+            Ok((vec![0.0, 0.0, 0.0, 0.0], FireRedDecoderCacheState::new(1)))
+        });
+        assert!(matches!(
+            too_wide,
+            Err(VokraError::InvalidArgument(message))
+                if message.contains("callback vocabulary or logits")
+        ));
+
+        let mut calls = 0;
+        let propagated = run_fixed_width_beam(2, 2, 1, 3, 1, 1.0, 0.0, 1.0, 1, |beam, step| {
+            calls += 1;
+            if beam.state.finished {
+                return Err(VokraError::ModelLoad(
+                    "finished callback fixture failure".to_owned(),
+                ));
+            }
+            let logits = if step == 0 {
+                vec![0.0, 0.0, 0.0, 4.0]
+            } else {
+                vec![4.0, 0.0, 0.0, -4.0]
+            };
+            Ok((logits, FireRedDecoderCacheState::new(1)))
+        });
+        assert!(matches!(
+            propagated,
+            Err(VokraError::ModelLoad(message))
+                if message.contains("finished callback fixture failure")
+        ));
+        assert!(calls >= 3, "the finished row must reach the callback");
+    }
+
+    #[test]
+    fn decoder_pad_key_mask_does_not_zero_current_query() {
+        let compute = Compute::cpu();
+        let layer = FireRedDecoderLayer {
+            d_model: 2,
+            inner_dim: 4,
+            n_head: 1,
+            source_dim: 2,
+        };
+        let identity = [1.0, 0.0, 0.0, 1.0];
+        let zero = [0.0, 0.0];
+        let ones = [1.0, 1.0];
+        let expand = [0.2, 0.1, 0.3, -0.2, 0.4, 0.2, -0.1, 0.5];
+        let expand_b = [0.1, 0.0, -0.1, 0.2];
+        let project = [0.1, 0.2, -0.3, 0.4, 0.2, -0.1, 0.3, 0.1];
+        let self_attention = FireRedDecoderSelfAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &identity,
+            v_w_t: &identity,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        let cross_attention = FireRedDecoderCrossAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &identity,
+            v_w_t: &identity,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        let weights = FireRedDecoderLayerWeights {
+            self_norm_gamma: &ones,
+            self_norm_beta: &zero,
+            self_attention,
+            cross_norm_gamma: &ones,
+            cross_norm_beta: &zero,
+            cross_attention,
+            mlp_norm_gamma: &ones,
+            mlp_norm_beta: &zero,
+            mlp_expand_w_t: &expand,
+            mlp_expand_b: &expand_b,
+            mlp_project_w_t: &project,
+            mlp_project_b: &zero,
+        };
+        let first = layer
+            .forward_with_key_mask(
+                &compute,
+                &[1.0, 2.0],
+                1,
+                &[true],
+                &[0.5, -0.5],
+                1,
+                &[true],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[true, false],
+                &[false],
+                weights,
+            )
+            .unwrap();
+        let second = layer
+            .forward_with_key_mask(
+                &compute,
+                &[1.0, 2.0],
+                1,
+                &[true],
+                &[0.5, -0.5],
+                1,
+                &[true],
+                &[1.0, 1.0, -100.0, -100.0],
+                &[1.0, 1.0, -100.0, -100.0],
+                &[true, false],
+                &[false],
+                weights,
+            )
+            .unwrap();
+        assert_eq!(first.output, second.output);
+        assert!(first.output.iter().any(|value| *value != 0.0));
+        let zero_matrix = [0.0; 4];
+        let zero_inner = [0.0; 8];
+        let zero_inner_bias = [0.0; 4];
+        let residual_weights = FireRedDecoderLayerWeights {
+            self_norm_gamma: &ones,
+            self_norm_beta: &zero,
+            self_attention: FireRedDecoderSelfAttentionWeights {
+                q_w_t: &identity,
+                q_b: &zero,
+                k_w_t: &identity,
+                v_w_t: &identity,
+                v_b: &zero,
+                output_w_t: &zero_matrix,
+                output_b: &zero,
+            },
+            cross_norm_gamma: &ones,
+            cross_norm_beta: &zero,
+            cross_attention: FireRedDecoderCrossAttentionWeights {
+                q_w_t: &identity,
+                q_b: &zero,
+                k_w_t: &identity,
+                v_w_t: &identity,
+                v_b: &zero,
+                output_w_t: &zero_matrix,
+                output_b: &zero,
+            },
+            mlp_norm_gamma: &ones,
+            mlp_norm_beta: &zero,
+            mlp_expand_w_t: &zero_inner,
+            mlp_expand_b: &zero_inner_bias,
+            mlp_project_w_t: &zero_inner,
+            mlp_project_b: &zero,
+        };
+        let residual_only = layer
+            .forward_with_key_mask(
+                &compute,
+                &[1.0, 2.0],
+                1,
+                &[true],
+                &[0.5, -0.5],
+                1,
+                &[true],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[true, false],
+                &[false],
+                residual_weights,
+            )
+            .unwrap();
+        // With every attention/MLP output path zeroed, a false current key
+        // mask must not erase a valid query or its residual stream.
+        assert_eq!(residual_only.output, vec![1.0, 2.0]);
+        let public = layer
+            .forward(
+                &compute,
+                &[1.0, 2.0],
+                1,
+                &[true],
+                &[0.5, -0.5],
+                1,
+                &[true],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[true, false],
+                weights,
+            )
+            .unwrap();
+        let explicit_all_valid = layer
+            .forward_with_key_mask(
+                &compute,
+                &[1.0, 2.0],
+                1,
+                &[true],
+                &[0.5, -0.5],
+                1,
+                &[true],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[1.0, 1.0, 100.0, 100.0],
+                &[true, false],
+                &[true],
+                weights,
+            )
+            .unwrap();
+        assert_eq!(public, explicit_all_valid);
+        assert!(
+            layer
+                .forward_with_key_mask(
+                    &compute,
+                    &[1.0, 2.0],
+                    1,
+                    &[true],
+                    &[0.5, -0.5],
+                    1,
+                    &[true],
+                    &[1.0, 1.0, 100.0, 100.0],
+                    &[1.0, 1.0, 100.0, 100.0],
+                    &[true, false],
+                    &[true, false],
+                    weights,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            combined_cache_mask(&[true, false], &[false]).unwrap(),
+            vec![true, false, false]
+        );
     }
 
     #[test]

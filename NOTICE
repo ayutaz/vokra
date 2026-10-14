@@ -560,6 +560,28 @@ checkpoint is bundled in this source repository, and this source change does
 not upload or replace a model artifact.
 
 --------------------------------------------------------------------------
+17e. FireRedASR AED beam semantics — Apache-2.0 source reference
+--------------------------------------------------------------------------
+
+Vokra's first-party Rust FireRed AED implementation uses the published
+TransformerDecoder beam-search semantics from FireRedTeam/FireRedASR at
+source revision 834635e4cf277ed8ca92049fc375b17c3dc20748. The fixed source
+repository's LICENSE is Apache-2.0; its complete source tree has no NOTICE
+file. This attribution identifies the source of the algorithmic contract,
+not a bundled Python runtime or model checkpoint.
+
+  FireRedTeam/FireRedASR
+  Source: https://github.com/FireRedTeam/FireRedASR/tree/834635e4cf277ed8ca92049fc375b17c3dc20748
+  License: https://github.com/FireRedTeam/FireRedASR/blob/834635e4cf277ed8ca92049fc375b17c3dc20748/LICENSE
+
+Changes by Vokra: independent Rust storage, explicit error handling,
+Compute-dispatched operators, incremental projected-key/value caches and
+synthetic mechanism tests. Source inspection and this attribution do not
+approve dependency payloads, training provenance, checkpoint execution,
+redistribution or publication. Real-weight and Apple parity remain separate
+gates.
+
+--------------------------------------------------------------------------
 18. Maintaining this file
 --------------------------------------------------------------------------
 
