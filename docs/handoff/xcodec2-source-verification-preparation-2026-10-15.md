@@ -1,10 +1,23 @@
 # XCodec2 model-free verification preparation — 2026-10-15 JST
 
+> **Latest-main integration supersession:** PR #248 is accepted after all
+> 70 checks completed (69 successful, one intentional skip), all 16 required
+> context/application pairs passed and all nine workflows reached terminal
+> success. Accepted main is `8bd30d9a`. The private candidate normally merged
+> it at `cffb941d`, with parents `e5451645` and `8bd30d9a`; the two documentation
+> conflicts were resolved without discarding either dated history. All five
+> ordinary pre-commit checks passed and that integration worktree was clean.
+> The Rust test blob remains `4f1e35e395d9acf93ac21b18f6d41437fef0432e`.
+> No compilation, real-weight execution, paid activation or push follows.
+> Regenerate the source-only bundle against both accepted prerequisites and
+> independently inspect its actual pack before transfer. The preparation
+> head/bundle below is retained as historical evidence, not the current packet.
+
 This is preparation for verifying the private [historical packet-binding
 correction](xcodec2-historical-packet-binding-2026-10-15.md), not an actual
 VAST run, real-weight parity result or final Apple packet. Rust source
 commit `a0a9ec30` and preparation head `4ecc34c1` remain unpushed and
-uncompiled. Latest accepted main is `6f135822`; integrate the subsequent
+uncompiled. At that preparation snapshot, accepted main was `6f135822`; integrate the subsequent
 accepted dependency head before freezing the actual verification candidate.
 
 ## Independently verified local scope
