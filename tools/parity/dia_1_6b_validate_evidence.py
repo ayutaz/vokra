@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
+
+REFERENCE_PROJECT_DIR = (Path(__file__).parent / "dia_1_6b_reference").resolve()
+if str(REFERENCE_PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(REFERENCE_PROJECT_DIR))
+from lock_contract import LockContractError, validate_lock_audit_packet
 
 
 REQUIRED = {
@@ -35,30 +40,12 @@ SOURCE_ROLE_BLOBS = {
     "dia/state.py": "172ec52c7c344781aad0552a6cddd6e5f1933894",
     "pyproject.toml": "dd844dd2fb0ab0c016520c4b070beaa7c159e3e1",
 }
-REFERENCE_PROJECT_LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-REFERENCE_PROJECT_PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+REFERENCE_PROJECT_LOCK_SHA256 = "06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+REFERENCE_PROJECT_PYPROJECT_SHA256 = "4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 DIRECT_DEPENDENCY_VERSIONS = {
     "einops": "0.8.2", "gguf": "0.19.0", "huggingface-hub": "0.30.2",
     "numpy": "2.2.5", "pydantic": "2.11.3",
-    "torch": "2.6.0+cpu",
-}
-DEPENDENCY_LICENSE_CONCLUSIONS = {
-    "annotated-types": "MIT_REVIEWED", "certifi": "MPL-2.0_BLOCKED_BY_POLICY",
-    "charset-normalizer": "MIT_REVIEWED",
-    "colorama": "BSD-3-Clause_REVIEWED", "einops": "MIT_REVIEWED",
-    "filelock": "UNLICENSE_POLICY_REVIEW_REQUIRED", "fsspec": "BSD-3-Clause_REVIEWED",
-    "gguf": "MIT_REVIEWED", "huggingface-hub": "Apache-2.0_REVIEWED",
-    "idna": "BSD-3-Clause_REVIEWED", "jinja2": "BSD-3-Clause_REVIEWED",
-    "markupsafe": "BSD-3-Clause_REVIEWED", "mpmath": "BSD_STYLE_PRIMARY_REVIEW_REQUIRED",
-    "networkx": "BSD-3-Clause_REVIEWED", "numpy": "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED",
-    "packaging": "Apache-2.0_REVIEWED",
-    "pydantic": "MIT_REVIEWED", "pydantic-core": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED",
-    "pyyaml": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", "requests": "Apache-2.0_REVIEWED",
-    "setuptools": "MIT_REVIEWED",
-    "sympy": "BSD-3-Clause_REVIEWED", "torch": "BSD-3-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
-    "tqdm": "MPL-2.0_OR_MIT_POLICY_REVIEW_REQUIRED", "typing-extensions": "PSF-2.0_BLOCKED_BY_POLICY",
-    "typing-inspection": "MIT_REVIEWED", "urllib3": "MIT_REVIEWED",
-    "vokra-dia-1-6b-reference": "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE",
+    "torch": "2.13.0+cpu", "torchaudio": "2.11.0+cpu",
 }
 SOURCE_CONTRACT_FORMAT = "vokra-dia-1-6b-source-contract-v1"
 SOURCE_CONTRACT_RUST_FILES = {
@@ -69,7 +56,9 @@ SOURCE_CONTRACT_RUST_FILES = {
 TORCHAUDIO_SEAM = {
     "module": "torchaudio",
     "marker": "dia-reference-torchaudio-audio-prompt-none-stub-v1",
-    "installed_distribution": False,
+    "locked_distribution": "torchaudio==2.11.0+cpu",
+    "installed_distribution_status": "UNKNOWN_NOT_CHECKED",
+    "compatibility_evidence": "LEGACY_UNVALIDATED_NO_COMPATIBILITY_EVIDENCE",
     "audio_prompt": None,
     "policy": "every audio load/use aborts loudly",
 }
@@ -168,38 +157,10 @@ def require_reference_project(identity: dict) -> None:
     if identity.get("use_torch_compile") is not False:
         raise ValueError("torch.compile must remain disabled in the adapted reference closure")
     audit = identity.get("dependency_audit")
-    if not isinstance(audit, dict) or audit.get("schema") != "vokra-dia-uv-lock-license-audit-v1" or audit.get("status") != "BLOCKED_UNREVIEWED_TRANSITIVE" or audit.get("package_count") != 29 or not isinstance(audit.get("rows"), list) or len(audit["rows"]) != 29 or len(audit.get("rows_sha256", "")) != 64:
-        raise ValueError("complete CPU lock license-audit rows are missing")
-    canonical_rows = []
-    for row in audit["rows"]:
-        if not isinstance(row, dict) or set(row) != {"name", "version", "source", "markers", "row_sha256", "license_conclusion"} or row["name"] not in DEPENDENCY_LICENSE_CONCLUSIONS or not isinstance(row["source"], dict) or not isinstance(row["markers"], list) or row["license_conclusion"] != DEPENDENCY_LICENSE_CONCLUSIONS[row["name"]]:
-            raise ValueError("lock license-audit row is incomplete or has no primary conclusion")
-        identity_row = {"name": row["name"], "version": row["version"], "source": row["source"], "markers": row["markers"]}
-        if row["row_sha256"] != hashlib.sha256(json.dumps(identity_row, sort_keys=True, separators=(",", ":")).encode()).hexdigest():
-            raise ValueError("lock license-audit row digest mismatch")
-        canonical_rows.append(row)
-    canonical_rows.sort(key=lambda row: (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), row["markers"]))
-    if hashlib.sha256(json.dumps(canonical_rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != audit["rows_sha256"]:
-        raise ValueError("lock license-audit aggregate digest mismatch")
-    lock_path = Path(__file__).parent / "dia_1_6b_reference" / "uv.lock"
-    if not lock_path.is_file():
-        raise ValueError("dedicated lock is missing for independent license-audit validation")
-    lock_document = tomllib.loads(lock_path.read_text(encoding="utf-8"))
-    expected_rows = []
-    for package in lock_document.get("package", []):
-        if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str):
-            raise ValueError("uv.lock package row is malformed")
-        name = package["name"]
-        if name not in DEPENDENCY_LICENSE_CONCLUSIONS:
-            raise ValueError(f"uv.lock package has no reviewed license conclusion: {name}")
-        source = package.get("source", {})
-        markers = sorted({dependency.get("marker") for dependency in package.get("dependencies", []) if isinstance(dependency, dict) and isinstance(dependency.get("marker"), str)})
-        identity_row = {"name": name, "version": package["version"], "source": source, "markers": markers}
-        expected_rows.append({**identity_row, "row_sha256": hashlib.sha256(json.dumps(identity_row, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "license_conclusion": DEPENDENCY_LICENSE_CONCLUSIONS[name]})
-    expected_rows.sort(key=lambda row: (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), row["markers"]))
-    expected_digest = hashlib.sha256(json.dumps(expected_rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    if audit["rows"] != expected_rows or audit["rows_sha256"] != expected_digest:
-        raise ValueError("manifest lock license-audit rows do not match the dedicated lock")
+    try:
+        validate_lock_audit_packet(audit, REFERENCE_PROJECT_DIR)
+    except LockContractError as error:
+        raise ValueError(f"current CPU lock license-audit contract is invalid: {error}") from error
     if identity.get("dependency_license_audit") != "BLOCKED_UNREVIEWED_TRANSITIVE":
         raise ValueError("Dia dependency license/provenance audit status drifted")
     if identity.get("expected_versions") != DIRECT_DEPENDENCY_VERSIONS or identity.get("actual_versions") != DIRECT_DEPENDENCY_VERSIONS:
@@ -430,15 +391,31 @@ def main() -> int:
             pass
         assert set(DIRECT_DEPENDENCY_VERSIONS) == {
             "einops", "gguf", "huggingface-hub", "numpy", "pydantic",
-            "torch",
+            "torch", "torchaudio",
         }
+        assert DIRECT_DEPENDENCY_VERSIONS["torch"] == "2.13.0+cpu"
+        assert DIRECT_DEPENDENCY_VERSIONS["torchaudio"] == "2.11.0+cpu"
         assert "soundfile" not in DIRECT_DEPENDENCY_VERSIONS
-        assert "torchaudio" not in DIRECT_DEPENDENCY_VERSIONS
-        assert "cffi" not in DEPENDENCY_LICENSE_CONCLUSIONS
-        assert "pycparser" not in DEPENDENCY_LICENSE_CONCLUSIONS
-        assert DEPENDENCY_LICENSE_CONCLUSIONS["numpy"] == "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED"
+        from lock_contract import build_lock_audit
+        lock_audit = build_lock_audit(REFERENCE_PROJECT_DIR)
+        validate_lock_audit_packet(lock_audit, REFERENCE_PROJECT_DIR)
+        assert lock_audit["all_lock_rows"]["package_count"] == 31
+        assert lock_audit["active_linux_x86_64_rows"]["package_count"] == 27
+        assert "_REVIEWED" not in json.dumps(lock_audit, sort_keys=True)
+        for mutation in (
+            lambda value: value.update(schema="vokra-dia-uv-lock-license-audit-v1"),
+            lambda value: value["all_lock_rows"].update(package_count=29),
+            lambda value: value["active_linux_x86_64_rows"].update(rows_sha256="0" * 64),
+        ):
+            tampered_audit = copy.deepcopy(lock_audit)
+            mutation(tampered_audit)
+            try:
+                validate_lock_audit_packet(tampered_audit, REFERENCE_PROJECT_DIR)
+                raise AssertionError("stale or tampered lock audit accepted")
+            except LockContractError:
+                pass
         assert require_audio_dependency_seam(dict(TORCHAUDIO_SEAM)) is None
-        for field, value in (("marker", "tampered"), ("installed_distribution", True), ("audio_prompt", "audio.wav"), ("policy", "allow")):
+        for field, value in (("marker", "tampered"), ("locked_distribution", "torchaudio==2.6.0+cpu"), ("installed_distribution_status", "INSTALLED"), ("compatibility_evidence", "VALIDATED"), ("audio_prompt", "audio.wav"), ("policy", "allow")):
             tampered = dict(TORCHAUDIO_SEAM)
             tampered[field] = value
             try:
