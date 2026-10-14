@@ -13,6 +13,11 @@
 # The `-diff` / `-merge` pins are additional guards: they prevent gitattributes
 # filters (e.g. binary-diff drivers) from mangling the raw byte payloads.
 
+# Authenticated upstream Moshi source and Apache-2.0 license fixtures; preserve
+# their exact bytes for Git-blob verification.
+tools/parity/kyutai_candle_reference/pinned-asr.rs -filter -diff -merge -text
+tools/parity/kyutai_candle_reference/pinned-LICENSE -filter -diff -merge -text
+
 # Whisper (and future model) parity f32 fixtures — see tests/parity/whisper_*/
 tests/parity/whisper_*/*.f32 -filter -diff -merge
 tests/parity/whisper_*/*.bin -filter -diff -merge
