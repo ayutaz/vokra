@@ -1,0 +1,114 @@
+{
+  "schema": "vokra-kyutai-stt-streaming-source-contract-v1",
+  "status": "AUTHENTICATED_SOURCE_CONTRACT",
+  "runtime_status": "BLOCKED_NOT_EXECUTED",
+  "source_identity": {
+    "dsm": {
+      "repository": "https://github.com/kyutai-labs/delayed-streams-modeling.git",
+      "revision": "4c4f65e147df056adf3346290d64c7b9649b18c9",
+      "roles": [
+        {
+          "path": "configs/config-stt-en-hf.toml",
+          "bytes": 1016,
+          "git_blob_sha1": "75382f8dabeb31832f28c8754afaaf63aaa7b158",
+          "sha256": "81f77d642689e1acb276089f62064dab2e71a5532fcac2d3c12563cf4946552c"
+        },
+        {
+          "path": "scripts/stt_from_file_pytorch.py",
+          "bytes": 8452,
+          "git_blob_sha1": "cf3fb05b0e0c1f265a667276d2886ce2664d79ff",
+          "sha256": "2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955"
+        }
+      ]
+    },
+    "moshi": {
+      "repository": "https://github.com/kyutai-labs/moshi.git",
+      "revision": "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362",
+      "roles": [
+        {
+          "path": "moshi/moshi/models/lm.py",
+          "bytes": 37312,
+          "git_blob_sha1": "209b7a59c9c086810a81a7d8b99c5233a0ad87ff",
+          "sha256": "38991e83d7e3aa0ff1483b27a0b59e1ff43642ad6a32dc8dc4272ad2b6c0dc5f"
+        },
+        {
+          "path": "moshi/moshi/models/lm_utils.py",
+          "bytes": 5089,
+          "git_blob_sha1": "7397067c4d5eb6cb6eb06bdf0f94bdf5a6985444",
+          "sha256": "a7d5f1347769d0ffaf2964c97fe25310e35bedb93bd087905c4c1934a3a30dab"
+        },
+        {
+          "path": "moshi/moshi/models/loaders.py",
+          "bytes": 18571,
+          "git_blob_sha1": "fd0e56a571e1a7f0de9d53827503a0669c1787f2",
+          "sha256": "3043f3be59112d2cb897a9261c2abf4628e802adea98c9d3ad16a3e899732e81"
+        },
+        {
+          "path": "moshi/moshi/utils/sampling.py",
+          "bytes": 4699,
+          "git_blob_sha1": "2a35f6cdff1981bb6914b27410c6b152be2a77b1",
+          "sha256": "113da9542ecdcc521945a337a63bec28abba7fd61c2eacaec5855fc7d7562126"
+        },
+        {
+          "path": "moshi/moshi/modules/transformer.py",
+          "bytes": 38159,
+          "git_blob_sha1": "244e73a3bc012256325e5b759cd13588a96d2673",
+          "sha256": "f5a73d752a5bde1eda2b0b14bebd13fd81db81017d361782a07164580a687622"
+        }
+      ]
+    }
+  },
+  "source_roles": {
+    "dsm": ["configs/config-stt-en-hf.toml", "scripts/stt_from_file_pytorch.py"],
+    "moshi": [
+      "moshi/moshi/models/lm.py",
+      "moshi/moshi/models/lm_utils.py",
+      "moshi/moshi/models/loaders.py",
+      "moshi/moshi/utils/sampling.py",
+      "moshi/moshi/modules/transformer.py"
+    ]
+  },
+  "contracts": [
+    {
+      "name": "per_step_feedback_and_state_transition",
+      "status": "SOURCE_EXPRESSION_AUTHENTICATED",
+      "roles": ["scripts/stt_from_file_pytorch.py", "moshi/moshi/models/lm.py"],
+      "expressions": [
+        "mimi.streaming(1) -> lm_gen.streaming(1)",
+        "mimi.encode(audio_chunk) -> lm_gen.step(audio_tokens)",
+        "state.cache.gather(...) -> state.graphed_main(...) -> generated text token -> state.cache scatter"
+      ]
+    },
+    {
+      "name": "temperature_zero_selection",
+      "status": "SOURCE_EXPRESSION_AUTHENTICATED",
+      "roles": ["moshi/moshi/utils/sampling.py", "moshi/moshi/models/lm.py"],
+      "expressions": [
+        "if use_sampling and temp > 0.0",
+        "torch.argmax(logits, dim=-1, keepdim=True)"
+      ],
+      "tie_resolution": "BLOCKED_EXTERNAL_TORCH_SEMANTICS"
+    },
+    {
+      "name": "context_window_and_output_order",
+      "status": "SOURCE_EXPRESSION_AUTHENTICATED",
+      "roles": [
+        "moshi/moshi/modules/transformer.py",
+        "moshi/moshi/models/lm.py",
+        "scripts/stt_from_file_pytorch.py"
+      ],
+      "expressions": [
+        "RingKVCache indexes modulo self.capacity",
+        "causal attention delta < self.context",
+        "LMGen output gathered from state.cache using generated delays",
+        "DSM appends one text_tokens result per input chunk in loop order"
+      ]
+    }
+  ],
+  "blockers": [
+    "per-step feedback/state transition is not independently observed",
+    "temperature-zero tie behavior is not independently observed",
+    "context/window truncation and output ordering are not independently observed"
+  ],
+  "claim_boundary": "source expressions only; no model execution, numerical parity, PCM transcription, or framework tie-rule claim"
+}

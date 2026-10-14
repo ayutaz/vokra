@@ -42,12 +42,14 @@
 //! - **Weight license**: **CC-BY 4.0** (`AttributionRequired`) in the
 //!   upstream card. Publication and runtime binding remain blocked pending
 //!   authenticated composite evidence and owner review.
-//! - **Streaming input contract**: the pinned Kyutai MLX example
-//!   `kyutai-labs/moshi/moshi_mlx/moshi_mlx/run_inference.py` at commit
-//!   `e6a55d2722a65870ef52a6c9f6ecfc0e90f38362` reads 24 kHz PCM, pads
-//!   `audio_silence_prefix_seconds` on the left and
-//!   `audio_delay_seconds + 1.0` on the right, then consumes 1,920-sample
-//!   chunks. It suppresses text ids `0` and `3` before SentencePiece.
+//! - **Streaming input contract**: the pinned DSM evaluator
+//!   `scripts/stt_evaluate_on_dataset.py` at commit
+//!   `4c4f65e147df056adf3346290d64c7b9649b18c9` reads 24 kHz PCM, pads
+//!   `audio_silence_prefix_seconds` on the left and the evaluator's
+//!   `audio_delay_seconds + 0.5` on the right, ceils the complete padded PCM
+//!   to 1,920-sample chunks, and suppresses text ids `0..=3` before
+//!   SentencePiece. The pinned from-file caller is a distinct chunked
+//!   boundary and is not silently treated as this evaluator contract.
 //!
 //! # Boundary — Mimi consumed, never re-implemented
 //!
@@ -666,14 +668,16 @@ impl KyutaiSttConfig {
 ///
 /// - PCM is 24 kHz mono at the Mimi boundary;
 /// - Mimi emits one `[n_q]` code row per 1,920 PCM samples (12.5 Hz);
-/// - `audio_silence_prefix_seconds` is prepended on the left;
-/// - the right side receives `audio_delay_seconds + 1.0` seconds of padding;
-/// - text ids `0` and `existing_text_padding_id` are not emitted as pieces.
+/// - the evaluator prepends one second of silence on the left;
+/// - the evaluator adds `audio_delay_seconds + 0.5` seconds of right padding;
+/// - the complete padded PCM is ceiled to a whole 1,920-sample Mimi frame;
+/// - the evaluator PCM emission view forwards only text ids greater than 3;
+///   the broader code-boundary emission API remains separate.
 ///
-/// The right-side extra second is an upstream input-preparation rule, not a
-/// claim that the decoder's learned delay is one whole-second longer.  The
-/// contract therefore keeps the values in samples and never rounds a
-/// fractional number of model frames.
+/// This is the sample-level boundary used by the authenticated independent
+/// evaluator.  The pinned `stt_from_file_pytorch.py` caller is a distinct
+/// frame-chunk boundary (input ceil, 13 prefix chunks, 32 suffix chunks) and
+/// must not be silently substituted for this contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KyutaiSttStreamingContract {
     sample_rate: u32,
@@ -700,10 +704,10 @@ impl KyutaiSttStreamingContract {
             ));
         }
         let sample_rate = KYUTAI_STT_SAMPLE_RATE as usize;
-        // The upstream values are 1.0 s silence prefix and 2.5 s model
-        // delay plus 1.0 s trailing margin.  Keep the half-second as exact
-        // integer arithmetic instead of rounding a float-derived frame.
-        let right_padding_seconds_half = 7usize;
+        // The evaluator uses 1.0 s left silence and the 2.5 s delay plus a
+        // 0.5 s trailing margin. Keep this in integer samples rather than
+        // rounding a fractional model frame.
+        let right_padding_seconds = 3usize;
         Ok(Self {
             sample_rate: KYUTAI_STT_SAMPLE_RATE,
             frame_hop_samples: KYUTAI_STT_MIMI_FRAME_HOP_SAMPLES,
@@ -712,14 +716,13 @@ impl KyutaiSttStreamingContract {
             text_card: config.text_card,
             text_pad_id: config.text_pad_id,
             silence_prefix_samples: sample_rate,
-            right_padding_samples: sample_rate
-                .checked_mul(right_padding_seconds_half)
-                .and_then(|value| value.checked_div(2))
-                .ok_or_else(|| {
+            right_padding_samples: sample_rate.checked_mul(right_padding_seconds).ok_or_else(
+                || {
                     VokraError::InvalidArgument(
                         "kyutai-stt streaming contract: right padding samples overflow".to_owned(),
                     )
-                })?,
+                },
+            )?,
         })
     }
 
@@ -772,9 +775,8 @@ impl KyutaiSttStreamingContract {
         (self.silence_prefix_samples, self.right_padding_samples)
     }
 
-    /// Computes the number of full Mimi frames after applying the upstream
-    /// left/right padding.  This mirrors `steps = padded_samples // 1920` in
-    /// the pinned streaming example; a partial trailing frame is not invented.
+    /// Computes the number of Mimi frames after applying the evaluator's
+    /// left/right padding and ceiling the complete PCM to a frame boundary.
     pub fn padded_frame_count(self, input_samples: usize) -> Result<usize> {
         let padded = input_samples
             .checked_add(self.silence_prefix_samples)
@@ -785,7 +787,22 @@ impl KyutaiSttStreamingContract {
                         .to_owned(),
                 )
             })?;
-        Ok(padded / self.frame_hop_samples)
+        let rounded = padded
+            .checked_add(self.frame_hop_samples - 1)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "kyutai-stt streaming contract: padded frame count overflows usize".to_owned(),
+                )
+            })?;
+        Ok(rounded / self.frame_hop_samples)
+    }
+
+    /// Evaluator-only text boundary: ids 0 through 3 are padding/control
+    /// rows, while ids above 3 are forwarded to the text decoder.  The
+    /// broader `emits_text_token` API remains unchanged for other routes.
+    #[must_use]
+    pub(crate) const fn emits_evaluator_text_token(self, token: u32) -> bool {
+        token > self.text_pad_id
     }
 
     /// Checks a row-major `[frames, n_q]` Mimi code packet without executing
@@ -3970,12 +3987,16 @@ mod tests {
         assert_eq!(contract.frame_hop_samples(), 1_920);
         assert_eq!(contract.n_q(), 32);
         assert_eq!(contract.audio_card(), 2_048);
-        assert_eq!(contract.pcm_padding_samples(), (24_000, 84_000));
-        assert_eq!(contract.padded_frame_count(0).unwrap(), 56);
-        assert_eq!(contract.padded_frame_count(24_000).unwrap(), 68);
+        assert_eq!(contract.pcm_padding_samples(), (24_000, 72_000));
+        assert_eq!(contract.padded_frame_count(0).unwrap(), 50);
+        assert_eq!(contract.padded_frame_count(24_000).unwrap(), 63);
         assert!(!contract.emits_text_token(0));
         assert!(!contract.emits_text_token(3));
         assert!(contract.emits_text_token(1));
+        assert!(!contract.emits_evaluator_text_token(0));
+        assert!(!contract.emits_evaluator_text_token(3));
+        assert!(!contract.emits_evaluator_text_token(1));
+        assert!(contract.emits_evaluator_text_token(4));
     }
 
     #[test]

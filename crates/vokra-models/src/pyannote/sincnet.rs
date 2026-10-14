@@ -755,27 +755,14 @@ mod tests {
     use crate::pyannote::{DEFAULT_SINCNET_STRIDE, PyanNetConfig, PyanNetWeights};
     use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
 
-    fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-pyannote-sincnet-{}-{}-{}.gguf",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default(),
-        ));
-        p
-    }
-
     /// Builds a minimal synthetic PyanNet GGUF whose tensor set covers
     /// every SincNet-required shape. Weights are deterministic
     /// f32-per-element so tests can reason about the forward output
     /// without importing a Python numeric fixture.
     ///
-    /// Returns the GGUF path — caller cleans up.
-    fn synthetic_sincnet_gguf() -> std::path::PathBuf {
+    /// Returns owned GGUF bytes so concurrent tests never share a filesystem
+    /// path or observe a partially-written fixture.
+    fn synthetic_sincnet_gguf() -> Vec<u8> {
         use crate::pyannote::{
             DEFAULT_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_NUM_LAYERS, DEFAULT_LSTM_BIDIRECTIONAL,
             DEFAULT_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_MONOLITHIC, DEFAULT_LSTM_NUM_LAYERS,
@@ -939,10 +926,20 @@ mod tests {
         )
         .unwrap();
 
-        let bytes = b.to_bytes().unwrap();
-        let path = scratch_path("sincnet-forward");
-        std::fs::write(&path, &bytes).unwrap();
-        path
+        b.to_bytes().unwrap()
+    }
+
+    #[test]
+    fn synthetic_sincnet_fixtures_parse_and_bind_independently_in_parallel() {
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let gguf = GgufFile::parse(synthetic_sincnet_gguf()).unwrap();
+                    let weights = PyanNetWeights::from_gguf(&gguf).expect("bind");
+                    assert!(weights.tensor_count() > 0);
+                });
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -1071,14 +1068,12 @@ mod tests {
 
     #[test]
     fn sincnet_from_weights_binds_all_required_tensors() {
-        let path = synthetic_sincnet_gguf();
-        let g = GgufFile::open(&path).unwrap();
+        let g = GgufFile::parse(synthetic_sincnet_gguf()).unwrap();
         let w = PyanNetWeights::from_gguf(&g).expect("bind");
         let cfg = PyanNetConfig::from_gguf(&g);
         let sn = SincNet::from_weights(&w, cfg.sincnet_stride as usize).expect("build sincnet");
         assert_eq!(sn.n_learnable_filters(), N_FILTERS_SINC / 2);
         assert_eq!(sn.stride(), cfg.sincnet_stride as usize);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1122,10 +1117,7 @@ mod tests {
             vec![0u8; 16],
         )
         .unwrap();
-        let bytes = b.to_bytes().unwrap();
-        let path = scratch_path("sincnet-shape-mismatch");
-        std::fs::write(&path, &bytes).unwrap();
-        let g = GgufFile::open(&path).unwrap();
+        let g = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
         let w = PyanNetWeights::from_gguf(&g).expect("bind");
         let err = SincNet::from_weights(&w, DEFAULT_SINCNET_STRIDE as usize).unwrap_err();
         match err {
@@ -1137,13 +1129,11 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn sincnet_forward_produces_expected_output_shape() {
-        let path = synthetic_sincnet_gguf();
-        let g = GgufFile::open(&path).unwrap();
+        let g = GgufFile::parse(synthetic_sincnet_gguf()).unwrap();
         let w = PyanNetWeights::from_gguf(&g).unwrap();
         let cfg = PyanNetConfig::from_gguf(&g);
         let sn = SincNet::from_weights(&w, cfg.sincnet_stride as usize).unwrap();
@@ -1177,13 +1167,11 @@ mod tests {
         for &v in &out.features {
             assert!(v.is_finite(), "SincNet output contains non-finite: {v}");
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn sincnet_forward_rejects_non_16khz_input_loudly() {
-        let path = synthetic_sincnet_gguf();
-        let g = GgufFile::open(&path).unwrap();
+        let g = GgufFile::parse(synthetic_sincnet_gguf()).unwrap();
         let w = PyanNetWeights::from_gguf(&g).unwrap();
         let cfg = PyanNetConfig::from_gguf(&g);
         let sn = SincNet::from_weights(&w, cfg.sincnet_stride as usize).unwrap();
@@ -1198,13 +1186,11 @@ mod tests {
             }
             other => panic!("expected UnsupportedOp, got {other:?}"),
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn sincnet_forward_rejects_short_input_loudly() {
-        let path = synthetic_sincnet_gguf();
-        let g = GgufFile::open(&path).unwrap();
+        let g = GgufFile::parse(synthetic_sincnet_gguf()).unwrap();
         let w = PyanNetWeights::from_gguf(&g).unwrap();
         let cfg = PyanNetConfig::from_gguf(&g);
         let sn = SincNet::from_weights(&w, cfg.sincnet_stride as usize).unwrap();
@@ -1219,13 +1205,11 @@ mod tests {
             }
             other => panic!("expected UnsupportedOp, got {other:?}"),
         }
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn synthesise_sinc_filters_returns_expected_kernel_layout() {
-        let path = synthetic_sincnet_gguf();
-        let g = GgufFile::open(&path).unwrap();
+        let g = GgufFile::parse(synthetic_sincnet_gguf()).unwrap();
         let w = PyanNetWeights::from_gguf(&g).unwrap();
         let cfg = PyanNetConfig::from_gguf(&g);
         let sn = SincNet::from_weights(&w, cfg.sincnet_stride as usize).unwrap();
