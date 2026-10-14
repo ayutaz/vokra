@@ -58,3 +58,25 @@ Existing primary citation locations are retained in their original documents.
 Fresh exact-head CI must validate the corrected documents before normal merge.
 PR #232's separately corrected dependency gate also awaits fresh CI and the
 accepted documentation baseline. No cloud lease or model row is promoted.
+
+## Subsequent exact-head failure and readback
+
+At `53a9e68efb3c06ca12926f05e76918b02171e4c3`, job `115738841213`
+(run `38529849478`) reports four entries: the HF organization page twice with
+HTTP 500, and two other existing GitHub file citations with HTTP 503. The
+advisory coverage job `115738981688` separately fails on HTTP 500. These
+remain failed results, not green checks or a completed live inventory.
+
+The two additional citations now use the same official raw source/ref/path.
+Credential-free readback authenticated both against official Contents API
+size and Git blob identity, without storing source bodies or acquiring models:
+
+| Same source path/ref | Bytes | Git blob SHA-1 |
+|---|---:|---|
+| Candle `cd96fa80/LICENSE-APACHE` | 11,357 | `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64` |
+| Moshi `e6a55d27/moshi/moshi/models/lm.py` | 37,312 | `209b7a59c9c086810a81a7d8b99c5233a0ad87ff` |
+
+Both raw requests returned 200. The unchanged HF organization page and the
+bounded model-list API subsequently returned 200 as well; this verifies
+service recovery only, not all catalog rows. No HF URL is excluded and no
+HTTP error is accepted. Fresh CI still controls ordinary acceptance.

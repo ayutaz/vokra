@@ -1774,7 +1774,7 @@ All three archive VCS records identify Candle commit
 `cd96fa80da255e34f7b16b4ff98b6a31d557201b`, with their respective package
 paths. The core archive bundles an Apache-2.0 `LICENSE`; the other two do not
 bundle a `LICENSE`/`COPYING`/`NOTICE` under those exact names. Root also read
-the [primary Apache license](https://github.com/huggingface/candle/blob/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-APACHE)
+the [primary Apache license](https://raw.githubusercontent.com/huggingface/candle/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-APACHE)
 and [primary MIT license](https://raw.githubusercontent.com/huggingface/candle/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-MIT)
 at that immutable commit. Their hashes are respectively
 `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`
