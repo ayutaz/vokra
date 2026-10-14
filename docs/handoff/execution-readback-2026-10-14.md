@@ -155,6 +155,41 @@ explicit `instances: null`. Recovered log SHA-256 is
 Other pre-existing account instances were outside this run's ownership and
 were not changed. No HF token or external model weight was transferred.
 
+### Corrected source: transport-only stopped attempt
+
+The portable-directory fix and preceding receipt are committed at
+`9e528d27bc1ca917a42c418be9396329b027ee7d`. Manager independently passed the
+full offline hook contract and focused regression with `TMPDIR` unset;
+the implementer also passed an explicit existing temporary-directory case.
+The original local-model guard retains SHA-256
+`0b8f3b1a343e1a8fd10e47f47d09dc65cbf9dc43aabb53bbeb3b68c9611edc62`.
+
+A new bounded admission at 02:58:43 UTC selected offer `54502206` at
+USD 0.1833333333/hour including 150 GiB storage, bandwidth separate.
+Owned instance `55853246` reached provider `running`, but the readback's
+explicit `22/tcp` host port refused all five SSH attempts. No source transfer,
+bootstrap or Cargo started. The short five-attempt service-readiness window
+is under review; provider `running` is not SSH readiness. No remote verdict
+is inferred from local tests or the preceding HEAD's successful Rust stages.
+Recovery could not connect; cleanup finished at 02:59:37 UTC with successful
+destroy and explicit individual `instances: null`. No owned paid worker
+from these two attempts remains at that readback.
+
+### Fresh existing-PR readback
+
+Current exact-head checks retain Draft #152 at 69 success / one skipped and
+Draft #182 at 105 success / 13 skipped, both zero pending/failures. These
+source-CI results do not close their model/dependency/native/owner gates or
+approve a Draft merge. #169 is 68 success / one skipped / one failure;
+#191 is 76 success / five skipped / one failure; #198 is 55 success /
+one skipped / one failure. Each failure is `documentation-links`.
+The #169/#191 job logs identify the official SB942 versions-comparison URL's
+HTTP 403, separate from their implementation. A single unauthenticated,
+20-second-bounded HEAD request at 03:02 UTC still returns HTTP 403 with
+`cf-mitigated: challenge`. No unchanged CI retry, challenge bypass, citation
+removal or protection waiver is made. Required-status-protection access via
+the current GitHub integration returns 403; its settings are not inferred.
+
 ## Remaining gates
 
 The WeSpeaker static collector is a temporary candidate, not acquired-wheel
