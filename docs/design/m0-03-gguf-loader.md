@@ -17,7 +17,7 @@
 
 ## 1. GGUF 対応範囲（出典付き）
 
-出典: [ggml-org/ggml `docs/gguf.md`](https://github.com/ggml-org/ggml/blob/eced84c86f8b/docs/gguf.md) @ `eced84c86f8b`（2026-06-26 取得。以下「仕様書」）。
+出典: [ggml-org/ggml `docs/gguf.md`](https://raw.githubusercontent.com/ggml-org/ggml/eced84c86f8b012c752c016f7fe789adea168e1e/docs/gguf.md) @ `eced84c86f8b`（2026-06-26 取得。以下「仕様書」）。
 
 | 項目 | 対応 | 仕様書の根拠 |
 |------|------|-------------|

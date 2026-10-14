@@ -1775,7 +1775,7 @@ All three archive VCS records identify Candle commit
 paths. The core archive bundles an Apache-2.0 `LICENSE`; the other two do not
 bundle a `LICENSE`/`COPYING`/`NOTICE` under those exact names. Root also read
 the [primary Apache license](https://github.com/huggingface/candle/blob/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-APACHE)
-and [primary MIT license](https://github.com/huggingface/candle/blob/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-MIT)
+and [primary MIT license](https://raw.githubusercontent.com/huggingface/candle/cd96fa80da255e34f7b16b4ff98b6a31d557201b/LICENSE-MIT)
 at that immutable commit. Their hashes are respectively
 `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`
 and `23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3`;
@@ -2220,7 +2220,7 @@ Root read the official FireRed source tree at revision
 `b41e68e6eb2bed90611e65c6bc5e2025dc6753df` by recomputing its Git-blob SHA-1.
 Its SHA-256 is
 `ea6412fdffc33b558a610d67143fd3211b76fc5a7a9ccac88ae2110f1fd3d320`.
-The [fixed official implementation](https://github.com/FireRedTeam/FireRedASR/blob/834635e4cf277ed8ca92049fc375b17c3dc20748/fireredasr/models/module/conformer_encoder.py)
+The [fixed official implementation](https://raw.githubusercontent.com/FireRedTeam/FireRedASR/834635e4cf277ed8ca92049fc375b17c3dc20748/fireredasr/models/module/conformer_encoder.py)
 returns the centered relative-position tensor from `RelPositionalEncoding`;
 it does not return a tuple containing the hidden stream. Consequently the
 uncommitted trace draft's hidden-stream positional tap is incorrect and is
@@ -6917,7 +6917,7 @@ bytes, SHA-256
 Path-dependent receipt bytes need not equal another run's output.
 
 The supplemental primary evidence binds the upstream
-[ANTLR 4.9.3 license](https://github.com/antlr/antlr4/blob/4.9.3/LICENSE.txt)
+[ANTLR 4.9.3 license](https://raw.githubusercontent.com/antlr/antlr4/4.9.3/LICENSE.txt)
 and [Python setup source](https://raw.githubusercontent.com/antlr/antlr4/e4c1a74c66bd5290364ea2b36c97cd724b247357/runtime/Python3/setup.py)
 to tag commit `e4c1a74c66bd5290364ea2b36c97cd724b247357`. The 527-byte setup
 SHA-256 matches the inspected locked sdist. Retained API-text copies add one
@@ -7113,7 +7113,7 @@ synthetic wiring is self-consistency, not an independent reference. The next
 immutable controller and exact-head VAST replay remain pending.
 
 Root separately authenticates the official
-[DSM PyTorch STT caller](https://github.com/kyutai-labs/delayed-streams-modeling/blob/4c4f65e147df056adf3346290d64c7b9649b18c9/scripts/stt_from_file_pytorch.py)
+[DSM PyTorch STT caller](https://raw.githubusercontent.com/kyutai-labs/delayed-streams-modeling/4c4f65e147df056adf3346290d64c7b9649b18c9/scripts/stt_from_file_pytorch.py)
 at revision `4c4f65e147df056adf3346290d64c7b9649b18c9`: 8,452 bytes,
 SHA-256 `2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955`,
 Git blob `cf3fb05b0e0c1f265a667276d2886ce2664d79ff`; decoded GitHub contents

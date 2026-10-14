@@ -133,6 +133,11 @@ or final packet follows from this readback.
 
 ## Documentation verification
 
+The later [source-link transport reconciliation](pr233-source-link-transport-2026-10-14.md)
+records the second exact-head CI failure, its cardinality cause and eleven
+primary raw/API identity receipts. Only citation transport and one short-ref
+expansion change; all checker limits and model/approval gates are preserved.
+
 The docs reference, runbook-path citation and documentation-example gates
 passed, along with diff whitespace hygiene. The example gate still lists 30
 deferred platform/UI blocks, not newly verified hardware/toolchain examples.
