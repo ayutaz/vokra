@@ -2,6 +2,14 @@
 
 ## ゴールと現在地
 
+> **2026-10-15 JSTの行別静的再確認:** [58-row readback](current-58-static-prerequisite-readback-2026-10-15.md)
+> で先行10行と残り48 report IDsを整理した。57行のsource/static observationsと保護対象1行の
+> `UNKNOWN_EXCLUDED`であり、HFのfresh全行取得・production READY判定・実weight結果ではない。
+> public/upstreamの別repository revisionや未受理候補との差だけを不整合と扱わず、
+> 現行MOSS lock48件／review49件と一致するlock hashを独立確認した。
+> source/consumerの独立作業とowner/legal/upstreamの外部前提を分離し、全行non-Apple完了・
+> 最終clean HEAD／Apple packetというゴールを変えない。
+
 > **14:53:31 UTCのsecurity受理readback（2026-10-15 JST）:** PR #244はexact
 > `71cc8017`の全70 checks（69 success / 1 skipped）、必須16 context/app全成功、
 > 開始した全9 workflowsの完了を確認して通常受理した。main／ローカルmainは
