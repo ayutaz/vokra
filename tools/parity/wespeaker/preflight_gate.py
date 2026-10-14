@@ -49,6 +49,8 @@ MANIFEST_FIELDS = {"approval_scope_sha256", "component_reviews", "dependency_rev
 
 SOURCE_REVISION = "45941e7cba2c3ea99e232d02bedf617fc71b0dad"
 CHECKPOINT_REVISION = "f0c48c298fd835726c27956a5d617bad7115627e"
+CHECKPOINT_REMOTE_FILENAME = "avg_model"
+CHECKPOINT_STAGED_FILENAME = "avg_model.pt"
 CHECKPOINT_SHA256 = "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
 PUBLIC_REVISION = "8e27acd8a875088f1a7321f40610397bf964a446"
 PUBLIC_SHA256 = "6dccbc026e9c32a8f99f3441e64f1ff52e36afb055442595c86cda8021c78c39"
@@ -63,13 +65,13 @@ SOURCE_IDENTITY = {
     "license": {"path": "LICENSE", "bytes": 11357, "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4", "git_blob_sha1": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"},
     "files": [
         {"path": "wespeaker/models/resnet.py", "role": "official_loader", "bytes": 9564, "sha256": "6f3c8219be2c9a8b9eabed8169c1abaec3e48670be7aaf1e792138b2b20e68c4", "git_blob_sha1": "17607e6d2c72627e15db4214cacfa9d7b89ca945"},
-        {"path": "wespeaker/models/pooling_layers.py", "role": "official_pooling", "bytes": 10255, "sha256": "768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9", "git_blob_sha1": "47120eead47a511939267470496539804c17b7d3"},
+        {"path": "wespeaker/models/pooling_layers.py", "role": "official_pooling", "bytes": 10255, "sha256": "768910c91e353f1d0c2f3edc8f9ae758d2ff7e477d37fb470ae946eba69adac8", "git_blob_sha1": "47120eb9029ba1b00d18fcd61dd80f8afa2037c6"},
     ],
 }
 
 FIXED_IDENTITIES = {
     "source": SOURCE_IDENTITY,
-    "checkpoint": {"repo": "Wespeaker/wespeaker-voxceleb-resnet34-LM", "revision": CHECKPOINT_REVISION, "path": "avg_model.pt", "bytes": 45053131, "sha256": CHECKPOINT_SHA256, "git_oid": "7f92ddd059d244c7d2653650d3be85de9f136c41", "config": {"path": "config.yaml", "bytes": 1673, "sha256": "3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e", "git_oid": "1941982501edc3909a56c9bca025fecf10cf28d2"}, "license_spdx": "cc-by-4.0", "owner_signoff_date": "2026-07-28", "role": "official_checkpoint"},
+    "checkpoint": {"repo": "Wespeaker/wespeaker-voxceleb-resnet34-LM", "revision": CHECKPOINT_REVISION, "remote_filename": CHECKPOINT_REMOTE_FILENAME, "staged_filename": CHECKPOINT_STAGED_FILENAME, "path": CHECKPOINT_STAGED_FILENAME, "bytes": 45053131, "sha256": CHECKPOINT_SHA256, "git_oid": None, "git_oid_status": "NOT_AUTHENTICATED", "config": {"path": "config.yaml", "bytes": 1673, "sha256": "3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e", "git_oid": "1941982501edc3909a56c9bca025fecf10cf28d2"}, "license_spdx": "cc-by-4.0", "owner_signoff_date": "2026-07-28", "role": "official_checkpoint"},
     "corrected_replacement": {"repo": "vokra/pyannote-wespeaker-voxceleb-resnet34-lm", "revision": PUBLIC_REVISION, "path": "pyannote-wespeaker.restamped.gguf", "bytes": PUBLIC_BYTES, "sha256": PUBLIC_SHA256, "license_spdx": "cc-by-4.0", "role": "authorized_corrected_replacement"},
     "legacy_mislicensed": {"repo": "vokra/wespeaker", "revision": "a20ec15a61be1b5c5cb0f4805dbf72bb341e946f", "path": "wespeaker.gguf", "bytes": None, "sha256": "d2dd9114179e28d14bd7c6ec372807823f1064c4f6cdc2349a83aa652635553d", "stamped_license_spdx": "apache-2.0", "actual_license_spdx": "cc-by-4.0", "accepted": False, "role": "rejected_mislicensed_legacy"},
     "fixture": {"path": "tests/fixtures/audio/jfk-30s.wav", "bytes": JFK_BYTES, "sha256": JFK_SHA256, "license_spdx": "public-domain", "role": "fixed_reference_input"},
@@ -273,7 +275,14 @@ def fixed_blocker() -> str | None:
     for row in SOURCE_IDENTITY["files"]:
         if not isinstance(row.get("bytes"), int) or not HEX64.fullmatch(str(row.get("sha256"))) or not HEX40.fullmatch(str(row.get("git_blob_sha1"))):
             return f"official source file identity is incomplete: {row['path']}"
-    if not isinstance(FIXED_IDENTITIES["checkpoint"]["bytes"], int):
+    checkpoint = FIXED_IDENTITIES["checkpoint"]
+    if (checkpoint.get("remote_filename") != CHECKPOINT_REMOTE_FILENAME
+            or checkpoint.get("staged_filename") != CHECKPOINT_STAGED_FILENAME
+            or checkpoint.get("path") != CHECKPOINT_STAGED_FILENAME
+            or checkpoint.get("git_oid") is not None
+            or checkpoint.get("git_oid_status") != "NOT_AUTHENTICATED"):
+        return "checkpoint remote/staged identity is not explicit or Git OID is unauthenticated"
+    if not isinstance(checkpoint["bytes"], int):
         return "official checkpoint byte identity is incomplete"
     return None
 

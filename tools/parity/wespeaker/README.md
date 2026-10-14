@@ -37,13 +37,25 @@ native payload licensing, or owner/legal approval. `PENDING_REVIEW` and
 
 The independent dumper imports official wenet-e2e/wespeaker revision
 45941e7cba2c3ea99e232d02bedf617fc71b0dad, loads only the pinned
-Wespeaker/wespeaker-voxceleb-resnet34-LM avg_model at revision
-f0c48c298fd835726c27956a5d617bad7115627e, and uses weights_only=True.
+Wespeaker/wespeaker-voxceleb-resnet34-LM remote `avg_model` at revision
+f0c48c298fd835726c27956a5d617bad7115627e, explicitly staged as local
+`avg_model.pt`, and uses weights_only=True. There is no alternate-name fallback.
 Its authenticated source contract includes `LICENSE`,
 `wespeaker/models/resnet.py`, and `wespeaker/models/pooling_layers.py`
 (10,255 bytes, SHA-256
-768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9,
-Git blob 47120eead47a511939267470496539804c17b7d3).
+768910c91e353f1d0c2f3edc8f9ae758d2ff7e477d37fb470ae946eba69adac8,
+Git blob 47120eb9029ba1b00d18fcd61dd80f8afa2037c6).
+The [2026-10-14 source reconciliation](../../../docs/handoff/wespeaker-source-pin-reconciliation-2026-10-14.md)
+records the original incorrect pooling digests and the exact primary-source
+correction. This changes the pending source/approval scope; old decisions or
+API/native receipts must not be carried over. Neither source authentication
+nor the absence of direct setuptools imports permits dropping Torch's locked
+setuptools dependency without separate Linux evidence. The declared model
+size/SHA-256 identities below are unchanged, not newly acquired or authenticated.
+Public HEAD metadata matches the declared checkpoint revision, linked size and
+SHA-256; it does not authenticate actual checkpoint bytes or its Git OID. The
+active manifest records the latter as `null` / `NOT_AUTHENTICATED`.
+
 The checkpoint identity is SHA-256
 9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449.
 
