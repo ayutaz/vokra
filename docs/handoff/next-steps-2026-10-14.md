@@ -2,6 +2,24 @@
 
 ## ゴールと現在地
 
+> **2026-10-15 JSTの継続readback:** #246はexact `f1fefec3`で全70 checks
+> （69 success / 1 intentional skip）、必須16 context/app、開始済み全9 workflowsの
+> terminal successを確認して18:24:02 UTCに通常受理した。main／ローカルmainは
+> `731592f9`でclean。MOSS API-smokeのlock／bridge bindingのsource受理であり、
+> pending dependency/native/API/ownerや実weightを完了させるものではない。
+> NSNet2 #249のpre-download audit修正は新しい5ケースがhosted CIでも実行・成功し、
+> 全体CI／受理待ち。#248の[最小lock修正](melotts-urllib3-minimal-reconciliation-2026-10-15.md)
+> は無関係な26 marker削除を復元したprivate `f4813f02`で、fresh published-head CIが必要。
+> Draft #152 `eaf0e5fa`は69/69 checks（68 success / 1 skip）と全9 workflowsが成功したが、
+> 実依存／native／license／owner／実weightのholdは維持する。別のXCodec2 Rust fixture
+> binding候補`4ecc34c1`は未push・未実行で、新しいリモート検証が必要。
+> 不要weightのmanager＋独立agent再調査は削除可能0件、削除0件。空き約191GiBは
+> 調査時点の容量であり、削除による回復量ではない。Git-tracked Silero fixtureと、
+> 帰属／不要性が未証明の共用HF／別project backupは保持した。
+> 新規cloud／ローカルモデル実行／公開なし。58未解決行、凍結63-row owner scope、
+> 承認済み実weight CPU、最終clean HEAD／fresh Apple packetというゴールは未完了。
+> 以下のsnapshotは当時の履歴として保持する。
+
 > **17:46:55 UTCの統合受理readback（2026-10-15 JST）:** #247 exact
 > `50ea0dec`／base `0f6750fa`は全73 checks（71 success / 2 intentional skips）、
 > 必須16 context/appと開始した全10 workflowsのterminal successを確認して通常受理した。
