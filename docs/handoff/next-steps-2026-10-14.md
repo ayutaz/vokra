@@ -2,6 +2,13 @@
 
 ## ゴールと現在地
 
+> **後続の受理と独立作業:** PR #233 は56 success / 1 skippedと必須16 context/app
+> の全成功を確認して08:24:33 UTCに通常受理され、mainは`46d2c9dd`。
+> PR #232の新候補`89f0e2e5`はこのmainを通常mergeしてfresh CI待ちで、未受理。
+> [OWSM admission修正](owsm-audit-admission-readback-2026-10-14.md)は、証拠に未束縛の
+> 監査フラグを拒否する。実際に使われるComplexTensorのlicense holdは解除しない。
+> この追加の静的作業も、58行の実weight CPU完了や最終packet生成とは区別する。
+
 > **PR受理後の最新readback:** PR #230 は 06:19:07 UTC に通常受理され、main は
 > `f8804b7429691bd90520aec801869262ba53573b`。以下のPR準備時点の記録は履歴として
 > 保持する。[Kyutai reference調査](kyutai-candle-reference-readback-2026-10-14.md)では
