@@ -79,6 +79,13 @@ jobs:
         # checked that they had not silently started failing open.
         # Needs no cargo / network / binutils (mktemp scratch + `nm` stub).
         run: bash scripts/compliance/test-nvidia-scanner-sigpipe.sh
+      - name: NSNet2 native audit fail-open behavioural test
+        # The VAST worker's NumPy audit is model-free here: the regression
+        # extracts its production function and supplies synthetic site-
+        # packages plus mocked ldd/grep. Keep this beside the existing
+        # SIGPIPE regression so the pre-download compliance guard remains
+        # covered without activating a VAST worker or downloading a model.
+        run: bash scripts/compliance/test-nsnet2-native-audit-sigpipe.sh
       - name: Hot-path zero-alloc regions (FR-EX-05)
         run: bash scripts/check-hot-path-allocs.sh
       - name: "Workflow hygiene (cron collisions / needs: ids / run: shell syntax)"
