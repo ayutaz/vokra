@@ -188,28 +188,35 @@ is_forbidden_native_basename() {
 
 audit_numpy_native_payload() {
   local venv="$PARITY_PROJECT/.venv" site_packages forbidden_files native_files so_file ldd_output
-  [[ -d "$venv" && ! -L "$venv" ]] || die "uv sync did not create a regular NSNet2 reference .venv"
+  [[ -d "$venv" && ! -L "$venv" ]] \
+    || { die "uv sync did not create a regular NSNet2 reference .venv"; return 2; }
   site_packages="$(find "$venv/lib" -type d -name site-packages -print -quit)"
   [[ -n "$site_packages" && -d "$site_packages/numpy" && ! -L "$site_packages/numpy" ]] \
-    || die "NSNet2 reference .venv has no regular NumPy package"
+    || { die "NSNet2 reference .venv has no regular NumPy package"; return 2; }
   [[ ! -e "$site_packages/numpy.libs" && ! -L "$site_packages/numpy.libs" ]] \
-    || die "NumPy bundled native payload directory is present; source build required"
+    || { die "NumPy bundled native payload directory is present; source build required"; return 2; }
 
   forbidden_files="$(find "$site_packages" -type f -print | while IFS= read -r native_file; do
     if is_forbidden_native_basename "$native_file"; then
       printf '%s\n' "$native_file"
     fi
   done)"
-  [[ -z "$forbidden_files" ]] || die "forbidden native payload found in reference .venv: $forbidden_files"
+  [[ -z "$forbidden_files" ]] \
+    || { die "forbidden native payload found in reference .venv: $forbidden_files"; return 2; }
 
   native_files="$(find "$site_packages" -type f -name '*.so*' -print)"
-  [[ -n "$native_files" ]] || die "reference .venv contains no native extensions to audit"
+  [[ -n "$native_files" ]] \
+    || { die "reference .venv contains no native extensions to audit"; return 2; }
   while IFS= read -r so_file; do
     [[ -n "$so_file" ]] || continue
     ldd_output="$(ldd "$so_file" 2>&1)" \
-      || die "ldd failed for native extension: $so_file"
-    if printf '%s\n' "$ldd_output" | grep -Eiq 'libgfortran|libquadmath|openblas|liblapack|libblas|libgomp|libflexiblas|libblis'; then
+      || { die "ldd failed for native extension: $so_file"; return 2; }
+    if grep -Eiq 'libgfortran|libquadmath|openblas|liblapack|libblas|libgomp|libflexiblas|libblis' <<< "$ldd_output"; then
       die "forbidden BLAS/compiler runtime linked by $so_file: $ldd_output"
+      return 2
+    elif [[ $? -ne 1 ]]; then
+      die "could not inspect native dependencies for $so_file"
+      return 2
     fi
   done <<< "$native_files"
   log "NumPy source native audit: PASS (no bundled forbidden payload or BLAS/compiler runtime links)"
