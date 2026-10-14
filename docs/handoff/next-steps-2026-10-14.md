@@ -2,6 +2,11 @@
 
 ## ゴールと現在地
 
+> **追加readback:** [2026-10-14 execution record](execution-readback-2026-10-14.md)
+> は同日のfresh metadata、Qwen修正commit、OpenMP source/native facts、停止した
+> VAST workspace attemptとowned resource削除を記録する。remote Cargo、実weight CPU、
+> 最終packetの成功とは扱わず、以下の計画準備時点の値・履歴も保持する。
+
 ゴールは公開モデルの各行を、exact source/artifact・依存/license・owner判断・
 strict converter/binder/native/CLI・独立reference・実weight CPU parity・
 Apple CPU/Metal/no-fallbackの証拠で完了、またはexact owner-approved dispositionで
