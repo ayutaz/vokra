@@ -190,6 +190,42 @@ HTTP 403, separate from their implementation. A single unauthenticated,
 removal or protection waiver is made. Required-status-protection access via
 the current GitHub integration returns 403; its settings are not inferred.
 
+### Frozen SSH correction and admission without creation
+
+The reviewed controller now gives the SSH service a bounded 180-second
+readiness window instead of five attempts. Every attempt remains supervised
+under both stage and total deadlines. Total work remains 1,620 seconds, the
+remote leaf 1,500 seconds, and recovery/deletion retain their existing bounds.
+Frozen controller/test SHA-256 values are respectively
+`05effb78632260c406e124966078ffd4dfc974627f7d14a1c507c4c80dbcee1f` and
+`d171d048cc2f4fab1c75941b6fcea9586689294875bfe5243644b2866a83595c`.
+Implementer and manager independently passed syntax, ShellCheck and the full
+offline causal suite at those fixed hashes. The delayed-service fixture only
+succeeds on the seventh SSH call, beyond the old five-attempt window;
+persistent refusal stops within its two-second test budget. Existing blocking
+create/SSH child-termination, ownership and null-readback cases remain intact.
+An earlier manager run during test-file editing was rejected, not counted as
+acceptance; the subsequent frozen-hash run exited zero with unchanged hashes.
+Offline mock evidence does not prove actual provider SSH or source acceptance.
+
+A new admission for exact clean source
+`5d95472770537ebcae0b152c615d02f5965bde23` stopped before baseline inventory
+or creation because no returned offer passed the unchanged USD 0.20/hour
+policy. Bundle SHA-256 is
+`cbbe9c92fb20363ad75e7be5c8d3d6dad8930baaaf90400ed1e3b7f3575b791e`.
+A separate read-only search lowering only the CPU floor to four cores still
+returned a lowest eligible quote of USD 0.2283333333/hour including 150 GiB
+storage, bandwidth separate. It created nothing and did not authorize a
+different execution scope or raise the ceiling. Provider availability is
+external waiting; a new exact-source VAST green and PR/CI acceptance remain
+open. These admissions created no paid worker or storage.
+
+The local static documentation/example, community, parity-citation,
+owner-checklist, platform, ABI-coverage, workflow and diff-hygiene gates passed.
+The workflow gate's first local invocation lacked the approved temporary UV
+cache setting and failed before inspection; rerunning with that setting passed
+all 48 workflow checks without changing a workflow or permission.
+
 ## Remaining gates
 
 The WeSpeaker static collector is a temporary candidate, not acquired-wheel

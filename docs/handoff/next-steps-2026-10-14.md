@@ -7,6 +7,13 @@
 > VAST workspace attemptとowned resource削除を記録する。remote Cargo、実weight CPU、
 > 最終packetの成功とは扱わず、以下の計画準備時点の値・履歴も保持する。
 
+> **後続の実測:** 同じexecution recordに、exact `005ac126`のRust fmt/Clippy/
+> workspace tests（8,218 passed / 0 failed / 105 ignored）と後続shell gate失敗を
+> 追記した。Linux tempdirの1行修正は`9e528d27`、失敗・PR readbackは`5d954727`。
+> SSH待機controllerの固定hash回帰は合格したが、その後のVAST admissionは料金上限
+> 内の候補がなく作成前停止。全体remote green、push/PR受理、実weight、最終packetは
+> 依然未完了で、古いHEADの部分成功を新HEADの全体成功に流用しない。
+
 ゴールは公開モデルの各行を、exact source/artifact・依存/license・owner判断・
 strict converter/binder/native/CLI・独立reference・実weight CPU parity・
 Apple CPU/Metal/no-fallbackの証拠で完了、またはexact owner-approved dispositionで
