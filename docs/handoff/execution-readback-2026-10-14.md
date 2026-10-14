@@ -228,6 +228,13 @@ all 48 workflow checks without changing a workflow or permission.
 
 ## Remaining gates
 
+The [TorchAudio archive inspection](wespeaker-torchaudio211-static-facts-2026-10-14.md)
+adds exact small-distribution LICENSE/RECORD facts, not whole-closure approval.
+Manager byte-level review rejected the first ELF parser's false no-linkage
+result; both libraries actually have PT_DYNAMIC and eight DT_NEEDED entries.
+Corrected results and the rejected originals remain separate. This software-
+only work adds no model, native-runtime, owner or public-row completion.
+
 The WeSpeaker static collector is a temporary candidate, not acquired-wheel
 evidence: its offline report has 13 `NOT_ACQUIRED` rows and one virtual row,
 `BLOCKED_UNRESOLVED_EVIDENCE`, `NO_UPLOAD`, and null owner fields. Review fixes
