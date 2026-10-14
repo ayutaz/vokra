@@ -1,8 +1,10 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-The documentation refresh baseline is local commit `1a63a8d1`; the fresh GitHub
-branch readback after ordinary acceptance of PR #229 is `134eb9c7`.
+The latest accepted source main is `f8804b74` after ordinary acceptance of
+PR #230; see the [acceptance and Kyutai reference readback](handoff/kyutai-candle-reference-readback-2026-10-14.md).
+The earlier local documentation commit `1a63a8d1` is preserved on an archive
+branch; it is no longer the current main baseline.
 The dated metadata snapshot below retains
 its 2026-10-13 source boundary. Model and Apple completion are not implied.
 
@@ -39,6 +41,7 @@ environment they name.
 | WeSpeaker dependency admission | [2026-10-14 exact setuptools finding](handoff/wespeaker-setuptools84-static-finding-2026-10-14.md): actual vendored LGPL payload, no paid repeat of the known-blocked closure, and next source-only route investigation |
 | WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |
 | Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
+| Kyutai alternate reference admission | [2026-10-14 Candle readback](handoff/kyutai-candle-reference-readback-2026-10-14.md): identical declared checkpoint/Mimi/tokenizer identities, distinct execution scope and a fixed-lock memmap2 security hold; no real-weight run |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
 | Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
