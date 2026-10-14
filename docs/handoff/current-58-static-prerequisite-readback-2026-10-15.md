@@ -11,6 +11,12 @@ The public metadata denominator remains 136 full / 58 unresolved; the frozen
 
 ## What this review does and does not establish
 
+> Subsequent [MMS production-admission readback](mms-current-evidence-admission-readback-2026-10-15.md)
+> confirms that its omitted Torch wheel-size field is intentionally covered by
+> an existing authenticated archive receipt. Current dependency/API bindings
+> validate; the actual first admission hold is package/native/owner review,
+> not an artifact-schema defect. No lock change or paid repeat audit is needed.
+
 The earlier prioritized ten rows and the remaining 48 report IDs are now
 accounted for below. Fifty-seven rows have source/static observations; report
 ID 9 is one deliberately excluded CosyVoice2 row, not nine rows. Its protected
@@ -59,7 +65,7 @@ artifact, approval or numerical evidence.
 | 24, 25 | Canary Flash / v2 | Fixed archive declarations do not authorize acquisition. Obtain exact replacement approval and complete encoder/AED/tokenizer conversion, then independent real CPU measurement for each variant. |
 | 26 | Conv-TasNet | Contradictory source/model and WHAM non-commercial terms require legal/owner disposition; kernel/stride provenance and replacement parity remain separate. |
 | 27 | SpeechBrain Lang-ID | Package/native/source/model/fixture owner scope remains pending; regenerate the exact ECAPA/XVector/107-label artifact only after the gates close. |
-| 28 | MMS | Publisher/native/license review and an incomplete wheel-size field remain open; bind approved language, backbone/adapter/vocabulary and native composition. |
+| 28 | MMS | Current dependency/API evidence validates, including an intentionally omitted wheel size covered by its archive receipt. Package/native/publisher review and external owner approval remain the admission hold; bind explicit language, backbone/adapter/vocabulary and native composition. |
 | 29, 30 | MOSS Audio 4B / 8B | Main has 48 full lock records and 49 review rows, with matching lock hash; strict artifact-schema validation first rejects missing Torch wheel sizes. PR #242 fills nine pre-existing size fields, removes an absent psutil review, updates urllib3/bindings and preserves pending reviews; source/model grant, API/native/owner, sidecars and exact artifact replacement remain open. |
 | 31 | MOSS Tokenizer Nano | Authenticated/server identities and synthetic source tests are not the actual API smoke; dependency/license/operator reviews and first real-weight measurement remain open. |
 | 32 | NSNet2 | Microsoft source CC-BY-4.0 and the public MIT stamp require exact replacement/provenance disposition, then independent reference/CPU parity. |
