@@ -25,7 +25,7 @@ GATE_VERSION = 2
 # separate patched project only after the owner-approved API smoke bridge.
 UNVERIFIED_TRANSFORMERS_PIN = "transformers==5.5.0"
 PATCHED_TRANSFORMERS_MINIMUM = (5, 10, 0)
-LOCK_SHA256 = "2e0b2af61d754edd0c7211193f5a68f07cf57455666ed5912c992560bdf55d3c"
+LOCK_SHA256 = "eaa1cd47a253bfd72f962d30f05362ed76b231ebef6cd2bce5e5f3cc8ed47d8c"
 PYPROJECT_SHA256 = "00dbde83ac503f0ce91d74b3da9fb2f6010d827efedd62831b276e3abeb28687"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -937,6 +937,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
 
 
 def self_test() -> int:
+    global validate_api_smoke_project, validate_api_smoke_evidence
     project = Path(__file__).resolve().parent
     manifest_path = project / "license_gate_manifest.json"
     identity_ok, identity_reason = validate_identity_evidence(project)
@@ -989,33 +990,37 @@ def self_test() -> int:
             if verify_source(source, contract=contract, expected_revision=revision)[0]:
                 print(f"moss_audio tracked source {filename} was accepted", file=sys.stderr)
                 return 1
-    ok, reason = validate(project, manifest_path)
+    production_ok, production_reason = validate(project, manifest_path)
+    if production_ok or ("unresolved" not in production_reason and "artifact" not in production_reason and "BLOCKED_UNVERIFIED_API_SMOKE" not in production_reason and "API smoke evidence" not in production_reason):
+        print(f"moss_audio preflight gate: expected pending review, got {production_reason}", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="moss-audio-api-bridge-") as temporary:
+        malformed = Path(temporary) / "evidence.json"
+        malformed.write_text("{}\n", encoding="utf-8")
+        malformed_sha = sha256_file(malformed)
+        bridge_ok, bridge_reason = validate_api_smoke_evidence(
+            malformed, malformed_sha, "0" * 40, ["4b"]
+        )
+        if bridge_ok or "schema" not in bridge_reason:
+            print("moss_audio API smoke bridge accepted malformed evidence", file=sys.stderr)
+            return 1
+        bridge_ok, bridge_reason = validate_api_smoke_evidence(
+            malformed, "0" * 64, "0" * 40, ["4b"]
+        )
+        if bridge_ok or "SHA-256" not in bridge_reason:
+            print("moss_audio API smoke bridge accepted tampered evidence", file=sys.stderr)
+            return 1
+        bridge_ok, bridge_reason = validate_api_smoke_evidence(
+            Path(temporary) / "missing.json", "0" * 64, "0" * 40, ["4b"]
+        )
+        if bridge_ok or "missing" not in bridge_reason:
+            print("moss_audio API smoke bridge accepted missing evidence", file=sys.stderr)
+            return 1
+    ok, reason = validate(project, manifest_path, _self_test=True)
     if ok or ("unresolved" not in reason and "artifact" not in reason and "BLOCKED_UNVERIFIED_API_SMOKE" not in reason and "API smoke evidence" not in reason):
         print(f"moss_audio preflight gate: expected pending review, got {reason}", file=sys.stderr)
         return 1
     if "API smoke evidence" in reason:
-        with tempfile.TemporaryDirectory(prefix="moss-audio-api-bridge-") as temporary:
-            malformed = Path(temporary) / "evidence.json"
-            malformed.write_text("{}\n", encoding="utf-8")
-            malformed_sha = sha256_file(malformed)
-            bridge_ok, bridge_reason = validate_api_smoke_evidence(
-                malformed, malformed_sha, "0" * 40, ["4b"]
-            )
-            if bridge_ok or "schema" not in bridge_reason:
-                print("moss_audio API smoke bridge accepted malformed evidence", file=sys.stderr)
-                return 1
-            bridge_ok, bridge_reason = validate_api_smoke_evidence(
-                malformed, "0" * 64, "0" * 40, ["4b"]
-            )
-            if bridge_ok or "SHA-256" not in bridge_reason:
-                print("moss_audio API smoke bridge accepted tampered evidence", file=sys.stderr)
-                return 1
-            bridge_ok, bridge_reason = validate_api_smoke_evidence(
-                Path(temporary) / "missing.json", "0" * 64, "0" * 40, ["4b"]
-            )
-            if bridge_ok or "missing" not in bridge_reason:
-                print("moss_audio API smoke bridge accepted missing evidence", file=sys.stderr)
-                return 1
         print("moss_audio preflight gate: self-test PASS (API smoke bridge fail-closed)")
         return 0
     if "BLOCKED_UNVERIFIED_API_SMOKE" in reason:
@@ -1149,6 +1154,63 @@ def self_test() -> int:
         if not good:
             print(f"moss_audio preflight gate: approved baseline failed: {reason}", file=sys.stderr)
             return 1
+        approved_baseline = approved.read_bytes()
+        evidence_baseline = evidence.read_bytes()
+        lock_path = test_project / "uv.lock"
+        lock_baseline = lock_path.read_bytes()
+        corrupted_lock = lock_baseline + b"\n# corrupted self-test lock\n"
+        lock_path.write_bytes(corrupted_lock)
+        corrupted_ok, corrupted_reason = validate(test_project, approved, evidence, _self_test=True)
+        lock_path.write_bytes(lock_baseline)
+        if corrupted_ok or corrupted_reason != "uv.lock bytes are not the fixed reviewed lock":
+            print("moss_audio corrupted lock was accepted or misclassified", file=sys.stderr)
+            return 1
+        malformed_identity = json.loads(approved_baseline)
+        malformed_identity["fixed_identities"]["source"].pop("tracked_tree_sha256")
+        approved.write_text(json.dumps(malformed_identity), encoding="utf-8")
+        original_project_validator = validate_api_smoke_project
+        original_evidence_validator = validate_api_smoke_evidence
+        validate_api_smoke_project = lambda _project: (True, "PASS")
+        validate_api_smoke_evidence = lambda *_args: (True, "PASS")
+        try:
+            production_identity_ok, production_identity_reason = validate(
+                test_project,
+                approved,
+                evidence,
+                Path("synthetic-api-smoke-evidence.json"),
+                "0" * 64,
+                "0" * 40,
+                ["4b"],
+                Path("synthetic-api-smoke-project"),
+            )
+        finally:
+            validate_api_smoke_project = original_project_validator
+            validate_api_smoke_evidence = original_evidence_validator
+            approved.write_bytes(approved_baseline)
+        if production_identity_ok or production_identity_reason != "fixed MOSS-Audio identities or NO_UPLOAD policy drifted":
+            print("moss_audio production fixed-identity tamper was accepted or misclassified", file=sys.stderr)
+            return 1
+        stale_scope = json.loads(approved_baseline)
+        stale_scope_data = json.loads(json.dumps(scope))
+        stale_scope_data["package_rows_sha256"] = "0" * 64
+        stale_scope_sha = canonical(stale_scope_data)
+        stale_scope["approval_scope_sha256"] = stale_scope_sha
+        stale_scope["operator_approval"]["digest"] = stale_scope_sha
+        approved.write_text(json.dumps(stale_scope), encoding="utf-8")
+        stale_scope_ok, stale_scope_reason = validate(test_project, approved, evidence, _self_test=True)
+        approved.write_bytes(approved_baseline)
+        if stale_scope_ok or stale_scope_reason != "approval scope is not bound to exact closure":
+            print("moss_audio stale approval scope was accepted or misclassified", file=sys.stderr)
+            return 1
+        stale_evidence = json.loads(evidence_baseline)
+        stale_evidence["scope_sha256"] = stale_scope_sha
+        stale_evidence["digest"] = stale_scope_sha
+        evidence.write_text(json.dumps(stale_evidence), encoding="utf-8")
+        stale_evidence_ok, stale_evidence_reason = validate(test_project, approved, evidence, _self_test=True)
+        evidence.write_bytes(evidence_baseline)
+        if stale_evidence_ok or stale_evidence_reason != "operator evidence is not bound to this exact manifest and scope":
+            print("moss_audio stale operator evidence was accepted or misclassified", file=sys.stderr)
+            return 1
         identity_candidate = json.loads((test_project / "identity_audit_evidence.json").read_text(encoding="utf-8"))
         identity_candidate["variants"]["4b"]["index"]["weight_map_entries"] = 902
         (test_project / "identity_audit_evidence.json").write_text(json.dumps(identity_candidate), encoding="utf-8")
@@ -1208,10 +1270,6 @@ def self_test() -> int:
         if validate(test_project, approved, evidence, _self_test=True)[0]:
             print("moss_audio boolean component signer accepted", file=sys.stderr); return 1
         approved.write_text(json.dumps(base), encoding="utf-8")
-        good, reason = validate(test_project, approved, evidence)
-        if good or "identity is incomplete" not in reason:
-            print("moss-audio incomplete fixed identity was accepted", file=sys.stderr)
-            return 1
         for tamper in ("lock_sha256", "pyproject_sha256"):
             candidate = json.loads(approved.read_text(encoding="utf-8")); candidate[tamper] = "0" * 64
             approved.write_text(json.dumps(candidate), encoding="utf-8")
@@ -1228,7 +1286,7 @@ def self_test() -> int:
             if validate(test_project, approved, evidence, _self_test=True)[0]:
                 print("moss_audio preflight gate: identity/review tamper accepted", file=sys.stderr); return 1
             approved.write_text(json.dumps(base), encoding="utf-8")
-    print("moss_audio preflight gate: self-test PASS")
+    print("moss_audio preflight gate: self-test PASS (API smoke bridge + binding/tamper fail-closed)")
     return 0
 
 
