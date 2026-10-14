@@ -1,5 +1,12 @@
 # MOSS API-smoke urllib3 candidate reconciliation — 2026-10-15 JST
 
+> Subsequent private source follow-up: [bridge binding correction](moss-api-smoke-bridge-binding-2026-10-15.md)
+> at `78f72c9f` aligns the actual consumer, binds evidence to authenticated
+> whole-lock rows and refuses an input-supplied verifier. The pre-existing
+> bridge hold below retains the earlier minimal candidate's boundary.
+> Neither candidate is accepted merely by local tests; API/native/owner and
+> real-weight gates remain open.
+
 Source-only candidate based on accepted main
 `0f6750fa401b613da7155e894065fdc70fb172bc`. The separate API-smoke project
 has **45 full package records**, not the main MOSS lock's 48. Its changes
@@ -26,7 +33,7 @@ Manager stdlib TOML/AST/hash comparison confirms complete equality of all
 other package records and top-level lock fields, correct actual project/lock
 bindings, and equality of the urllib3 record to the separately accepted #242
 main-MOSS metadata. This compares declarations, not downloaded archive bytes
-or installed-package/API compatibility. No package or model is imported.
+or installed-package/API compatibility. No target package or model is imported.
 
 Luna retains the bot ancestry through an ordinary merge, then restores the
 reviewed marker semantics. Both genuine `--self-test` commands for API smoke
