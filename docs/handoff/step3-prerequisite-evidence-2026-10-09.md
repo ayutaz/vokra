@@ -97,7 +97,7 @@ gitlinkから、Kineto `094d3c1d072362d0a919a77299459eee94f97931`、Dynolog
 GPLv3適用を明記します。これは公開source境界の確定であり、4 wheelのbuild identityや
 native linkageの証明ではありません。上のsource/build未確定事項をこの範囲だけ補足します。
 
-XCodec2の[Draft #152 dated archive disposition](https://github.com/ayutaz/vokra/blob/fe1f5fe27fe4016d6a6fd76fe131fa3d62e1f307/docs/handoff/xcodec2-dependency-license-disposition-2026-10-04.md)
+XCodec2の[Draft #152 dated archive disposition](https://raw.githubusercontent.com/ayutaz/vokra/fe1f5fe27fe4016d6a6fd76fe131fa3d62e1f307/docs/handoff/xcodec2-dependency-license-disposition-2026-10-04.md)
 は同一Linux Torch wheel/native digestについて過去のELF NEEDED結果を記録しています。
 今回の新archive report自身はELF/Mach-O解析を実行していません。過去の観測を新しい
 installed closure、build provenance、policy approvalへ昇格させません。

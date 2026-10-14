@@ -2,6 +2,13 @@
 
 ## ゴールと現在地
 
+> **PR受理後の最新readback:** PR #230 は 06:19:07 UTC に通常受理され、main は
+> `f8804b7429691bd90520aec801869262ba53573b`。以下のPR準備時点の記録は履歴として
+> 保持する。[Kyutai reference調査](kyutai-candle-reference-readback-2026-10-14.md)では
+> 公式PyTorch/Candleのcheckpoint識別が一致したが、固定Rust lockのmemmap2 0.9.5に
+> RustSec問題を確認。未修正lockの有料再検証はせず、依存scopeと実行契約を先に解決する。
+> 58行の実weight／owner前提・最終packetは未完了で、新規leaseは開始していない。
+
 > **追加readback:** [2026-10-14 execution record](execution-readback-2026-10-14.md)
 > は同日のfresh metadata、Qwen修正commit、OpenMP source/native facts、停止した
 > VAST workspace attemptとowned resource削除を記録する。remote Cargo、実weight CPU、
