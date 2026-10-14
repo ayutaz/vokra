@@ -226,6 +226,33 @@ The workflow gate's first local invocation lacked the approved temporary UV
 cache setting and failed before inspection; rerunning with that setting passed
 all 48 workflow checks without changing a workflow or permission.
 
+### Direct-path failure and independently working official proxy
+
+A further workspace-only run for clean source
+`488306b0b7104e4d47422458eb22e514555e15cd` admitted offer `50006707` at
+USD 0.175/hour including 150 GiB storage, bandwidth separate. Owned instance
+`55860535` had 36 effective CPU cores and 257,688 MiB of reported RAM.
+Provider `running` and the explicit `22/tcp` mapping agreed with the direct
+endpoint, but direct SSH timed out throughout the 180-second service window.
+No source transfer, bootstrap or Cargo started.
+
+An independent, ten-second-bounded `ssh ... true` diagnostic using the same
+owned instance's API-provided official proxy endpoint exited zero. This
+separates direct-path reachability from SSH authentication/service readiness;
+it does not identify the host/router cause or prove source acceptance. The
+[official SSH documentation](https://docs.vast.ai/guides/instances/connect/ssh)
+describes both direct and proxy connections. The direct-only controller
+therefore needs a reviewed, bounded official-proxy alternative, not a longer
+unchanged paid retry or a weaker ownership/host-validation rule.
+
+The original run finished at 03:59:45 UTC with validation pending, failed
+direct-path evidence recovery, successful owned-resource destruction, and
+explicit individual `instances: null`. Manager independently inspected that
+readback. Storage was destroyed too; unrelated account instances were not
+changed. The source bundle retained SHA-256
+`e7a616be1965c065e3355b4c58e600d96cf9db2c8ee658b70ac323fc694bb01d`.
+No HF token, model artifact or local model execution was involved.
+
 ## Remaining gates
 
 The [TorchAudio archive inspection](wespeaker-torchaudio211-static-facts-2026-10-14.md)
