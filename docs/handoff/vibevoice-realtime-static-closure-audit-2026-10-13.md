@@ -1,5 +1,7 @@
 # VibeVoice Realtime static dependency-closure audit — 2026-10-13
 
+> **2026-10-14 source-only follow-up:** [Exact source-license reconciliation](vibevoice-source-license-reconciliation-2026-10-14.md) verifies the two pinned upstream LICENSE identities and safetensors' official repository move. It does not approve the audited wheels, native payloads or execution. The old raw-evidence directory below was not present at the new inspection; its availability statement is retained as the original dated observation, not a current recovery guarantee.
+
 ## Verdict and scope
 
 The single authorized VAST static audit finished with controller **PASS**,

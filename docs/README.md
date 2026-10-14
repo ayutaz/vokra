@@ -51,6 +51,7 @@ environment they name.
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 | Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
 | Latest VibeVoice dependency evidence | [2026-10-13 static closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md): private 41-wheel scope, owner/legal/native/runtime unresolved, owned worker/data destroyed |
+| VibeVoice dependency source-license follow-up | [2026-10-14 exact source LICENSE identities](handoff/vibevoice-source-license-reconciliation-2026-10-14.md): official safetensors repository move, pinned source licenses, retained wheel/native gates and missing old local receipts |
 | Whole-document refresh coverage and limitations | [2026-10-13 documentation audit](handoff/documentation-refresh-2026-10-13.md); [2026-10-08](handoff/documentation-refresh-2026-10-08.md) and [2026-10-04](handoff/documentation-refresh-2026-10-04.md) preserve earlier reviews |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,

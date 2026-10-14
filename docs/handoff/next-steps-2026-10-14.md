@@ -30,6 +30,23 @@ Apple CPU/Metal/no-fallbackの証拠で完了、またはexact owner-approved di
 
 ## 優先順位・成果物・完了条件
 
+### 実行readback — 2026-10-14 00:16 UTC以降
+
+文書は`0379607c`、安全フック3件は`9de9409c`として別の論理commitにした。
+受理済みmain `134eb9c7`を通常mergeした検証候補は
+`6e1a4729f675d0094cbbc1deeedd85c1d3f2e661`で、この照会時点のworktreeはclean。
+これは検証準備のHEADであり、全行non-Apple完了後の最終Apple packet用HEADではない。
+文書／安全フックのpush、PR、remote workspace greenはまだ確認していない。
+GitHub APIの再照会でもmainは`134eb9c7`、openはDraft #198/#191/#182/#169/#152の5件。
+先行する「未コミット3件」は計画準備時点の状態として読み分ける。
+
+[source-license follow-up](vibevoice-source-license-reconciliation-2026-10-14.md)で
+safetensors 0.5.3とtokenizers 0.22.2の固定tag／commit／LICENSE blobを確認した。
+source-license factsの補完であり、wheel/native/owner/API gateの解除ではない。
+古いprivate static auditのraw receipt directoryは新しいfilesystem照会で不在だった。
+tracked summaryと記録hashは保持し、回収済みの原本と主張しない。source LICENSEを
+見つけたことを理由に、同じ入力の有料再監査や実モデル実行を開始しない。
+
 | 順序 | 作業 | 完了条件／次段への条件 |
 |---|---|---|
 | 0 | 不要ローカルモデルの安全整理 | exact path・帰属・再取得／別コピー・未使用を確認したものだけ削除。fixture、未公開唯一成果物、receipt/owner証拠は保持。削除結果と空き容量を記録 |
