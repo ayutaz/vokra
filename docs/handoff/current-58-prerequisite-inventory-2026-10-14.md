@@ -6,6 +6,12 @@ protected manifest was changed or read.
 
 ## Boundary and verdict vocabulary
 
+> Subsequent [exact software finding](wespeaker-setuptools84-static-finding-2026-10-14.md)
+> confirmed a vendored LGPL payload in the locked setuptools wheel used by the
+> current WeSpeaker reference closure. That known dependency-admission blocker
+> supplements, rather than replaces, the initial per-row prerequisite snapshot
+> below. It does not decide public withdrawal, replacement or owner approval.
+
 The source is `/private/tmp/vokra-coverage-20261014.wkUg7j/coverage.tsv`,
 SHA-256
 `9ef3eb07f12a98de7f425dcd75b98f4cd1be45ab1d3907aafeca2626196cdd56`, with
