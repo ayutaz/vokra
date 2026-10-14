@@ -121,6 +121,11 @@ production private layer's masked-key invariance, residual-only exact
 preservation, public-wrapper compatibility and mask-length refusal. Static
 format, zero-dependency, forbidden-symbol and diff checks passed; Rust
 compilation/test execution is deferred to VAST, not run on the maintainer Mac.
+The [first exact-head VAST replay](../handoff/execution-readback-2026-10-14.md#reviewed-proxy-route-actual-source-acceptance-and-clippy-stop)
+accepted source `3a7cc5c7` but stopped at Clippy before tests: two old private
+beam helpers were now unused in production. They are not public re-exports;
+the focused correction retains them under `cfg(test)` without relaxing lint
+checks. A corrected-head Rust replay is still required.
 PyTorch's `topk` calls do not specify an equal-score ordering contract here;
 a deterministic native tie rule must not be presented as independently
 verified upstream parity. Focused synthetic tests cannot replace the pinned

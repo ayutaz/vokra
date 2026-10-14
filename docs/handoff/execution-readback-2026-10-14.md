@@ -253,6 +253,44 @@ changed. The source bundle retained SHA-256
 `e7a616be1965c065e3355b4c58e600d96cf9db2c8ee658b70ac323fc694bb01d`.
 No HF token, model artifact or local model execution was involved.
 
+### Reviewed proxy route: actual source acceptance and Clippy stop
+
+Manager rejected the first proxy candidate before any lease because it
+misread the API's `22/tcp` list as a scalar/dictionary. The corrected candidate
+strictly validates the non-empty IPv4/IPv6 binding list, agreeing numeric
+ports, instance ID/label and official proxy hostname/port. Frozen controller
+and offline-test SHA-256 values are respectively
+`55307050a9a1f2e9d01d1ac61d46c62c08399b3e761b78c945a9108be20225d0` and
+`6872dd4e293ef40a6312ae857fd71cb39a24ff9e754ca706f2cb357d18d8cdf5`.
+Implementer and manager independently passed syntax, ShellCheck and the
+full offline causal suite, including direct/proxy routing, malformed binding,
+foreign ownership, supervised deadlines and explicit-null deletion cases.
+This mock result was not recorded as remote source acceptance.
+
+At 04:18:20 UTC, the unchanged policy admitted offer `50006707` at
+USD 0.175/hour including 150 GiB storage, bandwidth separate. Owned instance
+`55863382` had 36 effective CPU cores and 257,688 MiB reported RAM. Direct
+SSH timed out; the bounded official-proxy route succeeded at 04:20:39 UTC.
+Source bundle SHA-256
+`6027451751b528d3825be4e3e1f61532b999d5bf01656f5d272b77505a2a2fe0`
+was accepted at exact clean HEAD
+`3a7cc5c7cece0c97712c74804794a92ec120b6e4`. Bootstrap, exact checkout and
+format completed, using Rust 1.99.0 and Python 3.12.15. Clippy stopped with
+exit 101 because the old `FireRedBeamState::new` and `advance` helpers were
+unused after the fixed-width production driver change. Unit tests did not
+start; there is no full-workspace green or numerical-parity result.
+
+Result and log recovery through the same selected proxy succeeded. Cleanup
+finished at 04:22:39 UTC with owned instance/storage destroyed and individual
+`instances: null`, independently inspected by manager. Recovered log SHA-256
+is `ca7472a717e81d2fcc6eebbf9f47cedcfb3c792f65f545926798cde512d0df0e`.
+The result JSON SHA-256 is
+`5cb1b1a94d0373bc25de24ab71a6adaa0bdbef79329596eb84d4453103d886b7`.
+The focused correction makes those non-re-exported private helpers test-only
+without suppressing `dead_code` or changing the production driver/ranking.
+Its Rust replay remains required. No HF token, external model acquisition,
+real-weight CPU/Apple run or publication occurred in this attempt.
+
 ## Remaining gates
 
 The [TorchAudio archive inspection](wespeaker-torchaudio211-static-facts-2026-10-14.md)

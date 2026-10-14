@@ -3617,6 +3617,7 @@ where
 
 impl FireRedBeamState {
     /// Creates an empty, unfinished beam with zero score.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             tokens: Vec::new(),
@@ -3626,6 +3627,7 @@ impl FireRedBeamState {
     }
 
     /// Appends one token and updates completion and score state.
+    #[cfg(test)]
     pub fn advance(
         &self,
         token: usize,
