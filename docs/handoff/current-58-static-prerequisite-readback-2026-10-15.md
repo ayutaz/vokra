@@ -11,6 +11,17 @@ The public metadata denominator remains 136 full / 58 unresolved; the frozen
 
 ## What this review does and does not establish
 
+> Subsequent integration acceptance: #247 head `50ea0dec` was normally merged
+> at 17:46:55 UTC on 2026-10-14 as main `d1cbed72`, after all 73 checks
+> (71 success/two intentional skips), 16 required context/application pairs
+> and ten started workflows completed. #243/#245 are closed as superseded,
+> not individually merged. Dia's coordinated current contract is now accepted
+> as source-only code; its unconditional execution refusal remains. The
+> table below retains its earlier inspection boundary. The separate pending
+> [MOSS API-smoke bridge](moss-api-smoke-bridge-binding-2026-10-15.md) binds
+> actual whole-lock rows without approving licenses, native/API or owner scope.
+> No public row, CPU/Apple result or final packet is promoted.
+
 > Subsequent MOSS source-input acceptance: #242 head `934e61ac` was normally
 > merged at 16:55:26 UTC on 2026-10-14 as main `0f6750fa`, after all 70 checks,
 > 16 required context/application pairs and nine started workflows completed.
