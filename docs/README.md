@@ -1,6 +1,10 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+PR #232 was normally accepted at 09:03:54 UTC after 69 successful checks,
+one skip and all 16 required context/application pairs; its main snapshot is
+`fa42f112`. The [plan readback](handoff/next-steps-2026-10-14.md) records that
+acceptance and the source-only VAST admission result, not model completion.
 The recorded dependency baseline is `9ddc0da5` after the urllib3 update in PR #231;
 the accepted source-contract baseline is `f8804b74` from PR #230. See the
 [acceptance and Kyutai reference readback](handoff/kyutai-candle-reference-readback-2026-10-14.md).

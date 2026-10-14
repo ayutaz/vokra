@@ -6,6 +6,15 @@ correction and source-only investigation, not an execution or model approval.
 The [58-row inventory](current-58-prerequisite-inventory-2026-10-14.md) and
 frozen owner packet retain their denominators and decisions.
 
+The correction was committed as `c86f72ab`. After PR #232's normal acceptance
+at `fa42f112`, that main was normally merged into the candidate at
+`b92665f4`; all OWSM input bytes and the correction are unchanged. Manager
+again passed the actual self-test, eight focused tests, the Conv-TasNet
+binding self-test, actionlint and diff hygiene. Rust/Cargo/C-ABI inputs remain
+identical to recorded green source-only VAST `4263f416`. This is not a new
+remote result at the candidate, nor current-head PR CI acceptance. No local
+workspace compilation or model execution was used.
+
 ## Declaration is not approval
 
 The former `dependency_license_gate.py` returned `AUDITED_ALLOW` solely from
