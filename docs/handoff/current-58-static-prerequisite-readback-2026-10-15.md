@@ -84,7 +84,7 @@ artifact, approval or numerical evidence.
 | 49 | Kimi Audio | Source-submodule/component/training/license scope and multi-component native runtime remain blocked. |
 | 50 | Kyutai TTS | Recorded model/voice license labels are not complete source/dependency/data approval; authenticate tensor roles, demux/conditioners/Mimi and native runtime. |
 | 51 | Qwen2.5 Omni | Model license does not close source/component/data/dependency scope; complete thinker/talker/audio-VAE streaming and independent parity contracts. |
-| 52 | Qwen2 Audio | Fixed-source license is explicitly unknown; authenticate primary grant before native audio-language/reference work. |
+| 52 | Qwen2 Audio | Fixed-source license is explicitly unknown. Subsequent [primary-tree inspection](qwen2-audio-fixed-source-license-readback-2026-10-15.md) binds the exact commit/tree and finds no license-like filename, not a complete history receipt or proof that all source bodies lack a grant. Authenticate an explicit grant before native audio-language/reference work. |
 | 53 | Step-Audio2 | Complete source/weight/dependency/data/tokenizer/vocoder and native S2S composition before independent parity. |
 | 54 | VibeVoice ASR | External Qwen metadata/license, dataset/timestamp/diarization semantics and native ASR/reference contract remain open. |
 | 55 | VieNeu | Verify MOSS tokenizer license, dependencies and voice-cloning policy; native composite/parity remain incomplete. |
