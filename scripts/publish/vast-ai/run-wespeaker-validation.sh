@@ -193,12 +193,12 @@ download_hf_file() {
   token="${HF_TOKEN:-${HF:-}}"
   if [[ -n "$token" ]]; then
     [[ "$token" =~ ^[A-Za-z0-9._-]+$ ]] || { rm -f -- "$temporary"; die "HF token contains unsupported characters"; return 2; }
-    if ! printf 'header = "Authorization: Bearer %s"\n' "$token" | HF_TOKEN= HF= curl -fsSL --retry 3 --config - "$url" -o "$temporary"; then
+    if ! printf 'header = "Authorization: Bearer %s"\n' "$token" | HF_TOKEN= HF= curl -q -fsSL --retry 3 --config - "$url" -o "$temporary"; then
       rm -f -- "$temporary"
       return 2
     fi
   else
-    if ! curl -fsSL --retry 3 "$url" -o "$temporary"; then
+    if ! curl -q -fsSL --retry 3 "$url" -o "$temporary"; then
       rm -f -- "$temporary"
       return 2
     fi
@@ -376,7 +376,8 @@ EOF
     download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$download_dir" "$UPSTREAM_CHECKPOINT"; then
     log "self-test FAIL: synthetic authenticated download failed"; fail=1
   fi
-  if grep -Fq -- "hf_fake_token_123" "$curl_args" || grep -Fq -- "hf_fake_token_123" "$tmp/curl.env" || ! grep -Fq -- "hf_fake_token_123" "$curl_stdin" \
+  if [[ "$(sed -n '1p' "$curl_args")" != "-q" ]] \
+    || grep -Fq -- "hf_fake_token_123" "$curl_args" || grep -Fq -- "hf_fake_token_123" "$tmp/curl.env" || ! grep -Fq -- "hf_fake_token_123" "$curl_stdin" \
     || [[ "$(grep -Fc -- "/$UPSTREAM_CHECKPOINT_REMOTE?download=true" "$curl_args")" != 1 ]] \
     || grep -Fq -- "/$UPSTREAM_CHECKPOINT?download=true" "$curl_args" \
     || [[ ! -f "$download_dir/$UPSTREAM_CHECKPOINT" || -e "$download_dir/$UPSTREAM_CHECKPOINT_REMOTE" ]]; then
