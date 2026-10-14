@@ -33,9 +33,8 @@ bash scripts/check-fixture-eol-pins.sh
 # ~85 ms. Catches `<producer> | grep -q` under `set -o pipefail`, an idiom that
 # FAILS OPEN once the producer outsizes the pipe buffer — see the script header.
 echo "pre-commit [5/5]: pipefail/grep -q fail-open lint"
-# Owner directive 2026-08-01「python は uv から実行」= 全 python3 呼び出しを
-# uv run 経由に統一。tools/parity venv (Python 3.12) は project-wide default
-# interpreter として stdlib-only scripts も受ける。
-uv run --project tools/parity python scripts/compliance/lint-pipefail-grep-q.py
+# This checker imports only stdlib modules (re/sys/pathlib); keep this
+# compile-free hook independent of the tools/parity dependency environment.
+uv run --no-project --python 3.12 python scripts/compliance/lint-pipefail-grep-q.py
 
 echo "pre-commit: OK"

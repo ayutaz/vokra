@@ -93,6 +93,10 @@ jobs:
         # Executes the real hook with Git/Cargo/compliance boundaries mocked;
         # no compilation or ref mutation occurs in this checkout-only job.
         run: bash scripts/test-pre-push-fastpath.sh
+      - name: Pre-commit stdlib linter and production-hook regression tests
+        # Exercises the real hook and offline no-project UV path; Cargo and
+        # the three preceding shell checks are mock-only in the fixture.
+        run: bash scripts/test-pre-commit-stdlib.sh
 
   # Deterministic quality controls for AI-authored repository changes. This
   # job is checkout-only: it validates policy/configuration/scripts and never

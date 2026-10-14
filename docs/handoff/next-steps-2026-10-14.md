@@ -2,6 +2,72 @@
 
 ## ゴールと現在地
 
+> **16:55:26 UTCのMOSS受理と検証集約（2026-10-15 JST）:** PR #242はexact
+> `934e61ac`／base `627a641f`の全70 checks（69 success / 1 skipped）、必須16
+> context/app成功、開始した全9 workflowsのterminal successを確認して通常受理した。
+> 最新main／ローカルmainは`0f6750fa`でclean。48 dependency rows、source/model grant、
+> native/API/owner review、実weight CPU／Appleの承認や完了を意味しない。
+> 後続#245 Dia `cd90b94a`、#243 docsのprivate追記`f9feaabb`、stdlib pre-commit
+> 修正`e22a81eb`を通常mergeした候補`012ccaf4`に集約し、順次main更新によるCIの再無効化を
+> 減らす。元のPRは統合内容のfresh CI／受理が済むまで残し、古いCIを流用して受理しない。
+> [軽量検査の修正](pre-commit-stdlib-invocation-2026-10-15.md)は同じ5検査を保持し、
+> stdlib scannerの不要な146-package／約1.3G environment再生成を避ける。parser／memory
+> guards／owner gatesは不変で、通常commitと隔離negative-controlも成功した。
+> [OWSM follow-up](owsm-audit-admission-readback-2026-10-14.md#fixed-frontend-has-no-native-complex-selection-flag--2026-10-15-jst)
+> は固定公式frontendに依存回避flagがないことを確認し、[Qwen2候補調査](qwen2-audio-fixed-source-license-readback-2026-10-15.md)
+> は別providerのsource factsと既知advisoryの範囲を分離した。実行や署名は解除しない。
+> 58未解決行、凍結63-row owner scope、実weight CPU、最終clean HEAD／Apple packetは
+> 未完了。以下の受理snapshotは履歴として保持する。
+
+> **16:13:50 UTCのsource受理readback（2026-10-15 JST）:** PR #241はexact
+> `6bf092c4`／base `f0130b5d`の全70 checks（69 success / 1 skipped）、必須16
+> context/app成功、開始した全9 workflowsのterminal successを確認して通常受理した。
+> 最後のUnity Android/WebGL/UPMも成功し、最新main／ローカルmainは`627a641f`でclean。
+> source/staging修正だけの受理であり、依存/native/API/license/owner承認ではない。
+> MOSS #242とDia #245はこのmainの通常mergeとfresh CIが必要。Diaのdumper/validator
+> 現行contract修正`0c6bfd62`はpending #245 `cd90b94a`に含め、31 full records／27 active Linux
+> packagesを分離、未review／未検証seamの表現と無条件実行拒否を保持した。これはまだ
+> 公開headのCIで検証済みとは扱わない。[MMS current evidence readback](mms-current-evidence-admission-readback-2026-10-15.md)
+> は既存wheel-size receiptによる正当な省略を確認し、不必要なlock変更／有料再監査をしない。
+> [Qwen2 Audio fixed-tree readback](qwen2-audio-fixed-source-license-readback-2026-10-15.md)
+> もprimary metadataの限定的確認であり、complete history receiptやsource grantではない。
+> 58未解決行、凍結63-row owner scope、実weight CPU、最終clean HEAD／Apple packetは
+> 未完了。新規VAST／Scaleway／公開／ローカルモデル実行は開始していない。
+
+> **2026-10-15 JSTの行別静的再確認:** [58-row readback](current-58-static-prerequisite-readback-2026-10-15.md)
+> で先行10行と残り48 report IDsを整理した。57行のsource/static observationsと保護対象1行の
+> `UNKNOWN_EXCLUDED`であり、HFのfresh全行取得・production READY判定・実weight結果ではない。
+> public/upstreamの別repository revisionや未受理候補との差だけを不整合と扱わず、
+> 現行MOSS lock48件／review49件と一致するlock hashを独立確認した。
+> source/consumerの独立作業とowner/legal/upstreamの外部前提を分離し、全行non-Apple完了・
+> 最終clean HEAD／Apple packetというゴールを変えない。
+
+> **14:53:31 UTCのsecurity受理readback（2026-10-15 JST）:** PR #244はexact
+> `71cc8017`の全70 checks（69 success / 1 skipped）、必須16 context/app全成功、
+> 開始した全9 workflowsの完了を確認して通常受理した。main／ローカルmainは
+> `f0130b5d`でclean。変更はisolated server lockのrustls 0.23.45→0.23.46のみで、
+> Linux muslのadvisory/build/tests、macOS/Windows serverとdeploymentも成功した。
+> #241旧headと#243旧headの同じ新規RustSec失敗をrerun／ignoreせず原因修正した。
+> WeSpeaker `6bf092c4`、MOSS `33cb9526`、Dia `d33d7843`はこのmainを通常mergeした
+> 未受理候補で、focused model-free checksは成功、fresh exact-head CIは別に必要。
+> MOSSのcurrent-lock bindingとDiaの27-package／147件 publisher記録の契約修正は、
+> pending／unsigned／NO_UPLOADを維持し、実依存・API・owner approvalを解除しない。
+> 58未解決行・凍結63-row owner scope・実weight CPU・最終clean HEAD／Apple packetは
+> 未完了のまま。以下の13:43等のsnapshotは履歴として保持する。
+
+> **13:43:42 UTCの受理・監査readback:** PR #240はexact `e3fadc73`の
+> 全73 checks（72 success / 1 skipped）と必須16 context/app全成功を確認して
+> 通常受理した。main／ローカルmainは`fb1a692a`でclean。PR #237/#238/#239も
+> 受理済みだが、実weightやApple完了の判定には使わない。PR #241は上流fixtureの
+> 元の綴りを保持する単一ファイルのtypos除外と、最新mainの通常mergeを含む
+> `5199643d`をpushし、fresh CI待ち。旧headの失敗／Linux成功は履歴である。
+> [Candleの実source-only capture](kyutai-candle-reference-readback-2026-10-14.md#actual-source-only-capture-and-retained-lock-rejection)
+> は射影lockの`backtrace`完全record不一致で停止し、owned `55932858`と保存データを
+> 13:28:48 UTCにdestroy、個別null readbackまで確認した。違うfieldは未確定で、
+> 許容条件を緩めず診断だけを準備する。[RMVPE一次source調査](rmvpe-primary-license-readback-2026-10-14.md)
+> も固定source／weightの明示的grantを発見できず、同じlicense holdを維持する。
+> 58行・実weight CPU・最終clean HEAD／Apple packetは未完了のまま。
+
 > **11:01:31 UTCの受理readback:** PR #236はexact `afbaf0f9`の全70 checks
 > （69 success / 1 skipped、pending・失敗なし）と必須16 context/appの全成功を
 > 確認して通常受理した。Unityの全24 stepも成功を個別確認し、古いpending情報による
