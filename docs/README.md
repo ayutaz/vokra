@@ -1,13 +1,98 @@
 # Vokra documentation
 
-**Current-state review:** 2026-10-08 JST
+**Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**2026-10-15 JST acceptance readback:** PR #246 was normally merged at
+18:24:02 UTC on 2026-10-14 after all 70 checks completed (69 successful,
+one intentional skip), all 16 required context/application pairs succeeded
+and all nine started workflows reached terminal success, including Unity.
+Accepted main and clean local main are `731592f9`. The MOSS API-smoke
+source/bridge correction is accepted, not actual API, owner/legal, CPU or
+Apple execution. The five remaining open PRs are Draft #198/#191/#182/#169/#152.
+The [XCodec2 exact-byte guard candidate](handoff/xcodec2-exact-byte-guard-binding-2026-10-15.md)
+keeps #152's full unresolved scope and immutable historical oracle;
+fresh candidate CI and formal acceptance remain separate. The accepted-main
+and #246-pending statements below are preserved as earlier snapshots.
+
+Latest accepted main is `d1cbed72` after PR #247's normal merge at
+17:46:55 UTC on 2026-10-14: all 73 checks completed (71 success, two intentional
+skips), all 16 required context/application pairs successful and all ten
+started workflows terminal success, including late Unity packaging. Local
+main is fast-forwarded and clean. The source/static integration accepts Dia's
+fail-closed current contract, the dated non-Apple readback and the stdlib-only
+pre-commit correction. #243 and #245 are closed as superseded, not individually
+merged. Real-weight CPU, owner/legal/API readiness and final Apple packets
+remain unfinished. [MOSS API-smoke lock reconciliation](handoff/moss-api-smoke-urllib3-reconciliation-2026-10-15.md)
+and [authoritative bridge binding](handoff/moss-api-smoke-bridge-binding-2026-10-15.md)
+are the next reviewed source-only #246 candidate, normally integrated with
+this main as `d039e4dd`; fresh published-head CI and acceptance remain separate.
+The preceding accepted main was `0f6750fa` after PR #242's normal merge at
+16:55:26 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
+skip), all 16 required context/application pairs successful and all nine
+started workflows terminal success. Current MOSS lock/schema/review inputs are
+accepted; 48 pending dependency rows, source/model grants, native/API/owner
+approval and real-weight parity remain unresolved. Local main is clean and
+synchronized. At that snapshot, Dia #245, documentation #243 and the separate
+compile-free pre-commit correction were being consolidated for fresh
+current-base CI. The subsequent #247 acceptance above supersedes that pending
+state without treating the old heads as current evidence.
+The preceding accepted main was `627a641f` after PR #241's normal merge at
+16:13:50 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
+skip), all 16 required context/application pairs successful and all nine
+started workflows terminal success, including late Unity Android/WebGL/UPM
+stages. Local main is clean and synchronized. This accepts the WeSpeaker
+source/staging correction, not dependency/native/API/legal/owner or real-weight
+parity readiness. At that snapshot, MOSS #242 and Dia #245 had to integrate this main and
+pass new exact-head CI; the latter also needs the coordinated current-reference
+consumer correction `0c6bfd62`, now included in pending head `cd90b94a`. No local model execution
+or new paid worker follows. The preceding accepted snapshot was `f0130b5d`
+after PR #244's normal merge at
+14:53:31 UTC on 2026-10-14 (69 success, one skip, all 16 required
+context/application pairs successful). The isolated server rustls update
+passed fresh Linux musl advisory/build/tests, macOS/Windows compatibility and
+deployment checks. At that preceding snapshot, PR #241's source-pin and staging
+correction was not yet accepted; its integrated `6bf092c4` head required fresh CI. MOSS PR #242 and
+the separate Dia approval-validator correction also require fresh exact-head
+CI; their synthetic checks grant no execution approval. The source-only Candle capture failed
+the exact retained-lock-record gate; its owned worker and storage were destroyed.
+See the [actual capture readback](handoff/kyutai-candle-reference-readback-2026-10-14.md#actual-source-only-capture-and-retained-lock-rejection).
+Neither result completes a real-weight or Apple gate.
+The previous accepted snapshot was `fb1a692a` after PR #240 at 13:43:42 UTC
+(72 success, one skip, all 16 required context/application pairs successful).
+Earlier accepted main was `99bfa77a` after PR #236's normal merge at 11:01:31 UTC
+(69 success, one skip, all 16 required context/application pairs successful).
+The [FireRed configuration readback](handoff/firered-checkpoint-config-source-readback-2026-10-14.md)
+separates the actual checkpoint-argument prerequisite from an empty YAML
+sidecar and records the new inert-reader preparation; no real checkpoint,
+reference, CPU parity or final Apple packet follows from its synthetic tests.
+The dependency and observer snapshots below are dated earlier acceptances.
+Earlier accepted main snapshot is `ab653152` after PR #234's normal merge at 10:17:38 UTC
+(69 success, one skip, all 16 required context/application pairs successful).
+PR #235's scalar-approval correction was accepted at 09:39:44 UTC. The
+[observer preparation record](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md)
+records the separate source-only candidate and corrected read-only VAST search;
+no new worker or model result follows from either.
+PR #232 was normally accepted at 09:03:54 UTC after 69 successful checks,
+one skip and all 16 required context/application pairs; its main snapshot is
+`fa42f112`. The [plan readback](handoff/next-steps-2026-10-14.md) records that
+acceptance and the source-only VAST admission result, not model completion.
+The recorded dependency baseline is `9ddc0da5` after the urllib3 update in PR #231;
+the accepted source-contract baseline is `f8804b74` from PR #230. See the
+[acceptance and Kyutai reference readback](handoff/kyutai-candle-reference-readback-2026-10-14.md).
+The earlier local documentation commit `1a63a8d1` is preserved on an archive
+branch; it is no longer the current main baseline.
+The dated metadata snapshot below retains
+its 2026-10-13 source boundary. Model and Apple completion are not implied.
+
+**Current-state review:** 2026-10-13 JST
 
 **Read-only external baseline:** GitHub `main` at
-`d100d93778191ccab77bd1c37fe3552e3d889758` (API read on 2026-10-08). The
-documentation branch starts at that exact checkout; unmerged PRs and their CI
-are not part of this baseline. The detailed dated snapshot, including its
-source boundaries and historical evidence, is retained in the
-[documentation audit](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation).
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` (API read on 2026-10-13),
+matching local `main`. This documentation refresh preserves the existing
+dirty code changes; it is not a new clean release HEAD. Unmerged PRs and
+their CI are not part of this baseline. The [latest documentation audit](handoff/documentation-refresh-2026-10-13.md)
+records fresh metadata, security and PR facts, coverage and remaining gates.
+The [2026-10-08 index snapshot](handoff/documentation-refresh-2026-10-08.md#documentation-index-snapshot-retained-from-before-consolidation)
+is retained as dated history.
 
 The public catalog is not fully Apple-complete. Conversion, binding, native
 forward, independent parity, Apple CPU/Metal/no-fallback verification, and
@@ -24,6 +109,22 @@ environment they name.
 
 | Need | Document |
 |---|---|
+| What to do next | [2026-10-14 prioritized plan](handoff/next-steps-2026-10-14.md): local safety changes and PRs first, exact non-Apple gates, VAST CPU, final packet, then Scaleway |
+| Latest execution readback | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): exact `4263f416` source gates green (8,223 passed), earlier failed attempts retained, owned VAST worker/storage destroyed, and remaining gates |
+| All unresolved public rows | [2026-10-14 58-row prerequisite inventory](handoff/current-58-prerequisite-inventory-2026-10-14.md): exact metadata denominator, per-row first prerequisites, and protected-input exclusion; not an execution approval |
+| Latest static prerequisite review | [2026-10-15 58-row readback](handoff/current-58-static-prerequisite-readback-2026-10-15.md): 57 source/static observations plus one protected exclusion; current first prerequisites, pending PR scopes and corrections to namespace/count comparisons, not production readiness or CPU evidence |
+| MMS current evidence admission | [2026-10-15 production-gate readback](handoff/mms-current-evidence-admission-readback-2026-10-15.md): current dependency/API bindings validate and intentionally omitted wheel size is covered by its archive receipt; native/package/owner and full-model parity holds remain |
+| Qwen2 Audio fixed-source rights | [2026-10-15 primary-tree readback](handoff/qwen2-audio-fixed-source-license-readback-2026-10-15.md): exact commit/tree metadata and no license-like filename; bounded inspection, not a complete history audit or source-code grant |
+| Compile-free commit checks | [2026-10-15 stdlib invocation correction](handoff/pre-commit-stdlib-invocation-2026-10-15.md): preserve all five checks without synchronizing the parity environment; isolated real-UV regression, pending integrated CI |
+| Current versus historical gates | [2026-10-14 reference binding readback](handoff/reference-gate-binding-readback-2026-10-14.md): Qwen current probes, Dia active-contract mismatch and Canary historical closure; no approval carryover |
+| WeSpeaker dependency admission | [2026-10-14 exact setuptools finding](handoff/wespeaker-setuptools84-static-finding-2026-10-14.md): actual vendored LGPL payload, no paid repeat of the known-blocked closure, and next source-only route investigation |
+| WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |
+| RMVPE primary rights boundary | [2026-10-14 official-source and release readback](handoff/rmvpe-primary-license-readback-2026-10-14.md): no explicit grant located for the fixed code/checkpoint; keep fail-closed without acquiring weights |
+| Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
+| Kyutai alternate reference admission | [2026-10-14 Candle readback](handoff/kyutai-candle-reference-readback-2026-10-14.md): identical declared checkpoint/Mimi/tokenizer identities, distinct execution scope and a fixed-lock memmap2 security hold; no real-weight run |
+| Kyutai final-step observation preparation | [2026-10-14 source-only observer](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md): authenticated additive source patch and 17 stdlib tests; Rust/API, complete PCM oracle and real-weight parity remain unrun |
+| FireRed checkpoint configuration and bounded metadata preparation | [2026-10-14 source readback](handoff/firered-checkpoint-config-source-readback-2026-10-14.md): actual `args` loader contract, inert structural reader and 27 synthetic safety tests; no checkpoint or numerical evidence |
+| OWSM dependency admission | [2026-10-14 scalar-approval correction](handoff/owsm-audit-admission-readback-2026-10-14.md): unbound allow declarations are refused; the active ComplexTensor license and full-reference prerequisites remain open |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
 | Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
@@ -41,7 +142,9 @@ environment they name.
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 | Current Mac CPU/Metal campaign | [2026-09-11 Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md), the [residual execution ledger](handoff/mac-cpu-metal-residual-execution-2026-09-12.md), and the [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md) (the live audit has 58 unresolved rows; the dated ledger retains its historical 63-row baseline) |
 | Public catalog and security completion | [2026-09-29 execution plan](handoff/public-catalog-security-completion-2026-09-29.md) (dated starting counts; re-run the live audits for current values) |
-| Whole-document refresh coverage and limitations | [2026-10-08 documentation audit](handoff/documentation-refresh-2026-10-08.md); the [2026-10-04 audit](handoff/documentation-refresh-2026-10-04.md) preserves the previous review |
+| Latest VibeVoice dependency evidence | [2026-10-13 static closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md): private 41-wheel scope, owner/legal/native/runtime unresolved, owned worker/data destroyed |
+| VibeVoice dependency source-license follow-up | [2026-10-14 exact source LICENSE identities](handoff/vibevoice-source-license-reconciliation-2026-10-14.md): official safetensors repository move, pinned source licenses, retained wheel/native gates and missing old local receipts |
+| Whole-document refresh coverage and limitations | [2026-10-13 documentation audit](handoff/documentation-refresh-2026-10-13.md); [2026-10-08](handoff/documentation-refresh-2026-10-08.md) and [2026-10-04](handoff/documentation-refresh-2026-10-04.md) preserve earlier reviews |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).
