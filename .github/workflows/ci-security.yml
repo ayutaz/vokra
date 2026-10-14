@@ -66,6 +66,9 @@ jobs:
       - name: FireRed checkpoint metadata unit tests
         run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/audit -p 'test_firered_checkpoint_metadata.py'
 
+      - name: WeSpeaker source pin unit tests
+        run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/parity -p 'test_wespeaker_source_pin.py'
+
       - name: Install pinned zizmor
         shell: bash
         run: |
