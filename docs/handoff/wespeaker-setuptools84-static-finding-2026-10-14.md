@@ -1,5 +1,10 @@
 # WeSpeaker setuptools 84 static finding — 2026-10-14
 
+> **Source-contract follow-up:** the [fixed-source reconciliation](wespeaker-source-pin-reconciliation-2026-10-14.md)
+> identifies incorrect pooling digests and separates namespace/leaf import
+> facts from Torch's locked setuptools requirement. The archive and LGPL
+> finding below remain unchanged; no omission or execution approval follows.
+
 This factual software-only audit precedes any paid current WeSpeaker closure
 audit or reference execution. The source lock remains
 `65715f60a9f86aa80792e4a11303bc4eb2067cb4a3cd670b5b6d724d478c9d51`.

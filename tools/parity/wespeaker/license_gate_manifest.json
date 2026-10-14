@@ -1,5 +1,5 @@
 {
-  "approval_scope_sha256": "77ff8539c507652b7fda4ae4481b2c0fa60dfad4b81eaaa43d0466e127599f22",
+  "approval_scope_sha256": "009e346051df3bbacfa07e3ee7828d48c3d38f36efb8e8d8ed67744722c84ec1",
   "component_reviews": [
     {
       "approval_digest": null,
@@ -15,10 +15,10 @@
           },
           {
             "bytes": 10255,
-            "git_blob_sha1": "47120eead47a511939267470496539804c17b7d3",
+            "git_blob_sha1": "47120eb9029ba1b00d18fcd61dd80f8afa2037c6",
             "path": "wespeaker/models/pooling_layers.py",
             "role": "official_pooling",
-            "sha256": "768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9"
+            "sha256": "768910c91e353f1d0c2f3edc8f9ae758d2ff7e477d37fb470ae946eba69adac8"
           }
         ],
         "license": {
@@ -48,9 +48,12 @@
           "path": "config.yaml",
           "sha256": "3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e"
         },
-        "git_oid": "7f92ddd059d244c7d2653650d3be85de9f136c41",
+        "git_oid": null,
+        "git_oid_status": "NOT_AUTHENTICATED",
         "license_spdx": "cc-by-4.0",
         "owner_signoff_date": "2026-07-28",
+        "remote_filename": "avg_model",
+        "staged_filename": "avg_model.pt",
         "path": "avg_model.pt",
         "repo": "Wespeaker/wespeaker-voxceleb-resnet34-LM",
         "revision": "f0c48c298fd835726c27956a5d617bad7115627e",
@@ -312,9 +315,12 @@
         "path": "config.yaml",
         "sha256": "3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e"
       },
-      "git_oid": "7f92ddd059d244c7d2653650d3be85de9f136c41",
+      "git_oid": null,
+      "git_oid_status": "NOT_AUTHENTICATED",
       "license_spdx": "cc-by-4.0",
       "owner_signoff_date": "2026-07-28",
+      "remote_filename": "avg_model",
+      "staged_filename": "avg_model.pt",
       "path": "avg_model.pt",
       "repo": "Wespeaker/wespeaker-voxceleb-resnet34-LM",
       "revision": "f0c48c298fd835726c27956a5d617bad7115627e",
@@ -359,10 +365,10 @@
         },
         {
           "bytes": 10255,
-          "git_blob_sha1": "47120eead47a511939267470496539804c17b7d3",
+          "git_blob_sha1": "47120eb9029ba1b00d18fcd61dd80f8afa2037c6",
           "path": "wespeaker/models/pooling_layers.py",
           "role": "official_pooling",
-          "sha256": "768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9"
+          "sha256": "768910c91e353f1d0c2f3edc8f9ae758d2ff7e477d37fb470ae946eba69adac8"
         }
       ],
       "license": {
