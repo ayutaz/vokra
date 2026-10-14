@@ -10,6 +10,16 @@ at 06:19:07 UTC. Its reviewed head was
 required context/application pairs succeeded. No protection override was used.
 Local main was synchronized and clean before this documentation branch.
 
+Subsequently, Dependabot [PR #231](https://github.com/ayutaz/vokra/pull/231)
+was normally accepted at 07:03:27 UTC, producing main
+`9ddc0da53edae6ac8ebf25600891d849327be83b`. Its only changed file updates
+pyannote's lock from urllib3 2.7.0 to 2.8.0. Official PyPI JSON matches both
+artifact URLs, SHA-256 values and sizes; Python `>=3.10` admits this tree's
+3.12 pin, and upstream's license remains MIT. Exact head `a6c9d7d` had
+72 successful checks and one skipped check, including all 16 fresh required
+context/application pairs. This is dependency/source acceptance, not a
+pyannote model run or reference-closure approval.
+
 The former local main documentation commit `1a63a8d1` remains recoverable on
 `codex/archive-main-pre230-20261014`; it was not discarded or force-reset.
 The [exact source replay](execution-readback-2026-10-14.md#exact-source-replay-passed-and-owned-worker-destroyed)
@@ -127,3 +137,11 @@ The docs reference, runbook-path citation and documentation-example gates
 passed, along with diff whitespace hygiene. The example gate still lists 30
 deferred platform/UI blocks, not newly verified hardware/toolchain examples.
 No local Cargo compilation, model execution or paid dependency audit was run.
+
+The first PR #233 documentation-link job `115725024350` at `510dc36a`
+failed with three transport-status entries: one GitHub CONTRIBUTING link
+returned 503 and the existing HF organization link returned 504 in two files.
+The mandatory gate correctly failed; no new status acceptance, exclusion or
+protection override is introduced. The accepted PR #231 main was normally
+merged into the documentation branch, so subsequent CI must cover its new
+head, not relabel this failed job as passed.

@@ -1,8 +1,9 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-The latest accepted source main is `f8804b74` after ordinary acceptance of
-PR #230; see the [acceptance and Kyutai reference readback](handoff/kyutai-candle-reference-readback-2026-10-14.md).
+The latest accepted main is `9ddc0da5` after the urllib3 update in PR #231;
+the accepted source-contract baseline is `f8804b74` from PR #230. See the
+[acceptance and Kyutai reference readback](handoff/kyutai-candle-reference-readback-2026-10-14.md).
 The earlier local documentation commit `1a63a8d1` is preserved on an archive
 branch; it is no longer the current main baseline.
 The dated metadata snapshot below retains
