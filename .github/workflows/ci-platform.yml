@@ -824,7 +824,9 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Build vokra-server (release, x86_64-unknown-linux-musl)
         run: |
-          cargo build --release \
+          # The isolated server lockfile is committed and must be the exact
+          # graph used by this deployment build.
+          cargo build --locked --release \
             --target x86_64-unknown-linux-musl \
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
@@ -895,3 +897,7 @@ jobs:
         # lockfile. If cargo somehow touched it, the isolation pattern is
         # broken and the change must be reviewed.
         run: git diff --exit-code Cargo.lock
+      - name: Verify isolated Cargo.lock unchanged
+        # The deployment build is locked above; keep this separate guard so
+        # any isolated-graph rewrite is visible and reviewed in the PR.
+        run: git diff --exit-code -- integrations/vokra-server/Cargo.lock

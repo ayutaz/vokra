@@ -642,7 +642,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          set -- cargo build
+          # Keep the committed isolated lock authoritative; dependency drift
+          # must arrive as an explicit lockfile change in the PR.
+          set -- cargo build --locked
           if [ "${{ matrix.run_tests }}" = "true" ]; then
             set -- "$@" --release
           fi
@@ -692,7 +694,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test \
+          cargo test --locked \
             --manifest-path integrations/vokra-server/Cargo.toml \
             -p vokra-server --lib
       - name: Compat tests (openai / vllm / piper_http / wyoming / wyoming_info_reply / multi_session)
@@ -713,7 +715,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --release \
+          cargo test --locked --release \
             --manifest-path integrations/vokra-server/Cargo.toml \
             -p vokra-server \
             --test openai_compat \
@@ -754,6 +756,12 @@ jobs:
         # the runtime graph (NFR-DS-02 breach, plan §5 R1).
         shell: bash
         run: git diff --exit-code Cargo.lock
+      - name: Verify isolated Cargo.lock unchanged
+        # cargo-deny reads the server workspace after the locked build/test
+        # legs. Keep its resolver from silently rewriting the committed
+        # isolated lockfile; any dependency update must be reviewed in the PR.
+        shell: bash
+        run: git diff --exit-code -- integrations/vokra-server/Cargo.lock
 
   # Phase 5b: cargo-audit (RustSec advisory-db) ADVISORY sweep.
   # ADVISORY, not required — the REQUIRED cargo-audit already runs against
