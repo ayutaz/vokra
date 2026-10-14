@@ -14,8 +14,8 @@ current audio codes. Each step performs one transformer row and never
 recomputes a full prefix. A failed step clears all layer caches and poisons the
 stream until `reset` is called.
 
-Primary sources: [Moshi `LMGen` at the pinned revision](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/models/lm.py)
-and the [pinned Moshi package license](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/LICENSE).
+Primary sources: [Moshi `LMGen` at the pinned revision](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/models/lm.py)
+and the [pinned Moshi package license](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/LICENSE).
 The released Kyutai STT configuration carries a 375-frame context bound;
 the implementation reads that bound from authenticated metadata rather than
 hard-coding it. This change has not validated the real checkpoint: its tests
