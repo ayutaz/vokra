@@ -1,5 +1,20 @@
 # Dia dependency-scope validator reconciliation — 2026-10-14
 
+> **2026-10-15 JST direct-entry safeguard:** source commit `340f66be` adds the
+> worker's unconditional `BLOCKED_UPSTREAM_PINNED_COMPATIBILITY` refusal to
+> both direct CLI and programmatic `run()` before path/project/import/model
+> access. CLI returns error 2 without a traceback; `--help` and `--self-test`
+> remain model-free. Six causal stdlib tests include malformed input,
+> side-effect sentinels, actual subprocess exit, worker ordering and explicit
+> test-mode argument validation. The focused suite is wired into Linux
+> security CI. Implementer and manager run it offline successfully; standard
+> pre-commit passes all five cheap gates. This closes an admission-path gap,
+> not upstream compatibility, dependency/license/owner review or parity.
+> The current lock has 31 total records versus 27 active Linux rows;
+> historical dumper/validator digests and 29-row expectations still require a
+> separate coordinated correction. No numerical bound, lock, project,
+> source identity, worker gate, approval or measured receipt changed.
+
 Source-only candidate based on accepted main
 `fb1a692a24ebe4bb928556699eff6fbce4750b46`. This is a validator correction,
 not a new measured dependency receipt, owner approval or reference result.
