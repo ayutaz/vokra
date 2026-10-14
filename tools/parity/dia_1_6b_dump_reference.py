@@ -93,6 +93,22 @@ REQUIRED_ARTIFACTS = {
     "delayed_codes", "reverted_codes", "dac_latent", "pcm",
 }
 TORCHAUDIO_STUB_MARKER = "dia-reference-torchaudio-audio-prompt-none-stub-v1"
+UPSTREAM_COMPATIBILITY_STATUS = "BLOCKED_UPSTREAM_PINNED_COMPATIBILITY"
+
+
+def require_execution_admission() -> None:
+    """Keep direct adapter entry fail-closed while upstream pins disagree.
+
+    The VAST worker enforces this same status before preparing any execution
+    inputs.  Direct CLI and programmatic calls must not bypass that admission
+    boundary by reaching path validation, project identity, or model imports.
+    ``--self-test`` is intentionally handled by ``main`` before this guard.
+    """
+    raise RuntimeError(
+        "Dia reference execution is blocked: "
+        f"{UPSTREAM_COMPATIBILITY_STATUS}; authenticated upstream pins "
+        "Torch/TorchAudio 2.6.0 while the candidate project uses 2.13.0/2.11.0"
+    )
 
 
 def install_torchaudio_fail_closed_stub() -> dict[str, Any]:
@@ -502,6 +518,7 @@ def validate_dependency_binding(
 
 
 def run(source: Path, model: Path, public: Path, dac_evidence: Path, dac_checkpoint: Path, dac_source: Path, output: Path, text: str, seed: int, expected_head: str, approval_sha256: str, dependency_approval_sha256: str, dependency_scope_sha256: str, dependency_approval_status: str, dependency_publication: str) -> None:
+    require_execution_admission()
     validate_binding(expected_head, approval_sha256)
     dependency_binding = validate_dependency_binding(expected_head, dependency_approval_sha256, dependency_scope_sha256, dependency_approval_status, dependency_publication)
     if not source.is_dir() or not model.is_dir() or not public.is_dir() or not output.is_dir():
@@ -823,6 +840,7 @@ def main() -> int:
         self_test()
         return 0
     try:
+        require_execution_admission()
         for name in ("source", "model", "public", "output", "dac_evidence", "dac_checkpoint", "dac_source"):
             raw = getattr(args, name)
             if raw is not None:
