@@ -897,3 +897,7 @@ jobs:
         # lockfile. If cargo somehow touched it, the isolation pattern is
         # broken and the change must be reviewed.
         run: git diff --exit-code Cargo.lock
+      - name: Verify isolated Cargo.lock unchanged
+        # The deployment build is locked above; keep this separate guard so
+        # any isolated-graph rewrite is visible and reviewed in the PR.
+        run: git diff --exit-code -- integrations/vokra-server/Cargo.lock
