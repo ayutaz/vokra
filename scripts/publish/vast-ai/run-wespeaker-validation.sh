@@ -21,10 +21,10 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 # digest with a newly observed value in this worker.
 UPSTREAM_HF="Wespeaker/wespeaker-voxceleb-resnet34-LM"
 UPSTREAM_REVISION="f0c48c298fd835726c27956a5d617bad7115627e"
+UPSTREAM_CHECKPOINT_REMOTE="avg_model"
 UPSTREAM_CHECKPOINT="avg_model.pt"
 UPSTREAM_CHECKPOINT_SHA256="9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
 UPSTREAM_CHECKPOINT_BYTES=45053131
-UPSTREAM_CHECKPOINT_GIT_OID="7f92ddd059d244c7d2653650d3be85de9f136c41"
 UPSTREAM_CONFIG="config.yaml"
 UPSTREAM_CONFIG_BYTES=1673
 UPSTREAM_CONFIG_SHA256="3cf7d3243464cd939083e29d2be65c2abcdd954c1a64559bad73b74ffdb0db3e"
@@ -38,8 +38,8 @@ SOURCE_RESNET_BYTES=9564
 SOURCE_RESNET_SHA256="6f3c8219be2c9a8b9eabed8169c1abaec3e48670be7aaf1e792138b2b20e68c4"
 SOURCE_RESNET_GIT_BLOB="17607e6d2c72627e15db4214cacfa9d7b89ca945"
 SOURCE_POOLING_BYTES=10255
-SOURCE_POOLING_SHA256="768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9"
-SOURCE_POOLING_GIT_BLOB="47120eead47a511939267470496539804c17b7d3"
+SOURCE_POOLING_SHA256="768910c91e353f1d0c2f3edc8f9ae758d2ff7e477d37fb470ae946eba69adac8"
+SOURCE_POOLING_GIT_BLOB="47120eb9029ba1b00d18fcd61dd80f8afa2037c6"
 
 # Canonical 182-tensor artifact used by the existing real parity test.
 PUBLIC_REPO="vokra/pyannote-wespeaker-voxceleb-resnet34-lm"
@@ -109,7 +109,7 @@ verify_source_file() {
   [[ -f "$path" && ! -L "$path" ]] || { die "source file is missing or symlinked: $relative"; return 2; }
   [[ "$(wc -c < "$path" | tr -d '[:space:]')" == "$expected_bytes" ]] || { die "source byte size mismatch: $relative"; return 2; }
   [[ "$(sha256_file "$path")" == "$expected_sha" ]] || { die "source SHA mismatch: $relative"; return 2; }
-  actual_blob="$(git -C "$root" hash-object "$relative")"
+  actual_blob="$(git -C "$root" hash-object --no-filters "$relative")"
   [[ "$actual_blob" == "$expected_blob" ]] || { die "source Git blob mismatch: $relative"; return 2; }
 }
 
@@ -182,15 +182,46 @@ write_apple_args() {
 }
 
 download_hf_file() {
-  local repository="$1" revision="$2" filename="$3" output_dir="$4"
+  local repository="$1" revision="$2" remote_filename="$3" output_dir="$4" local_filename="${5:-$remote_filename}"
+  local output_path temporary token
+  [[ "$remote_filename" =~ ^[A-Za-z0-9._/-]+$ && "$local_filename" =~ ^[A-Za-z0-9._-]+$ ]] || { die "invalid Hugging Face filename"; return 2; }
   mkdir -p "$output_dir"
-  local url="https://huggingface.co/$repository/resolve/$revision/$filename?download=true"
-  if [[ -n "${HF_TOKEN:-${HF:-}}" ]]; then
-    curl -fsSL --retry 3 -H "Authorization: Bearer ${HF_TOKEN:-${HF:-}}" "$url" -o "$output_dir/$filename"
+  output_path="$output_dir/$local_filename"
+  [[ ! -e "$output_path" && ! -L "$output_path" ]] || { die "refusing to overwrite staged input: $output_path"; return 2; }
+  temporary="$(mktemp "$output_dir/.${local_filename}.download.XXXXXX")" || { die "could not create staged download temporary"; return 2; }
+  local url="https://huggingface.co/$repository/resolve/$revision/$remote_filename?download=true"
+  token="${HF_TOKEN:-${HF:-}}"
+  if [[ -n "$token" ]]; then
+    [[ "$token" =~ ^[A-Za-z0-9._-]+$ ]] || { rm -f -- "$temporary"; die "HF token contains unsupported characters"; return 2; }
+    if ! printf 'header = "Authorization: Bearer %s"\n' "$token" | HF_TOKEN= HF= curl -fsSL --retry 3 --config - "$url" -o "$temporary"; then
+      rm -f -- "$temporary"
+      return 2
+    fi
   else
-    curl -fsSL --retry 3 "$url" -o "$output_dir/$filename"
+    if ! curl -fsSL --retry 3 "$url" -o "$temporary"; then
+      rm -f -- "$temporary"
+      return 2
+    fi
   fi
-  [[ -f "$output_dir/$filename" ]] || die "download did not produce $output_dir/$filename"
+  if ! link_exclusive_file "$temporary" "$output_path"; then
+    rm -f -- "$temporary"
+    die "refusing to replace staged input: $output_path"
+    return 2
+  fi
+  rm -f -- "$temporary"
+  [[ -f "$output_path" && ! -L "$output_path" ]] || die "download did not produce $output_path"
+}
+
+link_exclusive_file() {
+  local source="$1" destination="$2"
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    ln -T -- "$source" "$destination"
+  else
+    # Production is Linux/VAST; this guarded fallback keeps the offline
+    # contract self-test runnable on macOS, which has no ln -T.
+    [[ ! -d "$destination" ]] || return 1
+    ln "$source" "$destination"
+  fi
 }
 
 pre_sync_gate() {
@@ -238,7 +269,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool required_file
-  for tool in uv cargo cargo-deny cargo-audit rustc rustup git awk grep find tee wc tr curl; do
+  for tool in uv cargo cargo-deny cargo-audit rustc rustup git awk grep find tee wc tr curl mktemp; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" && ! -L "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a real git checkout"
@@ -284,7 +315,7 @@ run_self_test() {
   [[ "$actual" == "$expected" ]] || { log "self-test FAIL: local hash identity"; fail=1; }
 
   cases=$((cases + 1))
-  for required in "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT" \
+  for required in "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$UPSTREAM_CHECKPOINT" \
     "$UPSTREAM_CHECKPOINT_SHA256" "$SOURCE_REPOSITORY" "$SOURCE_REVISION" \
     "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_SHA256" \
     "tools/parity/wespeaker_prepare_checkpoint.py" "tools/parity/wespeaker_dump_reference.py" \
@@ -316,6 +347,62 @@ run_self_test() {
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: direct Python/pip command found"; fail=1
   fi
+  local fake_bin="$tmp/fake-bin" curl_args="$tmp/curl.args" curl_stdin="$tmp/curl.stdin" download_dir="$tmp/download"
+  local fake_curl="$fake_bin/curl" staged_before
+  mkdir -p "$fake_bin" "$download_dir"
+  cat > "$fake_curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$CURL_ARGS_LOG"
+printf '%s\n%s\n' "${HF_TOKEN-}" "${HF-}" > "$CURL_ENV_LOG"
+cat > "$CURL_STDIN_LOG"
+output=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    --config) shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'synthetic-hf-payload\n' > "$output"
+if [[ "${RACE_KIND:-}" == directory ]]; then
+  mkdir "$RACE_DEST"
+elif [[ "${RACE_KIND:-}" == symlink ]]; then
+  ln -s "$RACE_TARGET" "$RACE_DEST"
+fi
+EOF
+  chmod 700 "$fake_curl"
+  if ! CURL_ARGS_LOG="$curl_args" CURL_STDIN_LOG="$curl_stdin" CURL_ENV_LOG="$tmp/curl.env" PATH="$fake_bin:$PATH" HF_TOKEN=hf_fake_token_123 \
+    download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$download_dir" "$UPSTREAM_CHECKPOINT"; then
+    log "self-test FAIL: synthetic authenticated download failed"; fail=1
+  fi
+  if grep -Fq -- "hf_fake_token_123" "$curl_args" || grep -Fq -- "hf_fake_token_123" "$tmp/curl.env" || ! grep -Fq -- "hf_fake_token_123" "$curl_stdin" \
+    || [[ "$(grep -Fc -- "/$UPSTREAM_CHECKPOINT_REMOTE?download=true" "$curl_args")" != 1 ]] \
+    || grep -Fq -- "/$UPSTREAM_CHECKPOINT?download=true" "$curl_args" \
+    || [[ ! -f "$download_dir/$UPSTREAM_CHECKPOINT" || -e "$download_dir/$UPSTREAM_CHECKPOINT_REMOTE" ]]; then
+    log "self-test FAIL: token leaked to argv or remote/local staging contract drifted"; fail=1
+  fi
+  staged_before="$(<"$download_dir/$UPSTREAM_CHECKPOINT")"
+  if CURL_ARGS_LOG="$curl_args" CURL_STDIN_LOG="$curl_stdin" PATH="$fake_bin:$PATH" HF_TOKEN=hf_fake_token_123 \
+    download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$download_dir" "$UPSTREAM_CHECKPOINT" >/dev/null 2>&1; then
+    log "self-test FAIL: staged download overwrite accepted"; fail=1
+  fi
+  [[ "$(<"$download_dir/$UPSTREAM_CHECKPOINT")" == "$staged_before" ]] \
+    || { log "self-test FAIL: existing staged input changed"; fail=1; }
+  local race_dir="$tmp/race-directory" race_link="$tmp/race-symlink" race_target="$tmp/race-target"
+  mkdir -p "$race_dir" "$race_link" "$race_target"
+  CURL_ARGS_LOG="$tmp/race-dir.args" CURL_STDIN_LOG="$tmp/race-dir.stdin" CURL_ENV_LOG="$tmp/race-dir.env" \
+    PATH="$fake_bin:$PATH" RACE_KIND=directory RACE_DEST="$race_dir/$UPSTREAM_CHECKPOINT" HF_TOKEN= HF= \
+    download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$race_dir" "$UPSTREAM_CHECKPOINT" </dev/null >/dev/null 2>&1 \
+    && { log "self-test FAIL: raced destination directory accepted"; fail=1; }
+  [[ -d "$race_dir/$UPSTREAM_CHECKPOINT" && -z "$(find "$race_dir/$UPSTREAM_CHECKPOINT" -mindepth 1 -print -quit)" ]] \
+    || { log "self-test FAIL: raced directory received nested payload"; fail=1; }
+  CURL_ARGS_LOG="$tmp/race-link.args" CURL_STDIN_LOG="$tmp/race-link.stdin" CURL_ENV_LOG="$tmp/race-link.env" \
+    PATH="$fake_bin:$PATH" RACE_KIND=symlink RACE_DEST="$race_link/$UPSTREAM_CHECKPOINT" RACE_TARGET="$race_target" HF_TOKEN= HF= \
+    download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$race_link" "$UPSTREAM_CHECKPOINT" </dev/null >/dev/null 2>&1 \
+    && { log "self-test FAIL: raced destination symlink accepted"; fail=1; }
+  [[ -L "$race_link/$UPSTREAM_CHECKPOINT" && -z "$(find "$race_target" -mindepth 1 -print -quit)" ]] \
+    || { log "self-test FAIL: raced symlink received nested payload"; fail=1; }
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|[^[:space:]]*upload\.sh|[^[:space:]]*publish-one\.sh|huggingface-cli[[:space:]]+upload|hf[[:space:]]+upload|scp|rsync)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: publication command found"; fail=1
   fi
@@ -458,7 +545,7 @@ main() {
   step "Sync locked Python 3.12 reference environment"
   UV_NO_CACHE=1 uv sync --no-cache --project "$PARITY_PROJECT" --frozen --python 3.12
   step "Stage and verify exact official checkpoint and public parity artifact"
-  download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT" "$(dirname "$checkpoint")"
+  download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CHECKPOINT_REMOTE" "$(dirname "$checkpoint")" "$UPSTREAM_CHECKPOINT"
   download_hf_file "$UPSTREAM_HF" "$UPSTREAM_REVISION" "$UPSTREAM_CONFIG" "$(dirname "$checkpoint_config")"
   verify_file "$checkpoint" "$UPSTREAM_CHECKPOINT_SHA256" "$UPSTREAM_CHECKPOINT_BYTES"
   verify_file "$checkpoint_config" "$UPSTREAM_CONFIG_SHA256" "$UPSTREAM_CONFIG_BYTES"
@@ -523,7 +610,7 @@ main() {
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "upstream_hf=$UPSTREAM_HF"; echo "upstream_revision=$UPSTREAM_REVISION"
     echo "upstream_checkpoint_sha256=$UPSTREAM_CHECKPOINT_SHA256"; echo "source_revision=$SOURCE_REVISION"
-    echo "upstream_checkpoint_git_oid=$UPSTREAM_CHECKPOINT_GIT_OID"; echo "upstream_config_git_oid=$UPSTREAM_CONFIG_GIT_OID"
+    echo "upstream_checkpoint_remote=$UPSTREAM_CHECKPOINT_REMOTE"; echo "upstream_checkpoint_staged=$UPSTREAM_CHECKPOINT"; echo "upstream_config_git_oid=$UPSTREAM_CONFIG_GIT_OID"
     echo "public_revision=$PUBLIC_REVISION"; echo "public_gguf_sha256=$PUBLIC_SHA256"
     echo "reference_manifest_sha256=$(sha256_file "$reference_dir/manifest.json")"
     echo "corrected_gguf_sha256=$(sha256_file "$corrected_gguf")"
