@@ -1,7 +1,14 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main is `99bfa77a` after PR #236's normal merge at 11:01:31 UTC
+Latest accepted main snapshot is `fb1a692a` after PR #240's normal merge at
+13:43:42 UTC (72 success, one skip, all 16 required context/application pairs
+successful). PR #241's source-pin and staging correction is not yet accepted;
+its `5199643d` head requires fresh CI. The source-only Candle capture failed
+the exact retained-lock-record gate; its owned worker and storage were destroyed.
+See the [actual capture readback](handoff/kyutai-candle-reference-readback-2026-10-14.md#actual-source-only-capture-and-retained-lock-rejection).
+Neither result completes a real-weight or Apple gate.
+Earlier accepted main was `99bfa77a` after PR #236's normal merge at 11:01:31 UTC
 (69 success, one skip, all 16 required context/application pairs successful).
 The [FireRed configuration readback](handoff/firered-checkpoint-config-source-readback-2026-10-14.md)
 separates the actual checkpoint-argument prerequisite from an empty YAML
@@ -58,6 +65,7 @@ environment they name.
 | Current versus historical gates | [2026-10-14 reference binding readback](handoff/reference-gate-binding-readback-2026-10-14.md): Qwen current probes, Dia active-contract mismatch and Canary historical closure; no approval carryover |
 | WeSpeaker dependency admission | [2026-10-14 exact setuptools finding](handoff/wespeaker-setuptools84-static-finding-2026-10-14.md): actual vendored LGPL payload, no paid repeat of the known-blocked closure, and next source-only route investigation |
 | WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |
+| RMVPE primary rights boundary | [2026-10-14 official-source and release readback](handoff/rmvpe-primary-license-readback-2026-10-14.md): no explicit grant located for the fixed code/checkpoint; keep fail-closed without acquiring weights |
 | Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
 | Kyutai alternate reference admission | [2026-10-14 Candle readback](handoff/kyutai-candle-reference-readback-2026-10-14.md): identical declared checkpoint/Mimi/tokenizer identities, distinct execution scope and a fixed-lock memmap2 security hold; no real-weight run |
 | Kyutai final-step observation preparation | [2026-10-14 source-only observer](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md): authenticated additive source patch and 17 stdlib tests; Rust/API, complete PCM oracle and real-weight parity remain unrun |

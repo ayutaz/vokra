@@ -2,6 +2,19 @@
 
 ## ゴールと現在地
 
+> **13:43:42 UTCの受理・監査readback:** PR #240はexact `e3fadc73`の
+> 全73 checks（72 success / 1 skipped）と必須16 context/app全成功を確認して
+> 通常受理した。main／ローカルmainは`fb1a692a`でclean。PR #237/#238/#239も
+> 受理済みだが、実weightやApple完了の判定には使わない。PR #241は上流fixtureの
+> 元の綴りを保持する単一ファイルのtypos除外と、最新mainの通常mergeを含む
+> `5199643d`をpushし、fresh CI待ち。旧headの失敗／Linux成功は履歴である。
+> [Candleの実source-only capture](kyutai-candle-reference-readback-2026-10-14.md#actual-source-only-capture-and-retained-lock-rejection)
+> は射影lockの`backtrace`完全record不一致で停止し、owned `55932858`と保存データを
+> 13:28:48 UTCにdestroy、個別null readbackまで確認した。違うfieldは未確定で、
+> 許容条件を緩めず診断だけを準備する。[RMVPE一次source調査](rmvpe-primary-license-readback-2026-10-14.md)
+> も固定source／weightの明示的grantを発見できず、同じlicense holdを維持する。
+> 58行・実weight CPU・最終clean HEAD／Apple packetは未完了のまま。
+
 > **11:01:31 UTCの受理readback:** PR #236はexact `afbaf0f9`の全70 checks
 > （69 success / 1 skipped、pending・失敗なし）と必須16 context/appの全成功を
 > 確認して通常受理した。Unityの全24 stepも成功を個別確認し、古いpending情報による

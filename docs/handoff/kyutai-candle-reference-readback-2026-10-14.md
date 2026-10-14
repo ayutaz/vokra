@@ -166,6 +166,55 @@ official full-PCM observation contract, execution approval and real-weight
 CPU parity remain open. The earlier whole upstream lock finding is preserved;
 no package approval or model-row promotion follows from preparing this profile.
 
+## Actual source-only capture and retained-lock rejection
+
+The earlier no-offer records above are historical. At 13:23:22–13:23:24 UTC,
+the query-aligned source-only profile found an admissible offer: raw RAM
+128,570, four effective CPU cores, x86_64, reliability 0.9944719, and quoted
+USD 0.107/hour including 150 GiB storage. Bandwidth was separately metered;
+the hourly quote is not a claim about the final bill. The search preserved
+the RAM, price, storage, reliability, verified-host and direct-port gates.
+
+The actual attempt ran from 13:25:25 to 13:28:48 UTC, owned instance
+`55932858`. The frozen controller SHA-256 was
+`22f6393e67b0bb6cdef4e350a571f498f77ea763f0461902d0d1522b97c56684`;
+the collector remained
+`1dad1cb5649993648a1b0c7dae375f9d09a9093606936ccf66e5ce9c73e49cfd`.
+Direct SSH timed out; the official proxy connected. Rust 1.99.0, UV 0.13.1
+and CPython 3.12.15 bootstrapped, and the fixed-source metadata collector ran.
+It rejected the projected base lock with
+`CAPTURE_BLOCKED: projected base lock mutated retained package: backtrace`.
+
+The initial collector exit was 2 and controller exit was 1. None of the four
+result files was recovered, so this is neither an actual graph receipt nor
+a successful memmap2 candidate update. The recovered bounded remote log has
+SHA-256 `b8259754c2fcb718a0c311fa4a522b12496ca02cc0a3a19351c062a07b34bba2`;
+the controller status log has SHA-256
+`ea753d8545a1954cf55f41d8495804b92419080740df4c17b231242e64cc41d5`.
+Cleanup succeeded at 13:28:48 UTC. Manager separately inspected the individual
+readback, `instances: null` (file SHA-256
+`817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057`).
+The owned instance and saved data are gone; this does not claim the entire
+VAST account is empty.
+
+The rejected package name is known, but the changed fields and other possible
+retained-record mutations are not: the projected lock was not recovered.
+Dependency relabeling during workspace projection is only a hypothesis.
+Do not weaken full-record equality, disregard checksums/dependencies, or
+repeat this unchanged capture blindly. A diagnostics-only collector candidate
+keeps the same rejection and output schema, emitting capped, redacted field
+differences to the existing log. Its SHA-256 is
+`8bc8fbf2be559264edc67bb49da44288d54c3c43d54cd44c4ccdbbc4cc94bc3d`;
+implementer and manager independently pass five model-free offline tests.
+It has not been transferred or executed on a worker. New controller freezing
+and lifecycle review are prerequisites to any separately authorized retry.
+
+Only public fixed source and tooling were used. No model/checkpoint/config/
+tokenizer payload, upstream API execution, compilation, independent PCM
+reference, real-weight parity, approval or publication occurred. The known
+fixed-lock security issue, license/native review, API/observer contract and
+all-row non-Apple exit gates remain unresolved.
+
 ## Documentation verification
 
 The later [source-link transport reconciliation](pr233-source-link-transport-2026-10-14.md)
