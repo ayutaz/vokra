@@ -23,6 +23,8 @@ PUBLICATION = "NO_UPLOAD"
 SCOPE_STATUS = "PENDING_OWNER_REVIEW"
 APPROVAL_STATUS = "APPROVED"
 APPROVAL_DECISION = "APPROVE"
+EXPECTED_PACKAGE_COUNT = 27
+EXPECTED_PUBLISHER_BYTES = 147
 HEAD_RE = re.compile(r"[0-9a-f]{40}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 PLACEHOLDER_RE = re.compile(r"(?:^|[\s_-])(todo|pending|owner|example|tbd|unknown|test)(?:$|[\s_-])")
@@ -111,8 +113,8 @@ def validate_scope(scope_path: Path, expected_head: str) -> tuple[dict[str, Any]
     if not isinstance(audit, dict) or audit.get("expected_head") != expected_head:
         raise ApprovalError("dependency scope HEAD mismatch")
     _hex(expected_head, HEAD_RE, "expected_head")
-    if audit.get("package_count") != 26 or not isinstance(audit.get("package_identities"), list) or len(audit["package_identities"]) != 26 or len(set(audit["package_identities"])) != 26 or audit["package_identities"] != sorted(audit["package_identities"]):
-        raise ApprovalError("dependency scope package evidence is not the exact 26-row closure")
+    if audit.get("package_count") != EXPECTED_PACKAGE_COUNT or not isinstance(audit.get("package_identities"), list) or len(audit["package_identities"]) != EXPECTED_PACKAGE_COUNT or len(set(audit["package_identities"])) != EXPECTED_PACKAGE_COUNT or audit["package_identities"] != sorted(audit["package_identities"]):
+        raise ApprovalError(f"dependency scope package evidence is not the exact {EXPECTED_PACKAGE_COUNT}-row closure")
     native = scope.get("native_inventory")
     if not isinstance(native, list) or audit.get("native_file_count") != len(native):
         raise ApprovalError("dependency scope native evidence is incomplete")
@@ -127,7 +129,7 @@ def validate_scope(scope_path: Path, expected_head: str) -> tuple[dict[str, Any]
     evidence = _scope_evidence(scope)
     if any(not isinstance(value, str) or not SHA_RE.fullmatch(value) for value in evidence.values()):
         raise ApprovalError("dependency scope evidence digest is missing")
-    if audit.get("failures") != [] or audit.get("publisher_bytes_recorded") != 50:
+    if audit.get("failures") != [] or audit.get("publisher_bytes_recorded") != EXPECTED_PUBLISHER_BYTES:
         raise ApprovalError("dependency scope publisher/failure evidence is incomplete")
     owner_review = scope["owner_review"]
     if not isinstance(owner_review, dict) or owner_review.get("decision") is not None or owner_review.get("approval_schema") != APPROVAL_SCHEMA:
@@ -165,15 +167,15 @@ def validate_approval(scope_path: Path, approval_path: Path, approval_sha256: st
 
 
 def _fixture_scope(head: str) -> dict[str, Any]:
-    packages = sorted(f"p{i}==1" for i in range(26))
+    packages = sorted(f"p{i}==1" for i in range(EXPECTED_PACKAGE_COUNT))
     native = [{"package_identity": packages[0], "path": "x.so", "sha256": "a" * 64}]
-    publisher = {"packages": 26, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": 50}
+    publisher = {"packages": EXPECTED_PACKAGE_COUNT, "publisher_license_evidence_missing": [], "publisher_bytes_recorded": EXPECTED_PUBLISHER_BYTES}
     audit = {
         "expected_head": head,
-        "package_count": 26,
+        "package_count": EXPECTED_PACKAGE_COUNT,
         "package_identities": packages,
         "native_file_count": len(native),
-        "publisher_bytes_recorded": 50,
+        "publisher_bytes_recorded": EXPECTED_PUBLISHER_BYTES,
         "package_evidence_sha256": hashlib.sha256(canonical(packages)).hexdigest(),
         "native_evidence_sha256": hashlib.sha256(canonical(native)).hexdigest(),
         "publisher_evidence_sha256": hashlib.sha256(canonical(publisher)).hexdigest(),
@@ -219,6 +221,11 @@ def self_test() -> int:
         approval_path.write_bytes(canonical(approval) + b"\n")
         approval_sha = digest_bytes(approval_path)
         validate_approval(scope_path, approval_path, approval_sha, head)
+        validated_scope, _ = validate_scope(scope_path, head)
+        assert validated_scope["status"] == SCOPE_STATUS
+        assert validated_scope["dependency_license_audit"] == GATE
+        assert validated_scope["publication"] == PUBLICATION
+        assert validated_scope["owner_review"]["decision"] is None
 
         def expect_reject(label: str, mutate: Any) -> None:
             candidate = json.loads(approval_path.read_text(encoding="utf-8"))
@@ -231,11 +238,128 @@ def self_test() -> int:
                 return
             raise AssertionError(f"tampered approval accepted: {label}")
 
+        def expect_scope_reject(label: str, mutate: Any) -> None:
+            candidate = json.loads(scope_path.read_text(encoding="utf-8"))
+            mutate(candidate)
+            unsigned_candidate = dict(candidate)
+            del unsigned_candidate["scope_sha256"]
+            candidate["scope_sha256"] = hashlib.sha256(canonical(unsigned_candidate)).hexdigest()
+            path = root / f"{label}-scope.json"
+            path.write_bytes(canonical(candidate) + b"\n")
+            try:
+                validate_scope(path, head)
+            except ApprovalError:
+                return
+            raise AssertionError(f"stale or malformed scope accepted: {label}")
+
+        expect_scope_reject(
+            "legacy-26-50",
+            lambda value: value["audit"].update(
+                package_count=26,
+                package_identities=value["audit"]["package_identities"][:-1],
+                publisher_bytes_recorded=50,
+            ),
+        )
+        expect_scope_reject(
+            "current-package-count",
+            lambda value: value["audit"].update(package_count=26),
+        )
+        expect_scope_reject(
+            "current-publisher-bytes",
+            lambda value: value["audit"].update(publisher_bytes_recorded=50),
+        )
+        expect_scope_reject(
+            "duplicate-identity",
+            lambda value: value["audit"]["package_identities"].__setitem__(
+                -1, value["audit"]["package_identities"][0]
+            ),
+        )
+
+        def swap_first_last(value: dict[str, Any]) -> None:
+            identities = value["audit"]["package_identities"]
+            identities[0], identities[-1] = identities[-1], identities[0]
+
+        expect_scope_reject(
+            "unsorted-identities",
+            swap_first_last,
+        )
+        expect_scope_reject(
+            "identity-length",
+            lambda value: value["audit"]["package_identities"].pop(),
+        )
+        expect_scope_reject(
+            "owner-decision",
+            lambda value: value["owner_review"].update(decision="APPROVE"),
+        )
+        expect_scope_reject(
+            "failures",
+            lambda value: value["audit"].update(failures=["unexpected"]),
+        )
+        expect_scope_reject(
+            "wrong-scope-head",
+            lambda value: value["audit"].update(expected_head="b" * 40),
+        )
+        expect_scope_reject(
+            "absolute-native-path",
+            lambda value: value["native_inventory"][0].update(path="/tmp/native.so"),
+        )
+        expect_scope_reject(
+            "malformed-native-digest",
+            lambda value: value["native_inventory"][0].update(sha256="not-a-sha"),
+        )
+        for label, key in (
+            ("malformed-package-evidence", "package_evidence_sha256"),
+            ("malformed-native-evidence", "native_evidence_sha256"),
+            ("malformed-publisher-evidence", "publisher_evidence_sha256"),
+        ):
+            expect_scope_reject(label, lambda value, key=key: value["audit"].update({key: "not-a-sha"}))
+
+        def write_scope_variant(label: str, mutate: Any) -> Path:
+            candidate = json.loads(scope_path.read_text(encoding="utf-8"))
+            mutate(candidate)
+            unsigned_candidate = dict(candidate)
+            del unsigned_candidate["scope_sha256"]
+            candidate["scope_sha256"] = hashlib.sha256(canonical(unsigned_candidate)).hexdigest()
+            path = root / f"{label}-scope.json"
+            path.write_bytes(canonical(candidate) + b"\n")
+            return path
+
+        valid_package_evidence_scope = write_scope_variant(
+            "changed-package-evidence",
+            lambda value: value["audit"].update(package_evidence_sha256="f" * 64),
+        )
+        validate_scope(valid_package_evidence_scope, head)
+        try:
+            validate_approval(valid_package_evidence_scope, approval_path, approval_sha, head)
+        except ApprovalError:
+            pass
+        else:
+            raise AssertionError("approval accepted changed valid package evidence digest")
+
+        valid_publisher_evidence_scope = write_scope_variant(
+            "changed-publisher-evidence",
+            lambda value: value["audit"].update(publisher_evidence_sha256="e" * 64),
+        )
+        validate_scope(valid_publisher_evidence_scope, head)
+        try:
+            validate_approval(valid_publisher_evidence_scope, approval_path, approval_sha, head)
+        except ApprovalError:
+            pass
+        else:
+            raise AssertionError("approval accepted changed valid publisher evidence digest")
+
         expect_reject("wrong-scope", lambda value: value.update(scope_sha256="0" * 64))
         expect_reject("wrong-head", lambda value: value.update(expected_head="b" * 40))
         expect_reject("wrong-native", lambda value: value.update(native_evidence_sha256="0" * 64))
+        expect_reject("wrong-publisher", lambda value: value.update(publisher_evidence_sha256="0" * 64))
         expect_reject("wrong-publication", lambda value: value.update(publication="UPLOAD"))
         expect_reject("placeholder", lambda value: value.update(signer="TODO owner"))
+        try:
+            validate_approval(scope_path, approval_path, "0" * 64, head)
+        except ApprovalError:
+            pass
+        else:
+            raise AssertionError("wrong supplied approval SHA accepted")
         duplicate = root / "duplicate.json"
         duplicate.write_text('{"schema":"x","schema":"y"}\n', encoding="utf-8")
         try:
