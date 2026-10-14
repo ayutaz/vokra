@@ -2,6 +2,14 @@
 
 ## ゴールと現在地
 
+> **09:39:44 UTCの受理readback:** PR #235はexact `64422404`の69 success /
+> 1 skippedと必須16 context/appの全成功を確認して通常受理した。mainは`d4a54d62`、
+> ローカルmainもFF更新済み。PR #234はその後behindと判定され、最新mainを通常mergeした
+> `54340ba5`でfresh CIを要求する。旧headの成功は新headのCIと扱わない。
+> [Kyutai observer source準備](kyutai-candle-observer-source-preparation-2026-10-14.md)
+> は17件のstdlibテストと原本復元を確認した別候補で、Rust/API・full PCM reference・
+> 実weight CPU・最終packetの成功ではない。新規VAST/Scalewayは開始していない。
+
 > **09:03:54 UTCの受理readback:** PR #232はexact `89f0e2e5`の70 checks
 > （69 success / 1 skipped、失敗・pendingなし）と必須16 context/appの全成功を
 > 確認して通常squash mergeした。受理mainは`fa42f112`、ローカルmainもFF更新済み。

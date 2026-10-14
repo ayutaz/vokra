@@ -54,6 +54,9 @@ jobs:
       - name: OWSM v4 medium 1B dependency license gate unit tests
         run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/parity/owsm_v4_medium_1b_reference -p 'test_dependency_license_gate.py'
 
+      - name: Kyutai Candle ASR observer source-contract unit tests
+        run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/parity/kyutai_candle_reference -p 'test_asr_observer_patch.py'
+
       - name: Install pinned zizmor
         shell: bash
         run: |
