@@ -26,8 +26,9 @@ The current dedicated candidate lock is SHA-256
 its project is SHA-256
 `4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb`.
 The current audit/owner-scope producer uses a 27-package Linux closure and
-147 recorded publisher-evidence bytes. The approval validator still required
-the historical 26-package / 50-byte contract, so its model-free self-test
+147 publisher license-file records with raw bytes captured. The counter named
+`publisher_bytes_recorded` counts files, not byte length. The approval validator still required
+the historical 26-package / 50-record contract, so its model-free self-test
 could pass without accepting the current producer's scope shape.
 
 The implementation changes only those two production expectations. Schema,
@@ -37,7 +38,7 @@ unsigned scope must remain `PENDING_OWNER_REVIEW`, owner decision `None`,
 `BLOCKED_UNREVIEWED_TRANSITIVE` and `NO_UPLOAD`. No real approval is generated.
 
 Model-free synthetic tests include the current shape, the rejected legacy
-26/50 shape, independent cardinality/publisher mutations, duplicate/unsorted
+26/50-record shape, independent cardinality/publisher mutations, duplicate/unsorted
 identities, malformed native/evidence inputs, populated owner decision,
 nonempty audit failures, old approvals against changed valid evidence digests,
 and wrong supplied approval-file SHA. Both implementer and manager run the
