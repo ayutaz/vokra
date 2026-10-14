@@ -1,5 +1,12 @@
 # FireRed checkpoint configuration source readback — 2026-10-14
 
+> **11:01:31 UTC supersession:** PR #236 was normally accepted after its
+> exact head `afbaf0f9` completed 69 successful checks, one skip, no pending
+> or failure, and all 16 required context/application pairs. Accepted main
+> is `99bfa77a7daceee719012a595badf08b370da390`. The configuration finding
+> below was privately recorded at `3b1ae62e`; it and the inert-reader
+> preparation are a separate follow-up, not new model/approval evidence.
+
 Read-only source investigation against accepted main
 `ab653152b6d41a04fb9adacc6e7d89b694fc0188`. This record is prepared separately
 from source-observer PR #236 and is not an accepted change to main. No model,
@@ -75,3 +82,57 @@ Independent frontend/encoder/decoder/beam/reference and real-weight CPU
 parity must then pass. Existing source-only Rust results are not those
 measurements; no row advances, upload remains disabled, and the final clean
 HEAD/Apple packet goal remains open.
+
+## Inert structural reader preparation, not an actual checkpoint receipt
+
+The first-party [metadata reader](../../tools/audit/firered_checkpoint_metadata.py)
+now prepares a bounded path for already extracted `data.pkl` metadata. It
+does not open a checkpoint ZIP, tensor payload, network connection or model
+package. CLI use requires Linux and an explicit remote marker before input
+read; this is an execution-location guard, not source/model/operator
+approval. Real input acquisition/extraction remains a separately admitted
+remote scope. The maintainer Mac is used only for tiny synthetic unit tests.
+
+The restricted pickle global set resolves `argparse.Namespace`,
+`collections.OrderedDict`, the fixed tensor reducer and supported storage
+labels to inert local objects. Descriptor mutation, unknown globals or
+opcodes, unsupported metadata, trailing bytes, sparse memo indices, cycles,
+missing constructor fields, boolean integers, nonfinite numbers and invalid
+storage spans fail closed. There is no replacement numeric forward or
+independent-reference claim.
+
+Input is capped at 512 KiB before read. Streaming preflight caps opcodes at
+32,768 and memo entries/indices at 8,192. Shared normalization budgets cap
+nodes at 8,192 and output at 2 MiB, with per-occurrence string/descriptor
+charges before expansion and a final exact serialized-size check before
+write. These are new tool security limits, not relaxed model parity bounds.
+The real metadata's compatibility and size are still unverified.
+
+Review caught and corrected exponential shared-graph expansion, post-reducer
+descriptor mutation, recursively nested credential-bearing keys, unpinned
+parent-path races, premature FIFO blocking and an inner-fd cleanup failure.
+The corrected reader uses non-following, fd-pinned parent traversal and
+exclusive output creation. It never overwrites or automatically deletes a
+partial output or another writer's file. Ordinary OrderedDict hook/state
+metadata is explicitly handled rather than silently ignored.
+
+Luna and manager independently pass 27 offline/no-project Python 3.12
+stdlib tests. Controls prove oversized input is refused before read, sparse
+memo/trailing input before unpickler construction, Darwin/marker refusal
+before input read, and expansion failures are caused by the intended budget.
+One invocation is added to the existing workflow-security job; actionlint
+passes and no action version, permission or job is added.
+
+The single stdlib Pickler fixture has 940 **synthetic**, distinct storage
+descriptors: 93,568 input bytes, 28,286 opcodes, 6,610 memo writes and maximum
+memo index 6,609. Manager measurement renders 245,487 bytes and records
+2,166,553 bytes of Python-traced peak allocation. This is not RSS, a real
+checkpoint measurement, actual model configuration or a 940-tensor source
+inventory. No tensor values or model framework are loaded.
+
+Captured source/model labels remain `DECLARED_NOT_AUTHENTICATED`; the full
+checkpoint hash is null, approval is null, publication is `NO_UPLOAD`, and
+real-checkpoint/model/parity gates are `NOT_RUN`. The existing gate/scope
+hash, machine status, expected model facts and owner decisions are not
+changed. There is still no actual FireRed argument receipt, released-weight
+CPU/reference comparison or final Apple packet.

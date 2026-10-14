@@ -1,7 +1,14 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main is `ab653152` after PR #234's normal merge at 10:17:38 UTC
+Latest accepted main is `99bfa77a` after PR #236's normal merge at 11:01:31 UTC
+(69 success, one skip, all 16 required context/application pairs successful).
+The [FireRed configuration readback](handoff/firered-checkpoint-config-source-readback-2026-10-14.md)
+separates the actual checkpoint-argument prerequisite from an empty YAML
+sidecar and records the new inert-reader preparation; no real checkpoint,
+reference, CPU parity or final Apple packet follows from its synthetic tests.
+The dependency and observer snapshots below are dated earlier acceptances.
+Earlier accepted main snapshot is `ab653152` after PR #234's normal merge at 10:17:38 UTC
 (69 success, one skip, all 16 required context/application pairs successful).
 PR #235's scalar-approval correction was accepted at 09:39:44 UTC. The
 [observer preparation record](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md)
@@ -54,6 +61,7 @@ environment they name.
 | Kyutai PCM scheduling correction | [2026-10-14 fixed-source reconciliation](handoff/kyutai-stt-pcm-contract-reconciliation-2026-10-14.md): distinct MLX/PyTorch padding and LM schedules, private correction target, independent PCM parity still missing |
 | Kyutai alternate reference admission | [2026-10-14 Candle readback](handoff/kyutai-candle-reference-readback-2026-10-14.md): identical declared checkpoint/Mimi/tokenizer identities, distinct execution scope and a fixed-lock memmap2 security hold; no real-weight run |
 | Kyutai final-step observation preparation | [2026-10-14 source-only observer](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md): authenticated additive source patch and 17 stdlib tests; Rust/API, complete PCM oracle and real-weight parity remain unrun |
+| FireRed checkpoint configuration and bounded metadata preparation | [2026-10-14 source readback](handoff/firered-checkpoint-config-source-readback-2026-10-14.md): actual `args` loader contract, inert structural reader and 27 synthetic safety tests; no checkpoint or numerical evidence |
 | OWSM dependency admission | [2026-10-14 scalar-approval correction](handoff/owsm-audit-admission-readback-2026-10-14.md): unbound allow declarations are refused; the active ComplexTensor license and full-reference prerequisites remain open |
 | Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
 | Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |

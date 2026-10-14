@@ -1,5 +1,16 @@
 # Kyutai Candle observer source preparation — 2026-10-14
 
+> **11:01:31 UTC acceptance:** exact PR #236 head `afbaf0f9` completed all
+> 70 checks (69 success / one skip), with no pending/failure and all 16
+> required context/application pairs successful. Unity job `115813687873`
+> and all 24 returned step summaries were successful. Normal squash merge
+> produced main `99bfa77a7daceee719012a595badf08b370da390`; local main was
+> fast-forwarded and clean. The initial auto-review refusal cited older
+> pending Unity evidence; fresh exact-head and individual job evidence
+> resolved it through the same normal merge route, with no bypass. This
+> accepts source preparation, not Rust/API, PCM or model parity. Earlier
+> private-candidate/CI-wait statements below remain dated history.
+
 > **10:17:38 UTC supersession:** PR #234's exact `54340ba5` completed 69
 > successful checks, one skip, no failure/pending, and all 16 required
 > context/application pairs. Normal squash acceptance produced main
