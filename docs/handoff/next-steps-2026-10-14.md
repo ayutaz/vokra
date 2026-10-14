@@ -33,6 +33,11 @@ Apple packetを再生成）までを指す。以下の表は安全整理・PR準
 この到達点は表の工程5に相当する。工程4のCPU作業だけでゴール達成とせず、Scaleway
 実行と公開はこの到達点の後に置く。
 
+> **Kyutaiの先行作業:** [固定sourceの照合](kyutai-stt-pcm-contract-reconciliation-2026-10-14.md)
+> により、非公開PCM接続は既に存在し、追加接続よりも契約の混在修正が必要と判明した。
+> MLXのpaddingとPyTorchのLM方式を分離し、非公開PCM経路を固定DSM/PyTorchへ整合する。
+> 独立PCM oracle・実weight CPU parityは未取得で、完了件数や最終packetは進めない。
+
 - 計画準備時のローカル `main` はドキュメントcommit
   `1a63a8d162b2285650d858ea5d174573588b3f13`。2026-10-14のGitHub branch APIで
   remote `main` は当初 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` と確認し、
