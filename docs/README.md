@@ -1,12 +1,22 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main snapshot is `f0130b5d` after PR #244's normal merge at
+Latest accepted main is `627a641f` after PR #241's normal merge at
+16:13:50 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
+skip), all 16 required context/application pairs successful and all nine
+started workflows terminal success, including late Unity Android/WebGL/UPM
+stages. Local main is clean and synchronized. This accepts the WeSpeaker
+source/staging correction, not dependency/native/API/legal/owner or real-weight
+parity readiness. MOSS #242 and Dia #245 must normally integrate this main and
+pass new exact-head CI; the latter also needs the coordinated current-reference
+consumer correction `0c6bfd62`, now included in pending head `cd90b94a`. No local model execution
+or new paid worker follows. The preceding accepted snapshot was `f0130b5d`
+after PR #244's normal merge at
 14:53:31 UTC on 2026-10-14 (69 success, one skip, all 16 required
 context/application pairs successful). The isolated server rustls update
 passed fresh Linux musl advisory/build/tests, macOS/Windows compatibility and
-deployment checks. PR #241's source-pin and staging correction is not yet
-accepted; its integrated `6bf092c4` head requires fresh CI. MOSS PR #242 and
+deployment checks. At that preceding snapshot, PR #241's source-pin and staging
+correction was not yet accepted; its integrated `6bf092c4` head required fresh CI. MOSS PR #242 and
 the separate Dia approval-validator correction also require fresh exact-head
 CI; their synthetic checks grant no execution approval. The source-only Candle capture failed
 the exact retained-lock-record gate; its owned worker and storage were destroyed.

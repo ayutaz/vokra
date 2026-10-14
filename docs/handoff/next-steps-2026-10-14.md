@@ -2,6 +2,21 @@
 
 ## ゴールと現在地
 
+> **16:13:50 UTCのsource受理readback（2026-10-15 JST）:** PR #241はexact
+> `6bf092c4`／base `f0130b5d`の全70 checks（69 success / 1 skipped）、必須16
+> context/app成功、開始した全9 workflowsのterminal successを確認して通常受理した。
+> 最後のUnity Android/WebGL/UPMも成功し、最新main／ローカルmainは`627a641f`でclean。
+> source/staging修正だけの受理であり、依存/native/API/license/owner承認ではない。
+> MOSS #242とDia #245はこのmainの通常mergeとfresh CIが必要。Diaのdumper/validator
+> 現行contract修正`0c6bfd62`はpending #245 `cd90b94a`に含め、31 full records／27 active Linux
+> packagesを分離、未review／未検証seamの表現と無条件実行拒否を保持した。これはまだ
+> 公開headのCIで検証済みとは扱わない。[MMS current evidence readback](mms-current-evidence-admission-readback-2026-10-15.md)
+> は既存wheel-size receiptによる正当な省略を確認し、不必要なlock変更／有料再監査をしない。
+> [Qwen2 Audio fixed-tree readback](qwen2-audio-fixed-source-license-readback-2026-10-15.md)
+> もprimary metadataの限定的確認であり、complete history receiptやsource grantではない。
+> 58未解決行、凍結63-row owner scope、実weight CPU、最終clean HEAD／Apple packetは
+> 未完了。新規VAST／Scaleway／公開／ローカルモデル実行は開始していない。
+
 > **2026-10-15 JSTの行別静的再確認:** [58-row readback](current-58-static-prerequisite-readback-2026-10-15.md)
 > で先行10行と残り48 report IDsを整理した。57行のsource/static observationsと保護対象1行の
 > `UNKNOWN_EXCLUDED`であり、HFのfresh全行取得・production READY判定・実weight結果ではない。

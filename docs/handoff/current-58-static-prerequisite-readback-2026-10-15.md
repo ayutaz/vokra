@@ -11,6 +11,15 @@ The public metadata denominator remains 136 full / 58 unresolved; the frozen
 
 ## What this review does and does not establish
 
+> Subsequent source acceptance: WeSpeaker #241 head `6bf092c4` was normally
+> merged at 16:13:50 UTC on 2026-10-14 as main `627a641f`, after all 70 checks,
+> 16 required context/application pairs and nine started workflows completed.
+> The table below retains its earlier `f0130b5d` inspection boundary. Current
+> source/staging identities are corrected, but native/API/license/owner and
+> real-weight gates are not approved. Dia's coordinated current-reference
+> correction `0c6bfd62` is included in pending #245 head `cd90b94a`; it is not accepted
+> merely by existing #245 CI, and unconditional execution refusal remains.
+
 > Subsequent [MMS production-admission readback](mms-current-evidence-admission-readback-2026-10-15.md)
 > confirms that its omitted Torch wheel-size field is intentionally covered by
 > an existing authenticated archive receipt. Current dependency/API bindings
