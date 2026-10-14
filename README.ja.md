@@ -14,7 +14,23 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **開発状況（2026-10-08）:** workspace は `0.3.0` development で、今回の
+> **現在の監査スナップショット（2026-10-13）:** workspace は `0.3.0` development です。
+> 最新の VibeVoice Realtime-0.5B closure audit は disposable worker `55648877` 上の
+> static-only VAST audit でした。選定した source、lock、collector、provenance input を
+> 認証し、worker の回収と破棄を確認しました。model weight の取得・実行、model の
+> 実行、package/native API の呼び出し、artifact の upload は行っていません。
+> collector の verdict は `OWNER_REVIEW_REQUIRED_NO_UPLOAD` です。controller は別途
+> 完了しています。owner/legal 承認、license review、
+> provenance review、native runtime status、runtime parity は未解決です。
+> `safetensors` 0.5.3 と `tokenizers` 0.22.2 の bundled license file が不足し、
+> さらに10個の native package が review 対象です。[VibeVoice static-closure audit](docs/handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md)
+> と [documentation refresh record](docs/handoff/documentation-refresh-2026-10-13.md) を参照してください。
+> exact `main` HEAD `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` の fresh metadata/card-only
+> audit は repository 194、GGUF repository 193、GGUF file 198、CPU `136/43/14/1`、
+> Metal `136/57/1`、未解決 public row 58件を報告します。Apple CPU/Metal/no-fallback
+> 検証の完了は主張しません。
+>
+> **過去のカタログスナップショット（2026-10-08）:** workspace は `0.3.0` development で、今回の
 > documentation review と read-only 公開 audit は GitHub の exact `main` checkout
 > `d100d93778191ccab77bd1c37fe3552e3d889758` を基準にしています。
 > 2026-10-08 の metadata/card-only 公開 audit は repository 194、GGUF を持つ repository
@@ -31,7 +47,8 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 > no-fallback検証と公開artifactの置換は未完了です。
 > [Apple 検証結果](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)に記録した
 > Apple Silicon batch は named scope のみ合格し、その後、明示的に承認された4件の
-> artifact が公開されました。公開 row はなお58件未解決です。
+> artifact が公開されました。この snapshot では公開 row は58件未解決でした。
+> 現在値として扱う前に live metadata を再取得してください。
 > 2026-10-04 に修正済みの VAST source-only audit が固定した Kyutai source input を
 > 認証し、worker cleanup を独立に確認しました。model weight の取得・実行は行って
 > おらず、CPU parity、Apple hardware、公開 status は進展していません。0.3.0は最初のGitHub

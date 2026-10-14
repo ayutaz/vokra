@@ -1,5 +1,7 @@
 # Vokra ABI Changelog (historical prerelease buckets; current line: v0.3.0)
 
+> **2026-10-13 current routing / supersession:** The [2026-10-13 refresh](handoff/documentation-refresh-2026-10-13.md) records current main/release/model/PR facts. It does not change ABI entries, historical anchors, the advisory gate, or the owner-gated freeze. Older source-validation counts below retain their original verification date.
+
 > **2026-10-08 source-validation boundary:** at `main`
 > `d100d93778191ccab77bd1c37fe3552e3d889758`, the metadata-only catalog
 > remains 136 CPU/Metal code-artifact-full and 58 unresolved across 194 public

@@ -1,5 +1,7 @@
 # Mac CPU / Metal residual execution ledger (2026-09-12)
 
+> **2026-10-13 current routing / supersession:** The [latest snapshot](documentation-refresh-2026-10-13.md) remains metadata-only 136 full / 58 unresolved at main `7d38061c`. The [private static closure audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) is finished with worker/data cleanup and original guard restoration, not full model/Apple or legal approval. The 135/59 values and all exact-head execution outcomes below remain dated evidence.
+
 > **2026-10-08 supersession boundary:** the 135-full / 59-unresolved audit
 > described below is retained as dated 2026-09-12 evidence, not the latest live
 > inventory. The current metadata-only readback is 136 CPU/Metal code-artifact

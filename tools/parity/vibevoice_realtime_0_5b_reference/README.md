@@ -16,6 +16,35 @@ model-free receipts below are intentionally retained as history. This does not
 claim complete acoustic encoding, waveform synthesis, Rust numerical parity,
 Apple CPU/Metal parity, or publication eligibility.
 
+## 2026-10-13 static-closure audit
+
+The latest VAST receipt is a static-only audit bound to the owner-approved
+source, project, lock, collector, and provenance inputs. It used disposable
+worker `55648877` and verified recovery and destruction. The collector verdict
+is `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; the audit did not download or execute model
+weights, invoke a model/package/native API, or publish an artifact. Owner/legal
+approval, license review, provenance review, native runtime status, and runtime
+parity remain unresolved (separate from the successful controller run). It
+records missing bundled license files for `safetensors` 0.5.3 and
+`tokenizers` 0.22.2, plus ten native packages requiring review.
+
+The receipt's collector was a private audit input with SHA-256
+`df8e2f2a92631589ba87c0f223285201dcbde77d4ef4b7c4d677b50eb360620e`; it is
+not `audit_installed_closure.py` in this checkout (that VibeVoice path is not
+tracked on `main`). The audited private project and lock hashes were
+`0d2642a580732293884f7d35a79e22fd37479632afcda6321efc2d74ed6f4c54` and
+`34f58e53b5c79ed96853c2a4b6f9b6b1eaf12066f010cd23ddffae2b816b3797`,
+whereas the tracked VibeVoice files currently hash to
+`4498804bacda712defe082a6c6d8b79df4e29c1b35fac37db872cd7986cc9cd9` and
+`e8787e3c9e7bfdb3383fca1bba22026edbec4b9e61191692797e43e801f74352`.
+The private receipt therefore must not be presented as proof that a
+reproducible audit recipe in the current `main` tree passed.
+
+See the [2026-10-13 static-closure audit](../../../docs/handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md)
+and [documentation refresh record](../../../docs/handoff/documentation-refresh-2026-10-13.md)
+for the canonical status and scope. This receipt does not establish real-weight
+CPU parity, Apple CPU/Metal/no-fallback verification, or publication eligibility.
+
 ## 2026-09-30 VAST narrow-reference receipts
 
 Both runs used the exact checkpoint/source contract above and three timed
@@ -96,7 +125,7 @@ smoke imported and inspected the official API only: it did not download a
 model, construct a model, execute a checkpoint, generate parity numbers, or
 publish an artifact.
 
-The installed-closure audit for the same project and lock is recorded at
+The earlier 2026-09-30 installed-closure audit for that private project and lock is recorded at
 `a2d2939ae7dddff33eade14b4eb70ccc6a7af2b732617c6de2531c43ec5bcfc6` and remains
 `OWNER_REVIEW_REQUIRED/NO_UPLOAD`. It covers 56 installed packages and reports
 missing bundled license files for `safetensors`, `tokenizers`, `tqdm`, and

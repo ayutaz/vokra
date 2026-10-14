@@ -1,5 +1,7 @@
 # Mac CPU / Apple Metal Scaleway results (2026-09-11)
 
+> **2026-10-13 current routing / supersession:** These bounded Apple results retain their original heads/contracts. The [latest documentation snapshot](documentation-refresh-2026-10-13.md) and [new static-only audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) add no Apple measurement and do not generalize these results to 194 public repositories or the 58 unresolved rows. No new Scaleway run or publication occurred for this refresh.
+
 **Status:** the bounded, authorized execution batch is complete. Every Apple
 CPU/reference, Metal/reference, and Metal/CPU check listed below passed without
 a CPU fallback. Operational cleanup and the follow-up PR are recorded

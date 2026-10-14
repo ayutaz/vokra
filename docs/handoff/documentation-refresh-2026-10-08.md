@@ -1,5 +1,7 @@
 # Documentation refresh — 2026-10-08
 
+> **2026-10-13 current routing / supersession:** The [2026-10-13 refresh](documentation-refresh-2026-10-13.md) is now the current metadata/security/PR and execution-routing snapshot. Retain this audit's original inventory, checks, HEADs, counts and per-file coverage as dated evidence; they are not new measurements or the present PR queue.
+
 ## Scope and source boundary
 
 Documentation branch: `docs/update-documentation-20261008`, starting at exact

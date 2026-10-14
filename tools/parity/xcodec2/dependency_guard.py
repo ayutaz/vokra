@@ -179,16 +179,54 @@ def _validate_documents(pyproject: dict, lock: dict) -> None:
             )
 
 
-def _validate_files(pyproject_text: str, lock_text: str) -> None:
-    pyproject, lock = _parse_documents(pyproject_text, lock_text)
-    _validate_documents(pyproject, lock)
-    manifest = audit.strict_json(audit.MANIFEST)
-    rows = audit.strict_json(audit.ROWS)
-    expected = audit.source_digest_map()
+def _validate_hash_bindings(
+    pyproject_bytes: bytes,
+    lock_bytes: bytes,
+    manifest: dict,
+    rows: dict,
+) -> None:
+    """Bind the exact project/lock bytes to both committed gate documents."""
+
+    actual = {
+        "pyproject_sha256": audit.sha256_bytes(pyproject_bytes),
+        "uv_lock_sha256": audit.sha256_bytes(lock_bytes),
+        "dependency_audit_sha256": audit.sha256_file(audit.ROWS),
+    }
+    manifest_project = manifest.get("project")
+    audit_project = {
+        "pyproject_sha256": rows.get("pyproject_sha256"),
+        "uv_lock_sha256": rows.get("uv_lock_sha256"),
+    }
+    if not isinstance(manifest_project, dict):
+        raise AssertionError("license manifest project binding is missing")
+    for field in ("pyproject_sha256", "uv_lock_sha256"):
+        if manifest_project.get(field) != actual[field]:
+            raise AssertionError(f"license manifest {field} binding drifted")
+        if audit_project[field] != actual[field]:
+            raise AssertionError(f"dependency audit {field} binding drifted")
+    if manifest_project.get("dependency_audit_sha256") != actual["dependency_audit_sha256"]:
+        raise AssertionError("license manifest dependency-audit binding drifted")
+
+
+def _validate_helper_source_bindings(
+    manifest: dict, rows: dict, expected: dict[str, str]
+) -> None:
     if manifest.get("project", {}).get("source_digests") != expected:
         raise AssertionError("license manifest helper source digest binding drifted")
     if rows.get("source_digests") != expected:
         raise AssertionError("dependency rows helper source digest binding drifted")
+
+
+def _validate_files(pyproject_bytes: bytes, lock_bytes: bytes) -> None:
+    pyproject_text = pyproject_bytes.decode("utf-8")
+    lock_text = lock_bytes.decode("utf-8")
+    pyproject, lock = _parse_documents(pyproject_text, lock_text)
+    _validate_documents(pyproject, lock)
+    manifest = audit.strict_json(audit.MANIFEST)
+    rows = audit.strict_json(audit.ROWS)
+    _validate_hash_bindings(pyproject_bytes, lock_bytes, manifest, rows)
+    expected = audit.source_digest_map()
+    _validate_helper_source_bindings(manifest, rows, expected)
 
 
 def _validate_installed_environment() -> None:
@@ -395,11 +433,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    pyproject_text = PYPROJECT.read_text(encoding="utf-8")
-    lock_text = LOCKFILE.read_text(encoding="utf-8")
-    _validate_files(pyproject_text, lock_text)
+    pyproject_bytes = PYPROJECT.read_bytes()
+    lock_bytes = LOCKFILE.read_bytes()
+    _validate_files(pyproject_bytes, lock_bytes)
     if args.self_test:
-        _tamper_self_test(pyproject_text, lock_text)
+        _tamper_self_test(
+            pyproject_bytes.decode("utf-8"), lock_bytes.decode("utf-8")
+        )
     if args.documents_only:
         print("xcodec2 dependency guard: PASS (documents-only)")
         return 0

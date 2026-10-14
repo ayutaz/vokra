@@ -51,7 +51,7 @@ MODEL_CONFIG_SHA256 = "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef
 DECODER_REPOSITORY = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DECODER_REVISION = "a87c50897bb00837eb857d0538b29d117541d7f6"
 DECODER_CHECKPOINT_SHA256 = "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
-LOCK_SHA256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
+LOCK_SHA256 = "e03f60fb15066ed5efbcd4d682c8a2f61eefc5ca261f982d1943988e84f85fd6"
 TRANSFORMERS_VERSION = "5.10.4"
 SECURITY_ADVISORY_ID = "GHSA-4j2p-28q2-5m79"
 CPU_LOAD_MODE = "DEFAULT_CPU_NO_DEVICE_MAP"
@@ -857,6 +857,28 @@ def self_test() -> None:
         else:
             raise SmokeError(message)
     require_cpu_load_contract()
+    current_lock = Path(__file__).resolve().parent / "uv.lock"
+    current_lock_sha256 = sha256_file(current_lock)
+    if current_lock_sha256 != LOCK_SHA256:
+        raise SmokeError("self-test current uv.lock binding is stale")
+    current_lock_record = require_lock(current_lock)
+    if current_lock_record["sha256"] != current_lock_sha256:
+        raise SmokeError("self-test require_lock returned a different current uv.lock hash")
+    historical_lock_sha256 = "98cef03a391c9a31116b0b63c1dca4bb456c1a58ec407a4567e78e648eaf8857"
+    if historical_lock_sha256 == current_lock_sha256:
+        raise SmokeError("historical Qwen3-TTS lock binding unexpectedly matches current bytes")
+    original_lock_sha256 = LOCK_SHA256
+    LOCK_SHA256 = historical_lock_sha256
+    try:
+        try:
+            require_lock(current_lock)
+        except SmokeError as error:
+            if "SHA-256" not in str(error):
+                raise SmokeError("historical lock binding failed for an unexpected reason") from error
+        else:
+            raise SmokeError("historical lock binding accepted current bytes")
+    finally:
+        LOCK_SHA256 = original_lock_sha256
     for values in (("0", "Linux", "x86_64"), ("1", "Darwin", "arm64"), ("1", "Linux", "aarch64")):
         try:
             require_execution_host_values(*values)

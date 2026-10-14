@@ -93,6 +93,10 @@ jobs:
         # Executes the real hook with Git/Cargo/compliance boundaries mocked;
         # no compilation or ref mutation occurs in this checkout-only job.
         run: bash scripts/test-pre-push-fastpath.sh
+      - name: Pre-commit stdlib linter and production-hook regression tests
+        # Exercises the real hook and offline no-project UV path; Cargo and
+        # the three preceding shell checks are mock-only in the fixture.
+        run: bash scripts/test-pre-commit-stdlib.sh
 
   # Deterministic quality controls for AI-authored repository changes. This
   # job is checkout-only: it validates policy/configuration/scripts and never
@@ -642,7 +646,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          set -- cargo build
+          # Keep the committed isolated lock authoritative; dependency drift
+          # must arrive as an explicit lockfile change in the PR.
+          set -- cargo build --locked
           if [ "${{ matrix.run_tests }}" = "true" ]; then
             set -- "$@" --release
           fi
@@ -692,7 +698,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test \
+          cargo test --locked \
             --manifest-path integrations/vokra-server/Cargo.toml \
             -p vokra-server --lib
       - name: Compat tests (openai / vllm / piper_http / wyoming / wyoming_info_reply / multi_session)
@@ -713,7 +719,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --release \
+          cargo test --locked --release \
             --manifest-path integrations/vokra-server/Cargo.toml \
             -p vokra-server \
             --test openai_compat \
@@ -754,6 +760,12 @@ jobs:
         # the runtime graph (NFR-DS-02 breach, plan §5 R1).
         shell: bash
         run: git diff --exit-code Cargo.lock
+      - name: Verify isolated Cargo.lock unchanged
+        # cargo-deny reads the server workspace after the locked build/test
+        # legs. Keep its resolver from silently rewriting the committed
+        # isolated lockfile; any dependency update must be reviewed in the PR.
+        shell: bash
+        run: git diff --exit-code -- integrations/vokra-server/Cargo.lock
 
   # Phase 5b: cargo-audit (RustSec advisory-db) ADVISORY sweep.
   # ADVISORY, not required — the REQUIRED cargo-audit already runs against
@@ -791,7 +803,7 @@ jobs:
       - name: Install cargo-audit
         # Same install path as ci.yml `license` job — keeps the toolchain
         # identical so a regression in one leg reproduces in the other.
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a
         with:
           tool: cargo-audit
       - name: cargo audit (root workspace, zero-dep tripwire)
@@ -950,8 +962,8 @@ jobs:
       - name: XCodec2 stdlib evidence regression suites
         # These suites use synthetic distributions and never import the
         # official runtime, load a model, or install project dependencies.
-        # Keep them on the hosted runner: the maintainer Mac's model-execution
-        # guard intentionally refuses the same unittest commands locally.
+        # Keep them on the hosted runner as explicit stdlib-only evidence;
+        # these synthetic suites do not exercise runtime/model execution.
         run: |
           set -euo pipefail
           uv run --no-project --python 3.12 python -m unittest discover -s tools/parity/xcodec2 -p test_dependency_audit.py -v

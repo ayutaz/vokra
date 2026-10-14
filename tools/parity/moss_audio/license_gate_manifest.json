@@ -1,5 +1,5 @@
 {
-  "approval_scope_sha256": "cdda6be3a60e4b703c0d26d249a21703b69c2024f10bfabedf4896e2d7bb2b9a",
+  "approval_scope_sha256": "6cfe95b3317173af13db255569631f37b6f467933e1d6fd1c16e5826ef0d6ae5",
   "component_reviews": [
     {
       "approval_digest": null,
@@ -561,19 +561,6 @@
     },
     {
       "bundled_review": null,
-      "id": "psutil@7.2.2",
-      "license": null,
-      "name": "psutil",
-      "native_review": null,
-      "payload_sha256": null,
-      "source": {
-        "registry": "https://pypi.org/simple"
-      },
-      "status": "PENDING_REVIEW",
-      "version": "7.2.2"
-    },
-    {
-      "bundled_review": null,
       "id": "pycparser@3.0",
       "license": null,
       "name": "pycparser",
@@ -860,7 +847,7 @@
     },
     {
       "bundled_review": null,
-      "id": "urllib3@2.7.0",
+      "id": "urllib3@2.8.0",
       "license": null,
       "name": "urllib3",
       "native_review": null,
@@ -869,7 +856,7 @@
         "registry": "https://pypi.org/simple"
       },
       "status": "PENDING_REVIEW",
-      "version": "2.7.0"
+      "version": "2.8.0"
     },
     {
       "bundled_review": null,
@@ -885,7 +872,7 @@
       "version": "0.1.0"
     }
   ],
-  "dependency_reviews_sha256": "52e78bdc20d8b480850bda206c723377f923861ded6542436f95b9d8d2d6743d",
+  "dependency_reviews_sha256": "dc1084afd693097fb587999c48486233cb07f0f938eff3ee893d7b35578a9c3a",
   "fixed_identities": {
     "common_assets": {
       "chat_template.jinja": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
@@ -1131,13 +1118,13 @@
     }
   },
   "gate_version": 2,
-  "lock_sha256": "2e0b2af61d754edd0c7211193f5a68f07cf57455666ed5912c992560bdf55d3c",
+  "lock_sha256": "eaa1cd47a253bfd72f962d30f05362ed76b231ebef6cd2bce5e5f3cc8ed47d8c",
   "no_upload": "NO_UPLOAD",
   "operator_approval": {
     "decision": "PENDING_REVIEW",
     "digest": null,
     "signer": null
   },
-  "package_rows_sha256": "2cef0e549b75bfa966213d09e0a55d9b09bf2c4f49dae0df759fbb4f97d068da",
+  "package_rows_sha256": "37f246d9206db8b7867d53098dd384eba2472bf0c2c18d76461e3f008c43b04b",
   "pyproject_sha256": "00dbde83ac503f0ce91d74b3da9fb2f6010d827efedd62831b276e3abeb28687"
 }

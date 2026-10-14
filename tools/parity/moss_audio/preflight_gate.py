@@ -25,7 +25,7 @@ GATE_VERSION = 2
 # separate patched project only after the owner-approved API smoke bridge.
 UNVERIFIED_TRANSFORMERS_PIN = "transformers==5.5.0"
 PATCHED_TRANSFORMERS_MINIMUM = (5, 10, 0)
-LOCK_SHA256 = "2e0b2af61d754edd0c7211193f5a68f07cf57455666ed5912c992560bdf55d3c"
+LOCK_SHA256 = "eaa1cd47a253bfd72f962d30f05362ed76b231ebef6cd2bce5e5f3cc8ed47d8c"
 PYPROJECT_SHA256 = "00dbde83ac503f0ce91d74b3da9fb2f6010d827efedd62831b276e3abeb28687"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -184,8 +184,8 @@ IDENTITY_EVIDENCE_BINDING = {
 # only after this bridge; model compatibility/parity remains a VAST gate.
 API_SMOKE_FORMAT = "vokra-moss-audio-transformers-api-smoke-v1"
 API_SMOKE_SOURCE_REPO = "https://github.com/OpenMOSS/MOSS-Audio.git"
-API_SMOKE_PROJECT_SHA256 = "af7486c52182a23cc64185e6ad95c42b8863673dc4e032fda79637a9ca0d427e"
-API_SMOKE_LOCK_SHA256 = "fd8c1f2342da9512d1fb1e97ed0e7640ffa4a83db279aeaba655ce6cf89c1085"
+API_SMOKE_PROJECT_SHA256 = "17431a2f3ddfb6a9853c47c51f2e99209fcf8c0497e0675c5eb4016cbed58aec"
+API_SMOKE_LOCK_SHA256 = "517ed7226440a5b6b6d2e462619ad705ba24bc7bc8e87cdecc59317a77b1d4be"
 API_SMOKE_SOURCE_FILES = {
     "src/configuration_moss_audio.py": SOURCE_IDENTITY["files"]["src/configuration_moss_audio.py"],
     "src/modeling_moss_audio.py": SOURCE_IDENTITY["files"]["src/modeling_moss_audio.py"],
@@ -202,8 +202,8 @@ API_SMOKE_METADATA_FILES = {
 }
 API_SMOKE_REQUIRED_DEPENDENCIES = {
     "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
-    "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.9.1",
-    "torchaudio==2.9.1", "transformers==5.10.4",
+    "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.13.0",
+    "torchaudio==2.11.0", "transformers==5.10.4",
 }
 
 
@@ -266,24 +266,34 @@ def identity_digest(value: Any) -> str:
     return sha256((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
 
 
-def validate_api_smoke_project(project: Path) -> tuple[bool, str]:
-    """Authenticate the patched project that the main reference will run."""
+def _load_api_smoke_project(project: Path) -> tuple[list[dict[str, Any]], str, str, Any]:
+    """Load the checked-in API-smoke verifier and derive authoritative rows."""
     if project.is_symlink() or not project.is_dir():
-        return block("patched API smoke/reference project is missing or symlinked")
+        raise ValueError("patched API smoke/reference project is missing or symlinked")
     pyproject = project / "pyproject.toml"
     lock = project / "uv.lock"
     smoke = project / "api_smoke.py"
     if any(path.is_symlink() or not path.is_file() for path in (pyproject, lock, smoke)):
-        return block("patched API smoke/reference project closure is incomplete")
+        raise ValueError("patched API smoke/reference project closure is incomplete")
+    trusted_smoke = Path(__file__).resolve().parent / "api_smoke" / "api_smoke.py"
+    if trusted_smoke.is_symlink() or not trusted_smoke.is_file():
+        raise ValueError("checked-in API smoke verifier is missing or symlinked")
+    if smoke.read_bytes() != trusted_smoke.read_bytes():
+        raise ValueError("supplied API smoke verifier differs from checked-in trusted parser")
+    module_spec = importlib.util.spec_from_file_location("moss_audio_api_smoke_project", trusted_smoke)
+    if module_spec is None or module_spec.loader is None:
+        raise ValueError("patched API smoke verifier cannot be loaded")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    rows, project_sha256, lock_sha256 = module.verify_project(project)
+    project_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    return rows, project_sha256, lock_sha256, project_data.get("project", {}).get("dependencies")
+
+
+def validate_api_smoke_project(project: Path) -> tuple[bool, str]:
+    """Authenticate the patched project that the main reference will run."""
     try:
-        module_spec = importlib.util.spec_from_file_location("moss_audio_api_smoke_project", smoke)
-        if module_spec is None or module_spec.loader is None:
-            return block("patched API smoke verifier cannot be loaded")
-        module = importlib.util.module_from_spec(module_spec)
-        module_spec.loader.exec_module(module)
-        rows, project_sha256, lock_sha256 = module.verify_project(project)
-        project_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        dependencies = project_data.get("project", {}).get("dependencies")
+        rows, project_sha256, lock_sha256, dependencies = _load_api_smoke_project(project)
         if set(dependencies or ()) != API_SMOKE_REQUIRED_DEPENDENCIES:
             return block("patched API smoke/reference dependency closure is not exact")
         if project_sha256 != API_SMOKE_PROJECT_SHA256 or lock_sha256 != API_SMOKE_LOCK_SHA256 or not rows:
@@ -293,7 +303,7 @@ def validate_api_smoke_project(project: Path) -> tuple[bool, str]:
     return True, "PASS"
 
 
-def validate_api_smoke_evidence(path: Path, expected_sha256: str, expected_head: str, selected: list[str]) -> tuple[bool, str]:
+def validate_api_smoke_evidence(path: Path, expected_sha256: str, expected_head: str, selected: list[str], *, authoritative_project: Path) -> tuple[bool, str]:
     """Validate the independent patched-Transformers smoke before weights."""
     if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
         return block("API smoke evidence is missing, symlinked, or empty")
@@ -305,6 +315,15 @@ def validate_api_smoke_evidence(path: Path, expected_sha256: str, expected_head:
         return block("API smoke expected HEAD is malformed")
     if selected not in (["4b"], ["8b"], ["4b", "8b"]):
         return block("API smoke variant selection is not exact")
+    try:
+        authoritative_rows, project_sha256, lock_sha256, dependencies = _load_api_smoke_project(authoritative_project)
+        if (set(dependencies or ()) != API_SMOKE_REQUIRED_DEPENDENCIES
+                or project_sha256 != API_SMOKE_PROJECT_SHA256
+                or lock_sha256 != API_SMOKE_LOCK_SHA256
+                or not authoritative_rows):
+            return block("API smoke authoritative project identity is not exact")
+    except Exception as exc:  # noqa: BLE001 - malformed closure must fail closed
+        return block(f"API smoke authoritative project is not authenticated: {exc}")
     try:
         evidence = load_json(path)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -383,6 +402,11 @@ def validate_api_smoke_evidence(path: Path, expected_sha256: str, expected_head:
             or canonical(project["packages"]) != project["package_rows_sha256"]):
         return block("API smoke locked project identity is not exact")
     package_rows = project["packages"]
+    authoritative_rows_sha256 = canonical(authoritative_rows)
+    if (package_rows != authoritative_rows
+            or scope["package_rows_sha256"] != authoritative_rows_sha256
+            or project["package_rows_sha256"] != authoritative_rows_sha256):
+        return block("API smoke evidence package rows do not match the authenticated lock")
     package_reviews = scope["package_reviews"]
     if (not package_rows or not isinstance(package_reviews, list)
             or len(package_reviews) != len(package_rows)):
@@ -832,7 +856,8 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         if not project_ok:
             return block(project_reason)
         api_ok, api_reason = validate_api_smoke_evidence(
-            api_smoke_evidence_path, api_smoke_sha256, expected_head, selected_variants
+            api_smoke_evidence_path, api_smoke_sha256, expected_head, selected_variants,
+            authoritative_project=api_smoke_project_path,
         )
         if not api_ok:
             return block(api_reason)
@@ -937,6 +962,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
 
 
 def self_test() -> int:
+    global validate_api_smoke_project, validate_api_smoke_evidence
     project = Path(__file__).resolve().parent
     manifest_path = project / "license_gate_manifest.json"
     identity_ok, identity_reason = validate_identity_evidence(project)
@@ -989,33 +1015,40 @@ def self_test() -> int:
             if verify_source(source, contract=contract, expected_revision=revision)[0]:
                 print(f"moss_audio tracked source {filename} was accepted", file=sys.stderr)
                 return 1
-    ok, reason = validate(project, manifest_path)
+    production_ok, production_reason = validate(project, manifest_path)
+    if production_ok or ("unresolved" not in production_reason and "artifact" not in production_reason and "BLOCKED_UNVERIFIED_API_SMOKE" not in production_reason and "API smoke evidence" not in production_reason):
+        print(f"moss_audio preflight gate: expected pending review, got {production_reason}", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="moss-audio-api-bridge-") as temporary:
+        malformed = Path(temporary) / "evidence.json"
+        malformed.write_text("{}\n", encoding="utf-8")
+        malformed_sha = sha256_file(malformed)
+        bridge_ok, bridge_reason = validate_api_smoke_evidence(
+            malformed, malformed_sha, "0" * 40, ["4b"],
+            authoritative_project=project / "api_smoke",
+        )
+        if bridge_ok or "schema" not in bridge_reason:
+            print("moss_audio API smoke bridge accepted malformed evidence", file=sys.stderr)
+            return 1
+        bridge_ok, bridge_reason = validate_api_smoke_evidence(
+            malformed, "0" * 64, "0" * 40, ["4b"],
+            authoritative_project=project / "api_smoke",
+        )
+        if bridge_ok or "SHA-256" not in bridge_reason:
+            print("moss_audio API smoke bridge accepted tampered evidence", file=sys.stderr)
+            return 1
+        bridge_ok, bridge_reason = validate_api_smoke_evidence(
+            Path(temporary) / "missing.json", "0" * 64, "0" * 40, ["4b"],
+            authoritative_project=project / "api_smoke",
+        )
+        if bridge_ok or "missing" not in bridge_reason:
+            print("moss_audio API smoke bridge accepted missing evidence", file=sys.stderr)
+            return 1
+    ok, reason = validate(project, manifest_path, _self_test=True)
     if ok or ("unresolved" not in reason and "artifact" not in reason and "BLOCKED_UNVERIFIED_API_SMOKE" not in reason and "API smoke evidence" not in reason):
         print(f"moss_audio preflight gate: expected pending review, got {reason}", file=sys.stderr)
         return 1
     if "API smoke evidence" in reason:
-        with tempfile.TemporaryDirectory(prefix="moss-audio-api-bridge-") as temporary:
-            malformed = Path(temporary) / "evidence.json"
-            malformed.write_text("{}\n", encoding="utf-8")
-            malformed_sha = sha256_file(malformed)
-            bridge_ok, bridge_reason = validate_api_smoke_evidence(
-                malformed, malformed_sha, "0" * 40, ["4b"]
-            )
-            if bridge_ok or "schema" not in bridge_reason:
-                print("moss_audio API smoke bridge accepted malformed evidence", file=sys.stderr)
-                return 1
-            bridge_ok, bridge_reason = validate_api_smoke_evidence(
-                malformed, "0" * 64, "0" * 40, ["4b"]
-            )
-            if bridge_ok or "SHA-256" not in bridge_reason:
-                print("moss_audio API smoke bridge accepted tampered evidence", file=sys.stderr)
-                return 1
-            bridge_ok, bridge_reason = validate_api_smoke_evidence(
-                Path(temporary) / "missing.json", "0" * 64, "0" * 40, ["4b"]
-            )
-            if bridge_ok or "missing" not in bridge_reason:
-                print("moss_audio API smoke bridge accepted missing evidence", file=sys.stderr)
-                return 1
         print("moss_audio preflight gate: self-test PASS (API smoke bridge fail-closed)")
         return 0
     if "BLOCKED_UNVERIFIED_API_SMOKE" in reason:
@@ -1149,6 +1182,63 @@ def self_test() -> int:
         if not good:
             print(f"moss_audio preflight gate: approved baseline failed: {reason}", file=sys.stderr)
             return 1
+        approved_baseline = approved.read_bytes()
+        evidence_baseline = evidence.read_bytes()
+        lock_path = test_project / "uv.lock"
+        lock_baseline = lock_path.read_bytes()
+        corrupted_lock = lock_baseline + b"\n# corrupted self-test lock\n"
+        lock_path.write_bytes(corrupted_lock)
+        corrupted_ok, corrupted_reason = validate(test_project, approved, evidence, _self_test=True)
+        lock_path.write_bytes(lock_baseline)
+        if corrupted_ok or corrupted_reason != "uv.lock bytes are not the fixed reviewed lock":
+            print("moss_audio corrupted lock was accepted or misclassified", file=sys.stderr)
+            return 1
+        malformed_identity = json.loads(approved_baseline)
+        malformed_identity["fixed_identities"]["source"].pop("tracked_tree_sha256")
+        approved.write_text(json.dumps(malformed_identity), encoding="utf-8")
+        original_project_validator = validate_api_smoke_project
+        original_evidence_validator = validate_api_smoke_evidence
+        validate_api_smoke_project = lambda _project: (True, "PASS")
+        validate_api_smoke_evidence = lambda *_args, **_kwargs: (True, "PASS")
+        try:
+            production_identity_ok, production_identity_reason = validate(
+                test_project,
+                approved,
+                evidence,
+                Path("synthetic-api-smoke-evidence.json"),
+                "0" * 64,
+                "0" * 40,
+                ["4b"],
+                Path("synthetic-api-smoke-project"),
+            )
+        finally:
+            validate_api_smoke_project = original_project_validator
+            validate_api_smoke_evidence = original_evidence_validator
+            approved.write_bytes(approved_baseline)
+        if production_identity_ok or production_identity_reason != "fixed MOSS-Audio identities or NO_UPLOAD policy drifted":
+            print("moss_audio production fixed-identity tamper was accepted or misclassified", file=sys.stderr)
+            return 1
+        stale_scope = json.loads(approved_baseline)
+        stale_scope_data = json.loads(json.dumps(scope))
+        stale_scope_data["package_rows_sha256"] = "0" * 64
+        stale_scope_sha = canonical(stale_scope_data)
+        stale_scope["approval_scope_sha256"] = stale_scope_sha
+        stale_scope["operator_approval"]["digest"] = stale_scope_sha
+        approved.write_text(json.dumps(stale_scope), encoding="utf-8")
+        stale_scope_ok, stale_scope_reason = validate(test_project, approved, evidence, _self_test=True)
+        approved.write_bytes(approved_baseline)
+        if stale_scope_ok or stale_scope_reason != "approval scope is not bound to exact closure":
+            print("moss_audio stale approval scope was accepted or misclassified", file=sys.stderr)
+            return 1
+        stale_evidence = json.loads(evidence_baseline)
+        stale_evidence["scope_sha256"] = stale_scope_sha
+        stale_evidence["digest"] = stale_scope_sha
+        evidence.write_text(json.dumps(stale_evidence), encoding="utf-8")
+        stale_evidence_ok, stale_evidence_reason = validate(test_project, approved, evidence, _self_test=True)
+        evidence.write_bytes(evidence_baseline)
+        if stale_evidence_ok or stale_evidence_reason != "operator evidence is not bound to this exact manifest and scope":
+            print("moss_audio stale operator evidence was accepted or misclassified", file=sys.stderr)
+            return 1
         identity_candidate = json.loads((test_project / "identity_audit_evidence.json").read_text(encoding="utf-8"))
         identity_candidate["variants"]["4b"]["index"]["weight_map_entries"] = 902
         (test_project / "identity_audit_evidence.json").write_text(json.dumps(identity_candidate), encoding="utf-8")
@@ -1208,10 +1298,6 @@ def self_test() -> int:
         if validate(test_project, approved, evidence, _self_test=True)[0]:
             print("moss_audio boolean component signer accepted", file=sys.stderr); return 1
         approved.write_text(json.dumps(base), encoding="utf-8")
-        good, reason = validate(test_project, approved, evidence)
-        if good or "identity is incomplete" not in reason:
-            print("moss-audio incomplete fixed identity was accepted", file=sys.stderr)
-            return 1
         for tamper in ("lock_sha256", "pyproject_sha256"):
             candidate = json.loads(approved.read_text(encoding="utf-8")); candidate[tamper] = "0" * 64
             approved.write_text(json.dumps(candidate), encoding="utf-8")
@@ -1228,7 +1314,7 @@ def self_test() -> int:
             if validate(test_project, approved, evidence, _self_test=True)[0]:
                 print("moss_audio preflight gate: identity/review tamper accepted", file=sys.stderr); return 1
             approved.write_text(json.dumps(base), encoding="utf-8")
-    print("moss_audio preflight gate: self-test PASS")
+    print("moss_audio preflight gate: self-test PASS (API smoke bridge + binding/tamper fail-closed)")
     return 0
 
 

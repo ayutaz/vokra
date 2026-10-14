@@ -62,13 +62,24 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 現行の workspace release line は `0.3.0` である。
 
-**2026-10-08 current snapshot:** 今回の documentation review と read-only
+**2026-10-13 metadata snapshot:** exact GitHub `main` checkout は
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`。fresh metadata/card-only
+audit は repository 194、GGUF repository 193、GGUF file 198 を報告している。
+CPU は `full=136`、`partial=43`、`no-runtime-binder=14`、`not-artifact=1`、
+Metal は `full=136`、`blocked-by-cpu=57`、`not-artifact=1` である。
+これは catalog metadata の更新であり、API/header や Apple 実機を再検証したものではない。
+別途 2026-10-13 に実施した VibeVoice VAST audit は private な static-only audit で、
+model や API を実行しておらず、CPU/Metal/no-fallback parity や公開可否を確立しない。
+[documentation refresh record](handoff/documentation-refresh-2026-10-13.md) と
+[VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) を参照すること。
+
+**2026-10-08 historical snapshot:** 今回の documentation review と read-only
 metadata/card-only 公開 audit は GitHub の exact `main` checkout
 `d100d93778191ccab77bd1c37fe3552e3d889758` を基準にしている。audit は repository 194、GGUF
 repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=43`、
 `no-runtime-binder=14`、`not-artifact=1`、Metal status は `full=136`、
-`blocked-by-cpu=57`、`not-artifact=1` で、未解決の public row は58件
-である。VibeVoice Realtime-0.5B は strict structural `vibevoice_streaming` binder と
+`blocked-by-cpu=57`、`not-artifact=1` である。この historical snapshot では未解決の
+public row は58件だった。VibeVoice Realtime-0.5B は strict structural `vibevoice_streaming` binder と
 CLI inspection route に進み partial のままである。605-tensor の完全な checkpoint は変換済みで、
 Microsoft source に対する狭い independent reference probe も受理済みだが、full streaming、
 native CPU parity、Apple CPU/Metal 検証は未完了である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は

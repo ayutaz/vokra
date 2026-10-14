@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 import tempfile
 import tomllib
@@ -28,6 +29,7 @@ EXPECTED_DIRECT = {
 }
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 BLOCKED_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
+UNBOUND_APPROVAL_STATUS = "BLOCKED_UNBOUND_AUDIT_APPROVAL"
 
 
 def _dependency_name(specifier: str) -> str:
@@ -51,6 +53,10 @@ def audit(project: Path) -> dict[str, object]:
         "AUDITED_ALLOW",
     }:
         errors.append("dependency audit status is neither pending fail-closed nor owner-approved")
+    # This scalar is a declaration, not owner-reviewed evidence.  There is no
+    # accepted binding format in this gate yet, so accepting it would make a
+    # one-line metadata edit an approval bypass.
+    unbound_approval = audit_status == "AUDITED_ALLOW"
     dependencies = metadata.get("project", {}).get("dependencies", [])
     direct = {_dependency_name(str(item)): str(item).split("==", 1)[1] for item in dependencies if "==" in str(item)}
     if direct != EXPECTED_DIRECT:
@@ -84,10 +90,15 @@ def audit(project: Path) -> dict[str, object]:
     )
     if forbidden:
         errors.append(f"forbidden CUDA/Triton package rows: {forbidden!r}")
-    if errors:
+    has_contract_errors = bool(errors)
+    if unbound_approval:
+        errors.append(
+            "AUDITED_ALLOW is unbound: current hash-bound validated approval evidence is required"
+        )
+    if has_contract_errors:
         status = "BLOCKED_LOCK_CONTRACT"
-    elif audit_status == "AUDITED_ALLOW":
-        status = "AUDITED_ALLOW"
+    elif unbound_approval:
+        status = UNBOUND_APPROVAL_STATUS
     else:
         status = BLOCKED_STATUS
     return {
@@ -103,28 +114,43 @@ def audit(project: Path) -> dict[str, object]:
 
 
 def self_test() -> None:
+    # Exercise the checked-in 43-row project fixture, not a reduced toy lock.
+    fixture = Path(__file__).resolve().parent
+    baseline = audit(fixture)
+    assert baseline["status"] == BLOCKED_STATUS, baseline
+    assert baseline["lock_package_count"] == 43, baseline
+
     with tempfile.TemporaryDirectory(prefix="owsm-dependency-gate-") as directory:
         project = Path(directory)
-        (project / "pyproject.toml").write_text(
-            """[project]\ndependencies = [\n"""
-            + "\n".join(f'    "{name}=={version}",' for name, version in EXPECTED_DIRECT.items())
-            + "\n]\n\n[tool.vokra.owsm_v4_medium_1b_reference]\ndependency_license_audit = \"PENDING_PRIMARY_SOURCE_AUDIT_FAIL_CLOSED\"\n",
-            encoding="utf-8",
-        )
-        rows = []
-        for name, version in EXPECTED_DIRECT.items():
-            source = (
-                '\nsource = { registry = "https://download.pytorch.org/whl/cpu" }'
-                if name == "torch"
-                else ""
-            )
-            rows.append(f'[[package]]\nname = "{name}"\nversion = "{version}"{source}\n')
-        rows.append('[[package]]\nname = "torch"\nversion = "2.6.0+cpu"\nsource = { registry = "https://download.pytorch.org/whl/cpu" }\n')
-        (project / "uv.lock").write_text("\n".join(rows), encoding="utf-8")
-        result = audit(project)
-        assert result["status"] == BLOCKED_STATUS, result
-        (project / "uv.lock").write_text((project / "uv.lock").read_text().replace("2.6.0+cpu", "2.6.0+cuda"), encoding="utf-8")
+        shutil.copy2(fixture / "pyproject.toml", project / "pyproject.toml")
+        shutil.copy2(fixture / "uv.lock", project / "uv.lock")
+
+        lock_path = project / "uv.lock"
+        lock = lock_path.read_text(encoding="utf-8")
+        torch_cpu_row = 'name = "torch"\nversion = "2.6.0+cpu"'
+        assert lock.count(torch_cpu_row) == 1
+        lock_path.write_text(lock.replace(torch_cpu_row, 'name = "torch"\nversion = "2.6.0+cuda"'), encoding="utf-8")
         assert audit(project)["status"] == "BLOCKED_LOCK_CONTRACT"
+        lock_path.write_text(lock, encoding="utf-8")
+
+        pyproject = (project / "pyproject.toml").read_text(encoding="utf-8")
+        pyproject = pyproject.replace(
+            'dependency_license_audit = "PENDING_PRIMARY_SOURCE_AUDIT_FAIL_CLOSED"',
+            'dependency_license_audit = "AUDITED_ALLOW"',
+        )
+        (project / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        flipped = audit(project)
+        assert flipped["status"] == UNBOUND_APPROVAL_STATUS, flipped
+        assert flipped["status"] != "AUDITED_ALLOW"
+
+        # A transitive lock mutation cannot create an approval path either.
+        lock = (project / "uv.lock").read_text(encoding="utf-8")
+        assert lock.count('name = "certifi"\nversion = "2026.7.22"') == 1
+        lock = lock.replace('name = "certifi"\nversion = "2026.7.22"', 'name = "certifi"\nversion = "2026.7.23"')
+        (project / "uv.lock").write_text(lock, encoding="utf-8")
+        mutated = audit(project)
+        assert mutated["status"] == UNBOUND_APPROVAL_STATUS, mutated
+        assert mutated["status"] != "AUDITED_ALLOW"
     print("owsm_v4_medium_1b dependency/license gate self-test: OK")
 
 

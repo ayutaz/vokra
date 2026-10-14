@@ -1,5 +1,9 @@
 # Mac CPU / Metal owner disposition packet (2026-09-07)
 
+> **2026-10-14 planning boundary:** The [updated execution plan](next-steps-2026-10-14.md) changes priority, not signer, scope, license or execution authority. Resolve source/package/native evidence first and retain this immutable packet's denominator and decisions; no new approval follows from the completed private static audit or green PR CI.
+
+> **2026-10-13 current routing / supersession:** The [current readback](documentation-refresh-2026-10-13.md) supersedes older live-status pointers only. The [static dependency audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) does not approve licenses/native payloads or change any signer, scope hash or decision. Preserve this packet's frozen 63-row denominator; the live public inventory has 58 unresolved rows. PR #199 is now merged, without altering this model-scope packet.
+
 Updated with owner-independent evidence on 2026-09-09.
 
 > **2026-10-08 current-readback boundary:** the root-owned
@@ -169,12 +173,14 @@ collector correctly remains `BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`. This is not
 runtime parity evidence and does not authorize checkpoint acquisition,
 execution or publication.
 
-Primary sources:
+Primary sources (2026-10-14 transport-only update: the README links use the
+official raw bodies for the same source paths; historical decisions and
+scope hashes are unchanged, and the MUSDB `master` alias remains mutable):
 
 - <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/LICENSE>
-- <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/README.md>
+- <https://raw.githubusercontent.com/facebookresearch/demucs/e976d93ecc3865e5757426930257e200846a520a/README.md>
 - <https://raw.githubusercontent.com/facebookresearch/demucs/e976d93ecc3865e5757426930257e200846a520a/demucs/audio.py>
-- <https://github.com/sigsep/sigsep-mus-db/blob/master/README.md>
+- <https://raw.githubusercontent.com/sigsep/sigsep-mus-db/master/README.md>
 
 ## Owner decision vocabulary
 

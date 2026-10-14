@@ -26,11 +26,22 @@ torchaudio = None
 MODEL_ID = "Wespeaker/wespeaker-voxceleb-resnet34-LM"
 MODEL_REVISION = "f0c48c298fd835726c27956a5d617bad7115627e"
 SOURCE_REVISION = "45941e7cba2c3ea99e232d02bedf617fc71b0dad"
+CHECKPOINT_REMOTE_FILENAME = "avg_model"
 CHECKPOINT_FILE = "avg_model.pt"
 CHECKPOINT_BYTES = 45_053_131
 CHECKPOINT_SHA256 = "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
 SAMPLE_RATE = 16_000
 PCM_SAMPLES = 32_000
+SOURCE_FILES = {
+    "LICENSE": (11_357, "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
+    "wespeaker/models/resnet.py": (9_564, "6f3c8219be2c9a8b9eabed8169c1abaec3e48670be7aaf1e792138b2b20e68c4"),
+    "wespeaker/models/pooling_layers.py": (10_255, "768910c91e353f1d0c2f3edc8f9ae758d2ff7e477d37fb470ae946eba69adac8"),
+}
+SOURCE_BLOBS = {
+    "LICENSE": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+    "wespeaker/models/resnet.py": "17607e6d2c72627e15db4214cacfa9d7b89ca945",
+    "wespeaker/models/pooling_layers.py": "47120eb9029ba1b00d18fcd61dd80f8afa2037c6",
+}
 
 
 def validate_raw_path(raw: str, label: str) -> Path:
@@ -91,6 +102,27 @@ def deterministic_pcm() -> np.ndarray:
     return np.asarray(np.clip(pcm, -0.95, 0.95), dtype=np.float32)
 
 
+def verify_source_tree(source_input: Path) -> Path:
+    """Authenticate the small official source surface before runtime loading."""
+    if source_input.is_symlink() or not source_input.is_dir():
+        raise SystemExit(f"not a regular WeSpeaker source tree: {source_input}")
+    source_root = source_input.resolve()
+    if not (source_root / "wespeaker" / "models" / "resnet.py").is_file():
+        raise SystemExit(f"not a WeSpeaker source tree: {source_root}")
+    if subprocess.run(["git", "-C", str(source_root), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout:
+        raise SystemExit("source tree is dirty")
+    if subprocess.run(["git", "-C", str(source_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip() != SOURCE_REVISION:
+        raise SystemExit("source revision mismatch")
+    for relative, (size, expected) in SOURCE_FILES.items():
+        path = source_root / relative
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(source_root.resolve()) or path.stat().st_size != size or sha256(path) != expected:
+            raise SystemExit(f"source identity mismatch: {relative}")
+        blob = subprocess.run(["git", "-C", str(source_root), "hash-object", "--no-filters", relative], check=True, capture_output=True, text=True).stdout.strip()
+        if blob != SOURCE_BLOBS[relative]:
+            raise SystemExit(f"source Git blob mismatch: {relative}")
+    return source_root
+
+
 def unwrap_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
     if not isinstance(checkpoint, dict):
         raise SystemExit(f"expected checkpoint dict, got {type(checkpoint).__name__}")
@@ -113,6 +145,8 @@ def unwrap_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
 def stdlib_self_test() -> None:
     if len(MODEL_REVISION) != 40 or len(SOURCE_REVISION) != 40:
         raise SystemExit("WeSpeaker identity constants are malformed")
+    if CHECKPOINT_REMOTE_FILENAME != "avg_model" or CHECKPOINT_FILE != "avg_model.pt":
+        raise SystemExit("checkpoint remote/staged filename contract drifted")
     source = Path(__file__).read_text(encoding="utf-8")
     unsafe = "weights_only=" + "False"
     if unsafe in source or "torch.load" not in source:
@@ -156,35 +190,14 @@ def main() -> int:
     ):
         parser.error("--output-dir must be absent or an empty regular directory")
 
+    source_root = verify_source_tree(source_input)
+
     if checkpoint.is_symlink() or not checkpoint.is_file() or checkpoint.name != CHECKPOINT_FILE:
         raise SystemExit(f"checkpoint must be the exact regular {CHECKPOINT_FILE} file")
     if checkpoint.stat().st_size != CHECKPOINT_BYTES or sha256(checkpoint) != CHECKPOINT_SHA256:
         raise SystemExit("checkpoint identity mismatch")
 
     _load_runtime()
-
-    if source_input.is_symlink() or not source_input.is_dir():
-        raise SystemExit(f"not a regular WeSpeaker source tree: {source_input}")
-    source_root = source_input.resolve()
-    if not (source_root / "wespeaker" / "models" / "resnet.py").is_file():
-        raise SystemExit(f"not a WeSpeaker source tree: {source_root}")
-    if subprocess.run(["git", "-C", str(source_root), "status", "--porcelain", "--untracked-files=all"], check=True, capture_output=True, text=True).stdout:
-        raise SystemExit("source tree is dirty")
-    if subprocess.run(["git", "-C", str(source_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip() != SOURCE_REVISION:
-        raise SystemExit("source revision mismatch")
-    source_files = {
-        "LICENSE": (11_357, "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
-        "wespeaker/models/resnet.py": (9_564, "6f3c8219be2c9a8b9eabed8169c1abaec3e48670be7aaf1e792138b2b20e68c4"),
-        "wespeaker/models/pooling_layers.py": (10_255, "768910f8e88cb47e742274563339d7e780cb9d56c629c4d4124605296686f0f9"),
-    }
-    for relative, (size, expected) in source_files.items():
-        path = source_root / relative
-        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(source_root.resolve()) or path.stat().st_size != size or sha256(path) != expected:
-            raise SystemExit(f"source identity mismatch: {relative}")
-        blob = subprocess.run(["git", "-C", str(source_root), "hash-object", relative], check=True, capture_output=True, text=True).stdout.strip()
-        expected_blob = {"LICENSE": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64", "wespeaker/models/resnet.py": "17607e6d2c72627e15db4214cacfa9d7b89ca945", "wespeaker/models/pooling_layers.py": "47120eead47a511939267470496539804c17b7d3"}[relative]
-        if blob != expected_blob:
-            raise SystemExit(f"source Git blob mismatch: {relative}")
     sys.path.insert(0, str(source_root))
     resnet = importlib.import_module("wespeaker.models.resnet")
 
@@ -250,6 +263,8 @@ def main() -> int:
         "pcm_samples": int(pcm.size),
         "feature_shape": list(features.shape),
         "embedding_shape": list(embedding.shape),
+        "checkpoint_remote_filename": CHECKPOINT_REMOTE_FILENAME,
+        "checkpoint_staged_filename": CHECKPOINT_FILE,
         "checkpoint_sha256": CHECKPOINT_SHA256,
         "python": platform.python_version(),
         "numpy": np.__version__,

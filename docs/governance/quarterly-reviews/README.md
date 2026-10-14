@@ -1,5 +1,7 @@
 # Quarterly review records
 
+> **2026-10-13 current routing / supersession:** The [2026-10-13 readback](../../handoff/documentation-refresh-2026-10-13.md) confirms main `7d38061c` and one tag/release, v0.3.0. No new tracked quarterly record or owner Go/No-go verdict is added; existing milestone/calendar decisions remain open. Older readbacks below are historical.
+
 > **Current state (2026-10-08):** exact GitHub `main` is
 > `d100d93778191ccab77bd1c37fe3552e3d889758`. `release-cadence.yml` and
 > `tools/release/test_cadence.py` are landed. The all-pages API reports **one

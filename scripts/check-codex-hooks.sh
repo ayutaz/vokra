@@ -128,6 +128,7 @@ for file in \
 do
     run_check "shell self-test: $file" bash "$HOOKS/$file" --self-test
 done
+run_check 'protected-path metadata regression' bash "$ROOT/scripts/check-protected-path-metadata.sh"
 
 run_check 'Python self-test: post_tool_use.py' \
     env UV_CACHE_DIR="${TMPDIR:-/tmp}/vokra-uv-cache" \

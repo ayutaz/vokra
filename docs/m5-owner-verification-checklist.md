@@ -1,5 +1,7 @@
 # M5 (v1.0 GA) Owner Verification Checklist
 
+> **2026-10-13 current routing / supersession:** The [fresh snapshot](handoff/documentation-refresh-2026-10-13.md) records main `7d38061c`, unchanged metadata-only 136 full / 58 unresolved, 199 Dependabot alerts, eight Code Scanning findings and six open PRs. #199 is merged. The [static audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) is operationally complete but does not close an owner/legal, runtime, real-weight, Apple, publication, ABI or GA gate. Literal checklist count was rechecked as 53 checked / 29 unchecked; no checkbox or signed scope is changed. Older current-readback notes below remain dated evidence.
+
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
 **2026-10-08 current-readback boundary:** the root-owned [documentation

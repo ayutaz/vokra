@@ -1,5 +1,7 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
+> **2026-10-13 current routing / supersession:** The [2026-10-13 snapshot](../handoff/documentation-refresh-2026-10-13.md) is the current main/release pointer. This remains an unfilled GA judgment template; static audit PASS, merged packaging source and metadata counts do not authorize a GA verdict or tag.
+
 > **Current state (2026-10-08):** exact GitHub `main` is
 > `d100d93778191ccab77bd1c37fe3552e3d889758`. `release-cadence.yml` and
 > `tools/release/test_cadence.py` are landed. The all-pages API reports **one

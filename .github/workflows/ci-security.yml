@@ -42,8 +42,35 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
+      - name: Dia direct execution admission guard self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/test_dia_execution_admission.py --self-test
+
+      - name: Dia current lock contract self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/test_dia_current_lock_contract.py --self-test
+
+      - name: GitHub blob report gate stdlib self-test
+        run: uv run --no-project --offline --python 3.12 python scripts/test-check-github-blob-link-report.py
+
       - name: GigaAM v3 dependency quarantine self-test
         run: uv run --no-project --offline --python 3.12 python tools/parity/gigaam_v3/security_self_test.py
+
+      - name: OWSM v4 medium 1B dependency license gate self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/owsm_v4_medium_1b_reference/dependency_license_gate.py --self-test
+
+      - name: OWSM v4 medium 1B dependency license gate unit tests
+        run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/parity/owsm_v4_medium_1b_reference -p 'test_dependency_license_gate.py'
+
+      - name: Kyutai Candle ASR observer source-contract unit tests
+        run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/parity/kyutai_candle_reference -p 'test_asr_observer_patch.py'
+
+      - name: FireRed checkpoint metadata unit tests
+        run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/audit -p 'test_firered_checkpoint_metadata.py'
+
+      - name: WeSpeaker source pin unit tests
+        run: uv run --no-project --offline --python 3.12 python -m unittest discover -s tools/parity -p 'test_wespeaker_source_pin.py'
+
+      - name: MOSS Audio API-smoke preflight binding self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/moss_audio/test_api_smoke_preflight_binding.py --self-test
 
       - name: Install pinned zizmor
         shell: bash
@@ -173,7 +200,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Check Markdown links
+        id: lychee
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
           # Three requirement/ADR targets are intentionally gitignored-local
@@ -200,4 +229,109 @@ jobs:
             --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/privacy/guidance/business-associates/index\.html$'
             --exclude '^https://leginfo\.legislature\.ca\.gov/faces/billVersionsCompareClient\.xhtml\?bill_id=202320240SB942$'
             README.md CONTRIBUTING.md .github docs
-          fail: true
+          # Keep the complete lychee v0.24.2 JSON report and its real exit
+          # code for the mandatory final gate below.  fail=false is only the
+          # collector mode; it is not an exemption from link checking.
+          format: json
+          output: lychee/report.json
+          jobSummary: false
+          token: ${{ github.token }}
+          fail: false
+      - name: Diagnose fixed GitHub blob failures
+        if: ${{ always() && steps.lychee.outputs.exit_code != '0' }}
+        shell: bash
+        run: |
+          set -u
+          set -o pipefail
+
+          # This is deliberately a fixed six-request probe. Do not replace
+          # these literals with PR, ref, or workflow inputs.
+          max_probes=6
+          probes=0
+          summary_file="${GITHUB_STEP_SUMMARY:-${RUNNER_TEMP}/vokra-link-diagnostic-summary.md}"
+          mkdir -p "$(dirname "${summary_file}")"
+
+          {
+            printf '\n### Fixed GitHub blob failure diagnostic\n\n'
+            printf '~~~text\n'
+            printf 'endpoint\tcurl_exit\thttp_status\tcontent_type\n'
+          } >>"${summary_file}"
+
+          probe() {
+            local label="$1"
+            local accept="$2"
+            local url="$3"
+            local headers output record curl_exit
+            probes=$((probes + 1))
+            if (( probes > max_probes )); then
+              printf 'probe limit exceeded\n' >&2
+              return 1
+            fi
+            headers="${RUNNER_TEMP}/vokra-link-diagnostic-${probes}.headers"
+            output="${RUNNER_TEMP}/vokra-link-diagnostic-${probes}.result"
+            record="${RUNNER_TEMP}/vokra-link-diagnostic-${probes}.record"
+            set +e
+            curl -q \
+              --silent --show-error --location \
+              --connect-timeout 5 --max-time 10 --max-filesize 1048576 \
+              --max-redirs 3 --fail --proto '=https' --proto-redir '=https' \
+              --netrc-file /dev/null \
+              --header 'User-Agent: vokra-ci-link-diagnostic/1' \
+              --header "Accept: ${accept}" \
+              --dump-header "${headers}" \
+              --output /dev/null \
+              --write-out 'http=%{http_code}\tcontent_type=%{content_type}' \
+              "${url}" >"${output}" 2>"${output}.err"
+            curl_exit=$?
+            set -e
+
+            # Emit the actual shell exit code. Never print cookies,
+            # authorization material, URLs, or an arbitrary response body.
+            : >"${record}"
+            printf '%s\tcurl_exit=%s\t' "${label}" "${curl_exit}" >>"${record}"
+            if [[ -s "${output}" ]]; then
+              cat "${output}" >>"${record}"
+            else
+              printf 'http=000\tcontent_type=' >>"${record}"
+            fi
+            printf '\n' >>"${record}"
+            cat "${record}" >>"${summary_file}"
+            # Only this fixed response-header allowlist is copied; location
+            # is intentionally omitted so a redirect cannot expose a query
+            # credential in the diagnostic summary.
+            awk 'BEGIN { IGNORECASE=1 }
+              /^HTTP\/[0-9.]+ / ||
+              /^(content-type|x-github-request-id):[[:space:]]/ { print }' \
+              "${headers}" | sed 's/^/  header: /' >>"${summary_file}"
+          }
+
+          probe 'blob-contributing' 'text/html' \
+            'https://github.com/ayutaz/vokra/blob/main/CONTRIBUTING.md'
+          probe 'raw-contributing' 'application/vnd.github.raw+json' \
+            'https://raw.githubusercontent.com/ayutaz/vokra/main/CONTRIBUTING.md'
+          probe 'api-contributing' 'application/vnd.github+json' \
+            'https://api.github.com/repos/ayutaz/vokra/contents/CONTRIBUTING.md?ref=main'
+          probe 'blob-architecture' 'text/html' \
+            'https://github.com/ayutaz/vokra/blob/main/docs/architecture.md'
+          probe 'raw-architecture' 'application/vnd.github.raw+json' \
+            'https://raw.githubusercontent.com/ayutaz/vokra/main/docs/architecture.md'
+          probe 'api-architecture' 'application/vnd.github+json' \
+            'https://api.github.com/repos/ayutaz/vokra/contents/docs/architecture.md?ref=main'
+
+          printf '~~~\n' >>"${summary_file}"
+
+          # Do not turn a diagnostic observation into a second gate. The
+          # mandatory JSON final gate below remains authoritative.
+          exit 0
+      - name: Enforce lychee report and narrow GitHub 503 recovery
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LYCHEE_EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --offline --python 3.12 python \
+            scripts/check-github-blob-link-report.py \
+            --report lychee/report.json \
+            --lychee-exit-code "${LYCHEE_EXIT_CODE:-255}"

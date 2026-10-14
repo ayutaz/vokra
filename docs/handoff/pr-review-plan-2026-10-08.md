@@ -1,5 +1,17 @@
 # PR review and disposition plan — 2026-10-08
 
+> **2026-10-14 acceptance supersession:** [PR #229](https://github.com/ayutaz/vokra/pull/229) was reviewed and ordinarily squash-merged at `134eb9c7dbbfdafd2e4c1bdddac2e97253f9eea4` (2026-10-13 15:30:40 UTC / 2026-10-14 00:30:40 JST). All 16 required context/application pairs succeeded on exact head `9db7d7b512888d3ea9834b10aaca767881309ae1`; 77 total checks were 74 success / 3 skipped. Branch and PR readbacks confirm acceptance, without protection changes or admin override. The [latest plan](next-steps-2026-10-14.md) retains the five Draft responsibilities and current-lock gates; #169 is not closed from unaccepted #182. Local documentation commit `1a63a8d1` is not yet pushed.
+
+> **2026-10-13 current routing / supersession:** The [exact-head PR table](documentation-refresh-2026-10-13.md) is current: #229 is non-draft, CLEAN/MERGEABLE at `9db7d7b512888d3ea9834b10aaca767881309ae1`, with 74 SUCCESS / 3 SKIPPED and no pending/failure; drafts #198/#191/#182/#169/#152 remain open. Review #229's pinned-action diff and exact-head gates before a separately authorized merge; do not treat draft source CI as owner/legal/model approval. #199 and #220–#225 are accepted; #219/#226/#227/#228 are CLOSED, not individually merged. The [static audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) is done, but exact license/native/owner/compatibility work precedes real-weight CPU and final Scaleway. Earlier queue and CI snapshots below retain their dates.
+
+> **2026-10-09 acceptance and prerequisite supersession:** #218 is accepted
+> at main `7025f17f`; #219 is incorporated/CLOSED, not individually merged.
+> #182's current `a3afc1ec` CI is 105 SUCCESS / 13 SKIPPED. Four authentic
+> Qwen software wheel archives were inspected and cleaned, without model
+> execution or license/operator promotion. See the [dated step-3 evidence](step3-prerequisite-evidence-2026-10-09.md)
+> for exact hashes, retained blockers, new #220 preparation and the still
+> uncompleted real-weight CPU leg. The pending snapshots below are historical.
+
 ## 「3まで」の現行実行計画と実測 — 2026-10-09 11:24 JST
 
 この節は現在の実行範囲を記録します。下記「2まで」の完了は前の凍結済みbatchの

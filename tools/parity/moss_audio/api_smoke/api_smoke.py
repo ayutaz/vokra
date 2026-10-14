@@ -69,7 +69,7 @@ VARIANTS = {
     },
 }
 PROJECT_SHA256 = "17431a2f3ddfb6a9853c47c51f2e99209fcf8c0497e0675c5eb4016cbed58aec"
-LOCK_SHA256 = "f64849e762adac41eebddf54debb64ef6f33a935b8a5931dc3ec9feb3390064c"
+LOCK_SHA256 = "517ed7226440a5b6b6d2e462619ad705ba24bc7bc8e87cdecc59317a77b1d4be"
 REQUIRED_DEPENDENCIES = {
     "einops==0.8.1", "numpy==2.3.5", "safetensors==0.7.0",
     "scipy==1.16.3", "soundfile==0.13.1", "tiktoken==0.12.0", "torch==2.13.0",

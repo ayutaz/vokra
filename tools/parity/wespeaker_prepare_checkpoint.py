@@ -29,10 +29,10 @@ from typing import Any
 
 UPSTREAM_HF = "Wespeaker/wespeaker-voxceleb-resnet34-LM"
 UPSTREAM_REVISION = "f0c48c298fd835726c27956a5d617bad7115627e"
+CHECKPOINT_REMOTE_FILENAME = "avg_model"
 CHECKPOINT_FILENAME = "avg_model.pt"
 CHECKPOINT_SHA256 = "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449"
 CHECKPOINT_BYTES = 45053131
-CHECKPOINT_GIT_OID = "7f92ddd059d244c7d2653650d3be85de9f136c41"
 SOURCE_REVISION = "45941e7cba2c3ea99e232d02bedf617fc71b0dad"
 TENSOR_COUNT = 219
 COUNTER_COUNT = 36
@@ -252,9 +252,10 @@ def self_test() -> int:
     assert len(counters) == COUNTER_COUNT
     assert manifest["projection.weight"] == (17982, 256)
     assert manifest["layer4.2.bn2.num_batches_tracked"] == ()
+    assert CHECKPOINT_REMOTE_FILENAME == "avg_model"
     assert CHECKPOINT_FILENAME == "avg_model.pt"
     assert CHECKPOINT_BYTES == 45053131 and len(CHECKPOINT_SHA256) == 64
-    assert len(CHECKPOINT_GIT_OID) == 40 and len(SOURCE_REVISION) == 40
+    assert len(SOURCE_REVISION) == 40
     source = Path(__file__).read_text(encoding="utf-8")
     assert "torch.load(str(checkpoint), map_location=\"cpu\", weights_only=True)" in source
     with tempfile.TemporaryDirectory(prefix="wespeaker-prepare-self-test-") as directory:
@@ -437,6 +438,8 @@ def main() -> int:
             "model_id": UPSTREAM_HF,
             "model_revision": UPSTREAM_REVISION,
             "source_revision": SOURCE_REVISION,
+            "checkpoint_remote_filename": CHECKPOINT_REMOTE_FILENAME,
+            "checkpoint_staged_filename": CHECKPOINT_FILENAME,
             "checkpoint_filename": CHECKPOINT_FILENAME,
             "checkpoint_sha256": source_hash,
             "output_sha256": output_hash,

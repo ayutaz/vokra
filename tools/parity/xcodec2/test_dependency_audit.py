@@ -7,6 +7,7 @@ import ast
 import base64
 import copy
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from unittest import mock
 
 import collect_dependency_evidence as collector
 import dependency_audit as audit
+import dependency_guard as guard
 import dump_reference as reference
 
 
@@ -178,6 +180,159 @@ class DependencyAuditTests(unittest.TestCase):
         rows_tampered["setuptools_devendoring"]["status"] = "APPROVED"
         with self.assertRaises(audit.AuditError):
             audit.validate_gate_documents(manifest, rows_tampered, actual, closure)
+
+    def test_guard_binds_exact_project_lock_and_helper_documents(self) -> None:
+        pyproject_bytes = guard.PYPROJECT.read_bytes()
+        lock_bytes = guard.LOCKFILE.read_bytes()
+        guard._validate_files(pyproject_bytes, lock_bytes)
+
+        with self.assertRaises(AssertionError):
+            guard._validate_files(pyproject_bytes + b"\n", lock_bytes)
+        with self.assertRaises(AssertionError):
+            guard._validate_files(pyproject_bytes, lock_bytes + b"\n")
+        with tempfile.TemporaryDirectory() as scratch:
+            crlf_pyproject = Path(scratch) / "pyproject.toml"
+            crlf_lock = Path(scratch) / "uv.lock"
+            crlf_pyproject.write_bytes(pyproject_bytes.replace(b"\n", b"\r\n"))
+            crlf_lock.write_bytes(lock_bytes.replace(b"\n", b"\r\n"))
+            for label, py_path, lock_path in (
+                ("pyproject", crlf_pyproject, Path(scratch) / "original-lock.toml"),
+                ("lock", Path(scratch) / "original-pyproject.toml", crlf_lock),
+            ):
+                if label == "lock":
+                    py_path.write_bytes(pyproject_bytes)
+                else:
+                    lock_path.write_bytes(lock_bytes)
+                with self.subTest(crlf_file=label), \
+                    mock.patch.object(guard, "PYPROJECT", py_path), \
+                    mock.patch.object(guard, "LOCKFILE", lock_path), \
+                    mock.patch.object(sys, "argv", ["dependency_guard.py", "--documents-only"]), \
+                    mock.patch.object(guard, "_validate_installed_environment") as installed, \
+                    mock.patch.object(guard, "_validate_official_decoder") as decoder, \
+                    self.assertRaises(AssertionError):
+                    guard.main()
+                installed.assert_not_called()
+                decoder.assert_not_called()
+
+            with (
+                mock.patch.object(sys, "argv", ["dependency_guard.py", "--documents-only"]),
+                mock.patch.object(guard, "_validate_installed_environment") as installed,
+                mock.patch.object(guard, "_validate_official_decoder") as decoder,
+            ):
+                self.assertEqual(guard.main(), 0)
+            installed.assert_not_called()
+            decoder.assert_not_called()
+
+        manifest = audit.strict_json(audit.MANIFEST)
+        rows = audit.strict_json(audit.ROWS)
+        for document, field in (
+            (manifest["project"], "pyproject_sha256"),
+            (manifest["project"], "uv_lock_sha256"),
+            (manifest["project"], "dependency_audit_sha256"),
+            (rows, "pyproject_sha256"),
+            (rows, "uv_lock_sha256"),
+        ):
+            tampered = copy.deepcopy(manifest)
+            tampered_rows = copy.deepcopy(rows)
+            target = tampered["project"] if document is manifest["project"] else tampered_rows
+            target[field] = "0" * 64
+            with self.subTest(document="manifest" if document is manifest["project"] else "audit", field=field), self.assertRaises(AssertionError):
+                guard._validate_hash_bindings(pyproject_bytes, lock_bytes, tampered, tampered_rows)
+
+        missing_manifest = copy.deepcopy(manifest)
+        del missing_manifest["project"]["pyproject_sha256"]
+        with self.assertRaises(AssertionError):
+            guard._validate_hash_bindings(pyproject_bytes, lock_bytes, missing_manifest, rows)
+        missing_rows = copy.deepcopy(rows)
+        del missing_rows["uv_lock_sha256"]
+        with self.assertRaises(AssertionError):
+            guard._validate_hash_bindings(pyproject_bytes, lock_bytes, manifest, missing_rows)
+
+        disagreement = copy.deepcopy(rows)
+        disagreeing_manifest = copy.deepcopy(manifest)
+        disagreeing_manifest["project"]["uv_lock_sha256"] = "a" * 64
+        disagreement["uv_lock_sha256"] = "b" * 64
+        with self.assertRaises(AssertionError):
+            guard._validate_hash_bindings(pyproject_bytes, lock_bytes, disagreeing_manifest, disagreement)
+
+        helper_tamper = copy.deepcopy(manifest)
+        helper_tamper["project"]["source_digests"]["dependency_guard.py"] = "0" * 64
+        with self.assertRaises(AssertionError):
+            guard._validate_helper_source_bindings(helper_tamper, rows, guard.audit.source_digest_map())
+        helper_rows_tamper = copy.deepcopy(rows)
+        helper_rows_tamper["source_digests"]["dependency_guard.py"] = "0" * 64
+        with self.assertRaises(AssertionError):
+            guard._validate_helper_source_bindings(manifest, helper_rows_tamper, guard.audit.source_digest_map())
+
+    def test_guard_real_validator_rejects_gate_document_binding_drift(self) -> None:
+        pyproject_bytes = guard.PYPROJECT.read_bytes()
+        lock_bytes = guard.LOCKFILE.read_bytes()
+        manifest = audit.strict_json(audit.MANIFEST)
+        rows = audit.strict_json(audit.ROWS)
+
+        def validate_documents(candidate_manifest: dict, candidate_rows: dict) -> None:
+            with tempfile.TemporaryDirectory() as scratch:
+                manifest_path = Path(scratch) / "license_gate_manifest.json"
+                rows_path = Path(scratch) / "dependency_audit.json"
+                rows_bytes = json.dumps(
+                    candidate_rows, ensure_ascii=True, indent=2
+                ).encode("utf-8")
+                candidate_manifest = copy.deepcopy(candidate_manifest)
+                project = candidate_manifest.get("project")
+                if isinstance(project, dict):
+                    project["dependency_audit_sha256"] = hashlib.sha256(rows_bytes).hexdigest()
+                manifest_path.write_bytes(
+                    json.dumps(candidate_manifest, ensure_ascii=True, indent=2).encode("utf-8")
+                )
+                rows_path.write_bytes(rows_bytes)
+                with (
+                    mock.patch.object(audit, "MANIFEST", manifest_path),
+                    mock.patch.object(audit, "ROWS", rows_path),
+                ):
+                    guard._validate_files(pyproject_bytes, lock_bytes)
+
+        validate_documents(manifest, rows)
+        cases = []
+        missing_manifest = copy.deepcopy(manifest)
+        del missing_manifest["project"]["pyproject_sha256"]
+        cases.append(("manifest missing pyproject hash", missing_manifest, rows))
+        missing_rows = copy.deepcopy(rows)
+        del missing_rows["uv_lock_sha256"]
+        cases.append(("audit missing lock hash", manifest, missing_rows))
+        for label, field, target in (
+            ("manifest wrong pyproject hash", "pyproject_sha256", "manifest"),
+            ("manifest wrong lock hash", "uv_lock_sha256", "manifest"),
+            ("audit wrong pyproject hash", "pyproject_sha256", "rows"),
+            ("audit wrong lock hash", "uv_lock_sha256", "rows"),
+        ):
+            candidate_manifest = copy.deepcopy(manifest)
+            candidate_rows = copy.deepcopy(rows)
+            (candidate_manifest["project"] if target == "manifest" else candidate_rows)[field] = "0" * 64
+            cases.append((label, candidate_manifest, candidate_rows))
+        disagreeing_manifest = copy.deepcopy(manifest)
+        disagreeing_rows = copy.deepcopy(rows)
+        disagreeing_manifest["project"]["uv_lock_sha256"] = "a" * 64
+        disagreeing_rows["uv_lock_sha256"] = "b" * 64
+        cases.append(("manifest/audit lock disagreement", disagreeing_manifest, disagreeing_rows))
+        missing_project = copy.deepcopy(manifest)
+        del missing_project["project"]
+        cases.append(("manifest project object missing", missing_project, rows))
+        missing_manifest_source = copy.deepcopy(manifest)
+        del missing_manifest_source["project"]["source_digests"]["dependency_guard.py"]
+        cases.append(("manifest missing helper digest", missing_manifest_source, rows))
+        missing_rows_source = copy.deepcopy(rows)
+        del missing_rows_source["source_digests"]["dependency_guard.py"]
+        cases.append(("audit missing helper digest", manifest, missing_rows_source))
+        wrong_manifest_source = copy.deepcopy(manifest)
+        wrong_manifest_source["project"]["source_digests"]["dependency_guard.py"] = "0" * 64
+        cases.append(("manifest wrong helper digest", wrong_manifest_source, rows))
+        wrong_rows_source = copy.deepcopy(rows)
+        wrong_rows_source["source_digests"]["dependency_guard.py"] = "0" * 64
+        cases.append(("audit wrong helper digest", manifest, wrong_rows_source))
+
+        for label, candidate_manifest, candidate_rows in cases:
+            with self.subTest(binding_case=label), self.assertRaises(AssertionError):
+                validate_documents(candidate_manifest, candidate_rows)
 
     def test_reference_defers_third_party_imports_until_preflight(self) -> None:
         tree = ast.parse(

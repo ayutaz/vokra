@@ -8,7 +8,7 @@
   "uv_lock_sha256": "a3b843c2e26c601260c48a900e060a6a93c909d8bee0cf6ac99d30db7db1c335",
   "source_digests": {
     "dependency_audit.py": "6a6c96beaadbf5b9db6bcfefd7c40f238b8f679a9598a292e6515a8ca765eb9a",
-    "dependency_guard.py": "c180ea5338f492fbb8cde5ff03eadf077a92edf68a3f5823fcd80f52285d10b2",
+    "dependency_guard.py": "72d866b6f875883e82c0c1c8c2b904b84d32ac08346788985daa833f717deda8",
     "collect_dependency_evidence.py": "b8754c2946de03a346539a5f77e4e78b08ee71e9591fac769fae65363f604407",
     "inspect_locked_sdist_sources.py": "a17ef3fb4b124bff5a53f22d2ee67afb353ed85e3c1016e8a1392a0dfaae1958",
     "build_derived_locked_sdists.py": "b0712410a1cc28d67aeaa8629e2ba5ffb559362964457e386e154fad76b8b98f",

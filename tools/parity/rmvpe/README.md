@@ -57,10 +57,17 @@ The lock contains 40 package rows, including platform-qualified torch and
 torchaudio rows. The inspector binds every row's name/version/source,
 resolution marker, and dependency qualifier into canonical digests:
 
-- lock SHA-256: `747057f4e8596d801d5d0450e6e10a33fc467ab9e9a6cf2063460d1ea019919d`
-- package/dependency rows: `ecc622c63e8a487c4440cdc838f22af7b31fae783cca41f693b0f870dd9a1819`
+- lock SHA-256: `37583dee0556529c3047741f8887141794b6a5ffb84f4fb7e668beafcd8ee1e6`
+- package/dependency rows: `4122e4869c4eb5fd18bf1c20bc3afa4433cf48c0bc99b0af02b7e6b1d91b8a37`
 - resolution markers: `70a0c0d228b605430c8219bfc8e4ed66652a5f06d64cab841fee543266f3bffa`
-- version-keyed license evidence: `2afebac3c079863d28415885412c11fd2acf7e3f3b9a686e2c855455da8eedec`
+- version-keyed license evidence: `94c9d96039172bc799b955dd40eab3b9cb5b9f00c42a5dd464202bf71e981b70`
+
+This refresh changes only `urllib3` from `2.7.0` to `2.8.0`.  The prior
+platform-qualified torch/torchaudio dependency markers are retained because
+`uv lock --check --offline` accepts this minimal lock and it keeps each Linux
+and Darwin resolution partition explicit.  The corresponding primary release
+evidence is `https://pypi.org/pypi/urllib3/2.8.0/json`; this update changes no
+license status or publication gate.
 
 Resolution is not license approval. The gate remains blocked for the
 `librosa -> soxr` LGPL/native route; `soundfile`'s bundled libsndfile LGPL

@@ -146,7 +146,8 @@ impl KyutaiSttPcmEngine {
                 "kyutai STT PCM session: max_frames must be > 0".to_owned(),
             ));
         }
-        let minimum = self.contract.padded_frame_count(0)?;
+        let padding = PytorchPcmPaddingPlan::from_contract(&self.contract)?;
+        let minimum = padding.total_padding_frames()?;
         if max_frames < minimum {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai STT PCM session: max_frames={max_frames} cannot hold the required {minimum} padding frames"
@@ -188,9 +189,10 @@ impl KyutaiSttPcmSession<'_> {
         self.push_pcm_with_callbacks(samples)
     }
 
-    /// Appends exactly the prescribed right padding once, drains complete
-    /// frames, and drops any final partial frame.  EOS is retained as a raw
-    /// sampled token; it never stops this schedule early.
+    /// Right-pads the caller audio to a complete frame, appends the PyTorch
+    /// caller's fixed suffix, and drains the resulting complete frames once.
+    /// EOS is retained as a raw sampled token; it never stops this schedule
+    /// early.
     pub(crate) fn finish(&mut self) -> Result<()> {
         self.finish_with_callbacks()
     }
@@ -259,10 +261,93 @@ impl KyutaiSttPcmSession<'_> {
     }
 }
 
+/// The public streaming contract is an MLX contract (24,000/84,000 samples
+/// and floor semantics).  The authenticated PyTorch DSM caller uses a
+/// separate private plan: 13 left frames, caller-audio ceil padding, and 32
+/// right frames.  Keeping this plan private prevents the two upstream
+/// callers from being silently mixed at the public contract boundary.
+///
+/// The plan is tied to the existing source-only receipt for
+/// `delayed-streams-modeling/scripts/stt_from_file_pytorch.py` at revision
+/// `4c4f65e147df056adf3346290d64c7b9649b18c9` (8,452 bytes; raw SHA-256
+/// `2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955`).
+/// Its 13/32 frame counts derive from the caller's fixed 1.0/2.5-second
+/// padding and the authenticated 12.5 Hz frame rate, rather than a generic
+/// model-shape assumption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PytorchPcmPaddingPlan {
+    frame_hop_samples: usize,
+    prefix_samples: usize,
+    suffix_samples: usize,
+}
+
+impl PytorchPcmPaddingPlan {
+    const PREFIX_FRAMES: usize = 13;
+    const SUFFIX_FRAMES: usize = 32;
+
+    fn from_contract(contract: &KyutaiSttStreamingContract) -> Result<Self> {
+        if contract.sample_rate() != 24_000 || contract.frame_hop_samples() != 1_920 {
+            return Err(VokraError::InvalidArgument(
+                "kyutai STT PyTorch PCM caller requires the authenticated 24 kHz / 1,920-sample Mimi boundary".to_owned(),
+            ));
+        }
+        let hop = contract.frame_hop_samples();
+        let prefix_samples = Self::PREFIX_FRAMES.checked_mul(hop).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kyutai STT PyTorch PCM caller prefix sample count overflow".to_owned(),
+            )
+        })?;
+        let suffix_samples = Self::SUFFIX_FRAMES.checked_mul(hop).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kyutai STT PyTorch PCM caller suffix sample count overflow".to_owned(),
+            )
+        })?;
+        Ok(Self {
+            frame_hop_samples: hop,
+            prefix_samples,
+            suffix_samples,
+        })
+    }
+
+    fn total_padding_frames(self) -> Result<usize> {
+        let prefix = self.prefix_samples / self.frame_hop_samples;
+        let suffix = self.suffix_samples / self.frame_hop_samples;
+        prefix.checked_add(suffix).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kyutai STT PyTorch PCM caller padding frame count overflow".to_owned(),
+            )
+        })
+    }
+
+    #[cfg(test)]
+    fn frame_count_for_audio(self, input_samples: usize) -> Result<usize> {
+        let audio_frames = if input_samples == 0 {
+            0
+        } else {
+            input_samples
+                .checked_add(self.frame_hop_samples - 1)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "kyutai STT PyTorch PCM caller audio frame count overflow".to_owned(),
+                    )
+                })?
+                / self.frame_hop_samples
+        };
+        self.total_padding_frames()?
+            .checked_add(audio_frames)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "kyutai STT PyTorch PCM caller total frame count overflow".to_owned(),
+                )
+            })
+    }
+}
+
 /// The exact PCM carry/padding state machine is kept separate from the model
 /// callbacks so its transactional behavior can be tested without weights.
 #[derive(Debug)]
 struct PcmFrameBuffer {
+    padding: PytorchPcmPaddingPlan,
     pcm: Vec<f32>,
     frame: Vec<f32>,
     codes: Vec<u32>,
@@ -273,15 +358,17 @@ struct PcmFrameBuffer {
 
 impl PcmFrameBuffer {
     fn new(contract: &KyutaiSttStreamingContract, max_frames: usize) -> Result<Self> {
-        let minimum = contract.padded_frame_count(0)?;
+        let padding = PytorchPcmPaddingPlan::from_contract(contract)?;
+        let minimum = padding.total_padding_frames()?;
         if max_frames < minimum {
             return Err(VokraError::InvalidArgument(format!(
                 "kyutai STT PCM frame buffer: max_frames={max_frames} cannot hold {minimum} padding frames"
             )));
         }
         Ok(Self {
-            pcm: vec![0.0; contract.silence_prefix_samples()],
-            frame: vec![0.0; contract.frame_hop_samples()],
+            padding,
+            pcm: vec![0.0; padding.prefix_samples],
+            frame: vec![0.0; padding.frame_hop_samples],
             codes: vec![0; contract.n_q()],
             max_frames,
             encoded_frames: 0,
@@ -313,8 +400,8 @@ impl PcmFrameBuffer {
         if samples.is_empty() {
             return Ok(());
         }
-        self.check_capacity(contract, samples.len())?;
-        let hop = contract.frame_hop_samples();
+        self.check_capacity(samples.len())?;
+        let hop = self.padding.frame_hop_samples;
         self.drain(contract, &mut encode, &mut decode)?;
         let mut offset = 0;
         while offset < samples.len() {
@@ -343,12 +430,20 @@ impl PcmFrameBuffer {
                 "kyutai STT PCM frame buffer: finish may be called only once".to_owned(),
             ));
         }
-        let right = contract.right_padding_samples();
-        self.check_capacity(contract, right)?;
+        let hop = self.padding.frame_hop_samples;
+        let carry = self.pcm.len() % hop;
+        let align = if carry == 0 { 0 } else { hop - carry };
+        let additional = align
+            .checked_add(self.padding.suffix_samples)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "kyutai STT PCM frame buffer: right padding sample count overflow".to_owned(),
+                )
+            })?;
+        self.check_capacity(additional)?;
         self.finished = true;
-        let hop = contract.frame_hop_samples();
         self.drain(contract, &mut encode, &mut decode)?;
-        let mut remaining = right;
+        let mut remaining = additional;
         while remaining > 0 {
             let take = (hop - self.pcm.len()).min(remaining);
             self.pcm.extend(std::iter::repeat_n(0.0, take));
@@ -361,25 +456,21 @@ impl PcmFrameBuffer {
         self.drain(contract, &mut encode, &mut decode)
     }
 
-    fn reset(&mut self, contract: &KyutaiSttStreamingContract) {
+    fn reset(&mut self, _contract: &KyutaiSttStreamingContract) {
         self.pcm.clear();
-        self.pcm.resize(contract.silence_prefix_samples(), 0.0);
+        self.pcm.resize(self.padding.prefix_samples, 0.0);
         self.frame.fill(0.0);
         self.codes.fill(0);
         self.encoded_frames = 0;
         self.finished = false;
     }
 
-    fn check_capacity(
-        &self,
-        contract: KyutaiSttStreamingContract,
-        additional_samples: usize,
-    ) -> Result<()> {
+    fn check_capacity(&self, additional_samples: usize) -> Result<()> {
         checked_frame_capacity(
             self.pcm.len(),
             self.encoded_frames,
             additional_samples,
-            contract.frame_hop_samples(),
+            self.padding.frame_hop_samples,
             self.max_frames,
         )
     }
@@ -394,7 +485,7 @@ impl PcmFrameBuffer {
         Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
         Decode: FnMut(&[u32]) -> Result<()>,
     {
-        let hop = contract.frame_hop_samples();
+        let hop = self.padding.frame_hop_samples;
         while self.pcm.len() >= hop {
             self.frame.copy_from_slice(&self.pcm[..hop]);
             let remaining = self.pcm.len() - hop;
@@ -413,7 +504,8 @@ impl PcmFrameBuffer {
     }
 }
 
-/// Shared lifecycle state for the real session and model-free control tests.
+/// Shared lifecycle state for the real PyTorch-caller PCM session and
+/// model-free control tests.
 #[derive(Debug)]
 struct PcmSessionControl {
     buffer: PcmFrameBuffer,
@@ -600,19 +692,13 @@ where
     let old_schedule = *schedule;
     let old_raw = raw.len();
     let old_emitted = emitted.len();
+    // The pinned PyTorch caller has one LMGen step per Mimi row, including the
+    // first row.  The first result is retained in raw history as well; only
+    // the established 0/3 suppression policy controls emitted text.
     let result = (|| {
-        if schedule.frames == 0 {
-            let first_token = step(None, codes)?;
-            record_sampled_token(contract, raw, emitted, first_token, false)?;
-            schedule.accept(first_token);
-            let second_token = step(schedule.previous, codes)?;
-            record_sampled_token(contract, raw, emitted, second_token, true)?;
-            schedule.accept(second_token);
-        } else {
-            let token = step(schedule.previous, codes)?;
-            record_sampled_token(contract, raw, emitted, token, true)?;
-            schedule.accept(token);
-        }
+        let token = step(schedule.previous, codes)?;
+        record_sampled_token(contract, raw, emitted, token, true)?;
+        schedule.accept(token);
         schedule.finish_frame()
     })();
     if result.is_err() {
@@ -809,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_schedule_matches_first_double_step_and_current_rows() {
+    fn shared_schedule_matches_one_step_per_audio_row_and_current_rows() {
         let contract = contract();
         let mut schedule = TextSchedule::default();
         let mut raw = Vec::new();
@@ -831,11 +917,11 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(calls, [(None, 0), (Some(11), 0), (Some(2), 1)]);
-        assert_eq!(raw, [11, 2, 3]);
-        assert_eq!(emitted, [2]);
+        assert_eq!(calls, [(None, 0), (Some(11), 1)]);
+        assert_eq!(raw, [11, 2]);
+        assert_eq!(emitted, [11, 2]);
         assert_eq!(schedule.frames, 2);
-        assert_eq!(schedule.previous, Some(3));
+        assert_eq!(schedule.previous, Some(2));
 
         schedule = TextSchedule::default();
         raw.clear();
@@ -854,7 +940,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(calls, [(None, 7), (Some(19), 7)]);
+        assert_eq!(calls, [(None, 7)]);
     }
 
     #[test]
@@ -873,7 +959,7 @@ mod tests {
             &mut emitted,
             |_previous, _codes| {
                 calls += 1;
-                if calls == 2 {
+                if calls == 1 {
                     Err(VokraError::ModelLoad("injected LM failure".to_owned()))
                 } else {
                     Ok(11)
@@ -881,12 +967,18 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert_eq!(calls, 2);
+        assert_eq!(calls, 1);
         assert_eq!(schedule, TextSchedule::default());
         assert!(raw.is_empty() && emitted.is_empty());
 
-        let mut buffer =
-            PcmFrameBuffer::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        let mut buffer = PcmFrameBuffer::new(
+            &contract,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(1)
+                .unwrap(),
+        )
+        .unwrap();
         let result = buffer.push(
             contract,
             &[0.0; 1],
@@ -910,8 +1002,14 @@ mod tests {
     #[test]
     fn lifecycle_control_poison_finish_retry_and_reset_are_transactional() {
         let contract = contract();
-        let mut control =
-            PcmSessionControl::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        let mut control = PcmSessionControl::new(
+            &contract,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(1)
+                .unwrap(),
+        )
+        .unwrap();
         let encoder_error = control.push(
             contract,
             &[0.0; 1],
@@ -929,7 +1027,12 @@ mod tests {
         assert_eq!((mimi_resets, lm_resets), (1, 1));
         assert!(!control.poisoned && !control.finished);
         assert_eq!(control.schedule, TextSchedule::default());
-        assert_eq!(control.buffer.pcm.len(), contract.silence_prefix_samples());
+        assert_eq!(
+            control.buffer.pcm.len(),
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .prefix_samples
+        );
         assert!(control.ensure_live("push_pcm").is_ok());
 
         let lm_error = control.push(
@@ -961,7 +1064,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(calls > 2);
+        assert_eq!(calls, PytorchPcmPaddingPlan::PREFIX_FRAMES);
         assert!(!control.raw_text_tokens.is_empty());
         control
             .finish(
@@ -985,13 +1088,82 @@ mod tests {
         assert_eq!((mimi_resets, lm_resets), (3, 3));
         assert!(control.ensure_live("push_pcm").is_ok());
         assert_eq!(control.schedule, TextSchedule::default());
-        assert_eq!(control.buffer.pcm.len(), contract.silence_prefix_samples());
+        assert_eq!(
+            control.buffer.pcm.len(),
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .prefix_samples
+        );
+    }
+
+    #[test]
+    fn insufficient_finish_cap_fails_before_finish_callbacks_and_resets() {
+        let contract = contract();
+        let mut control = PcmSessionControl::new(
+            &contract,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(0)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut push_calls = 0;
+        control
+            .push(
+                contract,
+                &[0.0],
+                |_frame, codes| {
+                    codes.fill(0);
+                    Ok(())
+                },
+                |_previous, _codes| {
+                    push_calls += 1;
+                    Ok(2)
+                },
+            )
+            .unwrap();
+        let encoded_before_finish = control.buffer.encoded_frames;
+        let mut finish_encode_calls = 0;
+        let mut finish_step_calls = 0;
+        assert!(
+            control
+                .finish(
+                    contract,
+                    |_frame, _codes| {
+                        finish_encode_calls += 1;
+                        Ok(())
+                    },
+                    |_previous, _codes| {
+                        finish_step_calls += 1;
+                        Ok(2)
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(push_calls, PytorchPcmPaddingPlan::PREFIX_FRAMES);
+        assert_eq!(finish_encode_calls, 0);
+        assert_eq!(finish_step_calls, 0);
+        assert_eq!(control.buffer.encoded_frames, encoded_before_finish);
+        assert!(control.poisoned);
+
+        control.reset(&contract, || {}, || {});
+        assert!(!control.poisoned);
+        assert_eq!(control.buffer.encoded_frames, 0);
+        assert_eq!(
+            control.buffer.pcm.len(),
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .prefix_samples
+        );
     }
 
     #[test]
     fn control_push_nonfinite_cap_and_overflow_poison_automatically() {
         let contract = contract();
-        let cap = contract.padded_frame_count(0).unwrap();
+        let cap = PytorchPcmPaddingPlan::from_contract(&contract)
+            .unwrap()
+            .frame_count_for_audio(0)
+            .unwrap();
         let mut control = PcmSessionControl::new(&contract, cap).unwrap();
         control.raw_text_tokens.push(2);
         control.emitted_text_tokens.push(2);
@@ -1007,7 +1179,13 @@ mod tests {
         control.reset(&contract, || {}, || {});
         let cap_error = control.push(
             contract,
-            &vec![0.0; contract.right_padding_samples() + contract.frame_hop_samples()],
+            &vec![
+                0.0;
+                PytorchPcmPaddingPlan::from_contract(&contract)
+                    .unwrap()
+                    .suffix_samples
+                    + contract.frame_hop_samples()
+            ],
             |_frame, codes| {
                 codes.fill(0);
                 Ok(())
@@ -1035,8 +1213,14 @@ mod tests {
     #[test]
     fn control_finish_without_push_drains_prefix_and_right_padding_once() {
         let contract = contract();
-        let mut control =
-            PcmSessionControl::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        let mut control = PcmSessionControl::new(
+            &contract,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(0)
+                .unwrap(),
+        )
+        .unwrap();
         let mut rows = 0;
         control
             .push(
@@ -1060,7 +1244,13 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(rows, contract.padded_frame_count(0).unwrap() + 1);
+        assert_eq!(
+            rows,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .total_padding_frames()
+                .unwrap()
+        );
         assert_eq!(control.raw_text_tokens.len(), rows);
         assert!(
             control
@@ -1084,8 +1274,14 @@ mod tests {
     fn pcm_buffer_uses_production_chunking_padding_and_reset() {
         let contract = contract();
         let input = vec![0.25; 1_921];
-        let mut buffer =
-            PcmFrameBuffer::new(&contract, contract.padded_frame_count(1_921).unwrap()).unwrap();
+        let mut buffer = PcmFrameBuffer::new(
+            &contract,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(1_921)
+                .unwrap(),
+        )
+        .unwrap();
         let mut decoded = 0;
         for chunk in [&input[..1], &[][..], &input[1..961], &input[961..]] {
             buffer
@@ -1103,8 +1299,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert_eq!(decoded, 13);
-        assert_eq!(buffer.encoded_frames, 13);
+        assert_eq!(decoded, 14);
+        assert_eq!(buffer.encoded_frames, 14);
         buffer
             .finish(
                 contract,
@@ -1118,7 +1314,13 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(decoded, contract.padded_frame_count(1_921).unwrap());
+        assert_eq!(
+            decoded,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(1_921)
+                .unwrap()
+        );
         assert!(
             buffer
                 .finish(contract, |_frame, _codes| Ok(()), |_codes| Ok(()))
@@ -1126,21 +1328,38 @@ mod tests {
         );
         buffer.reset(&contract);
         assert_eq!(buffer.encoded_frames, 0);
-        assert_eq!(buffer.pcm.len(), contract.silence_prefix_samples());
+        assert_eq!(
+            buffer.pcm.len(),
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .prefix_samples
+        );
         assert!(!buffer.finished);
     }
 
     #[test]
     fn pcm_buffer_rejects_cap_and_overflow_without_partial_append() {
         let contract = contract();
-        let mut buffer =
-            PcmFrameBuffer::new(&contract, contract.padded_frame_count(0).unwrap()).unwrap();
+        let mut buffer = PcmFrameBuffer::new(
+            &contract,
+            PytorchPcmPaddingPlan::from_contract(&contract)
+                .unwrap()
+                .frame_count_for_audio(0)
+                .unwrap(),
+        )
+        .unwrap();
         let before = buffer.pcm.len();
         assert!(
             buffer
                 .push(
                     contract,
-                    &vec![0.0; contract.right_padding_samples() + 1_920],
+                    &vec![
+                        0.0;
+                        PytorchPcmPaddingPlan::from_contract(&contract)
+                            .unwrap()
+                            .suffix_samples
+                            + 1_920
+                    ],
                     |_frame, codes| {
                         codes.fill(0);
                         Ok(())
@@ -1169,10 +1388,11 @@ mod tests {
     #[test]
     fn pcm_buffer_partitioning_preserves_exact_frames_and_bounded_carry() {
         let contract = contract();
-        let input: Vec<f32> = (0..contract.frame_hop_samples() * 2 + 17)
+        let plan = PytorchPcmPaddingPlan::from_contract(&contract).unwrap();
+        let input: Vec<f32> = (0..contract.frame_hop_samples() + 17)
             .map(|index| index as f32 * 0.001)
             .collect();
-        let cap = contract.padded_frame_count(input.len()).unwrap();
+        let cap = plan.frame_count_for_audio(input.len()).unwrap();
         let mut partitioned = PcmFrameBuffer::new(&contract, cap).unwrap();
         let mut partitioned_rows = Vec::new();
         let mut partitioned_codes = Vec::new();
@@ -1236,6 +1456,35 @@ mod tests {
         assert_eq!(partitioned_rows, one_rows);
         assert_eq!(partitioned_codes, one_codes);
         assert_eq!(partitioned.pcm, one_chunk.pcm);
+
+        let mut expected_pcm = vec![0.0; plan.prefix_samples];
+        expected_pcm.extend_from_slice(&input);
+        let remainder = input.len() % plan.frame_hop_samples;
+        if remainder != 0 {
+            expected_pcm.extend(std::iter::repeat_n(0.0, plan.frame_hop_samples - remainder));
+        }
+        expected_pcm.extend(std::iter::repeat_n(0.0, plan.suffix_samples));
+        let expected_frames: Vec<Vec<f32>> = expected_pcm
+            .chunks(plan.frame_hop_samples)
+            .map(|frame| frame.to_vec())
+            .collect();
+        assert_eq!(expected_frames.len(), 47);
+        assert_eq!(partitioned_rows, expected_frames);
+        assert_eq!(&partitioned_rows[13][..], &input[..plan.frame_hop_samples]);
+        assert_eq!(
+            &partitioned_rows[14][..17],
+            &input[plan.frame_hop_samples..]
+        );
+        assert!(
+            partitioned_rows[14][17..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert!(
+            partitioned_rows[15..]
+                .iter()
+                .all(|frame| frame.iter().all(|sample| *sample == 0.0))
+        );
     }
 
     #[test]
@@ -1362,5 +1611,18 @@ mod tests {
         assert_eq!(contract.padded_frame_count(0).unwrap(), 56);
         assert_eq!(contract.padded_frame_count(1_920).unwrap(), 57);
         assert_eq!(contract.padded_frame_count(1_921).unwrap(), 57);
+    }
+
+    #[test]
+    fn pytorch_padding_plan_uses_source_frame_contract_and_audio_ceil() {
+        let contract = contract();
+        let plan = PytorchPcmPaddingPlan::from_contract(&contract).unwrap();
+        assert_eq!(plan.prefix_samples, 13 * 1_920);
+        assert_eq!(plan.suffix_samples, 32 * 1_920);
+        assert_eq!(plan.total_padding_frames().unwrap(), 45);
+        assert_eq!(plan.frame_count_for_audio(0).unwrap(), 45);
+        assert_eq!(plan.frame_count_for_audio(1).unwrap(), 46);
+        assert_eq!(plan.frame_count_for_audio(1_920).unwrap(), 46);
+        assert_eq!(plan.frame_count_for_audio(1_921).unwrap(), 47);
     }
 }
