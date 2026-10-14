@@ -1,6 +1,12 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+Latest accepted main is `ab653152` after PR #234's normal merge at 10:17:38 UTC
+(69 success, one skip, all 16 required context/application pairs successful).
+PR #235's scalar-approval correction was accepted at 09:39:44 UTC. The
+[observer preparation record](handoff/kyutai-candle-observer-source-preparation-2026-10-14.md)
+records the separate source-only candidate and corrected read-only VAST search;
+no new worker or model result follows from either.
 PR #232 was normally accepted at 09:03:54 UTC after 69 successful checks,
 one skip and all 16 required context/application pairs; its main snapshot is
 `fa42f112`. The [plan readback](handoff/next-steps-2026-10-14.md) records that

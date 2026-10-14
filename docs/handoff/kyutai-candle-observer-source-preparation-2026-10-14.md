@@ -1,5 +1,15 @@
 # Kyutai Candle observer source preparation — 2026-10-14
 
+> **10:17:38 UTC supersession:** PR #234's exact `54340ba5` completed 69
+> successful checks, one skip, no failure/pending, and all 16 required
+> context/application pairs. Normal squash acceptance produced main
+> `ab653152b6d41a04fb9adacc6e7d89b694fc0188`; local main was fast-forwarded
+> and clean. The source preparation was committed privately at `c2b85c24`
+> and normally merged with that accepted main at `c90eeac5`. The 17 tests
+> pass again and the utility, source/license fixtures and numerical inputs
+> are unchanged. The preparation/CI-wait statements below are dated history,
+> not new model or remote-build evidence.
+
 Prepared against accepted main
 `d4a54d6212b3e60c702089c626d6d0f4ece23894`. PR #235 was normally merged at
 09:39:44 UTC after exact head `64422404` passed 69 checks, with one skip and
@@ -84,3 +94,36 @@ not claim a Linux Rust compile, runtime observation or model parity.
 5. Approved no-upload independent reference and real-weight CPU parity must
    pass before the final clean HEAD and regenerated Apple packet. No part of
    this source-only preparation closes that original step-4 goal.
+
+## Corrected source-metadata search, no allocation
+
+The installed VAST CLI and the official `vast-ai/vast-cli` source at
+`8d0d31c9285d415c5a3fd4c4a3001f7dd9f43f48` both multiply the `cpu_ram`
+query value by 1000. The earlier `cpu_ram>=64` query therefore searched raw
+values from 64000, while the unchanged admission floor is raw `65536`.
+The earlier MiB wording is not a new claim about the provider field's unit.
+See the [official CLI multiplier](https://github.com/vast-ai/vast-cli/blob/8d0d31c9285d415c5a3fd4c4a3001f7dd9f43f48/vast.py#L1047).
+
+Manager review accepted a separate query-aligned source-only controller:
+both search sites now use `cpu_ram>=65.536`, direct ports at least one,
+`dph_total<=0.20`, and an explicit limit of 64. The raw RAM floor, CPU floor
+of two, 150 storage allocation, reliability, x86_64/direct-SSH admission,
+price/deadline/ownership/recovery/destroy rules are unchanged. Default
+verified/external offer filters are not overridden. This does not authorize
+weights, a reference swap, upload, or a larger fee.
+
+The manager's full offline causal harness passes query boundaries, actual
+collector-generated synthetic receipts, uncertain-create ownership,
+interruption and cleanup-failure cases. The only difference in its separate
+frozen production copy is binding the already-reviewed collector SHA-256:
+`1dad1cb5649993648a1b0c7dae375f9d09a9093606936ccf66e5ce9c73e49cfd`.
+The frozen controller SHA-256 is
+`22f6393e67b0bb6cdef4e350a571f498f77ea763f0461902d0d1522b97c56684`.
+
+The actual read-only probe started at 10:17:15 UTC and terminated at
+10:17:16 UTC with zero returned quotes and a fail-closed selection. It exited
+before inventory, create, SSH, collector execution or destroy. No owned
+instance or charge was created. This is a result for that timestamp, query,
+default filters and limit, not proof of global VAST stock exhaustion.
+There is still no actual Linux metadata packet, Rust observer build/API
+validation, independent full PCM oracle or real-weight CPU result.
