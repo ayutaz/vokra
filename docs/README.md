@@ -1,13 +1,23 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main is `627a641f` after PR #241's normal merge at
+Latest accepted main is `0f6750fa` after PR #242's normal merge at
+16:55:26 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
+skip), all 16 required context/application pairs successful and all nine
+started workflows terminal success. Current MOSS lock/schema/review inputs are
+accepted; 48 pending dependency rows, source/model grants, native/API/owner
+approval and real-weight parity remain unresolved. Local main is clean and
+synchronized. Dia #245, documentation #243 and the separate compile-free
+pre-commit correction are being consolidated into one reviewed candidate for
+fresh current-base CI. This avoids sequential base invalidation without
+dropping checks or treating the old heads as current evidence.
+The preceding accepted main was `627a641f` after PR #241's normal merge at
 16:13:50 UTC on 2026-10-14: all 70 checks completed (69 success, one intentional
 skip), all 16 required context/application pairs successful and all nine
 started workflows terminal success, including late Unity Android/WebGL/UPM
 stages. Local main is clean and synchronized. This accepts the WeSpeaker
 source/staging correction, not dependency/native/API/legal/owner or real-weight
-parity readiness. MOSS #242 and Dia #245 must normally integrate this main and
+parity readiness. At that snapshot, MOSS #242 and Dia #245 had to integrate this main and
 pass new exact-head CI; the latter also needs the coordinated current-reference
 consumer correction `0c6bfd62`, now included in pending head `cd90b94a`. No local model execution
 or new paid worker follows. The preceding accepted snapshot was `f0130b5d`
@@ -81,6 +91,7 @@ environment they name.
 | Latest static prerequisite review | [2026-10-15 58-row readback](handoff/current-58-static-prerequisite-readback-2026-10-15.md): 57 source/static observations plus one protected exclusion; current first prerequisites, pending PR scopes and corrections to namespace/count comparisons, not production readiness or CPU evidence |
 | MMS current evidence admission | [2026-10-15 production-gate readback](handoff/mms-current-evidence-admission-readback-2026-10-15.md): current dependency/API bindings validate and intentionally omitted wheel size is covered by its archive receipt; native/package/owner and full-model parity holds remain |
 | Qwen2 Audio fixed-source rights | [2026-10-15 primary-tree readback](handoff/qwen2-audio-fixed-source-license-readback-2026-10-15.md): exact commit/tree metadata and no license-like filename; bounded inspection, not a complete history audit or source-code grant |
+| Compile-free commit checks | [2026-10-15 stdlib invocation correction](handoff/pre-commit-stdlib-invocation-2026-10-15.md): preserve all five checks without synchronizing the parity environment; isolated real-UV regression, pending integrated CI |
 | Current versus historical gates | [2026-10-14 reference binding readback](handoff/reference-gate-binding-readback-2026-10-14.md): Qwen current probes, Dia active-contract mismatch and Canary historical closure; no approval carryover |
 | WeSpeaker dependency admission | [2026-10-14 exact setuptools finding](handoff/wespeaker-setuptools84-static-finding-2026-10-14.md): actual vendored LGPL payload, no paid repeat of the known-blocked closure, and next source-only route investigation |
 | WeSpeaker small-distribution facts | [2026-10-14 TorchAudio archive inspection](handoff/wespeaker-torchaudio211-static-facts-2026-10-14.md): exact wheel/RECORD/LICENSE and corrected dynamic-linkage facts; no Linux API or closure approval |

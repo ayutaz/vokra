@@ -2,6 +2,23 @@
 
 ## ゴールと現在地
 
+> **16:55:26 UTCのMOSS受理と検証集約（2026-10-15 JST）:** PR #242はexact
+> `934e61ac`／base `627a641f`の全70 checks（69 success / 1 skipped）、必須16
+> context/app成功、開始した全9 workflowsのterminal successを確認して通常受理した。
+> 最新main／ローカルmainは`0f6750fa`でclean。48 dependency rows、source/model grant、
+> native/API/owner review、実weight CPU／Appleの承認や完了を意味しない。
+> 後続#245 Dia `cd90b94a`、#243 docsのprivate追記`f9feaabb`、stdlib pre-commit
+> 修正`e22a81eb`を通常mergeした候補`012ccaf4`に集約し、順次main更新によるCIの再無効化を
+> 減らす。元のPRは統合内容のfresh CI／受理が済むまで残し、古いCIを流用して受理しない。
+> [軽量検査の修正](pre-commit-stdlib-invocation-2026-10-15.md)は同じ5検査を保持し、
+> stdlib scannerの不要な146-package／約1.3G environment再生成を避ける。parser／memory
+> guards／owner gatesは不変で、通常commitと隔離negative-controlも成功した。
+> [OWSM follow-up](owsm-audit-admission-readback-2026-10-14.md#fixed-frontend-has-no-native-complex-selection-flag--2026-10-15-jst)
+> は固定公式frontendに依存回避flagがないことを確認し、[Qwen2候補調査](qwen2-audio-fixed-source-license-readback-2026-10-15.md)
+> は別providerのsource factsと既知advisoryの範囲を分離した。実行や署名は解除しない。
+> 58未解決行、凍結63-row owner scope、実weight CPU、最終clean HEAD／Apple packetは
+> 未完了。以下の受理snapshotは履歴として保持する。
+
 > **16:13:50 UTCのsource受理readback（2026-10-15 JST）:** PR #241はexact
 > `6bf092c4`／base `f0130b5d`の全70 checks（69 success / 1 skipped）、必須16
 > context/app成功、開始した全9 workflowsのterminal successを確認して通常受理した。

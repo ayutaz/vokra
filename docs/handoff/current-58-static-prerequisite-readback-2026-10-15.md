@@ -11,6 +11,15 @@ The public metadata denominator remains 136 full / 58 unresolved; the frozen
 
 ## What this review does and does not establish
 
+> Subsequent MOSS source-input acceptance: #242 head `934e61ac` was normally
+> merged at 16:55:26 UTC on 2026-10-14 as main `0f6750fa`, after all 70 checks,
+> 16 required context/application pairs and nine started workflows completed.
+> It corrects strict artifact sizes and the absent psutil review, leaving 48
+> pending dependency reviews. The earlier table's 48-lock/49-review and missing
+> size findings retain their `f0130b5d` inspection boundary; they are no longer
+> the current structural defect. Source/model grants, native/API/owner approval
+> and actual CPU/Apple evidence remain unresolved. No row is promoted.
+
 > Subsequent source acceptance: WeSpeaker #241 head `6bf092c4` was normally
 > merged at 16:13:50 UTC on 2026-10-14 as main `627a641f`, after all 70 checks,
 > 16 required context/application pairs and nine started workflows completed.
