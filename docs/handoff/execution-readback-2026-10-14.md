@@ -374,6 +374,22 @@ accounting, final Apple packet or Scaleway. No row is promoted and no upload
 or public ASR enablement follows. Later documentation-only recording commits
 are not retroactively described as this executed HEAD.
 
+## Subsequent PR acceptance and model-free reference routing
+
+PR #230 was normally merged at 06:19:07 UTC, with reviewed head `8dd9b1ff`
+and accepted main `f8804b7429691bd90520aec801869262ba53573b`. All 16 required
+context/application pairs passed; the final complete head readback contained
+81 successful and five skipped checks, with no pending or failed checks.
+Local main was synchronized without discarding the earlier documentation
+commit, which remains on `codex/archive-main-pre230-20261014`.
+
+The [subsequent Kyutai investigation](kyutai-candle-reference-readback-2026-10-14.md)
+finds identical declared official PyTorch/Candle checkpoint, Mimi and tokenizer
+LFS identities, but not runtime equivalence. The fixed Rust lock's memmap2
+0.9.5 has an outstanding RustSec finding; active CPU closure and a reviewed
+patched scope remain required. No new cloud lease, model acquisition/execution,
+CPU/Apple result, owner decision or publication was performed.
+
 ## Remaining gates
 
 The [TorchAudio archive inspection](wespeaker-torchaudio211-static-facts-2026-10-14.md)
@@ -390,9 +406,9 @@ cover streamed large native files, ELF32/64 linkage parsing, exact license-byte
 retention, and a shared interrupting deadline. Manager stdlib-only self-test and
 offline integration passed; live Linux fetch/native facts remain unmeasured.
 
-Next: submit the reviewed source with the exact green replay above to normal
-PR CI and acceptance, while preparing the separately bounded current dependency/API
-work and only execution-approved real-weight CPU work. All 58 unresolved rows
+The earlier next action to submit this source is superseded by PR #230's
+acceptance above. Next: resolve the separately bounded current dependency/API
+work and prepare only execution-approved real-weight CPU work. All 58 unresolved rows
 remain accounted for; none is generically withheld merely for being difficult.
 Final clean HEAD/Apple packet, Scaleway, and publication are still incomplete.
 Local model execution and local workspace Cargo were not performed. The original

@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 GATE_VERSION = 1
-LOCK_SHA256 = "f8a95f3052c472a608a087b2c2470cff193d98276094856e2e6c254678d56afa"
+LOCK_SHA256 = "d74403e35eb490f4dd25c4a1cd41e0fe6327aeeb752d887006e43bb2ebec104f"
 PROJECT_SHA256 = "0ab5226a359c7d5268761d1f4685a1723d69c2430bba0735ed79be6f943b59f8"
 UPSTREAM_REPO = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k"
 UPSTREAM_REVISION = "bb8a876bc157b5cf3c405994accb798c49146016"
@@ -29,6 +29,7 @@ ASTEROID_ARTIFACTS = {
     "wheel_sha256": "ea97a24901d9d9851b4a594171bd7c6dd900fee2c132b9ce045aa09926d489c7",
     "sdist_sha256": "0326f28c5342495cb08ba0520efd0e21e39435dfd78854837fdd5a6c9c9ca410",
 }
+LINUX_X86_64_MARKER = "platform_machine == 'x86_64' and sys_platform == 'linux'"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
@@ -41,7 +42,9 @@ PACKAGE_SCHEMAS = {
     frozenset({"name", "source", "version", "sdist"}),
     frozenset({"name", "source", "version", "dependencies", "metadata"}),
 }
-DEPENDENCY_SCHEMAS = {frozenset({"name"}), frozenset({"name", "marker"}), frozenset({"name", "marker", "extra"})}
+# Dependency rows may omit the enclosing platform marker when the lock's
+# supported-markers already fixes the environment to Linux x86_64.
+DEPENDENCY_SCHEMAS = {frozenset({"name"}), frozenset({"name", "marker"}), frozenset({"name", "extra"}), frozenset({"name", "marker", "extra"})}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 PYPROJECT_KEYS = {"project", "tool"}
 MANIFEST_KEYS = {"gate_version", "lock_sha256", "project_sha256", "package_rows_sha256", "package_review_rows", "package_review_rows_sha256", "identities", "license_rows", "license_rows_sha256", "reference_contract", "publication", "approval"}
@@ -181,6 +184,8 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     for key in ("resolution-markers", "supported-markers"):
         if not isinstance(lock[key], list) or any(not isinstance(item, str) or not item.strip() for item in lock[key]):
             raise ValueError("lock marker schema is malformed")
+        if lock[key] != [LINUX_X86_64_MARKER]:
+            raise ValueError("lock environment marker is not the reviewed Linux x86_64 scope")
     packages = lock.get("package")
     if not isinstance(packages, list) or not packages:
         raise ValueError("lock package table is missing or empty")
@@ -227,7 +232,7 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
                 if not isinstance(group, str) or not group.strip() or not isinstance(values, list):
                     raise ValueError("optional dependency group is malformed")
                 for dep in values:
-                    if not isinstance(dep, dict) or set(dep) != {"name", "marker"} or not isinstance(dep.get("name"), str) or not dep["name"].strip() or not isinstance(dep["marker"], str) or not dep["marker"].strip():
+                    if not isinstance(dep, dict) or set(dep) not in ({"name"}, {"name", "marker"}) or not isinstance(dep.get("name"), str) or not dep["name"].strip() or ("marker" in dep and (not isinstance(dep["marker"], str) or not dep["marker"].strip())):
                         raise ValueError("optional dependency row is malformed")
         registry = source.get("registry", "")
         if "metadata" in package and "virtual" not in source:
@@ -292,7 +297,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, evidence_path:
         blocked("canonical package rows drifted")
     reviews = manifest.get("package_review_rows")
     if not isinstance(reviews, list) or len(reviews) != len(rows) or canon(reviews) != manifest.get("package_review_rows_sha256"):
-        blocked("every locked package needs an exact version-keyed review row")
+        blocked("package review is unresolved or not bound: every locked package needs an exact version-keyed review row")
     actual = {(row["name"], row["version"]): row for row in rows}; seen: set[tuple[str, str]] = set()
     for review in reviews:
         if not isinstance(review, dict) or set(review) != REVIEW_KEYS:
@@ -352,11 +357,26 @@ def require_resolved_license_rows(rows: list[dict[str, Any]]) -> None:
 
 def self_test() -> int:
     project = Path(__file__).parent
-    ok = False
-    try: run(project / "uv.lock", project / "pyproject.toml", project / "license_gate_manifest.json", None)
-    except SystemExit as error: ok = error.code == 2
-    if not ok:
-        print("conv-tasnet gate self-test: production closure unexpectedly passed", file=sys.stderr); return 1
+    import contextlib
+    import io
+
+    def expect_blocked(action: Any, expected: str, label: str) -> bool:
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                action()
+        except SystemExit as error:
+            if error.code == 2 and expected in stderr.getvalue():
+                return True
+        print(f"conv-tasnet gate self-test: {label} did not reject with {expected!r}: {stderr.getvalue()}", file=sys.stderr)
+        return False
+
+    if not expect_blocked(
+        lambda: run(project / "uv.lock", project / "pyproject.toml", project / "license_gate_manifest.json", None),
+        "package review is unresolved or not bound",
+        "current closure",
+    ):
+        return 1
     # Keep the temporary approval fixtures under the project so the test does
     # not accidentally exercise the host's conventional ``/tmp`` symlink
     # (for example macOS ``/var -> /private/var``) instead of the contract.
@@ -371,6 +391,43 @@ def self_test() -> int:
         if regular_file(parent_link / approval.name):
             print("conv-tasnet gate self-test accepted symlinked evidence ancestry", file=sys.stderr)
             return 1
+
+        # A stale lock and an old manifest must fail the fixed-byte binding,
+        # and an environment marker outside the reviewed Linux x86_64 scope
+        # must fail parsing.
+        stale_lock = root / "stale.lock"
+        stale_lock.write_bytes((project / "uv.lock").read_bytes().replace(b"6.9.1", b"6.9.0", 1))
+        if not expect_blocked(
+            lambda: run(stale_lock, project / "pyproject.toml", project / "license_gate_manifest.json", None),
+            "project or lock bytes are not the fixed reviewed closure",
+            "stale lock",
+        ):
+            return 1
+        old_manifest = root / "old-manifest.json"
+        old_manifest.write_text(
+            (project / "license_gate_manifest.json").read_text(encoding="utf-8").replace(
+                LOCK_SHA256, "f8a95f3052c472a608a087b2c2470cff193d98276094856e2e6c254678d56afa"
+            ),
+            encoding="utf-8",
+        )
+        if not expect_blocked(
+            lambda: run(project / "uv.lock", project / "pyproject.toml", old_manifest, None),
+            "project or lock bytes are not the fixed reviewed closure",
+            "old manifest",
+        ):
+            return 1
+        for key in ("supported-markers", "resolution-markers"):
+            scoped_lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
+            scoped_lock[key] = ["python_version >= '3.12'"]
+            try:
+                lock_rows(scoped_lock)
+            except ValueError as error:
+                if str(error) != "lock environment marker is not the reviewed Linux x86_64 scope":
+                    print(f"conv-tasnet gate self-test: widened {key} marker had wrong reason: {error}", file=sys.stderr)
+                    return 1
+            else:
+                print(f"conv-tasnet gate self-test accepted widened {key} environment", file=sys.stderr)
+                return 1
 
         # Exercise the authenticated approval contract independently of the
         # production manifest (which is intentionally still externally
@@ -392,6 +449,18 @@ def self_test() -> int:
         evidence = root / "valid-approval.json"
         evidence.write_text(json.dumps(valid) + "\n", encoding="utf-8")
         validate_approval_evidence(evidence, approval_record, manifest, "b" * 64, "c" * 64)
+        old_approval = root / "old-approval.json"
+        old_record = dict(valid); old_record["lock_sha256"] = "f" * 64
+        old_approval.write_text(json.dumps(old_record) + "\n", encoding="utf-8")
+        try:
+            validate_approval_evidence(old_approval, approval_record, manifest, "b" * 64, "c" * 64)
+        except ValueError as error:
+            if str(error) != "approval evidence is not bound to exact scope":
+                print(f"conv-tasnet gate self-test: old approval had wrong reason: {error}", file=sys.stderr)
+                return 1
+        else:
+            print("conv-tasnet gate self-test accepted old approval scope", file=sys.stderr)
+            return 1
         signed_unresolved_rows = [
             {"id": "upstream-license-contradiction", "status": "UNRESOLVED"},
             {"id": "wham-research-restriction", "status": "UNRESOLVED"},
@@ -435,16 +504,22 @@ def self_test() -> int:
             print("conv-tasnet gate self-test created missing approval", file=sys.stderr)
             return 1
     valid_artifact = {"url": "https://files.pythonhosted.org/pkg.whl", "hash": "sha256:" + "a" * 64, "size": 1, "upload-time": "2026-01-01T00:00:00Z"}
-    for tampered in (
-        {key: value for key, value in valid_artifact.items() if key != "size"},
-        {**valid_artifact, "size": True},
-        {**valid_artifact, "upload-time": ""},
-        {**valid_artifact, "extra": "rejected"},
-        {**valid_artifact, "url": "https://evil.example/pkg.whl"},
+    for tampered, expected in (
+        ({key: value for key, value in valid_artifact.items() if key != "size"}, "artifact schema is not exact"),
+        ({**valid_artifact, "size": True}, "artifact size is malformed"),
+        ({**valid_artifact, "upload-time": ""}, "upload-time is missing"),
+        ({**valid_artifact, "extra": "rejected"}, "artifact schema is not exact"),
+        ({**valid_artifact, "url": "https://evil.example/pkg.whl"}, "artifact host is not authenticated"),
     ):
-        try: artifact(tampered, "self-test", "https://pypi.org/simple")
-        except ValueError: pass
-        else: return 1
+        try:
+            artifact(tampered, "self-test", "https://pypi.org/simple")
+        except ValueError as error:
+            if expected not in str(error):
+                print(f"conv-tasnet gate self-test: metadata rejection had wrong reason: {error}", file=sys.stderr)
+                return 1
+        else:
+            print(f"conv-tasnet gate self-test accepted malformed metadata: {expected}", file=sys.stderr)
+            return 1
     print("conv-tasnet gate self-test: PASS")
     return 0
 
