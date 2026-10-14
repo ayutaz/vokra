@@ -1,6 +1,17 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**19:48:48 UTC acceptance supersession (2026-10-15 JST):** PR #249 was
+normally merged at exact `db9f9ae5`, producing main `6f135822` after all 70
+checks completed (69 successful, one intentional skip), all 16 required
+context/application pairs passed and all nine started workflows succeeded.
+The [NSNet2 native-audit correction](handoff/nsnet2-native-audit-sigpipe-2026-10-15.md)
+and five hosted regressions are accepted; no NSNet2 real-weight/native/owner
+or Apple result is inferred. Local main is fast-forwarded and clean. MeloTTS
+#248's minimal correction is normally integrated with this main at private
+`69b4a0a9`; corrected published-head CI and acceptance remain outstanding.
+The following readbacks are earlier dated snapshots.
+
 **2026-10-15 JST current readback:** accepted main is `731592f9` after
 PR #246's ordinary merge at 18:24:02 UTC on 2026-10-14. All 70 checks
 completed (69 successful, one intentional skip), all 16 required

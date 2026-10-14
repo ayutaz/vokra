@@ -1,5 +1,13 @@
 # MeloTTS minimal urllib3 lock reconciliation — 2026-10-15 JST
 
+> **Accepted-main integration at 19:49 UTC:** PR #249 is normally accepted
+> as main `6f135822075f9b98de08dfb7329a88d786d36531`, and the MeloTTS
+> correction normally merges that main at private `69b4a0a9`. Fresh complete
+> CI is still required for the corrected published head. The original
+> preparation snapshot below is retained; it is not a new model verdict.
+
+At the 19:37 UTC preparation snapshot:
+
 Baseline main is `731592f97251f52f0e80ea81d211d9dde6b52d71`.
 Dependabot PR #248 starts at `58766652c1b97c4e9230713899d4e63ae77b45e5`;
 the separately reviewed correction is private commit

@@ -2,6 +2,18 @@
 
 ## ゴールと現在地
 
+> **19:48:48 UTCのsource受理supersession（2026-10-15 JST）:** NSNet2 #249
+> exact `db9f9ae5`は70/70 checks（69 success / 1 intentional skip）、必須16
+> context/app、遅いUnityを含む全9 workflowsのterminal successを確認して通常受理した。
+> main／ローカルmainは`6f135822`でclean。これはpre-download auditのsource修正と
+> 5件の実hosted regressionの受理であり、NSNet2依存/native/owner／実weightの検証ではない。
+> #248 minimal lock候補はこのmainを通常mergeしたprivate `69b4a0a9`で、次にsource-only
+> pushとfresh corrected-head CI／通常受理を進める。XCodec2 Rust候補は未push・未実行。
+> その準備用10,862-byte source bundleはblobがRusttestとhandoffの2件だけと独立確認したが、
+> 最終Apple packetではなく最新main統合後に再生成が必要。検証controllerもscopeレビュー中で、
+> 新規VAST／モデル実行／公開は開始していない。58行・63-row scopeと元の工程4のゴールは不変。
+> 以下のCI待ち／旧mainの記録は、その時点の履歴として保持する。
+
 > **2026-10-15 JSTの継続readback:** #246はexact `f1fefec3`で全70 checks
 > （69 success / 1 intentional skip）、必須16 context/app、開始済み全9 workflowsの
 > terminal successを確認して18:24:02 UTCに通常受理した。main／ローカルmainは
