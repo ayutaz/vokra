@@ -2,6 +2,19 @@
 
 ## ゴールと現在地
 
+> **14:53:31 UTCのsecurity受理readback（2026-10-15 JST）:** PR #244はexact
+> `71cc8017`の全70 checks（69 success / 1 skipped）、必須16 context/app全成功、
+> 開始した全9 workflowsの完了を確認して通常受理した。main／ローカルmainは
+> `f0130b5d`でclean。変更はisolated server lockのrustls 0.23.45→0.23.46のみで、
+> Linux muslのadvisory/build/tests、macOS/Windows serverとdeploymentも成功した。
+> #241旧headと#243旧headの同じ新規RustSec失敗をrerun／ignoreせず原因修正した。
+> WeSpeaker `6bf092c4`、MOSS `33cb9526`、Dia `d33d7843`はこのmainを通常mergeした
+> 未受理候補で、focused model-free checksは成功、fresh exact-head CIは別に必要。
+> MOSSのcurrent-lock bindingとDiaの27-package／147-byte publisher契約修正は、
+> pending／unsigned／NO_UPLOADを維持し、実依存・API・owner approvalを解除しない。
+> 58未解決行・凍結63-row owner scope・実weight CPU・最終clean HEAD／Apple packetは
+> 未完了のまま。以下の13:43等のsnapshotは履歴として保持する。
+
 > **13:43:42 UTCの受理・監査readback:** PR #240はexact `e3fadc73`の
 > 全73 checks（72 success / 1 skipped）と必須16 context/app全成功を確認して
 > 通常受理した。main／ローカルmainは`fb1a692a`でclean。PR #237/#238/#239も

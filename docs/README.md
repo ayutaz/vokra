@@ -1,13 +1,19 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main snapshot is `fb1a692a` after PR #240's normal merge at
-13:43:42 UTC (72 success, one skip, all 16 required context/application pairs
-successful). PR #241's source-pin and staging correction is not yet accepted;
-its `5199643d` head requires fresh CI. The source-only Candle capture failed
+Latest accepted main snapshot is `f0130b5d` after PR #244's normal merge at
+14:53:31 UTC on 2026-10-14 (69 success, one skip, all 16 required
+context/application pairs successful). The isolated server rustls update
+passed fresh Linux musl advisory/build/tests, macOS/Windows compatibility and
+deployment checks. PR #241's source-pin and staging correction is not yet
+accepted; its integrated `6bf092c4` head requires fresh CI. MOSS PR #242 and
+the separate Dia approval-validator correction also require fresh exact-head
+CI; their synthetic checks grant no execution approval. The source-only Candle capture failed
 the exact retained-lock-record gate; its owned worker and storage were destroyed.
 See the [actual capture readback](handoff/kyutai-candle-reference-readback-2026-10-14.md#actual-source-only-capture-and-retained-lock-rejection).
 Neither result completes a real-weight or Apple gate.
+The previous accepted snapshot was `fb1a692a` after PR #240 at 13:43:42 UTC
+(72 success, one skip, all 16 required context/application pairs successful).
 Earlier accepted main was `99bfa77a` after PR #236's normal merge at 11:01:31 UTC
 (69 success, one skip, all 16 required context/application pairs successful).
 The [FireRed configuration readback](handoff/firered-checkpoint-config-source-readback-2026-10-14.md)
