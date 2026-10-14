@@ -2,6 +2,16 @@
 
 ## ゴールと現在地
 
+> **11:01:31 UTCの受理readback:** PR #236はexact `afbaf0f9`の全70 checks
+> （69 success / 1 skipped、pending・失敗なし）と必須16 context/appの全成功を
+> 確認して通常受理した。Unityの全24 stepも成功を個別確認し、古いpending情報による
+> 自動審査の拒否は新しい証拠で解消した。mainは`99bfa77a`、ローカルmainもFF更新して
+> clean。これでsource-only observer準備は受理済みだが、Rust/API・独立PCM oracle・
+> 実weight CPUは未実施。続く[FireRedの設定readback](firered-checkpoint-config-source-readback-2026-10-14.md)
+> はcheckpoint内`args`の契約と、tensor値を読まない小さなmetadata readerを準備した。
+> 27件の合成安全性テストと940 descriptorの容量確認は、実モデルの設定・940 tensorの
+> 実inventory・依存承認・parityの証拠ではない。58行と最終Apple packetの完了は未判定のまま。
+
 > **10:17:38 UTCの受理readback:** PR #234はexact `54340ba5`の69 success /
 > 1 skipped、pending・失敗なし、必須16 context/appの全成功を確認して通常受理した。
 > 最新mainは`ab653152`、ローカルmainもFF更新してclean。observer準備は`c2b85c24`
