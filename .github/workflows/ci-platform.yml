@@ -824,7 +824,9 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Build vokra-server (release, x86_64-unknown-linux-musl)
         run: |
-          cargo build --release \
+          # The isolated server lockfile is committed and must be the exact
+          # graph used by this deployment build.
+          cargo build --locked --release \
             --target x86_64-unknown-linux-musl \
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
