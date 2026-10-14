@@ -325,6 +325,55 @@ CPU pass, all-row disposition or final Apple packet is inferred. No owned
 paid worker from these attempts remains after the explicit cleanup readbacks;
 unrelated account resources remain outside this campaign.
 
+## Exact source replay passed and owned worker destroyed
+
+The next source-only Rust replay used clean head
+`4263f41631bd15288f06d3cd5c6b83ea4a8fdf60`, including the private
+[Kyutai PCM reconciliation](kyutai-stt-pcm-contract-reconciliation-2026-10-14.md)
+and FireRed helper correction. Its Git bundle SHA-256 is
+`c44bc5fdb058ce7247eca1fc3a4539ad7ded7c796c5645074a24c7de21f8c42a`.
+The unchanged accepted controller hash is
+`55307050a9a1f2e9d01d1ac61d46c62c08399b3e761b78c945a9108be20225d0`.
+
+Admission began at 04:56:02 UTC. Offer `50006707` met the unchanged
+USD 0.20/hour ceiling at USD 0.175/hour including 150 GiB storage;
+bandwidth was separate. Owned instance `55867942` reported 36 effective CPU
+cores and 257,688 MiB RAM. Direct SSH timed out, then the official proxy
+connected at 04:57:59 UTC. Source acceptance and result recovery used that
+route; no endpoint or credential is copied into this record.
+
+The recovered exact-head result is `PASS`. Rust 1.99.0, UV 0.13.0 and Python
+3.12.15 were installed remotely. Formatting, all-target/all-feature Clippy,
+workspace/all-feature tests, zero-dependency, forbidden-symbol and the full
+Codex hook gate passed. The complete log has 323 test-result rows totaling
+**8,223 passed / 0 failed / 105 ignored**. These totals include zero-test
+doc suites and deliberate ignored fixtures; they do not imply 323 model
+validations. The Kyutai private PCM tests were 20/20 and FireRed native tests
+29/29. Synthetic/callback and committed-fixture tests are not new real-weight
+or Apple parity evidence. No external checkpoint or HF token was acquired.
+
+Result validation completed at 05:14:43 UTC, evidence recovery at 05:14:50,
+and cleanup at 05:14:53. The controller exited zero with recovery and cleanup
+zero. Manager inspected the individual post-destroy response for `55867942`:
+explicit `instances: null`, not an empty object. The instance and its storage
+are destroyed, within the bounded 30-minute lifecycle. Unrelated account
+instances were not touched.
+
+Recovered result SHA-256:
+`146bd65a89ae2232537e9a6791e3ad2ea9eb38034cefa635b004025b891d68bc`.
+Recovered full log SHA-256:
+`42d5b63f75f4331541b6c085b2b6acd50d6a2eeeb7133a61965aa66ef8822424`.
+The slow waveform frontend fixture was verified live at 100% of one CPU
+core; it completed without a skip or profile change. Compilation used 36
+jobs and tests retained `RUST_TEST_THREADS=1` for shared-state safety.
+
+This closes the source replay that earlier attempts did not. It does not
+close the separately required deny/audit/PR CI, dependency/API/license/owner
+gates, independent full-PCM references, real-weight CPU evidence, all-row
+accounting, final Apple packet or Scaleway. No row is promoted and no upload
+or public ASR enablement follows. Later documentation-only recording commits
+are not retroactively described as this executed HEAD.
+
 ## Remaining gates
 
 The [TorchAudio archive inspection](wespeaker-torchaudio211-static-facts-2026-10-14.md)
@@ -341,8 +390,8 @@ cover streamed large native files, ELF32/64 linkage parsing, exact license-byte
 retention, and a shared interrupting deadline. Manager stdlib-only self-test and
 offline integration passed; live Linux fetch/native facts remain unmeasured.
 
-Next: obtain exact-source remote green and PR acceptance when admission is
-available, while preparing the separately bounded current dependency/API
+Next: submit the reviewed source with the exact green replay above to normal
+PR CI and acceptance, while preparing the separately bounded current dependency/API
 work and only execution-approved real-weight CPU work. All 58 unresolved rows
 remain accounted for; none is generically withheld merely for being difficult.
 Final clean HEAD/Apple packet, Scaleway, and publication are still incomplete.

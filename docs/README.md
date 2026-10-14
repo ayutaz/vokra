@@ -33,7 +33,7 @@ environment they name.
 | Need | Document |
 |---|---|
 | What to do next | [2026-10-14 prioritized plan](handoff/next-steps-2026-10-14.md): local safety changes and PRs first, exact non-Apple gates, VAST CPU, final packet, then Scaleway |
-| Latest execution readback | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): fresh metadata, Qwen fail-closed repair, OpenMP provenance facts, stopped/deleted VAST worker, and remaining gates |
+| Latest execution readback | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): exact `4263f416` source gates green (8,223 passed), earlier failed attempts retained, owned VAST worker/storage destroyed, and remaining gates |
 | All unresolved public rows | [2026-10-14 58-row prerequisite inventory](handoff/current-58-prerequisite-inventory-2026-10-14.md): exact metadata denominator, per-row first prerequisites, and protected-input exclusion; not an execution approval |
 | Current versus historical gates | [2026-10-14 reference binding readback](handoff/reference-gate-binding-readback-2026-10-14.md): Qwen current probes, Dia active-contract mismatch and Canary historical closure; no approval carryover |
 | WeSpeaker dependency admission | [2026-10-14 exact setuptools finding](handoff/wespeaker-setuptools84-static-finding-2026-10-14.md): actual vendored LGPL payload, no paid repeat of the known-blocked closure, and next source-only route investigation |

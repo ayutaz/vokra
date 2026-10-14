@@ -98,3 +98,13 @@ Formatting, zero-dependency, forbidden-symbol and documentation citation
 checks pass. No local Rust compilation or model execution was performed.
 The correction is not yet supported by a green exact-head remote Rust run,
 an independent full-PCM reference or real-weight numerical evidence.
+
+### Subsequent exact-head Rust result
+
+The earlier pending Rust boundary above is superseded by the
+[recovered VAST source replay](execution-readback-2026-10-14.md#exact-source-replay-passed-and-owned-worker-destroyed)
+at `4263f41631bd15288f06d3cd5c6b83ea4a8fdf60`: Clippy and the full workspace
+tests/gates passed, including 20/20 private PCM tests. Instance `55867942`
+and storage were destroyed with explicit individual null readback. This
+does not supersede the missing independent full-PCM reference, dependency/
+license/operator closure, real-weight CPU parity or Apple evidence.

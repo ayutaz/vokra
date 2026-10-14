@@ -38,6 +38,13 @@ Apple packetを再生成）までを指す。以下の表は安全整理・PR準
 > MLXのpaddingとPyTorchのLM方式を分離し、非公開PCM経路を固定DSM/PyTorchへ整合する。
 > 独立PCM oracle・実weight CPU parityは未取得で、完了件数や最終packetは進めない。
 
+> **最新source検証:** clean `4263f416` のVAST replayはClippy・workspace tests・
+> 最終shell gateまで合格（8,223 passed / 0 failed / 105 ignored）。private Kyutai
+> PCM 20/20、FireRed native 29/29を確認し、`55867942`と保存データはdestroy後の
+> 個別null readbackまで完了した。次は通常PRのCI／受理。独立PCM reference、
+> 58行の実weight／owner前提、最終Apple packetは未完了。
+> [exact実行と回収hash](execution-readback-2026-10-14.md#exact-source-replay-passed-and-owned-worker-destroyed)。
+
 - 計画準備時のローカル `main` はドキュメントcommit
   `1a63a8d162b2285650d858ea5d174573588b3f13`。2026-10-14のGitHub branch APIで
   remote `main` は当初 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` と確認し、

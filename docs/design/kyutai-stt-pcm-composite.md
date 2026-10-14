@@ -75,8 +75,11 @@ Focused callback tests cover the exact expected padded PCM sequence,
 partition-independent framing, the first single call and feedback, empty
 audio, finish capacity failure before callbacks, poison/reset and suppression.
 These are source/mechanism checks, not independent framework or real-weight
-parity. Rust compilation and test execution for this correction still require
-the bounded remote verification; static formatting cannot substitute for them.
+parity. At the correction's source commit, Rust compilation/test execution
+were still pending. The [subsequent exact-head VAST replay](../handoff/execution-readback-2026-10-14.md#exact-source-replay-passed-and-owned-worker-destroyed)
+at `4263f416` passed Clippy and workspace tests, including all 20 private PCM
+tests; the owned worker/storage were destroyed. Independent full-PCM and
+real-weight parity remain absent.
 
 ## Evidence boundary
 
