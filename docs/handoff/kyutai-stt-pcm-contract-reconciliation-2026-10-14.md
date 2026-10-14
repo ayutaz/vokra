@@ -17,12 +17,16 @@ source-only and remains `execution=NOT_RUN`.
 
 | Source | Bytes | SHA-256 | Git blob SHA-1 |
 |---|---:|---|---|
-| [DSM PyTorch caller](https://github.com/kyutai-labs/delayed-streams-modeling/blob/4c4f65e147df056adf3346290d64c7b9649b18c9/scripts/stt_from_file_pytorch.py) | 8452 | `2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955` | `cf3fb05b0e0c1f265a667276d2886ce2664d79ff` |
-| [Moshi PyTorch LM/LMGen](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/models/lm.py) | 37312 | `38991e83d7e3aa0ff1483b27a0b59e1ff43642ad6a32dc8dc4272ad2b6c0dc5f` | `209b7a59c9c086810a81a7d8b99c5233a0ad87ff` |
-| [Moshi PyTorch sampling](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/utils/sampling.py) | 4699 | `113da9542ecdcc521945a337a63bec28abba7fd61c2eacaec5855fc7d7562126` | `2a35f6cdff1981bb6914b27410c6b152be2a77b1` |
-| [Moshi PyTorch transformer/cache](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/modules/transformer.py) | 38159 | `f5a73d752a5bde1eda2b0b14bebd13fd81db81017d361782a07164580a687622` | `244e73a3bc012256325e5b759cd13588a96d2673` |
-| [Moshi MLX file caller](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi_mlx/moshi_mlx/run_inference.py) | 6137 | `6214618788b16fe21ab2dd8ae55d115f3669a2d775a57cae3fa5af941a94cc3b` | `bf2b6ca0221cc377b418ffd26c2d1317217c3f69` |
-| [Moshi MLX generation](https://github.com/kyutai-labs/moshi/blob/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi_mlx/moshi_mlx/models/generate.py) | 5689 | `3f995b9f9275dd21c5ecd6fc21fe004fdef2461a2dccccfae264237981c7a54b` | `79908f61cc20b4dc88b2efd43eabdbe4422da249` |
+| [DSM PyTorch caller](https://raw.githubusercontent.com/kyutai-labs/delayed-streams-modeling/4c4f65e147df056adf3346290d64c7b9649b18c9/scripts/stt_from_file_pytorch.py) | 8452 | `2ac2d9bff71d3d6a874bed070eb9d4e60736209e3cbaa9697fbe735dc79d2955` | `cf3fb05b0e0c1f265a667276d2886ce2664d79ff` |
+| [Moshi PyTorch LM/LMGen](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/models/lm.py) | 37312 | `38991e83d7e3aa0ff1483b27a0b59e1ff43642ad6a32dc8dc4272ad2b6c0dc5f` | `209b7a59c9c086810a81a7d8b99c5233a0ad87ff` |
+| [Moshi PyTorch sampling](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/utils/sampling.py) | 4699 | `113da9542ecdcc521945a337a63bec28abba7fd61c2eacaec5855fc7d7562126` | `2a35f6cdff1981bb6914b27410c6b152be2a77b1` |
+| [Moshi PyTorch transformer/cache](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi/moshi/modules/transformer.py) | 38159 | `f5a73d752a5bde1eda2b0b14bebd13fd81db81017d361782a07164580a687622` | `244e73a3bc012256325e5b759cd13588a96d2673` |
+| [Moshi MLX file caller](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi_mlx/moshi_mlx/run_inference.py) | 6137 | `6214618788b16fe21ab2dd8ae55d115f3669a2d775a57cae3fa5af941a94cc3b` | `bf2b6ca0221cc377b418ffd26c2d1317217c3f69` |
+| [Moshi MLX generation](https://raw.githubusercontent.com/kyutai-labs/moshi/e6a55d2722a65870ef52a6c9f6ecfc0e90f38362/moshi_mlx/moshi_mlx/models/generate.py) | 5689 | `3f995b9f9275dd21c5ecd6fc21fe004fdef2461a2dccccfae264237981c7a54b` | `79908f61cc20b4dc88b2efd43eabdbe4422da249` |
+
+The [PR #230 link-transport follow-up](pr230-link-transport-2026-10-14.md)
+changes only these official source URLs, not any measured source identity,
+contract, test result or approval.
 
 ## Causal finding: distinct official contracts were mixed
 

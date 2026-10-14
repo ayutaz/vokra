@@ -173,12 +173,14 @@ collector correctly remains `BLOCKED_OWNER_REVIEW` / `NO_UPLOAD`. This is not
 runtime parity evidence and does not authorize checkpoint acquisition,
 execution or publication.
 
-Primary sources:
+Primary sources (2026-10-14 transport-only update: the README links use the
+official raw bodies for the same source paths; historical decisions and
+scope hashes are unchanged, and the MUSDB `master` alias remains mutable):
 
 - <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/LICENSE>
-- <https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/README.md>
+- <https://raw.githubusercontent.com/facebookresearch/demucs/e976d93ecc3865e5757426930257e200846a520a/README.md>
 - <https://raw.githubusercontent.com/facebookresearch/demucs/e976d93ecc3865e5757426930257e200846a520a/demucs/audio.py>
-- <https://github.com/sigsep/sigsep-mus-db/blob/master/README.md>
+- <https://raw.githubusercontent.com/sigsep/sigsep-mus-db/master/README.md>
 
 ## Owner decision vocabulary
 

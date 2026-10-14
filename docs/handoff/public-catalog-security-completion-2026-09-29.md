@@ -438,7 +438,7 @@ loads a voice preset `.pt` with `weights_only=True` and narrowly allowed
 [pinned generation path](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/vibevoice/modular/modeling_vibevoice_streaming_inference.py)
 consumes four separate prefilled outputs: `lm`, `tts_lm`, `neg_lm` and
 `neg_tts_lm`. A fabricated prompt or cache cannot validate this path.
-[Microsoft's Realtime guidance](https://github.com/microsoft/VibeVoice/blob/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/docs/vibevoice-realtime-0.5b.md)
+[Microsoft's Realtime guidance](https://raw.githubusercontent.com/microsoft/VibeVoice/94da20d98b2fa7688e9cbfaf7692ddb4954f7600/docs/vibevoice-realtime-0.5b.md)
 describes embedded prompts as a deepfake mitigation and directs voice
 customization requests to the team. The repository's MIT source license does
 not by itself settle per-preset voice consent, provenance, redistribution or
@@ -6918,7 +6918,7 @@ Path-dependent receipt bytes need not equal another run's output.
 
 The supplemental primary evidence binds the upstream
 [ANTLR 4.9.3 license](https://github.com/antlr/antlr4/blob/4.9.3/LICENSE.txt)
-and [Python setup source](https://github.com/antlr/antlr4/blob/4.9.3/runtime/Python3/setup.py)
+and [Python setup source](https://raw.githubusercontent.com/antlr/antlr4/e4c1a74c66bd5290364ea2b36c97cd724b247357/runtime/Python3/setup.py)
 to tag commit `e4c1a74c66bd5290364ea2b36c97cd724b247357`. The 527-byte setup
 SHA-256 matches the inspected locked sdist. Retained API-text copies add one
 terminal newline; raw license/setup bytes are unchanged and decoded content,
