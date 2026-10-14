@@ -1,7 +1,33 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
-Latest accepted main is `d1cbed72` after PR #247's normal merge at
+**19:48:48 UTC acceptance supersession (2026-10-15 JST):** PR #249 was
+normally merged at exact `db9f9ae5`, producing main `6f135822` after all 70
+checks completed (69 successful, one intentional skip), all 16 required
+context/application pairs passed and all nine started workflows succeeded.
+The [NSNet2 native-audit correction](handoff/nsnet2-native-audit-sigpipe-2026-10-15.md)
+and five hosted regressions are accepted; no NSNet2 real-weight/native/owner
+or Apple result is inferred. Local main is fast-forwarded and clean. MeloTTS
+#248's minimal correction is normally integrated with this main at private
+`69b4a0a9`; corrected published-head CI and acceptance remain outstanding.
+The following readbacks are earlier dated snapshots.
+
+**2026-10-15 JST current readback:** accepted main is `731592f9` after
+PR #246's ordinary merge at 18:24:02 UTC on 2026-10-14. All 70 checks
+completed (69 successful, one intentional skip), all 16 required
+context/application pairs passed, and all nine started workflows completed
+successfully. The MOSS API-smoke lock and independent bridge correction are
+accepted source changes, not native/API/owner or real-weight evidence.
+NSNet2 PR #249 is pending complete CI; its five new production-function
+regressions actually passed in the hosted checkout-only job. The separate
+[MeloTTS minimal lock correction](handoff/melotts-urllib3-minimal-reconciliation-2026-10-15.md)
+is privately committed and requires fresh corrected-head CI. Draft #152's
+`eaf0e5fa` has 68 successful checks and one intentional skip across nine
+successful workflows, but its dependency/native/license/owner and real-weight
+holds remain. No new model run, Apple packet or publication follows.
+The following acceptance and pending snapshots are retained as dated history.
+
+Previously accepted main was `d1cbed72` after PR #247's normal merge at
 17:46:55 UTC on 2026-10-14: all 73 checks completed (71 success, two intentional
 skips), all 16 required context/application pairs successful and all ten
 started workflows terminal success, including late Unity packaging. Local
