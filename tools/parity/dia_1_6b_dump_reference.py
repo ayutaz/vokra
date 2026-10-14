@@ -19,7 +19,6 @@ import os
 import re
 import stat
 import tempfile
-import tomllib
 import types
 from pathlib import Path
 from typing import Any
@@ -42,49 +41,13 @@ SOURCE_ROLE_BLOBS = {
 }
 FORMAT = "vokra-dia-1-6b-official-reference-v1"
 COMPARISON_STATUS = "NOT_RUN_OFFICIAL_ONLY"
-REFERENCE_PROJECT_LOCK_SHA256 = "58218102471c94979b1e9147759abf50fa3784793c193ff30cdde908400650dc"
-REFERENCE_PROJECT_PYPROJECT_SHA256 = "fa675f2c7542bd9eebedcc6ba29963f49093305c7a518542d71fad424449e77b"
+REFERENCE_PROJECT_LOCK_SHA256 = "06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+REFERENCE_PROJECT_PYPROJECT_SHA256 = "4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
 DEPENDENCY_LICENSE_AUDIT_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
 DIRECT_DEPENDENCY_VERSIONS = {
     "einops": "0.8.2", "gguf": "0.19.0", "huggingface-hub": "0.30.2",
     "numpy": "2.2.5", "pydantic": "2.11.3",
-    "torch": "2.6.0+cpu",
-}
-# Conclusions are deliberately conservative.  A package may have an
-# otherwise permissive top-level license while its native/bundled components
-# still require a separate primary-source review.  No row below grants the
-# execution gate; the project remains BLOCKED_UNREVIEWED_TRANSITIVE.
-DEPENDENCY_LICENSE_CONCLUSIONS = {
-    "annotated-types": "MIT_REVIEWED",
-    "certifi": "MPL-2.0_BLOCKED_BY_POLICY",
-    "cffi": "MIT_NATIVE_LIBFFI_REVIEW_REQUIRED",
-    "charset-normalizer": "MIT_REVIEWED",
-    "colorama": "BSD-3-Clause_REVIEWED",
-    "einops": "MIT_REVIEWED",
-    "filelock": "UNLICENSE_POLICY_REVIEW_REQUIRED",
-    "fsspec": "BSD-3-Clause_REVIEWED",
-    "gguf": "MIT_REVIEWED",
-    "huggingface-hub": "Apache-2.0_REVIEWED",
-    "idna": "BSD-3-Clause_REVIEWED",
-    "jinja2": "BSD-3-Clause_REVIEWED",
-    "markupsafe": "BSD-3-Clause_REVIEWED",
-    "mpmath": "BSD_STYLE_PRIMARY_REVIEW_REQUIRED",
-    "networkx": "BSD-3-Clause_REVIEWED",
-    "numpy": "BSD-3-Clause_NO_BLAS_NATIVE_REVIEW_REQUIRED",
-    "packaging": "Apache-2.0_REVIEWED",
-    "pycparser": "BSD-3-Clause_REVIEWED",
-    "pydantic": "MIT_REVIEWED",
-    "pydantic-core": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED",
-    "pyyaml": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED",
-    "requests": "Apache-2.0_REVIEWED",
-    "setuptools": "MIT_REVIEWED",
-    "sympy": "BSD-3-Clause_REVIEWED",
-    "torch": "BSD-3-Clause_BUNDLED_COMPONENT_REVIEW_REQUIRED",
-    "tqdm": "MPL-2.0_OR_MIT_POLICY_REVIEW_REQUIRED",
-    "typing-extensions": "PSF-2.0_BLOCKED_BY_POLICY",
-    "typing-inspection": "MIT_REVIEWED",
-    "urllib3": "MIT_REVIEWED",
-    "vokra-dia-1-6b-reference": "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE",
+    "torch": "2.13.0+cpu", "torchaudio": "2.11.0+cpu",
 }
 REQUIRED_ARTIFACTS = {
     "text_ids", "text_padding_mask",
@@ -114,11 +77,13 @@ def require_execution_admission() -> None:
 def install_torchaudio_fail_closed_stub() -> dict[str, Any]:
     """Install the only permitted torchaudio seam before importing official Dia.
 
-    Torchaudio is intentionally absent from the frozen project.  The pinned
-    upstream modules retain their optional audio-loader import, so a module
-    seam is installed rather than editing or mirroring those modules.  Any
-    actual audio load/use raises immediately; the fixed reference binds
-    ``audio_prompt=None`` and therefore never crosses the seam.
+    The current lock declares the Linux CPU distribution, but this historical
+    no-audio seam does not inspect an installed distribution or prove ABI/API
+    compatibility.  The pinned upstream modules retain their optional
+    audio-loader import, so a module seam is installed rather than editing or
+    mirroring those modules.  Any actual audio load/use raises immediately;
+    the fixed reference binds ``audio_prompt=None`` and therefore never
+    crosses the seam.
     """
     import sys
 
@@ -135,7 +100,9 @@ def install_torchaudio_fail_closed_stub() -> dict[str, Any]:
     return {
         "module": "torchaudio",
         "marker": TORCHAUDIO_STUB_MARKER,
-        "installed_distribution": False,
+        "locked_distribution": "torchaudio==2.11.0+cpu",
+        "installed_distribution_status": "UNKNOWN_NOT_CHECKED",
+        "compatibility_evidence": "LEGACY_UNVALIDATED_NO_COMPATIBILITY_EVIDENCE",
         "audio_prompt": None,
         "policy": "every audio load/use aborts loudly",
     }
@@ -155,25 +122,32 @@ def sha256(path: Path) -> str:
 
 
 def lock_dependency_audit(lock: Path) -> dict[str, Any]:
-    """Emit canonical, duplicate-safe rows for every resolved lock package."""
-    document = tomllib.loads(lock.read_text(encoding="utf-8"))
-    rows = []
-    for package in document.get("package", []):
-        if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str):
-            raise RuntimeError("uv.lock contains an invalid package row")
-        name = package["name"]
-        if name not in DEPENDENCY_LICENSE_CONCLUSIONS:
-            raise RuntimeError(f"lock package has no license conclusion: {name}")
-        source = package.get("source", {})
-        if not isinstance(source, dict):
-            raise RuntimeError(f"lock package source is invalid: {name}")
-        markers = sorted({dependency.get("marker") for dependency in package.get("dependencies", []) if isinstance(dependency, dict) and isinstance(dependency.get("marker"), str)})
-        identity = {"name": name, "version": package["version"], "source": source, "markers": markers}
-        row = {**identity, "row_sha256": hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "license_conclusion": DEPENDENCY_LICENSE_CONCLUSIONS[name]}
-        rows.append(row)
-    rows.sort(key=lambda row: (row["name"], row["version"], json.dumps(row["source"], sort_keys=True), row["markers"]))
-    digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return {"schema": "vokra-dia-uv-lock-license-audit-v1", "status": DEPENDENCY_LICENSE_AUDIT_STATUS, "package_count": len(rows), "rows_sha256": digest, "rows": rows}
+    """Emit the current factual all-row and Linux active-row contract."""
+    ancestry_is_symlink = False
+    if lock.is_absolute() and len(lock.parts) >= 2:
+        cursor = Path(lock.anchor)
+        for part in lock.parts[1:-1]:
+            cursor /= part
+            if cursor.is_symlink():
+                ancestry_is_symlink = True
+                break
+    if (
+        not lock.is_absolute()
+        or any(part in {".", ".."} for part in lock.parts)
+        or lock.name != "uv.lock"
+        or ancestry_is_symlink
+        or lock.is_symlink()
+        or not lock.is_file()
+        or lock != lock.parent / "uv.lock"
+    ):
+        raise RuntimeError("lock dependency audit requires the canonical regular uv.lock")
+    import sys
+    project = lock.parent
+    reference_dir = str(project)
+    if reference_dir not in sys.path:
+        sys.path.insert(0, reference_dir)
+    from lock_contract import build_lock_audit
+    return build_lock_audit(project)
 
 
 def reference_project_identity() -> dict[str, Any]:
@@ -732,15 +706,28 @@ def self_test() -> None:
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40 and len(PUBLIC_REVISION) == 40
     assert len(REFERENCE_PROJECT_LOCK_SHA256) == 64 and len(REFERENCE_PROJECT_PYPROJECT_SHA256) == 64
     assert DEPENDENCY_LICENSE_AUDIT_STATUS == "BLOCKED_UNREVIEWED_TRANSITIVE"
-    assert DIRECT_DEPENDENCY_VERSIONS["torch"] == "2.6.0+cpu"
+    assert REFERENCE_PROJECT_LOCK_SHA256 == "06d1f30607934c822c12fdef1db62369f2af0a72372e19d2ba782ffb95583449"
+    assert REFERENCE_PROJECT_PYPROJECT_SHA256 == "4dcc396ff3f7387b4b00b32db00ad79fa38f3cf1ef7ad22e3e7f3f8f563be4eb"
+    assert DIRECT_DEPENDENCY_VERSIONS["torch"] == "2.13.0+cpu"
+    assert DIRECT_DEPENDENCY_VERSIONS["torchaudio"] == "2.11.0+cpu"
     assert set(DIRECT_DEPENDENCY_VERSIONS) == {
         "einops", "gguf", "huggingface-hub", "numpy", "pydantic",
-        "torch",
+        "torch", "torchaudio",
     }
     assert "soundfile" not in DIRECT_DEPENDENCY_VERSIONS
-    assert "torchaudio" not in DIRECT_DEPENDENCY_VERSIONS
+    lock_audit = lock_dependency_audit(Path(__file__).parent / "dia_1_6b_reference" / "uv.lock")
+    assert lock_audit["schema"] == "vokra-dia-uv-lock-license-audit-v2"
+    assert lock_audit["status"] == "BLOCKED_UNREVIEWED_TRANSITIVE"
+    assert lock_audit["license_classification"] == "NOT_PERFORMED"
+    assert lock_audit["license_review_status"] == "PENDING_OWNER_REVIEW"
+    assert lock_audit["all_lock_rows"]["package_count"] == 31
+    assert lock_audit["active_linux_x86_64_rows"]["package_count"] == 27
+    assert "_REVIEWED" not in json.dumps(lock_audit, sort_keys=True)
     seam = install_torchaudio_fail_closed_stub()
-    assert seam["audio_prompt"] is None and seam["installed_distribution"] is False
+    assert seam["locked_distribution"] == "torchaudio==2.11.0+cpu"
+    assert seam["installed_distribution_status"] == "UNKNOWN_NOT_CHECKED"
+    assert seam["compatibility_evidence"] == "LEGACY_UNVALIDATED_NO_COMPATIBILITY_EVIDENCE"
+    assert seam["audio_prompt"] is None
     import sys
     stub = sys.modules["torchaudio"]
     for operation in (lambda: stub.load("forbidden"), lambda: stub.unavailable_audio_api):

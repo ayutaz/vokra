@@ -45,6 +45,9 @@ jobs:
       - name: Dia direct execution admission guard self-test
         run: uv run --no-project --offline --python 3.12 python tools/parity/test_dia_execution_admission.py --self-test
 
+      - name: Dia current lock contract self-test
+        run: uv run --no-project --offline --python 3.12 python tools/parity/test_dia_current_lock_contract.py --self-test
+
       - name: GitHub blob report gate stdlib self-test
         run: uv run --no-project --offline --python 3.12 python scripts/test-check-github-blob-link-report.py
 
