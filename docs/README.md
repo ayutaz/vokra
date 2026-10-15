@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**Static macro frontier (2026-10-16 JST):** the
+[fixed-source readback](handoff/kyutai-candle-paste-macro-readback-2026-10-16.md)
+proves that zero direct paste hits do not make gemm-c32/c64 independent:
+both versions reach paste through exported gemm-common macros. Metal uses
+type-position expansion. Twelve selected source files match archive hashes;
+entry-point names are present in pastey, but compilation/compatibility is
+not run or approved. No parent alias, owner/model gate or final-packet scope
+is removed on the basis of a text scan.
+
 **Actual applied-lock advisory accepted (2026-10-16 JST):**
 [run 38765578560 and original report](handoff/kyutai-candle-applied-advisory-result-2026-10-16.md)
 prove zero native vulnerabilities/warnings for registry137 at the fixed DB,

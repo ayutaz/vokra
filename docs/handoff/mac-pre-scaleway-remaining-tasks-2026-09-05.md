@@ -1,5 +1,11 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 JST static macro frontier:** [twelve fixed source members](kyutai-candle-paste-macro-readback-2026-10-16.md)
+> match archived hashes and prove indirect gemm-c32/c64 expansion plus Metal
+> type-position usage. Zero direct text hits do not remove aliases or prove
+> compatibility. Compiler/native/operator, independent real-weight CPU and
+> final Apple-packet gates remain; no inventory/disposition changes follow.
+
 > **2026-10-16 JST actual fixed-DB advisory acceptance:** the
 > [original applied-lock result](kyutai-candle-applied-advisory-result-2026-10-16.md)
 > authenticates native registry137 with zero vulnerabilities/warnings and

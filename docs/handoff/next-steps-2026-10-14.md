@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16 JSTのmacro静的readback:** [固定sourceとarchive hashの照合](kyutai-candle-paste-macro-readback-2026-10-16.md)
+> でgemm-c32/c64両版の間接macro経路とMetal両版の型位置展開を確認した。直接paste検索0件
+> でも未使用とは判断せず16 parentを維持する。12 source filesは既存hash一致、pasteyの
+> entry-point名は存在するがcompiler／macro互換性は未実行・未承認。次の実行scopeは
+> cross-crate aliasと型位置を含めてsource／license／native／operator条件を確定する。
+> 全non-Apple前提・独立PCM／実weight CPU・最終HEAD／packetという工程4は未完了。
+
 > **2026-10-16 JSTの実監査受理:** [run 38765578560と原本照合](kyutai-candle-applied-advisory-result-2026-10-16.md)
 > で通常監査137件は固定DBに対して脆弱性0／警告0、補完parent16＋workspace1も完了。
 > 実証跡download後の17 testsは失敗0／skip0。旧構成の監査失敗・owner判断は変更しない。

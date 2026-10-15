@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST static macro frontier:** [fixed-source evidence](kyutai-candle-paste-macro-readback-2026-10-16.md)
+> defines cross-crate alias and Metal type-position compatibility cases;
+> no parent is dropped because a literal scan has zero hits. Compilation
+> and upstream-code execution still require their exact prerequisite scope.
+> Full non-Apple/real-weight/final-packet obligations remain unchanged, with
+> Scaleway and publication later.
+
 > **2026-10-16 JST actual fixed-DB advisory acceptance:** [run 38765578560](kyutai-candle-applied-advisory-result-2026-10-16.md)
 > succeeds with independently checked original bytes: registry137 native
 > zero findings plus source-absent parents16/workspace1 supplemental coverage.
