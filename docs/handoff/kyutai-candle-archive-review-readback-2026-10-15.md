@@ -1,5 +1,12 @@
 # Candle archive license/build review readback — 2026-10-15 JST
 
+> Subsequent collection: the [14-archive supplement](kyutai-candle-build-source-supplement-2026-10-15.md)
+> passes the corrected 17-test suite and actual bounded source-only collection.
+> All five exact required helper paths are recovered; the prototype defects
+> described below retain their pre-execution review boundary, not a live
+> collection failure. Helper semantics/advisory/approval and real-weight gates
+> remain separate.
+
 This read-only review follows the [actual 104-archive collection](kyutai-candle-primary-archive-facts-2026-10-15.md).
 The full input receipt remains 651,624 bytes, SHA-256
 `b081d421f62cf41c445cf4171ccab875758106a55d629cd44ae32c9e9d972d69`.

@@ -1,5 +1,11 @@
 # Vokra documentation
 
+**Subsequent source supplement (2026-10-15):** the [bounded 14-archive collection](handoff/kyutai-candle-build-source-supplement-2026-10-15.md)
+authenticates 218 Rust source members, including all five missing helper
+paths. Seventeen independently run offline tests and actual checksum/body
+verification pass; helper source review and macro-module inventory are
+recorded separately from execution approval. No upstream code/model runs.
+
 **07:07:47 UTC acceptance (2026-10-15):** PR #253 was normally merged as
 main `5ceb4325` after all 73 checks completed (71 success, two intentional
 skips), all 16 required context/application pairs passed and all ten started

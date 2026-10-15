@@ -2,6 +2,14 @@
 
 ## ゴールと現在地
 
+> **続くsource補完（2026-10-15）:** [14件限定の実取得](kyutai-candle-build-source-supplement-2026-10-15.md)
+> は独立17 testsと実checksum照合が成功し、218 Rust member／215 unique bodies、
+> 不足していたhelper5件を回収した。helper本文の限定reviewと10 proc-macroのmodule
+> inventoryを確認し、当初prototypeの欠落は実取得前に修正済み。Candle専用の
+> current advisory監査、依存/native/license/operator承認、独立PCM／実weight CPUは別の残件。
+> 新着Dependabot #254（DFN3）も別scopeで最小差分と入力bindingを調査する。
+> 全行non-Apple完了と最終clean HEAD／fresh Apple packetというゴールは未完了のまま。
+
 > **07:07:47 UTCの受理と一次資料レビュー（2026-10-15）:** #253 exact
 > `92f63d62`は全73 checks（71 success / 2 intentional skips）、必須16
 > context/appと開始した全10 workflowsの成功後に通常mergeした。main／ローカルmainは
