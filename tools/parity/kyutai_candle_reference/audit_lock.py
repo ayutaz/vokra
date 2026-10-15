@@ -226,18 +226,20 @@ def _kill_owned_group(process: subprocess.Popen[bytes], grace: float = 1.0) -> N
 def run_command(argv: tuple[str, ...], *, cwd: Path, env: dict[str, str], deadline: float, stdout_cap: int, stderr_cap: int) -> CommandResult:
     _remaining(deadline)
     process = subprocess.Popen(list(argv), cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    assert process.stdout is not None and process.stderr is not None
-    selector = selectors.DefaultSelector()
-    streams = {process.stdout.fileno(): (process.stdout, "stdout"), process.stderr.fileno(): (process.stderr, "stderr")}
+    selector: selectors.BaseSelector | None = None
+    streams: dict[int, tuple[Any, str]] = {}
     captured = {"stdout": bytearray(), "stderr": bytearray()}
     truncated = {"stdout": False, "stderr": False}
     caps = {"stdout": stdout_cap, "stderr": stderr_cap}
-    for stream, name in streams.values():
-        os.set_blocking(stream.fileno(), False)
-        selector.register(stream, selectors.EVENT_READ, name)
     timed_out = False
     cleanup_needed = False
     try:
+        selector = selectors.DefaultSelector()
+        assert process.stdout is not None and process.stderr is not None
+        streams = {process.stdout.fileno(): (process.stdout, "stdout"), process.stderr.fileno(): (process.stderr, "stderr")}
+        for stream, name in streams.values():
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
         while selector.get_map() or process.poll() is None:
             timeout = min(0.25, _remaining(deadline))
             for key, _ in selector.select(timeout):
@@ -276,7 +278,8 @@ def run_command(argv: tuple[str, ...], *, cwd: Path, env: dict[str, str], deadli
                 _kill_owned_group(process)
             except BaseException:
                 pass
-        selector.close()
+        if selector is not None:
+            selector.close()
         for stream, _ in streams.values():
             if not stream.closed:
                 stream.close()

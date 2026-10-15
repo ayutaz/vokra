@@ -53,19 +53,30 @@ null rather than inserting a hash into the upstream JSON.
 
 ## Review and execution status
 
-The manager independently passes the final eleven corrected stdlib tests,
+The manager independently passes the corrected eleven stdlib tests,
 including blocking API reads, process-group deadline cleanup, exact version,
 artifact mutation, report/counter/truncation classification, config isolation
-and workflow pins, in 2.820 seconds, and actionlint passes. The exceptional
+and workflow pins, initially in 2.820 seconds, and actionlint passes. The exceptional
 I/O/interruption path now terminates its owned process group before
-unwinding and reaps its direct child. The additional injected-I/O descendant
-heartbeat assertion is Linux-only and has not run on the maintainer Mac;
-the actual hosted self-test step must prove that branch before audit.
+unwinding and reaps its direct child. Before the actual audit, further review
+finds that the Linux-only mock patched the same global `os.read` used by
+Python's `Popen` bootstrap. It could fail before entering the intended pipe
+loop, so the initial Mac result does not prove that causal path.
+
+The correction delegates bootstrap/non-target reads to the original function
+and captures target pipe descriptors only after successful process creation.
+Both the exited-parent/descendant-held-pipe timeout case and the injected-I/O
+case retain a forked SIGTERM-ignoring descendant, using heartbeat liveness
+rather than zombie-PID absence. Neither case is skipped on the Mac. Selector
+creation/registration is inside the cleanup-protected lifecycle. Manager
+independently reruns all eleven tests in **4.167 seconds**, including both
+causal paths, and actionlint/diff checks pass. Actual hosted execution and the
+advisory verdict still require separate evidence.
 
 Reviewed workflow/wrapper/test SHA-256 values respectively are
 `cf48f1c684bc517a64494ed0ae1b8b830c20cae11f7aada79558b87e10b6939b`,
-`68e4ee25064b58566d73960523e976bb8c70a9b008933b2faa07356e1637a4b5`
-and `a7ea44920435bb68dd437133afa30ee0bee6c6518622d46aa72878bfc3b7b5b0`.
+`ae7cad9210ad76e1af52799aba8ab76b60450ddc775a3abdfbf6813201cf11d1`
+and `a7615e304d2d79afd29d5fbc06e4c35fb01712a81142a4c0f324518876530134`.
 These are source and synthetic-test identities, not an advisory verdict.
 
 No actual hosted advisory run, cargo-audit installation/execution, target

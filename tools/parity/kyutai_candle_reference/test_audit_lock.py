@@ -236,44 +236,35 @@ class AuditLockTests(unittest.TestCase):
             self.assertTrue(stalled.timed_out)
 
             marker = root / "descendant.pid"
+            heartbeat = root / "descendant.heartbeat"
             descendant = root / "descendant"
             descendant.write_text(textwrap.dedent(f"""
                 #!{sys.executable}
                 import os, signal, sys, time
                 marker = sys.argv[1]
+                heartbeat = sys.argv[2]
                 child = os.fork()
                 if child == 0:
                     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                    open(marker, 'w').write(str(os.getpid()))
-                    time.sleep(10)
-                    raise SystemExit(0)
-                for _ in range(100):
-                    if os.path.exists(marker): break
-                    time.sleep(0.01)
+                    while True:
+                        open(heartbeat, 'w').write(str(time.monotonic()))
+                        time.sleep(0.01)
+                while not os.path.exists(heartbeat): time.sleep(0.01)
+                open(marker, 'w').write(str(child))
                 raise SystemExit(0)
             """).lstrip())
             descendant.chmod(descendant.stat().st_mode | stat.S_IXUSR)
-            held = audit_lock.run_command((str(descendant), str(marker)), cwd=root, env=env, deadline=audit_lock._now() + 0.4, stdout_cap=128, stderr_cap=32)
+            held = audit_lock.run_command((str(descendant), str(marker), str(heartbeat)), cwd=root, env=env, deadline=audit_lock._now() + 0.4, stdout_cap=128, stderr_cap=32)
             self.assertTrue(held.timed_out)
             for _ in range(100):
-                if marker.exists():
+                if marker.exists() and heartbeat.exists():
                     break
                 time.sleep(0.01)
-            child_pid = int(marker.read_text())
-            for _ in range(200):
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.02)
-            else:
-                self.fail("owned descendant survived process-group cleanup")
+            self.assertTrue(marker.exists() and heartbeat.exists())
+            first = heartbeat.read_text()
+            time.sleep(0.2)
+            self.assertEqual(heartbeat.read_text(), first, "exited parent left owned descendant running")
 
-            # The production guard is Linux-only; macOS process groups can
-            # retain an orphaned zombie PID even after SIGKILL, so the causal
-            # injected descendant assertion runs on the target platform.
-            if not sys.platform.startswith("linux"):
-                return
             injected_marker = root / "injected-descendant.pid"
             injected = root / "injected-descendant"
             injected.write_text(textwrap.dedent(f"""
@@ -284,25 +275,34 @@ class AuditLockTests(unittest.TestCase):
                 child = os.fork()
                 if child == 0:
                     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                    open(marker, 'w').write(str(os.getpid()))
                     while True:
                         open(heartbeat, 'w').write(str(time.monotonic()))
                         time.sleep(0.01)
-                    raise SystemExit(0)
-                while not os.path.exists(marker): time.sleep(0.01)
+                while not os.path.exists(heartbeat): time.sleep(0.01)
+                open(marker, 'w').write(str(child))
                 os.write(1, b'x')
                 time.sleep(10)
             """).lstrip())
             injected.chmod(injected.stat().st_mode | stat.S_IXUSR)
-            def fail_read(_fd, _size):
+            original_read = os.read
+            original_popen = audit_lock.subprocess.Popen
+            target_fds: set[int] = set()
+            def capture_popen(*args, **kwargs):
+                process = original_popen(*args, **kwargs)
+                target_fds.update((process.stdout.fileno(), process.stderr.fileno()))
+                return process
+            def fail_read(fd, size):
+                if fd not in target_fds:
+                    return original_read(fd, size)
                 for _ in range(200):
                     if injected_marker.exists():
                         break
                     time.sleep(0.01)
                 raise OSError("injected pipe failure")
-            with mock.patch("audit_lock.os.read", side_effect=fail_read):
-                with self.assertRaises(OSError):
-                    audit_lock.run_command((str(injected), str(injected_marker)), cwd=root, env=env, deadline=audit_lock._now() + 5, stdout_cap=128, stderr_cap=32)
+            with mock.patch.object(audit_lock.subprocess, "Popen", side_effect=capture_popen):
+                with mock.patch.object(audit_lock.os, "read", side_effect=fail_read):
+                    with self.assertRaises(OSError):
+                        audit_lock.run_command((str(injected), str(injected_marker)), cwd=root, env=env, deadline=audit_lock._now() + 5, stdout_cap=128, stderr_cap=32)
             self.assertTrue(injected_marker.exists())
             heartbeat = injected_marker.with_name(injected_marker.name + ".heartbeat")
             self.assertTrue(heartbeat.exists())
