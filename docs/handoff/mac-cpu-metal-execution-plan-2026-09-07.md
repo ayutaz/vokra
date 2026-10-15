@@ -1,5 +1,19 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **06:34:34 UTC acceptance (2026-10-15):** reviewed #251 is normally merged
+> as main `1d863280` after 70 successful checks, one intentional skip and ten
+> successful workflows. The [subsequent primary-archive facts](kyutai-candle-primary-archive-facts-2026-10-15.md)
+> cover all 104 selected registry packages without package/model execution.
+> Resolve exact source/license/native/advisory/operator and independent PCM
+> gates next; this is not real-weight CPU or final Apple-packet completion.
+
+> **06:06 UTC actual source capture (2026-10-15):** the [Candle result](kyutai-candle-source-metadata-ci-2026-10-15.md)
+> now proves the corrected-head metadata/precise-update leg, including 40
+> hosted tests and independently verified seven-file evidence. Ordinary PR
+> acceptance and all source/license/native/reference/real-weight conditions
+> remain distinct. This does not complete the original step-4 objective,
+> freeze final Apple packets or authorize Scaleway/publication.
+
 > **06:00:58 UTC source supersession (2026-10-15):** the [latest plan](next-steps-2026-10-14.md)
 > records accepted main `b5ae1b3c`, normal FACodec #252 acceptance and the
 > reviewed Candle semantic candidate. Its independent 40 tests and actual
