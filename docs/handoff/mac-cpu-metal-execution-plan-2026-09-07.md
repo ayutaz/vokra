@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-15 continuation pointer:** see the [latest plan readback](next-steps-2026-10-14.md)
+> and [actual Candle diagnostic](kyutai-candle-source-metadata-ci-2026-10-15.md).
+> Accepted source PRs and recovered dependency graphs do not prove real-weight
+> CPU parity or final clean-HEAD Apple packets. The original step-4 objective
+> still includes all non-Apple prerequisites and fresh final packets; keep
+> Scaleway and publication after that boundary, with no approval inferred
+> from the source-only work. Historical counts and signed scopes stay intact.
+
 > **2026-10-14 plan supersession:** The [new prioritized plan](next-steps-2026-10-14.md) fixes the next sequence and per-stage exit conditions after local documentation commit `1a63a8d1`: safe local cleanup / permanent hook review, PR acceptance preparation, exact dependency/license/upstream/owner gates, VAST real-weight CPU, final clean HEAD/packet, then Scaleway. The completed private 41-wheel static audit is not repeated or promoted to runtime approval. Older results and signed scopes below remain unchanged.
 
 > **2026-10-13 current routing / supersession:** Use the [2026-10-13 snapshot](documentation-refresh-2026-10-13.md) and [static closure verdict](vibevoice-realtime-static-closure-audit-2026-10-13.md) for current routing. The private 41-wheel static audit is done, with `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; repeating it is not the next step. Resolve exact dependency/license/native/upstream/owner gates, then approved compatibility work and VAST real-weight/reference/CPU parity, freeze clean HEAD/packet, run Scaleway CPU/Metal/no-fallback, record results and obtain separate publication approval. Earlier queues are historical, not completed gates.

@@ -2,6 +2,24 @@
 
 ## ゴールと現在地
 
+> **2026-10-15の継続readback:** FocalCodec #250はexact
+> `d4eabe36`の全70 checks（69 success / 1 intentional skip）、必須16
+> context/appと開始した全9 workflowsのterminal successを確認して04:51:58 UTCに
+> 通常mergeした。main／ローカルmainは`15491982`でclean。#248も受理済みで、
+> 以下のMeloTTS待ち・旧main記録は履歴である。Draft #152の修正Rust source
+> `3d5318e0`は別の承認済みVAST source-only runで検証し、owned worker/dataを破棄した。
+> これは実weight CPU parityではなく、依存/native/license/owner holdは維持する。
+> [Candle #251](https://github.com/ayutaz/vokra/pull/251) exact `265d0e93`の
+> 実source診断は25 tests成功後に厳密なbase-lock gateで停止したが、初期metadataを
+> 回収できた。CPU依存105件とwhole-lock161件は別集合で、削除edgeの一部は依存先が
+> lockに残っている。単なる表示差・未使用扱いで通さず、別のwhole-feature metadataを
+> 調査する。[実測とhash](kyutai-candle-source-metadata-ci-2026-10-15.md)を参照。
+> RMVPEの[固定source／fork履歴](rmvpe-primary-license-readback-2026-10-14.md)も
+> 訂正したがgrant未解決・sign-off不変。HF全行metadataはこのreadbackで再取得せず、
+> 記録済み58未解決行・凍結63-row scope、全行non-Apple前提、承認済み実weight CPU、
+> 最終clean HEAD／fresh Apple packetという元の工程4のゴールは未完了のまま。
+> 新規VAST／Scaleway、ローカルモデル実行、公開はこの継続診断では行っていない。
+
 > **19:48:48 UTCのsource受理supersession（2026-10-15 JST）:** NSNet2 #249
 > exact `db9f9ae5`は70/70 checks（69 success / 1 intentional skip）、必須16
 > context/app、遅いUnityを含む全9 workflowsのterminal successを確認して通常受理した。

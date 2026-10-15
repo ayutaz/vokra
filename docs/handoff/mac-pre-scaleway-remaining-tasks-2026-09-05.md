@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-15 source-only continuation:** the [prioritized plan](next-steps-2026-10-14.md)
+> records accepted main `15491982`, PR #250 acceptance and the separate
+> [actual Candle metadata recovery](kyutai-candle-source-metadata-ci-2026-10-15.md).
+> CPU-selected and whole-lock dependency graphs remain distinct; strict
+> projection validation, independent real-weight CPU work and final packets
+> are not complete. No live inventory refresh or row promotion follows, and
+> the frozen 63-row owner packet and dated evidence below remain unchanged.
+
 > **2026-10-14 plan pointer:** Use the [latest prioritized plan](next-steps-2026-10-14.md) for the next non-Apple tasks and Scaleway entry conditions. The 10/13 metadata-only 58 unresolved rows are not a new 10/14 all-row audit or a hardware verdict. Reconcile each exact current scope before promotion; keep the historical tables and 63-row owner packet intact.
 
 > **2026-10-13 current routing / supersession:** The latest [documentation readback](documentation-refresh-2026-10-13.md) records main `7d38061c`, 136 code/artifact-full / 58 unresolved, six open PRs and merged #199. The [single static closure audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) is complete and its owned worker/data destroyed; owner/legal/native/API/runtime gates remain open. It validated private candidate inputs, not main's reference environment. Earlier current-readback sections below are dated history. Preserve the frozen 63-row scope and all CPU/Apple/approval evidence; no row is promoted.
