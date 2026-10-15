@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **manifest-only置換計画の準備（2026-10-15）:** [offline planner](kyutai-candle-paste-overlay-preparation-2026-10-15.md)
+> の全16件入力／完全TOML差分／source inventory参照検証をレビューし、正規unittestで
+> 6 tests成功。ローカルCLIはhook拒否で止め、別経路では実行しない。次は新HEADの
+> hosted計画生成とartifact照合、その後の実適用・CPU／whole graph・strict監査。
+> 置換適用／互換性／security PASSは未主張。元の全58行non-Apple、承認済み実weight
+> CPU、最終clean HEAD／fresh packetの工程4は未完了で、Scalewayは最後のまま。
+
 > **不足ソースの実補完（2026-10-15）:** [paste依存元16件と更新依存3件](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
 > のmanifest／license本文・source inventoryを回収し、rootが照合した。最初の14件成功と
 > Metal上限停止の原本は保持し、公式サイズに限定した別経路で不足2件だけを取得した。

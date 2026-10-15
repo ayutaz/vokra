@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Manifest-overlay preparation (2026-10-15):** the
+[reviewed offline planner](handoff/kyutai-candle-paste-overlay-preparation-2026-10-15.md)
+passes six independent stdlib tests against the authenticated sixteen-parent
+receipts. Direct local CLI execution is refused and not worked around;
+actual plan generation/recovery is assigned to hosted CI. No overlay is
+applied, no macro compatibility or clean security audit is claimed, and the
+full non-Apple/real-weight/final-packet objective remains incomplete.
+
 **Exact missing source inputs recovered (2026-10-15):** the
 [sixteen-parent and three-updated-package readback](handoff/kyutai-candle-paste-parent-source-readback-2026-10-15.md)
 records authenticated manifests/licenses/source inventories, a retained
