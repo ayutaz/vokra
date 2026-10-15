@@ -100,3 +100,23 @@ diagnostic for an actual hosted attempt. Preserve all actual failures, recover
 small evidence and review the complete resulting graph before a new security
 verdict. PR #255 remains draft; unrelated drafts and owner/legal/source holds
 are not promoted. Scaleway remains last, and no public artifact is changed.
+
+## Integrated source-push boundary
+
+Reviewed preparation is committed as `f9f90510cef31424bfe9e59ad4f2a26aa4abafb8`
+with all five normal pre-commit checks passing. Manager separately passes all
+eight compliance-scanner regressions, 51-workflow hygiene, documentation
+references/community checks and the 144-block examples check (thirty Tier-C
+blocks explicitly remain unverified). The evidence copy is independently
+checked against the original plus its documented one terminal LF.
+
+Before the corresponding source push, manager compares runtime/test/build
+inputs with recorded green VAST source
+`4263f41631bd15288f06d3cd5c6b83ea4a8fdf60`: no differences under `crates`,
+`tests`, root Cargo files, `.cargo`, `.config` or Rust toolchain files.
+The matching tree IDs are `cd87ca121ccf2f5c1249c1165476a66ebec3a7f1`
+(`crates`) and `04b30c76bd82baf3229e861f839ad8b9c4610799` (`tests`).
+Reuse that [recorded remote evidence](dia-urllib3-minimal-reconciliation-2026-10-15.md)
+only for unchanged Rust inputs, following the documented source-push hook
+path; do not launch a local deep Cargo run or claim a new VAST replay.
+New wrapper/hosted diagnostics and fresh exact-head CI are separate gates.
