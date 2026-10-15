@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **不足ソースの実補完（2026-10-15）:** [paste依存元16件と更新依存3件](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+> のmanifest／license本文・source inventoryを回収し、rootが照合した。最初の14件成功と
+> Metal上限停止の原本は保持し、公式サイズに限定した別経路で不足2件だけを取得した。
+> 旧collectorの同一snapshot未回収は明示したまま。次は数値Rustを変えないmanifest-only
+> pastey alias案と実適用・全graph／strict監査。collectionを互換性／owner承認とは扱わず、
+> 全58行non-Apple、承認済み実weight CPU、最終clean HEAD／fresh packetの工程4は未完了。
+
 > **新候補の実監査結果（2026-10-15）:** [run 38713528857の原本](kyutai-candle-candidate-advisory-result-2026-10-15.md)
 > を回収し、入力13件とnative stdout、固定DBの実行前後一致を独立照合した。
 > 全154件でrc=1／`FAIL_FINDINGS`。同じ固定DBでは脆弱性0、pasteの保守終了警告1件となり、

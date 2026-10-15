@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Exact missing source inputs recovered (2026-10-15):** the
+[sixteen-parent and three-updated-package readback](handoff/kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+records authenticated manifests/licenses/source inventories, a retained
+fourteen-parent partial result and a successful two-Metal-only supplement.
+An old-tool snapshot retention gap remains explicit. Next prepare the
+manifest-only pastey overlay and independently verify its actual application;
+collection is not compatibility, legal/operator, real-weight or Apple approval.
+
 **Actual candidate advisory result (2026-10-15):** the
 [recovered 154-record strict audit](handoff/kyutai-candle-candidate-advisory-result-2026-10-15.md)
 returns `FAIL_FINDINGS` / rc 1: zero reported vulnerabilities and one

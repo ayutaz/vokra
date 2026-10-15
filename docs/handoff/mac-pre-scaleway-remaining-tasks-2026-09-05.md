@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-15 exact source supplement:** the [sixteen paste parents and three updated registry packages](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+> are authenticated as source-collection facts, with the first partial result
+> retained and only two missing Metal archives fetched afterward. Preserve
+> the documented tool-retention gap and owner/execution boundaries. The next
+> manifest-only overlay/application/strict-audit gates are not yet complete;
+> no public row, real-weight CPU or final Apple packet is promoted.
+
 > **2026-10-15 actual candidate advisory:** the [154-record report](kyutai-candle-candidate-advisory-result-2026-10-15.md)
 > is independently recovered and authenticated: rc 1 / `FAIL_FINDINGS`,
 > zero vulnerabilities and one paste unmaintained warning at the fixed DB.

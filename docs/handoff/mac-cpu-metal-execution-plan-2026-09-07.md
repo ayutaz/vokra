@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-15 exact source supplement:** reuse the [authenticated sixteen-parent/three-update inputs](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+> rather than repeating the source capture. Prepare the narrow manifest-only
+> alias plan, then independently authenticate actual application, complete
+> dependency/metadata delta and a new strict audit. Collection and the known
+> old-tool retention gap do not close compatibility/legal/operator or model
+> gates. Full all-row non-Apple, real-weight CPU and final clean-HEAD/fresh
+> packets remain the original step-4 objective; Scaleway stays last.
+
 > **2026-10-15 actual candidate advisory:** the [authenticated 154-record audit](kyutai-candle-candidate-advisory-result-2026-10-15.md)
 > returns rc 1 / `FAIL_FINDINGS`: zero vulnerabilities and one paste warning
 > at the fixed DB, down from five original findings. Resolve genuine
