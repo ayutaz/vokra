@@ -1,5 +1,11 @@
 # Candle source-only paste application review — 2026-10-15
 
+> **Actual hosted supersession (2026-10-16 JST):** [run 38758745134 and independent recovery](kyutai-candle-paste-application-result-2026-10-16.md)
+> now prove actual source-only application at published `89fbbc51`. The eight
+> original files are retained and full lock/raw-graph/source-proof comparisons
+> pass. This supersedes not-yet-run statements below, not strict advisory,
+> compatibility/approval, real-weight CPU or final Apple-packet requirements.
+
 ## 2026-10-16 JST: independent offline acceptance of finalization regressions
 
 This continuation supersedes the local-review and missing-regression holds

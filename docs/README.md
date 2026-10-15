@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Actual Candle application accepted (2026-10-16 JST):** the
+[successful source-only run and eight-file recovery](handoff/kyutai-candle-paste-application-result-2026-10-16.md)
+prove the sixteen path-parent transitions plus registry pastey, with 137
+unchanged complete lock records and independently checked CPU/whole raw
+graphs. This is not a strict security, package/macro, owner or model verdict.
+Verify full advisory coverage next; all non-Apple, real-weight CPU and final
+clean-HEAD/fresh Apple-packet obligations remain open. PR #255 stays draft.
+
 **Candle offline regression acceptance (2026-10-16 JST):** root independently
 passes all ten tests at the [reviewed application candidate](handoff/kyutai-candle-paste-application-preparation-2026-10-15.md#2026-10-16-jst-independent-offline-acceptance-of-finalization-regressions),
 including final-write failure, late operation-cutoff recovery and seven root

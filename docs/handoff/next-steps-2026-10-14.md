@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16 JSTの実適用受理:** [run 38758745134と8ファイル回収](kyutai-candle-paste-application-result-2026-10-16.md)
+> はsource-only SUCCESS。root独立照合で154 lock／137完全record不変、16 path parent＋
+> registry pasteyへの置換、raw CPU105／whole154、308／292 member証跡を確認した。
+> 次はこの実producerに束縛したstrict監査と、path化した16件を含む照合範囲の検証。
+> 数だけでsecurity PASSにせず旧監査も緩めない。#255はdraftで、全non-Apple前提・
+> 承認済み実weight CPU・最終clean HEAD／fresh Apple packetという工程4は未完了。
+
 > **2026-10-16 JSTのローカル回帰受理:** [Candle実適用準備記録](kyutai-candle-paste-application-preparation-2026-10-15.md#2026-10-16-jst-independent-offline-acceptance-of-finalization-regressions)
 > の現行producerと追加回帰をrootが独立実行し、10 tests／失敗0／skip0（1.173秒）。
 > 最終書込み後のI/O失敗・期限超過からBLOCKEDへ復旧し、全root pairの親子衝突も

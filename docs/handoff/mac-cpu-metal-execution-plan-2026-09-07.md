@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST actual source application:** [Candle run 38758745134](kyutai-candle-paste-application-result-2026-10-16.md)
+> succeeds and its eight original evidence files pass independent lock/raw
+> metadata/source-proof comparison. Next bind strict advisory to that actual
+> producer and prove path-parent coverage; metadata success is not a new
+> security, compatibility or model verdict. Full non-Apple, authorized
+> real-weight CPU and final clean-HEAD/fresh Apple packets remain the step-4
+> objective, with Scaleway/publication still later.
+
 > **2026-10-15 exact source supplement:** reuse the [authenticated sixteen-parent/three-update inputs](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
 > rather than repeating the source capture. Prepare the narrow manifest-only
 > alias plan, then independently authenticate actual application, complete
