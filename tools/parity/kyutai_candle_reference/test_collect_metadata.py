@@ -222,12 +222,59 @@ class CollectorTests(unittest.TestCase):
     def test_target_and_cargo_action_allowlist(self) -> None:
         cargo = ["cargo", "metadata", "--format-version", "1", "--filter-platform", leaf.TARGET, "--no-default-features"]
         leaf.validate_cargo_argv(cargo)
+        whole = ["cargo", "metadata", "--format-version", "1", "--all-features"]
+        leaf.validate_cargo_argv(whole)
         with self.assertRaises(leaf.CaptureError):
             leaf.validate_cargo_argv(["cargo", "metadata", "--filter-platform", "aarch64-unknown-linux-gnu"])
+        for invalid in (
+            whole + ["--filter-platform", leaf.TARGET],
+            whole + ["--no-default-features"],
+            ["cargo", "metadata", "--format-version", "1", "--all-features", "--locked"],
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(leaf.CaptureError):
+                    leaf.validate_cargo_argv(invalid)
         for action in ("build", "check", "test", "run"):
             with self.subTest(action=action):
                 with self.assertRaises(leaf.CaptureError):
                     leaf.validate_cargo_argv(["cargo", action])
+
+    def _bounded_output_cargo(self, size: int) -> Path:
+        return self._bounded_output_executable("cargo", size)
+
+    def _bounded_output_executable(self, name: str, size: int) -> Path:
+        payload = self.root / "bounded-output.bin"
+        payload.write_bytes(b"x" * size)
+        executable = self.root / name
+        executable.write_text(f"#!/bin/sh\nset -eu\ncat {payload}\n")
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+        return executable
+
+    def test_cpu_metadata_keeps_512kib_capture_bound(self) -> None:
+        cargo = self._bounded_output_cargo(leaf.MAX_CAPTURE_BYTES + 1)
+        command = [str(cargo), "metadata", "--format-version", "1", "--filter-platform", leaf.TARGET, "--no-default-features"]
+        with mock.patch.object(leaf, "_kill_process_group", side_effect=lambda process: process.terminate() or process.wait(timeout=1)):
+            with self.assertRaisesRegex(leaf.CaptureError, "exceeded capture bound"):
+                leaf.run_bounded_subprocess(command, cwd=self.root, env={"PATH": "/usr/bin:/bin"}, deadline=time.monotonic() + 5)
+
+        rustc = self._bounded_output_executable("rustc", leaf.MAX_CAPTURE_BYTES + 1)
+        command = [str(rustc), *leaf.WHOLE_LOCK_METADATA_ARGS]
+        with mock.patch.object(leaf, "_kill_process_group", side_effect=lambda process: process.terminate() or process.wait(timeout=1)):
+            with self.assertRaisesRegex(leaf.CaptureError, "exceeded capture bound"):
+                leaf.run_bounded_subprocess(command, cwd=self.root, env={"PATH": "/usr/bin:/bin"}, deadline=time.monotonic() + 5, validate=False)
+
+    def test_only_exact_whole_metadata_gets_2mib_bound(self) -> None:
+        cargo = self._bounded_output_cargo(leaf.MAX_CAPTURE_BYTES + 1)
+        command = [str(cargo), "metadata", "--format-version", "1", "--all-features"]
+        result = leaf.run_bounded_subprocess(command, cwd=self.root, env={"PATH": "/usr/bin:/bin"}, deadline=time.monotonic() + 5)
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(len(result["stdout"].encode()), leaf.MAX_CAPTURE_BYTES + 1)
+
+        cargo = self._bounded_output_cargo(leaf.MAX_WHOLE_LOCK_CAPTURE_BYTES + 1)
+        command[0] = str(cargo)
+        with mock.patch.object(leaf, "_kill_process_group", side_effect=lambda process: process.terminate() or process.wait(timeout=1)):
+            with self.assertRaisesRegex(leaf.CaptureError, "exceeded capture bound"):
+                leaf.run_bounded_subprocess(command, cwd=self.root, env={"PATH": "/usr/bin:/bin"}, deadline=time.monotonic() + 5)
 
     def _fake_cargo(self, body: str) -> Path:
         path = self.root / "cargo"
@@ -235,11 +282,13 @@ class CollectorTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
-    def _full_capture_environment(self, *, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, mutate_base: bool = False, mutate_final: bool = False) -> tuple[Path, Path]:
+    def _full_capture_environment(self, *, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, metadata: str | None = None, whole_metadata: str | None = None, mutate_base: bool = False, mutate_final: bool = False, mutate_whole: bool = False) -> tuple[Path, Path]:
         fake_bin = self.root / "fake-bin"
         fake_bin.mkdir(exist_ok=True)
         metadata_path = self.root / "metadata-fixture.json"
-        metadata_path.write_text(metadata_json())
+        metadata_path.write_text(metadata if metadata is not None else metadata_json())
+        whole_metadata_path = self.root / "whole-metadata-fixture.json"
+        whole_metadata_path.write_text(whole_metadata if whole_metadata is not None else metadata_json())
         patched_lock = self.root / "patched-fixture.lock"
         patched_lock.write_text(LOCK.format(memmap_version="0.9.11", memmap_checksum="c" * 64, candle_checksum="b" * 64))
         mutated_base_lock = self.root / "mutated-base-fixture.lock"
@@ -255,7 +304,7 @@ class CollectorTests(unittest.TestCase):
             "test \"${RUSTUP_TOOLCHAIN:-}\" = '1.99.0'\n"
             f"printf '%s\\n' \"$*\" >> {log_path}\n"
             "case \"$1\" in\n"
-            f"metadata) {'cp ' + str(mutated_base_lock) + ' \"$PWD/Cargo.lock\"; ' if mutate_base else ''}cat {metadata_path} ;;\n"
+            f"metadata) case \"$*\" in *--all-features*) {'printf \'\\nwhole-mutation\\n\' >> \"$PWD/Cargo.lock\"; ' if mutate_whole else ''}cat {whole_metadata_path} ;; *) {'cp ' + str(mutated_base_lock) + ' \"$PWD/Cargo.lock\"; ' if mutate_base else ''}cat {metadata_path} ;; esac ;;\n"
             f"tree) case \"$8\" in normal) printf '%s\\n' 'moshi -> candle normal' ;; build) printf '%s\\n' 'moshi -> build-helper build' ;; features) printf '%s\\n' 'moshi features: default-disabled'; {'printf \'\\nmutated\\n\' >> \"$PWD/Cargo.lock\"' if mutate_final else ':'} ;; esac ;;\n"
             f"update) cp {patched_lock} \"$PWD/Cargo.lock\" ;;\n"
             "*) exit 90 ;;\n"
@@ -271,10 +320,8 @@ class CollectorTests(unittest.TestCase):
         rustc.chmod(rustc.stat().st_mode | stat.S_IXUSR)
         return fake_bin, log_path
 
-    def _run_full_capture(self, *, via_main: bool = False, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, metadata: str | None = None, output_name: str | None = None, mutate_base: bool = False, mutate_final: bool = False) -> tuple[Path, Path]:
-        if metadata is not None:
-            (self.root / "metadata-fixture.json").write_text(metadata)
-        fake_bin, log_path = self._full_capture_environment(rust_version=rust_version, rust_host=rust_host, mutate_base=mutate_base, mutate_final=mutate_final)
+    def _run_full_capture(self, *, via_main: bool = False, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, metadata: str | None = None, whole_metadata: str | None = None, output_name: str | None = None, mutate_base: bool = False, mutate_final: bool = False, mutate_whole: bool = False) -> tuple[Path, Path]:
+        fake_bin, log_path = self._full_capture_environment(rust_version=rust_version, rust_host=rust_host, metadata=metadata, whole_metadata=whole_metadata, mutate_base=mutate_base, mutate_final=mutate_final, mutate_whole=mutate_whole)
         output = self.root / (output_name or ("main-output" if via_main else "capture-output"))
         fetcher = self.fixture_fetcher()
         environment = {"PATH": f"{fake_bin}:/usr/bin:/bin", "VOKRA_CANDLE_REMOTE_LINUX": "1", "VAST_API_KEY": "must-not-pass"}
@@ -300,11 +347,25 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(initial["upload"], "NO_UPLOAD")
         self.assertEqual(initial["model_execution"], "NOT_AUTHORIZED")
         self.assertLessEqual((output / "initial_metadata.json").stat().st_size, leaf.MAX_JSON_BYTES)
+        whole = json.loads((output / "whole_lock_metadata.json").read_text())
+        self.assertEqual(whole["status"], "WHOLE_LOCK_METADATA_UNREVIEWED")
+        self.assertIsNone(whole["target"])
+        self.assertIsNone(whole["platform_filter"])
+        self.assertEqual(whole["cpu_target"], initial["target"])
+        self.assertEqual(whole["cpu_execution_profile"], "NOT_CPU_EXECUTION_PROFILE")
+        self.assertEqual(whole["gpu_execution"], "NOT_AUTHORIZED")
+        self.assertEqual(whole["model_execution"], "NOT_AUTHORIZED")
+        self.assertEqual(whole["approval"], None)
+        self.assertEqual(whole["upload"], "NO_UPLOAD")
+        self.assertEqual(whole["projection_lock_before"], whole["projection_lock_after"])
+        self.assertEqual(whole["projection_lock_after"]["sha256"], leaf.sha256_bytes((output / "base/Cargo.lock").read_bytes()))
+        self.assertIn("version = 4", whole["postcommand_projection_lock"])
+        self.assertLessEqual((output / "whole_lock_metadata.json").stat().st_size, leaf.MAX_JSON_BYTES)
         self.assertTrue(packet["initial"]["trees"]["normal"].strip())
         self.assertTrue(packet["initial"]["trees"]["build"].strip())
         self.assertEqual(set(packet["lock_receipts"]), {"original", "projected_base", "patched", "final_projection"})
         self.assertEqual(packet["lock_receipts"]["patched"]["sha256"], packet["lock_receipts"]["final_projection"]["sha256"])
-        self.assertEqual(len(log_path.read_text().splitlines()), 9)
+        self.assertEqual(len(log_path.read_text().splitlines()), 10)
         self.assertTrue((output / "source/rust/Cargo.lock").is_file())
         self.assertTrue((output / "projection/Cargo.lock").is_file())
         self.assertTrue((output / "base/Cargo.lock").is_file())
@@ -348,6 +409,38 @@ class CollectorTests(unittest.TestCase):
         self.assertTrue((output / "base/Cargo.lock").is_file())
         self.assertFalse((output / "patched/Cargo.lock").exists())
         self.assertFalse((output / "metadata.json").exists())
+
+    def test_whole_lock_evidence_survives_strict_base_failure(self) -> None:
+        output = self.root / "base-failure-whole-output"
+        with self.assertRaisesRegex(leaf.CaptureError, "projected base lock mutated retained package: moshi"):
+            self._run_full_capture(output_name=output.name, mutate_base=True)
+        whole = json.loads((output / "whole_lock_metadata.json").read_text())
+        self.assertEqual(whole["status"], "WHOLE_LOCK_METADATA_UNREVIEWED")
+        self.assertEqual(whole["projection_lock_before"], whole["projection_lock_after"])
+        self.assertFalse((output / "metadata.json").exists())
+
+    def test_whole_lock_mutation_is_recovered_then_rejected(self) -> None:
+        output = self.root / "whole-mutation-output"
+        with self.assertRaisesRegex(leaf.CaptureError, "all-features metadata mutated projection Cargo.lock"):
+            self._run_full_capture(output_name=output.name, mutate_whole=True)
+        whole = json.loads((output / "whole_lock_metadata.json").read_text())
+        self.assertNotEqual(whole["projection_lock_before"], whole["projection_lock_after"])
+        self.assertIn("whole-mutation", whole["postcommand_projection_lock"])
+        self.assertFalse((output / "metadata.json").exists())
+
+    def test_whole_metadata_gpu_features_do_not_bypass_cpu_guard(self) -> None:
+        output, _ = self._run_full_capture(whole_metadata=metadata_json(gpu=True))
+        initial = json.loads((output / "initial_metadata.json").read_text())
+        whole = json.loads((output / "whole_lock_metadata.json").read_text())
+        self.assertEqual(initial["graph"]["gpu_features_active"], [])
+        self.assertEqual(whole["metadata"]["resolve"]["nodes"][0]["features"], ["cuda"])
+
+    def test_cpu_gpu_activation_rejects_before_whole_lock_evidence(self) -> None:
+        output = self.root / "cpu-gpu-output"
+        with self.assertRaisesRegex(leaf.CaptureError, "GPU feature became active"):
+            self._run_full_capture(output_name=output.name, metadata=metadata_json(gpu=True))
+        self.assertFalse((output / "initial_metadata.json").exists())
+        self.assertFalse((output / "whole_lock_metadata.json").exists())
 
     def test_symlink_ancestor_and_source_trickle_deadline(self) -> None:
         real_parent = self.root / "real-parent"

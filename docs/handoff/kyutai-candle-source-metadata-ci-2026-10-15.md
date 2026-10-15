@@ -1,5 +1,32 @@
 # Kyutai Candle source-metadata CI preparation — 2026-10-15 JST
 
+## Separate whole-lock diagnostic preparation
+
+The next reviewed collector has SHA-256
+`a33f8f690eea8bcbbfc49e8fe1a78472363c184836edab70b50b048f80f5db6c`.
+After recovering the existing CPU metadata and base lock, it adds exactly
+`cargo metadata --format-version 1 --all-features`, without a platform filter,
+under the same clean Cargo environment and shared deadline. It never builds
+or executes a GPU/model. The raw result is a separate seventh evidence file,
+`whole_lock_metadata.json`, with `WHOLE_LOCK_METADATA_UNREVIEWED`, null
+approval, `NO_UPLOAD`, model/GPU execution `NOT_AUTHORIZED`, null target/filter
+and a separate CPU target provenance field. It is not a CPU execution profile.
+
+Only that exact Cargo argv receives a 2 MiB per-stream capture cap; CPU/tree/
+probe commands retain 512 KiB. The existing 2 MiB JSON-file cap is unchanged.
+The receipt stores before/after lock hashes and bounded post-command lock
+text before rejecting any lock mutation. The strict retained-record gate is
+still unchanged. The workflow checks/uploads exactly seven literal paths,
+without source trees or caches, and retains artifacts for one day.
+
+Manager independently passes **31 stdlib tests**, including a same-argv
+non-Cargo capture-bound negative, actual fake-CPU GPU refusal, separate
+whole-feature GPU metadata, mutation evidence and the seven-path contract.
+Actionlint and workflow hygiene also pass. These synthetic results do not
+establish the whole-feature package universe, lock-edge equivalence, actual
+output size or any license/advisory/owner/real-weight approval. Inspect the
+new actual hosted artifact before choosing a semantic projection correction.
+
 ## Actual initial metadata recovery — 04:59 UTC
 
 At exact `265d0e93a8987590f103732e6b9b22b3f63de340`,

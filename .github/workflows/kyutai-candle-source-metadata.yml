@@ -95,6 +95,7 @@ jobs:
             base/Cargo.lock \
             patched/Cargo.lock \
             initial_metadata.json \
+            whole_lock_metadata.json \
             metadata.json; do
             if [ ! -f "$capture_root/$relative" ]; then
               echo "::error file=$relative::missing required capture evidence"
@@ -116,6 +117,7 @@ jobs:
             ${{ runner.temp }}/vokra-candle-source-metadata-${{ github.run_id }}-${{ github.run_attempt }}/base/Cargo.lock
             ${{ runner.temp }}/vokra-candle-source-metadata-${{ github.run_id }}-${{ github.run_attempt }}/patched/Cargo.lock
             ${{ runner.temp }}/vokra-candle-source-metadata-${{ github.run_id }}-${{ github.run_attempt }}/initial_metadata.json
+            ${{ runner.temp }}/vokra-candle-source-metadata-${{ github.run_id }}-${{ github.run_attempt }}/whole_lock_metadata.json
             ${{ runner.temp }}/vokra-candle-source-metadata-${{ github.run_id }}-${{ github.run_attempt }}/metadata.json
           if-no-files-found: error
           retention-days: 1

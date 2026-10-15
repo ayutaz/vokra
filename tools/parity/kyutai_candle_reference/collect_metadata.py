@@ -41,12 +41,14 @@ MAX_FILE_BYTES = 1024 * 1024
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_CAPTURE_BYTES = 512 * 1024
+MAX_WHOLE_LOCK_CAPTURE_BYTES = 2 * 1024 * 1024
 MAX_DEADLINE_SECONDS = 600.0
 MAX_LOCK_DIAGNOSTIC_BYTES = 16 * 1024
 MAX_LOCK_DIAGNOSTIC_ITEMS = 16
 MAX_LOCK_DIAGNOSTIC_FIELDS = 16
 RUST_VERSION = "1.99.0"
 RAW_BASE = f"https://raw.githubusercontent.com/kyutai-labs/moshi/{SOURCE_COMMIT}/rust/"
+WHOLE_LOCK_METADATA_ARGS = ("metadata", "--format-version", "1", "--all-features")
 
 
 class CaptureError(Exception):
@@ -639,7 +641,10 @@ def validate_cargo_argv(argv: list[str]) -> None:
         raise CaptureError("Cargo --config is forbidden")
     if len(argv) > 1 and argv[1] in FORBIDDEN_CARGO_ACTIONS:
         raise CaptureError("Cargo build/check/test/run/fetch is forbidden")
-    if argv[1:] == ["metadata", "--format-version", "1", "--filter-platform", TARGET, "--no-default-features"]:
+    if argv[1:] in (
+        ["metadata", "--format-version", "1", "--filter-platform", TARGET, "--no-default-features"],
+        list(WHOLE_LOCK_METADATA_ARGS),
+    ):
         return
     if argv[1:] in (
         ["tree", "--package", "moshi", "--target", TARGET, "--no-default-features", "--edges", "normal"],
@@ -749,6 +754,11 @@ def run_bounded_subprocess(
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     captured: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+    capture_bound = (
+        MAX_WHOLE_LOCK_CAPTURE_BYTES
+        if Path(argv[0]).name == "cargo" and tuple(argv[1:]) == WHOLE_LOCK_METADATA_ARGS
+        else MAX_CAPTURE_BYTES
+    )
     timed_out = False
     try:
         while selector.get_map():
@@ -764,7 +774,7 @@ def run_bounded_subprocess(
                     key.fileobj.close()
                     continue
                 buffer = captured[key.data]
-                if len(buffer) + len(chunk) > MAX_CAPTURE_BYTES:
+                if len(buffer) + len(chunk) > capture_bound:
                     _kill_process_group(process)
                     raise CaptureError(f"Cargo {key.data} exceeded capture bound")
                 buffer.extend(chunk)
@@ -1033,6 +1043,50 @@ def capture(
         base_lock.write_bytes(read_bytes(projection / "Cargo.lock", max_bytes=MAX_FILE_BYTES))
         if base_lock.is_symlink():
             raise CaptureError("base lock must be regular")
+        whole_lock_command = [cargo, *WHOLE_LOCK_METADATA_ARGS]
+        projection_lock_before = read_bytes(projection / "Cargo.lock", max_bytes=MAX_FILE_BYTES)
+        whole_lock_result = run_bounded_subprocess(
+            whole_lock_command,
+            cwd=projection,
+            env=env,
+            deadline=deadline,
+        )
+        if whole_lock_result["returncode"] != 0:
+            raise CaptureError(f"Cargo command failed: {whole_lock_result['argv']}")
+        try:
+            whole_lock_metadata = json.loads(whole_lock_result["stdout"])
+        except json.JSONDecodeError as exc:
+            raise CaptureError("Cargo all-features metadata output is not JSON") from exc
+        if not isinstance(whole_lock_metadata, dict):
+            raise CaptureError("Cargo all-features metadata object required")
+        projection_lock_after = read_bytes(projection / "Cargo.lock", max_bytes=MAX_FILE_BYTES)
+        whole_lock_evidence = {
+            "status": "WHOLE_LOCK_METADATA_UNREVIEWED",
+            "source_commit": SOURCE_COMMIT,
+            "target": None,
+            "platform_filter": None,
+            "cpu_target": TARGET,
+            "toolchain": toolchain,
+            "command": whole_lock_command,
+            "metadata": whole_lock_metadata,
+            "cpu_execution_profile": "NOT_CPU_EXECUTION_PROFILE",
+            "gpu_execution": "NOT_AUTHORIZED",
+            "model_execution": "NOT_AUTHORIZED",
+            "approval": None,
+            "upload": "NO_UPLOAD",
+            "projection_lock_before": {
+                "bytes": len(projection_lock_before),
+                "sha256": sha256_bytes(projection_lock_before),
+            },
+            "projection_lock_after": {
+                "bytes": len(projection_lock_after),
+                "sha256": sha256_bytes(projection_lock_after),
+            },
+            "postcommand_projection_lock": projection_lock_after.decode("utf-8"),
+        }
+        write_json(output_root / "whole_lock_metadata.json", whole_lock_evidence)
+        if projection_lock_after != projection_lock_before:
+            raise CaptureError("Cargo all-features metadata mutated projection Cargo.lock")
         base_result = validate_base_lock(original_lock, base_lock)
         update = [cargo, "update", "-p", PATCH_PACKAGE, "--precise", PATCH_MEMMAP_VERSION]
         update_result = run_bounded_subprocess(update, cwd=projection, env=env, deadline=deadline)

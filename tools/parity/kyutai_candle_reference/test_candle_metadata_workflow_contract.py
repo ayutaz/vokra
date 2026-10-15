@@ -53,7 +53,7 @@ def _blob(data: bytes) -> str:
 
 
 class CandleMetadataWorkflowContractTests(unittest.TestCase):
-    def test_workflow_recovers_exact_six_evidence_files_without_globs_or_caches(self) -> None:
+    def test_workflow_recovers_exact_seven_evidence_files_without_globs_or_caches(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         expected = [
             "source_receipt.json",
@@ -61,6 +61,7 @@ class CandleMetadataWorkflowContractTests(unittest.TestCase):
             "base/Cargo.lock",
             "patched/Cargo.lock",
             "initial_metadata.json",
+            "whole_lock_metadata.json",
             "metadata.json",
         ]
         check_start = text.index("      - name: Check the bounded evidence set")
@@ -173,7 +174,7 @@ class CandleMetadataWorkflowContractTests(unittest.TestCase):
                                     output = Path(temp) / "capture"
                                     self.assertEqual(leaf.main([str(output), "--deadline-seconds", "480"]), 0)
                                     self.assertTrue((output / "metadata.json").is_file())
-            self.assertEqual([argv[1] for argv in cargo_calls], ["metadata", "tree", "tree", "tree", "update", "metadata", "tree", "tree", "tree"])
+            self.assertEqual([argv[1] for argv in cargo_calls], ["metadata", "tree", "tree", "tree", "metadata", "update", "metadata", "tree", "tree", "tree"])
         finally:
             leaf.SOURCE_FILES = original_files
             leaf.SOURCE_URLS = original_urls
