@@ -1,6 +1,35 @@
 # Vokra documentation
 
-**Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**Latest execution plan (2026-10-14, continued 2026-10-15):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**06:00:58 UTC source acceptance (2026-10-15):** FACodec PR #252 was
+normally merged as main `b5ae1b3c` after all 70 checks completed (69 success,
+one intentional skip), all 16 required context/application pairs passed and
+all nine started workflows succeeded. The [minimal lock correction](handoff/facodec-urllib3-minimal-reconciliation-2026-10-15.md)
+preserves unrelated CUDA conditions; local main is fast-forwarded and clean.
+The [Candle semantic correction](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
+passes 40 independently run stdlib tests and complete recovered-data validation
+and is integrated with this main. Fresh corrected-head hosted capture remains
+necessary. None of this is real-weight CPU, Apple, owner/legal or publication
+completion; the dated observations below are preserved.
+
+**05:24 UTC diagnostic supersession (2026-10-15):** the separate
+[whole-lock capture](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
+now covers all 161 base-lock packages and dependency edges. The old raw-record
+gate still fails; a reviewed semantic correction and actual patched-lock
+evidence remain outstanding. The [four-family current binding review](handoff/current-58-static-prerequisite-readback-2026-10-15.md)
+finds no separate lock/project defect and does not approve pending reviews.
+
+**2026-10-15 continuation readback:** accepted main is `15491982` after
+ordinary PR #250 acceptance (69 successful checks, one intentional skip,
+16 required context/application pairs and nine terminal-success workflows).
+The [Candle diagnostic](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
+recovers actual initial metadata but remains failed at strict lock validation:
+105 selected CPU packages are not the 161-record whole lock. The
+[RMVPE fork/history correction](handoff/rmvpe-primary-license-readback-2026-10-14.md)
+does not establish the missing fixed-source/checkpoint grant. These source
+facts do not close the 58-row non-Apple queue, real-weight CPU parity or final
+Apple packet; older snapshots below retain their dated scope.
+
 **19:48:48 UTC acceptance supersession (2026-10-15 JST):** PR #249 was
 normally merged at exact `db9f9ae5`, producing main `6f135822` after all 70
 checks completed (69 successful, one intentional skip), all 16 required

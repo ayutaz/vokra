@@ -2,6 +2,45 @@
 
 ## ゴールと現在地
 
+> **06:00:58 UTCの受理と修正候補（2026-10-15）:** FACodec #252 exact
+> `d6524a15`は全70 checks（69 success / 1 intentional skip）、必須16
+> context/appと開始した全9 workflowsの成功を確認して通常mergeした。main／ローカル
+> mainは`b5ae1b3c`でclean。[最小lock修正](facodec-urllib3-minimal-reconciliation-2026-10-15.md)
+> は無関係な17 CUDA marker変更を復元し、他61 package recordsを保持する。
+> [Candle semantic修正](kyutai-candle-source-metadata-ci-2026-10-15.md)は
+> `256020e6`として保存し、このmainを通常mergeした`859736ab`に統合した。
+> 独立40 tests、実592→161 records、6 parent／10 removed edges／5 retained
+> targetsの原本照合は成功。新HEADのhosted captureと実memmap2更新はまだ未検証。
+> これは全58行non-Apple前提・実weight CPU・最終clean HEAD／fresh Apple packetの
+> 完了ではなく、元の工程4のゴールと凍結63-row owner scopeは維持する。
+> 新規VAST／Scaleway・ローカルモデル実行・公開は行っていない。
+
+> **05:24 UTCのwhole-lock回収supersession（2026-10-15）:** #251 exact
+> `072df353`の実診断で31 testsが成功し、全161 package／nodeとbase lockの全依存edgeの
+> 一致を独立確認した。既存のraw-record gateで停止した失敗は保持し、実データに基づく
+> 厳密な射影validatorの修正へ進む。[回収hashと境界](kyutai-candle-source-metadata-ci-2026-10-15.md)。
+> [別4系統のcurrent input照合](current-58-static-prerequisite-readback-2026-10-15.md)では
+> genuine binding defectなし。未承認reviewを通す変更や、不要な有料再監査はしない。
+> 実weight CPU・全行non-Apple完了・最終clean HEAD／Apple packetのゴールは依然未完了。
+
+> **2026-10-15の継続readback:** FocalCodec #250はexact
+> `d4eabe36`の全70 checks（69 success / 1 intentional skip）、必須16
+> context/appと開始した全9 workflowsのterminal successを確認して04:51:58 UTCに
+> 通常mergeした。main／ローカルmainは`15491982`でclean。#248も受理済みで、
+> 以下のMeloTTS待ち・旧main記録は履歴である。Draft #152の修正Rust source
+> `3d5318e0`は別の承認済みVAST source-only runで検証し、owned worker/dataを破棄した。
+> これは実weight CPU parityではなく、依存/native/license/owner holdは維持する。
+> [Candle #251](https://github.com/ayutaz/vokra/pull/251) exact `265d0e93`の
+> 実source診断は25 tests成功後に厳密なbase-lock gateで停止したが、初期metadataを
+> 回収できた。CPU依存105件とwhole-lock161件は別集合で、削除edgeの一部は依存先が
+> lockに残っている。単なる表示差・未使用扱いで通さず、別のwhole-feature metadataを
+> 調査する。[実測とhash](kyutai-candle-source-metadata-ci-2026-10-15.md)を参照。
+> RMVPEの[固定source／fork履歴](rmvpe-primary-license-readback-2026-10-14.md)も
+> 訂正したがgrant未解決・sign-off不変。HF全行metadataはこのreadbackで再取得せず、
+> 記録済み58未解決行・凍結63-row scope、全行non-Apple前提、承認済み実weight CPU、
+> 最終clean HEAD／fresh Apple packetという元の工程4のゴールは未完了のまま。
+> 新規VAST／Scaleway、ローカルモデル実行、公開はこの継続診断では行っていない。
+
 > **19:48:48 UTCのsource受理supersession（2026-10-15 JST）:** NSNet2 #249
 > exact `db9f9ae5`は70/70 checks（69 success / 1 intentional skip）、必須16
 > context/app、遅いUnityを含む全9 workflowsのterminal successを確認して通常受理した。
