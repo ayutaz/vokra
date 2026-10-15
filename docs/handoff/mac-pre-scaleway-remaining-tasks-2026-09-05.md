@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-15 actual candidate advisory:** the [154-record report](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> is independently recovered and authenticated: rc 1 / `FAIL_FINDINGS`,
+> zero vulnerabilities and one paste unmaintained warning at the fixed DB.
+> Four original findings no longer occur; genuine paste replacement and
+> compatibility are next, without waivers or a reduced audit universe.
+> No inventory row, owner, real-weight CPU or final Apple-packet gate advances.
+
 > **2026-10-15 corrected source-only resolution:** [run 38711006458](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
 > succeeds and all thirteen files are recovered. Independent full-record
 > comparison proves 161-to-154 whole lock, 151 unchanged retained records,

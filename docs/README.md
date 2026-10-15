@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**Actual candidate advisory result (2026-10-15):** the
+[recovered 154-record strict audit](handoff/kyutai-candle-candidate-advisory-result-2026-10-15.md)
+returns `FAIL_FINDINGS` / rc 1: zero reported vulnerabilities and one
+`paste 1.0.15` unmaintained warning at the same fixed database. All thirteen
+producer inputs and native output are independently rehashed; four prior
+findings no longer occur. Genuine replacement compatibility remains next,
+not an unchanged retry, warning waiver or model/owner/Apple promotion.
+PR #255 stays draft; full non-Apple/real-weight/final-packet gates remain open.
+
 **Exact candidate advisory preparation (2026-10-15):** the
 [new fixed 154-record profile](handoff/kyutai-candle-candidate-advisory-preparation-2026-10-15.md)
 preserves the old 161-record contract and strict warning policy. Manager

@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-15 actual candidate advisory:** the [authenticated 154-record audit](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> returns rc 1 / `FAIL_FINDINGS`: zero vulnerabilities and one paste warning
+> at the fixed DB, down from five original findings. Resolve genuine
+> replacement compatibility/source scope next; do not retry unchanged or
+> weaken warnings. Full all-row non-Apple, authorized real-weight CPU and
+> final clean-HEAD/fresh packet requirements remain incomplete; Scaleway last.
+
 > **2026-10-15 corrected source-only resolution:** the [actual thirteen-file
 > result](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
 > is independently verified, including the complete 161-to-154 lock delta and

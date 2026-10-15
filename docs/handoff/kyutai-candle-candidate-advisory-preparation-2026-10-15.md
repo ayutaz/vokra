@@ -1,5 +1,11 @@
 # Candle candidate advisory preparation — 2026-10-15
 
+> **Actual-run supersession:** the [recovered result](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> now records `FAIL_FINDINGS` / rc 1: zero vulnerabilities and the remaining
+> paste unmaintained warning across all 154 records at the fixed database.
+> The preparation-time pending statements below are historical. Do not
+> repeat unchanged execution or infer a clean audit/model verdict.
+
 The [corrected resolution](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
 succeeds at producer `27a2841384220c078aa37ff93ea8f9fc8a18594f`, run
 `38711006458` attempt 1, artifact `11961100426`. Its exact 38,252-byte

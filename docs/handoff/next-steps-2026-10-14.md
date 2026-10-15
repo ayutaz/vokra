@@ -1,5 +1,13 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **新候補の実監査結果（2026-10-15）:** [run 38713528857の原本](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> を回収し、入力13件とnative stdout、固定DBの実行前後一致を独立照合した。
+> 全154件でrc=1／`FAIL_FINDINGS`。同じ固定DBでは脆弱性0、pasteの保守終了警告1件となり、
+> 元の5指摘のうち4件は新候補に出ない。ツールエラーではないため変更なしの再試行はしない。
+> 次は全parentをカバーする真正なpaste代替と互換性確認。警告無視やroot-only aliasでは閉じない。
+> #255はdraft。全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh packet
+> という元の工程4は未完了。新規有料worker／モデル実行／owner署名／公開は行わない。
+
 > **修正版の実依存解決成功（2026-10-15）:** [run 38711006458](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
 > から13ファイルを回収。全lock 161→154、保持151 complete records／root fields不変、
 > 3版更新とanyhow配下7依存の削除だけを独立確認した。CPU 105、memmap／pasteは不変。
