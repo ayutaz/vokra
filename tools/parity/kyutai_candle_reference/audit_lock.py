@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -21,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+import tomllib
 from typing import Any, Callable
 
 PRODUCER_RUN_ID = 38690241603
@@ -58,8 +60,76 @@ EXPECTED_MEMBERS: dict[str, tuple[int, str]] = {
 }
 
 
+@dataclass(frozen=True)
+class AuditProfile:
+    """One of the two authenticated, non-customizable audit contracts."""
+
+    name: str
+    producer_run_id: int
+    producer_attempt: int
+    producer_head_sha: str
+    artifact_id: int
+    artifact_name: str
+    artifact_size: int
+    member_prefixes: tuple[str, ...]
+    expected_members: tuple[tuple[str, int, str], ...]
+    extracted_bytes: int
+    lock_relative_path: str
+    lock_sha256: str
+    lock_dependency_count: int
+    evidence_scope: str
+    cpu_active_packages: int | None
+
+
+CANDIDATE_CAPTURE_PREFIX = "vokra-candle-pin-capture-38711006458-1/"
+CANDIDATE_RESULT_PREFIX = "vokra-candle-pin-result-38711006458-1/"
+CANDIDATE_MEMBERS: tuple[tuple[str, int, str], ...] = (
+    (CANDIDATE_CAPTURE_PREFIX + "source_receipt.json", 8320, "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"),
+    (CANDIDATE_CAPTURE_PREFIX + "source/rust/Cargo.lock", 150274, "bc4348116cdf1408583311954c1baaee6bde3b4cf54cd160af50b278aa4e44ab"),
+    (CANDIDATE_CAPTURE_PREFIX + "base/Cargo.lock", 39842, "eafbfd9c58c0b8aa60c4298f4df7e0187c78161a8aa898d0490a98c52faf28de"),
+    (CANDIDATE_CAPTURE_PREFIX + "patched/Cargo.lock", 39843, PATCHED_LOCK_SHA256),
+    (CANDIDATE_CAPTURE_PREFIX + "initial_metadata.json", 896267, "c4712fec75c50bf1b0c2813bc0456994c7e383e145d3a5ec41c42dec9095bbc5"),
+    (CANDIDATE_CAPTURE_PREFIX + "whole_lock_metadata.json", 1261025, "3ed8961b442e32541af940ab0b84b00f93de7942c8de34b852f4b59af68301a6"),
+    (CANDIDATE_CAPTURE_PREFIX + "metadata.json", 324861, "3a988e3219f9b25d128ec52c27798aaf93f07909e6ad9ef8269d9faee8319fff"),
+    (CANDIDATE_RESULT_PREFIX + "candidate.lock", 38252, "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8"),
+    (CANDIDATE_RESULT_PREFIX + "candidate_cpu_metadata.json", 849118, "9c351398903613d266f41d4d9769f488780aba5c4592312cee54b732c634f043"),
+    (CANDIDATE_RESULT_PREFIX + "candidate_whole_metadata.json", 1148255, "959357f105d4118301fc0be3bf94bc6f49944e4df5122cb6a8124bfc2b6c2793"),
+    (CANDIDATE_RESULT_PREFIX + "pin_diagnostic.json", 228834, "5ee83d9cf3e2976b6350a7cd45346f27bfb40e4194616dcfb52e89c7f9385e44"),
+    (CANDIDATE_RESULT_PREFIX + "baseline_cpu_metadata.json", 849497, "6964ac9b62708caa3cd794cf26055628e455a5768f9312476049c468ca3c7e0d"),
+    (CANDIDATE_RESULT_PREFIX + "baseline_whole_metadata.json", 1205830, "cc3728fc52f80ea0554ca3cb9916de0bd45ebe7fa8d5379f541873ef0d7bed99"),
+)
+
+BASELINE_PROFILE = AuditProfile(
+    "baseline", PRODUCER_RUN_ID, PRODUCER_ATTEMPT, PRODUCER_HEAD_SHA, ARTIFACT_ID,
+    ARTIFACT_NAME, ARTIFACT_SIZE, (), (), MAX_ARTIFACT_BYTES, "patched/Cargo.lock",
+    PATCHED_LOCK_SHA256, 161, "candle_cpu_patched_lock", 105,
+)
+CANDIDATE_PROFILE = AuditProfile(
+    "candidate", 38711006458, 1, "27a2841384220c078aa37ff93ea8f9fc8a18594f",
+    11961100426, "kyutai-candle-pin-remediation-38711006458-1", 457074,
+    (CANDIDATE_CAPTURE_PREFIX, CANDIDATE_RESULT_PREFIX), CANDIDATE_MEMBERS,
+    7040218, CANDIDATE_RESULT_PREFIX + "candidate.lock",
+    "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8", 154,
+    "candle_candidate_whole_lock", None,
+)
+_PROFILES = {BASELINE_PROFILE.name: BASELINE_PROFILE, CANDIDATE_PROFILE.name: CANDIDATE_PROFILE}
+
+
 class AuditError(RuntimeError):
     pass
+
+
+def resolve_profile(profile: str | AuditProfile | None = None) -> AuditProfile:
+    if profile is None:
+        return BASELINE_PROFILE
+    if isinstance(profile, str):
+        try:
+            return _PROFILES[profile]
+        except KeyError as exc:
+            raise AuditError("profile is not registered") from exc
+    if profile is BASELINE_PROFILE or profile is CANDIDATE_PROFILE:
+        return profile
+    raise AuditError("custom audit profiles are not allowed")
 
 
 @dataclass(frozen=True)
@@ -324,12 +394,23 @@ def _api_json(url: str, token: str, deadline: float) -> dict[str, Any]:
     return value
 
 
-def validate_producer(*, repository: str, token: str, run_id: int = PRODUCER_RUN_ID, artifact_id: int = ARTIFACT_ID, expected_head: str = PRODUCER_HEAD_SHA, api: Callable[[str, str, float], dict[str, Any]] = _api_json, deadline: float) -> dict[str, Any]:
+def validate_producer(*, repository: str, token: str, run_id: int | None = None, artifact_id: int | None = None, expected_head: str | None = None, api: Callable[[str, str, float], dict[str, Any]] = _api_json, deadline: float, profile: str | AuditProfile | None = None) -> dict[str, Any]:
+    selected = resolve_profile(profile)
+    expected_run = selected.producer_run_id
+    expected_artifact = selected.artifact_id
+    expected_sha = selected.producer_head_sha
+    if run_id is not None and run_id != expected_run:
+        raise AuditError("producer run does not match registered profile")
+    if artifact_id is not None and artifact_id != expected_artifact:
+        raise AuditError("producer artifact does not match registered profile")
+    if expected_head is not None and expected_head != expected_sha:
+        raise AuditError("producer head does not match registered profile")
+    run_id, artifact_id, expected_head = expected_run, expected_artifact, expected_sha
     if repository != PRODUCTION_REPOSITORY or not token:
         raise AuditError("producer binding requires the exact production repository and token")
     base = f"https://api.github.com/repos/{repository}"
     run = api(f"{base}/actions/runs/{run_id}", token, deadline)
-    if run.get("id") != run_id or run.get("status") != "completed" or run.get("conclusion") != "success" or run.get("head_sha") != expected_head or run.get("run_attempt") != PRODUCER_ATTEMPT:
+    if run.get("id") != run_id or run.get("status") != "completed" or run.get("conclusion") != "success" or run.get("head_sha") != expected_head or run.get("run_attempt") != selected.producer_attempt:
         raise AuditError("producer run/head/attempt mismatch")
     listing = api(f"{base}/actions/runs/{run_id}/artifacts?per_page=100", token, deadline)
     artifacts = listing.get("artifacts")
@@ -339,7 +420,7 @@ def validate_producer(*, repository: str, token: str, run_id: int = PRODUCER_RUN
     if len(matches) != 1:
         raise AuditError("expected artifact ID is missing or duplicated")
     artifact = matches[0]
-    if artifact.get("name") != ARTIFACT_NAME or artifact.get("size_in_bytes") != ARTIFACT_SIZE or artifact.get("expired") is True:
+    if artifact.get("name") != selected.artifact_name or artifact.get("size_in_bytes") != selected.artifact_size or artifact.get("expired") is True:
         raise AuditError("artifact identity or size mismatch")
     expires_at = artifact.get("expires_at")
     if not expires_at:
@@ -356,7 +437,7 @@ def validate_producer(*, repository: str, token: str, run_id: int = PRODUCER_RUN
     return {"run_id": run_id, "run_attempt": run.get("run_attempt"), "head_sha": expected_head, "artifact_id": artifact_id, "artifact_name": artifact.get("name"), "artifact_size": artifact.get("size_in_bytes"), "expires_at": artifact.get("expires_at")}
 
 
-def _walk_regular_files(root: Path) -> dict[str, Path]:
+def _walk_regular_files(root: Path, *, max_bytes: int = MAX_ARTIFACT_BYTES, exact_bytes: int | None = None) -> dict[str, Path]:
     if not root.is_dir() or root.is_symlink():
         raise AuditError("artifact root must be a regular directory")
     files: dict[str, Path] = {}
@@ -375,23 +456,112 @@ def _walk_regular_files(root: Path) -> dict[str, Path]:
         if size > MAX_MEMBER_BYTES:
             raise AuditError(f"artifact member exceeds cap: {relative}")
         total += size
-        if total > MAX_ARTIFACT_BYTES:
+        if total > max_bytes:
             raise AuditError("artifact extracted bytes exceed cap")
         files[relative] = path
+    if exact_bytes is not None and total != exact_bytes:
+        raise AuditError("artifact extracted bytes do not match registered profile")
     return files
 
 
-def validate_artifact(root: Path) -> dict[str, Any]:
-    files = _walk_regular_files(root)
-    if set(files) != set(EXPECTED_MEMBERS):
+def _validate_candidate_metadata(files: dict[str, Path]) -> None:
+    def read_json(relative: str) -> dict[str, Any]:
+        try:
+            value = json.loads(_read_bounded(files[relative], MAX_MEMBER_BYTES))
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AuditError(f"candidate evidence is not valid JSON: {relative}") from exc
+        if not isinstance(value, dict):
+            raise AuditError(f"candidate evidence is not an object: {relative}")
+        return value
+
+    lock_relative = CANDIDATE_RESULT_PREFIX + "candidate.lock"
+    try:
+        lock = tomllib.loads(_read_bounded(files[lock_relative], MAX_MEMBER_BYTES).decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise AuditError("candidate lock is not valid TOML") from exc
+    lock_packages = lock.get("package")
+    if not isinstance(lock_packages, list) or len(lock_packages) != CANDIDATE_PROFILE.lock_dependency_count:
+        raise AuditError("candidate lock package count is not 154")
+    identities = []
+    for package in lock_packages:
+        if not isinstance(package, dict) or not all(isinstance(package.get(key), str) for key in ("name", "version")):
+            raise AuditError("candidate lock package identity is malformed")
+        identities.append((package["name"], package["version"], package.get("source")))
+    if len(set(identities)) != len(identities):
+        raise AuditError("candidate lock contains duplicate package identities")
+
+    whole = read_json(CANDIDATE_RESULT_PREFIX + "candidate_whole_metadata.json")
+    if whole.get("status") != "PIN_REMEDIATION_WHOLE_METADATA_UNREVIEWED" or whole.get("approval") is not None or whole.get("platform_filter") is not None or whole.get("target") is not None or whole.get("gpu_execution") != "NOT_AUTHORIZED" or whole.get("model_execution") != "NOT_AUTHORIZED" or whole.get("upload") != "NO_UPLOAD":
+        raise AuditError("candidate whole metadata is not an unfiltered review-pending packet")
+    if whole.get("source_commit") != "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362":
+        raise AuditError("candidate whole metadata source commit mismatch")
+    metadata = whole.get("metadata")
+    packages = metadata.get("packages") if isinstance(metadata, dict) else None
+    resolve = metadata.get("resolve") if isinstance(metadata, dict) else None
+    nodes = resolve.get("nodes") if isinstance(resolve, dict) else None
+    if not isinstance(metadata, dict) or not isinstance(packages, list) or not isinstance(nodes, list) or len(packages) != 154 or len(nodes) != 154:
+        raise AuditError("candidate whole metadata does not contain the complete 154-node graph")
+    members = metadata.get("workspace_members")
+    if not isinstance(members, list) or len(members) != 1:
+        raise AuditError("candidate whole metadata workspace root is not unique")
+    package_ids = {item.get("id") for item in packages if isinstance(item, dict)}
+    node_ids = {item.get("id") for item in nodes if isinstance(item, dict)}
+    if len(package_ids) != 154 or package_ids != node_ids or not all(isinstance(item, str) for item in package_ids):
+        raise AuditError("candidate whole metadata package/node identities disagree")
+    metadata_identities = set()
+    for package in packages:
+        if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str) or package.get("source") is not None and not isinstance(package.get("source"), str):
+            raise AuditError("candidate whole metadata package identity is malformed")
+        metadata_identities.add((package["name"], package["version"], package.get("source")))
+    lock_identities = {(package["name"], package["version"], package.get("source")) for package in lock_packages}
+    if len(metadata_identities) != 154 or metadata_identities != lock_identities:
+        raise AuditError("candidate whole metadata package identities disagree with the candidate lock")
+    workspace_package = [item for item in packages if isinstance(item, dict) and item.get("id") in members]
+    if len(workspace_package) != 1 or workspace_package[0].get("name") != "moshi":
+        raise AuditError("candidate whole metadata workspace member is not Moshi")
+    root = resolve.get("root")
+    if root is not None:
+        root_packages = [item for item in packages if isinstance(item, dict) and item.get("id") == root and item.get("name") == "moshi"]
+        if len(root_packages) != 1:
+            raise AuditError("candidate whole metadata root is not the unique Moshi package")
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("deps"), list):
+            raise AuditError("candidate whole metadata node dependencies are malformed")
+        for dependency in node["deps"]:
+            if not isinstance(dependency, dict) or dependency.get("pkg") not in node_ids or not isinstance(dependency.get("dep_kinds"), list) or not dependency["dep_kinds"]:
+                raise AuditError("candidate whole metadata dependency references an unknown node")
+            for dep_kind in dependency["dep_kinds"]:
+                if not isinstance(dep_kind, dict) or dep_kind.get("kind") not in {None, "normal", "build", "dev"} or dep_kind.get("target") is not None and not isinstance(dep_kind.get("target"), str):
+                    raise AuditError("candidate whole metadata dependency kind is malformed")
+    cpu = read_json(CANDIDATE_RESULT_PREFIX + "candidate_cpu_metadata.json")
+    if cpu.get("status") != "PIN_REMEDIATION_CPU_METADATA_UNREVIEWED" or cpu.get("target") != "x86_64-unknown-linux-gnu" or cpu.get("platform_filter") != cpu.get("target") or cpu.get("approval") is not None or cpu.get("upload") != "NO_UPLOAD" or cpu.get("model_execution") != "NOT_AUTHORIZED" or cpu.get("gpu_execution") != "NOT_AUTHORIZED":
+        raise AuditError("candidate CPU metadata provenance mismatch")
+    diagnostic = read_json(CANDIDATE_RESULT_PREFIX + "pin_diagnostic.json")
+    if diagnostic.get("status") != "PIN_REMEDIATION_SOURCE_ONLY_REVIEW_PENDING" or diagnostic.get("approval") is not None or diagnostic.get("upload") != "NO_UPLOAD" or diagnostic.get("model_execution") != "NOT_AUTHORIZED":
+        raise AuditError("candidate diagnostic is not review-pending source-only evidence")
+
+
+def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None) -> dict[str, Any]:
+    selected = resolve_profile(profile)
+    if selected is BASELINE_PROFILE:
+        expected = EXPECTED_MEMBERS
+        files = _walk_regular_files(root)
+    else:
+        expected = {relative: (size, digest) for relative, size, digest in selected.expected_members}
+        files = _walk_regular_files(root, max_bytes=selected.extracted_bytes, exact_bytes=selected.extracted_bytes)
+        if not all(any(relative.startswith(prefix) for prefix in selected.member_prefixes) for relative in files):
+            raise AuditError("candidate artifact contains an unregistered member prefix")
+    if set(files) != set(expected):
         raise AuditError("artifact member set mismatch")
     receipts: dict[str, Any] = {}
-    for relative, (expected_size, expected_hash) in EXPECTED_MEMBERS.items():
+    for relative, (expected_size, expected_hash) in expected.items():
         data = _read_bounded(files[relative], MAX_MEMBER_BYTES)
         digest = _sha256(data)
         if len(data) != expected_size or digest != expected_hash:
             raise AuditError(f"artifact member hash/size mismatch: {relative}")
         receipts[relative] = {"bytes": len(data), "sha256": digest}
+    if selected is CANDIDATE_PROFILE:
+        _validate_candidate_metadata(files)
     return {"members": receipts, "total_bytes": sum(item["bytes"] for item in receipts.values())}
 
 
@@ -440,7 +610,8 @@ def _exact_int(value: Any, name: str, *, minimum: int = 0) -> int:
     return value
 
 
-def validate_report(report: Any) -> dict[str, Any]:
+def validate_report(report: Any, *, profile: str | AuditProfile | None = None) -> dict[str, Any]:
+    selected = resolve_profile(profile)
     if not isinstance(report, dict):
         raise AuditError("audit JSON must be an object")
     for field in ("database", "lockfile", "settings", "vulnerabilities", "warnings"):
@@ -450,8 +621,8 @@ def validate_report(report: Any) -> dict[str, Any]:
     if not isinstance(database, dict) or "last-commit" not in database or database["last-commit"] is not None:
         raise AuditError("pinned Database::open report must have explicit null database.last-commit")
     advisory_count = _exact_int(database.get("advisory-count"), "advisory count", minimum=1)
-    if not isinstance(lockfile, dict) or _exact_int(lockfile.get("dependency-count"), "lock dependency count") != 161:
-        raise AuditError("whole-lock dependency count is not 161")
+    if not isinstance(lockfile, dict) or _exact_int(lockfile.get("dependency-count"), "lock dependency count") != selected.lock_dependency_count:
+        raise AuditError(f"whole-lock dependency count is not {selected.lock_dependency_count}")
     if not isinstance(settings, dict) or settings.get("ignore") != [] or settings.get("target_arch") != [] or settings.get("target_os") != [] or settings.get("severity") is not None:
         raise AuditError("audit report contains ignore, target, or severity filters")
     if set(settings.get("informational_warnings", [])) != FULL_WARNING_CLASSES:
@@ -473,16 +644,20 @@ def validate_report(report: Any) -> dict[str, Any]:
             raise AuditError("warning values must be lists")
         warning_counts[key] = len(value)
         warning_entries += len(value)
-    return {"database_advisory_count": advisory_count, "database_last_commit": None, "database_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT", "lock_dependency_count": 161, "vulnerability_count": vulnerability_count, "vulnerability_found": vulnerabilities["found"], "warning_counts": warning_counts, "warning_entries": warning_entries}
+    return {"database_advisory_count": advisory_count, "database_last_commit": None, "database_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT", "lock_dependency_count": selected.lock_dependency_count, "vulnerability_count": vulnerability_count, "vulnerability_found": vulnerabilities["found"], "warning_counts": warning_counts, "warning_entries": warning_entries}
 
 
 def _command_evidence(result: CommandResult) -> dict[str, Any]:
     return {"argv": list(result.argv), "returncode": result.returncode, "stdout": result.stdout.decode("utf-8", "replace"), "stdout_bytes": len(result.stdout), "stdout_sha256": _sha256(result.stdout), "stdout_truncated": result.stdout_truncated, "stderr": result.stderr.decode("utf-8", "replace"), "stderr_bytes": len(result.stderr), "stderr_sha256": _sha256(result.stderr), "stderr_truncated": result.stderr_truncated, "timed_out": result.timed_out}
 
 
-def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, auditor: str, repository: str, output: Path, deadline_seconds: float = DEFAULT_DEADLINE_SECONDS, api: Callable[[str, str, float], dict[str, Any]] = _api_json, command_runner: Callable[..., CommandResult] = run_command, verifier: Callable[..., dict[str, Any]] = verify_auditor, producer_validator: Callable[..., dict[str, Any]] = validate_producer, artifact_validator: Callable[[Path], dict[str, Any]] = validate_artifact, provenance: Callable[..., dict[str, Any]] = git_provenance, host_guard: Callable[[dict[str, str]], None] = _host_guard) -> int:
+def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, auditor: str, repository: str, output: Path, deadline_seconds: float = DEFAULT_DEADLINE_SECONDS, api: Callable[[str, str, float], dict[str, Any]] = _api_json, command_runner: Callable[..., CommandResult] = run_command, verifier: Callable[..., dict[str, Any]] = verify_auditor, producer_validator: Callable[..., dict[str, Any]] = validate_producer, artifact_validator: Callable[..., dict[str, Any]] = validate_artifact, provenance: Callable[..., dict[str, Any]] = git_provenance, host_guard: Callable[[dict[str, str]], None] = _host_guard, profile: str | AuditProfile | None = None) -> int:
+    if type(deadline_seconds) not in (int, float) or not math.isfinite(float(deadline_seconds)) or deadline_seconds <= 0 or deadline_seconds > DEFAULT_DEADLINE_SECONDS:
+        raise AuditError("deadline must be finite, positive, and no greater than 480 seconds")
+    selected = resolve_profile(profile)
     deadline = _now() + deadline_seconds
-    evidence: dict[str, Any] = {"scope": "candle_cpu_patched_lock", "status": "ERROR", "advisory_audit": "ERROR", "approval": None, "license_review": "NOT_PERFORMED", "root_runtime_audit": "NOT_RUN", "model_execution": "NOT_AUTHORIZED", "upload": "NO_UPLOAD", "lock_records": 161, "cpu_active_packages": 105, "patched_lock_sha256": PATCHED_LOCK_SHA256, "tool": {"expected_cargo_audit_version": CARGO_AUDIT_VERSION, "install_action_commit": INSTALL_ACTION_COMMIT, "release_commit": CARGO_AUDIT_RELEASE_COMMIT}, "advisory_database": {"commit": ADVISORY_DB_COMMIT, "tree": ADVISORY_DB_TREE, "no_fetch": True, "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT"}, "yanked_check": "NOT_CHECKED", "producer": None, "artifact": None, "audit": None}
+    lock_hash_field = "patched_lock_sha256" if selected is BASELINE_PROFILE else "candidate_lock_sha256"
+    evidence: dict[str, Any] = {"scope": selected.evidence_scope, "status": "ERROR", "advisory_audit": "ERROR", "approval": None, "license_review": "NOT_PERFORMED", "root_runtime_audit": "NOT_RUN", "model_execution": "NOT_AUTHORIZED", "upload": "NO_UPLOAD", "lock_records": selected.lock_dependency_count, "cpu_active_packages": selected.cpu_active_packages, lock_hash_field: selected.lock_sha256, "tool": {"expected_cargo_audit_version": CARGO_AUDIT_VERSION, "install_action_commit": INSTALL_ACTION_COMMIT, "release_commit": CARGO_AUDIT_RELEASE_COMMIT}, "advisory_database": {"commit": ADVISORY_DB_COMMIT, "tree": ADVISORY_DB_TREE, "no_fetch": True, "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT"}, "yanked_check": "NOT_CHECKED", "producer": None, "artifact": None, "audit": None}
     try:
         source_env = dict(os.environ)
         host_guard(source_env)
@@ -493,10 +668,14 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
         verified_auditor = evidence["tool"].get("binary_path")
         if not isinstance(verified_auditor, str) or not verified_auditor:
             raise AuditError("auditor verifier did not return a resolved binary path")
-        evidence["producer"] = producer_validator(repository=repository, token=token, api=api, deadline=deadline)
-        evidence["artifact"] = artifact_validator(artifact_root)
+        if selected is BASELINE_PROFILE:
+            evidence["producer"] = producer_validator(repository=repository, token=token, api=api, deadline=deadline)
+            evidence["artifact"] = artifact_validator(artifact_root)
+        else:
+            evidence["producer"] = producer_validator(repository=repository, token=token, api=api, deadline=deadline, profile=selected)
+            evidence["artifact"] = artifact_validator(artifact_root, profile=selected)
         before = provenance(db, cwd=cwd, env=env, deadline=deadline, runner=command_runner)
-        lockfile = artifact_root / "patched/Cargo.lock"
+        lockfile = artifact_root / selected.lock_relative_path
         result = command_runner(build_audit_argv(verified_auditor, lockfile, db), cwd=cwd, env=env, deadline=deadline, stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES)
         audit: dict[str, Any] = {"command": _command_evidence(result), "git_before": before}
         evidence["audit"] = audit
@@ -520,7 +699,7 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
             return 2
         audit["report"] = parsed
         try:
-            facts = validate_report(parsed)
+            facts = validate_report(parsed, profile=selected)
         except AuditError as exc:
             audit.update({"classification": "ERROR_REPORT_MISMATCH", "error": {"type": type(exc).__name__, "message": str(exc)}})
             _write_json(output, evidence)
@@ -565,11 +744,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--auditor", default="cargo-audit")
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    parser.add_argument("--profile", choices=tuple(_PROFILES), default=BASELINE_PROFILE.name)
     parser.add_argument("--deadline-seconds", type=float, default=DEFAULT_DEADLINE_SECONDS)
     args = parser.parse_args(argv)
     if args.deadline_seconds <= 0 or args.deadline_seconds > DEFAULT_DEADLINE_SECONDS:
         parser.error("deadline must be positive and no greater than 480 seconds")
-    return run_audit(artifact_root=args.artifact_root, db=args.db, cwd=args.cwd, cargo_home=args.cargo_home, auditor=args.auditor, repository=args.repository, output=args.output, deadline_seconds=args.deadline_seconds)
+    return run_audit(artifact_root=args.artifact_root, db=args.db, cwd=args.cwd, cargo_home=args.cargo_home, auditor=args.auditor, repository=args.repository, output=args.output, deadline_seconds=args.deadline_seconds, profile=args.profile)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,12 @@
 # Vokra documentation
 
+**Exact candidate advisory preparation (2026-10-15):** the
+[new fixed 154-record profile](handoff/kyutai-candle-candidate-advisory-preparation-2026-10-15.md)
+preserves the old 161-record contract and strict warning policy. Manager
+passes twelve legacy and nine candidate tests, including the real recovered
+artifact. The new hosted audit and its actual result remain next; no fresh
+security, macro/API, owner or model verdict is inferred.
+
 **Corrected dependency resolution succeeds (2026-10-15):** the
 [actual corrected diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
 produces all thirteen evidence files. Manager independently verifies the
