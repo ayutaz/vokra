@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Candle application review (2026-10-15):** the [source-only preparation record](handoff/kyutai-candle-paste-application-preparation-2026-10-15.md)
+separates root's eight passing offline orchestration tests from the subsequent
+late-finalization correction and still-pending causal regressions. A test-file
+read is refused by the safety hook; no guard bypass or alternate execution
+follows. The application implementation is not committed/published or accepted
+as an actual hosted run. PR #255 remains draft; full non-Apple prerequisites,
+authorized real-weight CPU and final clean-HEAD Apple packets are incomplete.
+
 **Actual hosted plan / dependency acceptance (2026-10-15):** the
 [planner result and #256 readback](handoff/kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
 authenticates the actual sixteen-parent plan and 292 unchanged-member

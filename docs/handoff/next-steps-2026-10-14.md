@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **Candle実適用のレビュー継続（2026-10-15）:** [準備記録](kyutai-candle-paste-application-preparation-2026-10-15.md)
+> にroot独立8 tests成功と、期限切れ後の最終記録に関する追加修正を分けて記録した。
+> 新候補の最終fault回帰は未受理。テスト担当の読み取り確認が安全hookに拒否されたため、
+> 再経路実行やルール変更をせず、対象review／offline testsだけの限定許可を確認中。
+> 実装は未commit／未公開、#255はdraft。実source適用、strict監査、全行non-Apple、
+> 承認済み実weight CPUと最終clean HEAD／fresh Apple packetの工程4は未完了のまま。
+
 > **Candle以外の重複回避（2026-10-15）:** OWSMのcurrent lockは
 > `21dc57e49571c7b47e84c91ae84166c35ca418b26635d1f4ac236d69925b1ebb`。
 > 全lock 43 recordsとLinux active 40 registry rowsを区別する。既知のtorch-complex
