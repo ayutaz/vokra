@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16 JSTの監査範囲訂正:** [固定版auditorの一次ソース確認](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> でsource欠如recordの照合除外を確定した。実lock154件はregistry137＋変更parent16＋
+> Moshi本体1に分かれる。同じ固定DBの補完照合と通常strict監査を組み合わせ、件数だけで
+> PASSにしない。依頼者は限定したコード／テスト／workflow／記録更新とGitHub CIを許可。
+> 実監査結果はまだなく、モデル／有料worker／owner署名／Apple／公開の許可は含まない。
+> 全non-Apple前提・承認済み実weight CPU・最終clean HEAD／fresh packetの工程4は未完了。
+
 > **2026-10-16 JSTの実適用受理:** [run 38758745134と8ファイル回収](kyutai-candle-paste-application-result-2026-10-16.md)
 > はsource-only SUCCESS。root独立照合で154 lock／137完全record不変、16 path parent＋
 > registry pasteyへの置換、raw CPU105／whole154、308／292 member証跡を確認した。

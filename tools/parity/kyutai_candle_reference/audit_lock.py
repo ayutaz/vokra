@@ -48,6 +48,7 @@ MAX_AUDITOR_BYTES = 64 * 1024 * 1024
 DEFAULT_DEADLINE_SECONDS = 480.0
 FULL_WARNING_CLASSES = {"unmaintained", "unsound", "notice"}
 KNOWN_WARNING_CLASSES = FULL_WARNING_CLASSES | {"yanked"}
+REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 EXPECTED_MEMBERS: dict[str, tuple[int, str]] = {
     "source_receipt.json": (8320, "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"),
@@ -62,7 +63,7 @@ EXPECTED_MEMBERS: dict[str, tuple[int, str]] = {
 
 @dataclass(frozen=True)
 class AuditProfile:
-    """One of the two authenticated, non-customizable audit contracts."""
+    """One of the three authenticated, non-customizable audit contracts."""
 
     name: str
     producer_run_id: int
@@ -99,6 +100,27 @@ CANDIDATE_MEMBERS: tuple[tuple[str, int, str], ...] = (
     (CANDIDATE_RESULT_PREFIX + "baseline_whole_metadata.json", 1205830, "cc3728fc52f80ea0554ca3cb9916de0bd45ebe7fa8d5379f541873ef0d7bed99"),
 )
 
+APPLIED_MEMBERS: tuple[tuple[str, int, str], ...] = (
+    ("application_receipt.json", 258168, "767a29af6e6a72a052caf4a65867d0245315e64533c92550ef8a8d257cbe5a1b"),
+    ("baseline_cpu_metadata.json", 849778, "40fc5791a5c5e81e847ca57e03328ec885075954b5d639a1596c699f00665c24"),
+    ("baseline_whole_metadata.json", 1149393, "4c7102a2b1948980d56fe8eb42d84bcfe26413c92caf1e3ec00972ba13ace721"),
+    ("candidate.lock", 38252, "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8"),
+    ("final.lock", 35980, "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6"),
+    ("overlay_cpu_metadata.json", 847544, "1c3bf26f65e4a13947ef5e5ed88d89feb6e9d4afd562761a5cd315b1c03a2b94"),
+    ("overlay_whole_metadata.json", 1145613, "2bfa92f66975af7ca65c68c2d769f9224c319ef6fecd0e34441b0be8b653b6b2"),
+    ("source_receipt.json", 8320, "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"),
+)
+
+APPLIED_PATH_PARENT_NAMES = (
+    "gemm", "gemm-c32", "gemm-c64", "gemm-common", "gemm-f16", "gemm-f32", "gemm-f64", "metal",
+)
+APPLIED_PATH_PARENT_IDENTITIES = tuple(
+    (name, version, None)
+    for name in APPLIED_PATH_PARENT_NAMES
+    for version in (("0.27.0", "0.29.0") if name == "metal" else ("0.17.1", "0.18.2"))
+)
+APPLIED_SOURCE_ABSENT_IDENTITIES = APPLIED_PATH_PARENT_IDENTITIES + (("moshi", "0.6.4", None),)
+
 BASELINE_PROFILE = AuditProfile(
     "baseline", PRODUCER_RUN_ID, PRODUCER_ATTEMPT, PRODUCER_HEAD_SHA, ARTIFACT_ID,
     ARTIFACT_NAME, ARTIFACT_SIZE, (), (), MAX_ARTIFACT_BYTES, "patched/Cargo.lock",
@@ -112,7 +134,14 @@ CANDIDATE_PROFILE = AuditProfile(
     "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8", 154,
     "candle_candidate_whole_lock", None,
 )
-_PROFILES = {BASELINE_PROFILE.name: BASELINE_PROFILE, CANDIDATE_PROFILE.name: CANDIDATE_PROFILE}
+APPLIED_PROFILE = AuditProfile(
+    "applied", 38758745134, 1, "89fbbc512beac5debbf4807a1dde3f2e8588096e",
+    11985400172, "kyutai-candle-paste-application-evidence-38758745134-1", 259361,
+    (), APPLIED_MEMBERS, 4333048, "final.lock",
+    "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6", 154,
+    "candle_applied_final_lock", 105,
+)
+_PROFILES = {profile.name: profile for profile in (BASELINE_PROFILE, CANDIDATE_PROFILE, APPLIED_PROFILE)}
 
 
 class AuditError(RuntimeError):
@@ -127,7 +156,7 @@ def resolve_profile(profile: str | AuditProfile | None = None) -> AuditProfile:
             return _PROFILES[profile]
         except KeyError as exc:
             raise AuditError("profile is not registered") from exc
-    if profile is BASELINE_PROFILE or profile is CANDIDATE_PROFILE:
+    if profile is BASELINE_PROFILE or profile is CANDIDATE_PROFILE or profile is APPLIED_PROFILE:
         return profile
     raise AuditError("custom audit profiles are not allowed")
 
@@ -541,6 +570,186 @@ def _validate_candidate_metadata(files: dict[str, Path]) -> None:
         raise AuditError("candidate diagnostic is not review-pending source-only evidence")
 
 
+def _artifact_json(files: dict[str, Path], relative: str) -> dict[str, Any]:
+    try:
+        value = json.loads(_read_bounded(files[relative], MAX_JSON_BYTES))
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditError(f"applied evidence is not valid JSON: {relative}") from exc
+    if not isinstance(value, dict):
+        raise AuditError(f"applied evidence is not an object: {relative}")
+    return value
+
+
+def _lock_packages(files: dict[str, Path], relative: str) -> list[dict[str, Any]]:
+    try:
+        value = tomllib.loads(_read_bounded(files[relative], MAX_MEMBER_BYTES).decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise AuditError(f"applied lock is not valid TOML: {relative}") from exc
+    packages = value.get("package")
+    if not isinstance(packages, list):
+        raise AuditError(f"applied lock has no package list: {relative}")
+    if any(not isinstance(item, dict) for item in packages):
+        raise AuditError(f"applied lock package row is malformed: {relative}")
+    return packages
+
+
+def _identity(row: dict[str, Any]) -> tuple[str, str, str | None]:
+    if not isinstance(row.get("name"), str) or not isinstance(row.get("version"), str):
+        raise AuditError("package identity is malformed")
+    source = row.get("source")
+    if source is not None and not isinstance(source, str):
+        raise AuditError("package source is malformed")
+    return row["name"], row["version"], source
+
+
+def _metadata_graph(payload: dict[str, Any], *, expected_status: str, expected_count: int, expected_target: str | None) -> tuple[set[tuple[str, str, str | None]], set[str]]:
+    if payload.get("status") != expected_status or payload.get("approval") is not None or payload.get("upload") != "NO_UPLOAD" or payload.get("model_execution") != "NOT_AUTHORIZED" or payload.get("source_only") is not True:
+        raise AuditError("applied metadata provenance is not an unapproved source-only packet")
+    if payload.get("target") != expected_target or payload.get("platform_filter") != expected_target:
+        raise AuditError("applied metadata target boundary mismatch")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        raise AuditError("applied metadata payload is missing metadata")
+    packages = metadata.get("packages")
+    resolve = metadata.get("resolve")
+    nodes = resolve.get("nodes") if isinstance(resolve, dict) else None
+    if not isinstance(packages, list) or len(packages) != expected_count or not isinstance(nodes, list) or len(nodes) != expected_count:
+        raise AuditError("applied metadata graph count mismatch")
+    package_ids: set[str] = set()
+    identities: set[tuple[str, str, str | None]] = set()
+    for package in packages:
+        if not isinstance(package, dict) or not isinstance(package.get("id"), str):
+            raise AuditError("applied metadata package identity is malformed")
+        package_ids.add(package["id"])
+        identities.add(_identity(package))
+    if len(package_ids) != expected_count or len(identities) != expected_count:
+        raise AuditError("applied metadata package identities are duplicated")
+    node_ids: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not isinstance(node.get("deps"), list):
+            raise AuditError("applied metadata node is malformed")
+        node_ids.add(node["id"])
+        for dependency in node["deps"]:
+            if not isinstance(dependency, dict) or dependency.get("pkg") not in package_ids or not isinstance(dependency.get("dep_kinds"), list) or not dependency["dep_kinds"]:
+                raise AuditError("applied metadata dependency references an unknown node")
+            for dep_kind in dependency["dep_kinds"]:
+                if not isinstance(dep_kind, dict) or dep_kind.get("kind") not in {None, "normal", "build", "dev"} or dep_kind.get("target") is not None and not isinstance(dep_kind.get("target"), str):
+                    raise AuditError("applied metadata dependency kind is malformed")
+    if node_ids != package_ids:
+        raise AuditError("applied metadata package/node identities disagree")
+    if resolve.get("root") is not None:
+        raise AuditError("applied metadata must retain the virtual workspace root")
+    members = metadata.get("workspace_members")
+    if not isinstance(members, list) or len(members) != 1 or members[0] not in package_ids:
+        raise AuditError("applied metadata workspace member is not unique")
+    member = next(package for package in packages if package["id"] == members[0])
+    if member.get("name") != "moshi" or member.get("version") != "0.6.4" or member.get("source") is not None:
+        raise AuditError("applied metadata workspace member is not the source-absent Moshi root")
+    return identities, package_ids
+
+
+def _validate_applied_metadata(files: dict[str, Path]) -> None:
+    application = _artifact_json(files, "application_receipt.json")
+    if application.get("status") != "SOURCE_APPLICATION_REVIEW_PENDING" or application.get("approval") is not None or application.get("upload") != "NO_UPLOAD" or application.get("model_execution") != "NOT_AUTHORIZED" or application.get("source_only") is not True:
+        raise AuditError("applied application receipt is not review-pending source-only evidence")
+    source = _artifact_json(files, "source_receipt.json")
+    if source.get("source_commit") != "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362" or not isinstance(source.get("files"), dict) or len(source["files"]) != 23:
+        raise AuditError("applied source receipt binding mismatch")
+    final_rows = _lock_packages(files, "final.lock")
+    candidate_rows = _lock_packages(files, "candidate.lock")
+    if len(final_rows) != APPLIED_PROFILE.lock_dependency_count or len(candidate_rows) != APPLIED_PROFILE.lock_dependency_count:
+        raise AuditError("applied lock dependency count is not 154")
+    final_ids = [_identity(row) for row in final_rows]
+    candidate_ids = [_identity(row) for row in candidate_rows]
+    if len(set(final_ids)) != 154 or len(set(candidate_ids)) != 154:
+        raise AuditError("applied lock contains duplicate identities")
+    expected_absent = set(APPLIED_SOURCE_ABSENT_IDENTITIES)
+    actual_absent = {identity for identity in final_ids if identity[2] is None}
+    if actual_absent != expected_absent or sum(identity[2] == REGISTRY_SOURCE for identity in final_ids) != 137:
+        raise AuditError("applied final lock source identity set mismatch")
+    for identity, row in zip(final_ids, final_rows):
+        if identity[2] is None and ("source" in row or "checksum" in row):
+            raise AuditError("applied source-absent package contains source/checksum fields")
+    candidate_by_id = {identity: row for identity, row in zip(candidate_ids, candidate_rows)}
+    final_by_id = {identity: row for identity, row in zip(final_ids, final_rows)}
+    parent_old = {(name, version, REGISTRY_SOURCE) for name, version, _ in APPLIED_PATH_PARENT_IDENTITIES}
+    expected_added = expected_absent - {("moshi", "0.6.4", None)}
+    expected_removed = parent_old | {("paste", "1.0.15", REGISTRY_SOURCE)}
+    expected_added = expected_added | {("pastey", "0.2.3", REGISTRY_SOURCE)}
+    if set(candidate_by_id) - set(final_by_id) != expected_removed or set(final_by_id) - set(candidate_by_id) != expected_added:
+        raise AuditError("applied candidate-to-final lock identity delta is not the fixed 17-transition map")
+    for identity in set(candidate_by_id) & set(final_by_id):
+        if candidate_by_id[identity] != final_by_id[identity]:
+            raise AuditError("unrelated applied lock record changed")
+    for old_id in parent_old:
+        old = candidate_by_id[old_id]
+        new = final_by_id[(old_id[0], old_id[1], None)]
+        expected = {key: value for key, value in old.items() if key not in {"source", "checksum"}}
+        expected["dependencies"] = ["pastey" if dep == "paste" else dep for dep in expected.get("dependencies", [])]
+        if new != expected:
+            raise AuditError("applied path-parent lock record changed outside source/checksum/paste mapping")
+    pastey = final_by_id[("pastey", "0.2.3", REGISTRY_SOURCE)]
+    if not isinstance(pastey.get("checksum"), str) or not pastey.get("checksum"):
+        raise AuditError("applied pastey registry record lacks checksum")
+    mapped_order = []
+    for identity in candidate_ids:
+        if identity in parent_old:
+            mapped_order.append((identity[0], identity[1], None))
+        elif identity == ("paste", "1.0.15", REGISTRY_SOURCE):
+            mapped_order.append(("pastey", "0.2.3", REGISTRY_SOURCE))
+        else:
+            mapped_order.append(identity)
+    if mapped_order != final_ids:
+        raise AuditError("applied lock package order changed outside the fixed identity mapping")
+
+    whole_ids, _whole_nodes = _metadata_graph(_artifact_json(files, "baseline_whole_metadata.json"), expected_status="OVERLAY_BASELINE_WHOLE_UNREVIEWED", expected_count=154, expected_target=None)
+    cpu_ids, _ = _metadata_graph(_artifact_json(files, "baseline_cpu_metadata.json"), expected_status="OVERLAY_BASELINE_CPU_UNREVIEWED", expected_count=105, expected_target="x86_64-unknown-linux-gnu")
+    overlay_whole_ids, _ = _metadata_graph(_artifact_json(files, "overlay_whole_metadata.json"), expected_status="OVERLAY_WHOLE_METADATA_UNREVIEWED", expected_count=154, expected_target=None)
+    overlay_cpu_ids, _ = _metadata_graph(_artifact_json(files, "overlay_cpu_metadata.json"), expected_status="OVERLAY_CPU_METADATA_UNREVIEWED", expected_count=105, expected_target="x86_64-unknown-linux-gnu")
+    if whole_ids != set(candidate_ids) or overlay_whole_ids != set(final_ids) or not cpu_ids <= whole_ids or not overlay_cpu_ids <= overlay_whole_ids:
+        raise AuditError("applied CPU/whole metadata identity binding mismatch")
+
+
+def _validate_applied_source_absence(db: Path, lockfile: Path, *, deadline: float | None = None) -> dict[str, Any]:
+    if deadline is not None and _now() >= deadline:
+        raise AuditError("applied supplemental coverage deadline exceeded")
+    crates = db / "crates"
+    if not crates.is_dir() or crates.is_symlink():
+        raise AuditError("fixed RustSec database crates directory is missing or symlinked")
+    try:
+        rows = tomllib.loads(_read_bounded(lockfile, MAX_MEMBER_BYTES).decode("utf-8")).get("package")
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise AuditError("applied audit lock cannot be parsed") from exc
+    if not isinstance(rows, list) or len(rows) != APPLIED_PROFILE.lock_dependency_count:
+        raise AuditError("applied audit lock package count is not 154")
+    identities = [_identity(row) for row in rows if isinstance(row, dict)]
+    if len(identities) != len(rows) or len(set(identities)) != len(identities):
+        raise AuditError("applied audit lock identities are malformed")
+    absent = {identity for identity in identities if identity[2] is None}
+    if absent != set(APPLIED_SOURCE_ABSENT_IDENTITIES):
+        raise AuditError("applied audit source-absent identity set mismatch")
+    if sum(identity[2] == REGISTRY_SOURCE for identity in identities) != 137:
+        raise AuditError("applied audit registry package count is not 137")
+    checked = []
+    for identity, row in zip(identities, rows):
+        if identity[2] is None and ("source" in row or "checksum" in row):
+            raise AuditError("applied source-absent package contains source/checksum fields")
+    for name, version, _ in APPLIED_SOURCE_ABSENT_IDENTITIES:
+        if deadline is not None and _now() >= deadline:
+            raise AuditError("applied supplemental coverage deadline exceeded")
+        entry = crates / name
+        try:
+            entry.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise AuditError(f"fixed RustSec database unexpectedly contains a crate path: {name}")
+        checked.append({"name": name, "version": version, "source": None, "database_path": f"crates/{name}", "role": "workspace_root" if name == "moshi" else "path_parent", "status": "ABSENT"})
+    if deadline is not None and _now() >= deadline:
+        raise AuditError("applied supplemental coverage deadline exceeded")
+    return {"database_commit": ADVISORY_DB_COMMIT, "database_tree": ADVISORY_DB_TREE, "registry_package_count": 137, "source_absent_package_count": 17, "source_absent_packages": checked, "coverage_scope": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER"}
+
+
 def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None) -> dict[str, Any]:
     selected = resolve_profile(profile)
     if selected is BASELINE_PROFILE:
@@ -549,7 +758,7 @@ def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None) 
     else:
         expected = {relative: (size, digest) for relative, size, digest in selected.expected_members}
         files = _walk_regular_files(root, max_bytes=selected.extracted_bytes, exact_bytes=selected.extracted_bytes)
-        if not all(any(relative.startswith(prefix) for prefix in selected.member_prefixes) for relative in files):
+        if selected.member_prefixes and not all(any(relative.startswith(prefix) for prefix in selected.member_prefixes) for relative in files):
             raise AuditError("candidate artifact contains an unregistered member prefix")
     if set(files) != set(expected):
         raise AuditError("artifact member set mismatch")
@@ -562,6 +771,8 @@ def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None) 
         receipts[relative] = {"bytes": len(data), "sha256": digest}
     if selected is CANDIDATE_PROFILE:
         _validate_candidate_metadata(files)
+    elif selected is APPLIED_PROFILE:
+        _validate_applied_metadata(files)
     return {"members": receipts, "total_bytes": sum(item["bytes"] for item in receipts.values())}
 
 
@@ -656,8 +867,15 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
         raise AuditError("deadline must be finite, positive, and no greater than 480 seconds")
     selected = resolve_profile(profile)
     deadline = _now() + deadline_seconds
-    lock_hash_field = "patched_lock_sha256" if selected is BASELINE_PROFILE else "candidate_lock_sha256"
+    if selected is BASELINE_PROFILE:
+        lock_hash_field = "patched_lock_sha256"
+    elif selected is APPLIED_PROFILE:
+        lock_hash_field = "final_lock_sha256"
+    else:
+        lock_hash_field = "candidate_lock_sha256"
     evidence: dict[str, Any] = {"scope": selected.evidence_scope, "status": "ERROR", "advisory_audit": "ERROR", "approval": None, "license_review": "NOT_PERFORMED", "root_runtime_audit": "NOT_RUN", "model_execution": "NOT_AUTHORIZED", "upload": "NO_UPLOAD", "lock_records": selected.lock_dependency_count, "cpu_active_packages": selected.cpu_active_packages, lock_hash_field: selected.lock_sha256, "tool": {"expected_cargo_audit_version": CARGO_AUDIT_VERSION, "install_action_commit": INSTALL_ACTION_COMMIT, "release_commit": CARGO_AUDIT_RELEASE_COMMIT}, "advisory_database": {"commit": ADVISORY_DB_COMMIT, "tree": ADVISORY_DB_TREE, "no_fetch": True, "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT"}, "yanked_check": "NOT_CHECKED", "producer": None, "artifact": None, "audit": None}
+    if selected is APPLIED_PROFILE:
+        evidence.update({"native_registry_package_count": 137, "parsed_lock_record_count": 154, "supplemental_path_parent_package_count": 16, "supplemental_workspace_package_count": 1, "supplemental_coverage": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER"})
     try:
         source_env = dict(os.environ)
         host_guard(source_env)
@@ -676,9 +894,32 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
             evidence["artifact"] = artifact_validator(artifact_root, profile=selected)
         before = provenance(db, cwd=cwd, env=env, deadline=deadline, runner=command_runner)
         lockfile = artifact_root / selected.lock_relative_path
+        lock_before_hash = None
+        if selected is APPLIED_PROFILE:
+            lock_before_hash = _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES))
+            if lock_before_hash != selected.lock_sha256:
+                raise AuditError("registered audit lock hash changed before cargo-audit")
+            evidence["supplemental_coverage_before"] = _validate_applied_source_absence(db, lockfile, deadline=deadline)
         result = command_runner(build_audit_argv(verified_auditor, lockfile, db), cwd=cwd, env=env, deadline=deadline, stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES)
         audit: dict[str, Any] = {"command": _command_evidence(result), "git_before": before}
         evidence["audit"] = audit
+        if selected is APPLIED_PROFILE:
+            lock_after_command_hash = _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES))
+            if lock_after_command_hash != lock_before_hash:
+                audit["classification"] = "ERROR_LOCK_MUTATED"
+                _write_json(output, evidence)
+                return 2
+            try:
+                evidence["supplemental_coverage_after_command"] = _validate_applied_source_absence(db, lockfile, deadline=deadline)
+            except AuditError as exc:
+                classification = "ERROR_REQUIRES_PATH_ADVISORY_REVIEW" if "unexpectedly contains a crate path" in str(exc) else "ERROR_SUPPLEMENTAL_COVERAGE"
+                audit.update({"classification": classification, "error": {"type": type(exc).__name__, "message": str(exc)}})
+                _write_json(output, evidence)
+                return 2
+            if evidence["supplemental_coverage_after_command"] != evidence["supplemental_coverage_before"]:
+                audit.update({"classification": "ERROR_SUPPLEMENTAL_COVERAGE_CHANGED", "error": {"type": "AuditError", "message": "fixed-DB source-absence evidence changed during audit"}})
+                _write_json(output, evidence)
+                return 2
         if result.timed_out:
             audit["classification"] = "ERROR_TIMEOUT"
             _write_json(output, evidence)
@@ -707,6 +948,14 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
         after = provenance(db, cwd=cwd, env=env, deadline=deadline, runner=command_runner)
         if after != before:
             audit.update({"classification": "ERROR_DATABASE_CHANGED", "error": {"type": "AuditError", "message": "advisory DB changed during audit"}})
+            _write_json(output, evidence)
+            return 2
+        if selected is APPLIED_PROFILE and _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES)) != selected.lock_sha256:
+            audit.update({"classification": "ERROR_LOCK_MUTATED", "error": {"type": "AuditError", "message": "registered audit lock changed during final provenance check"}})
+            _write_json(output, evidence)
+            return 2
+        if _now() >= deadline:
+            audit.update({"classification": "ERROR_DEADLINE", "error": {"type": "AuditError", "message": "shared audit deadline exceeded before final classification"}})
             _write_json(output, evidence)
             return 2
         audit["git_after"], audit["report_facts"] = after, facts

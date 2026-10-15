@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**Applied-lock coverage correction (2026-10-16 JST):** the
+[pinned-auditor primary-source review](handoff/kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+proves that ordinary cargo-audit skips source-absent records. The actual lock
+contains 137 registry packages, sixteen modified path parents and one Moshi
+workspace package. Prepare explicit same-database supplemental accounting;
+154 parsed records alone cannot prove coverage. The narrow audit/CI work is
+now authorized, but has not yet produced an applied-lock audit result. Model,
+paid-worker, owner/legal, Apple and publication gates remain unchanged.
+
 **Actual Candle application accepted (2026-10-16 JST):** the
 [successful source-only run and eight-file recovery](handoff/kyutai-candle-paste-application-result-2026-10-16.md)
 prove the sixteen path-parent transitions plus registry pastey, with 137

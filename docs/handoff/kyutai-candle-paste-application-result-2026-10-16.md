@@ -1,5 +1,12 @@
 # Candle actual source-only overlay application — 2026-10-16 JST
 
+> **Subsequent coverage review:** the
+> [applied advisory preparation](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> proves the pinned auditor skips source-absent packages. The next authorized
+> source-only CI must pair its registry audit with explicit fixed-database
+> coverage of sixteen modified parents and the separate Moshi workspace.
+> This does not replace the original evidence or constitute an audit PASS.
+
 ## Verdict and original goal boundary
 
 **ACCEPTED_SOURCE_METADATA_ONLY_NO_APPROVAL.** The reviewed application

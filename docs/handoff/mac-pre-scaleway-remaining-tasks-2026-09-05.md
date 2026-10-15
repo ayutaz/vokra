@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 JST advisory coverage correction:** [pinned primary sources](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> prove that ordinary cargo-audit skips source-absent records. Account for
+> registry137, modified parents16 and workspace1 separately using the same
+> authenticated database. The narrow audit/CI work is authorized, not yet an
+> executed applied-lock PASS or model/owner/Apple/publication approval.
+> No inventory count, frozen disposition or full step-4 exit gate changes.
+
 > **2026-10-16 JST actual source application:** [Candle's eight-file result](kyutai-candle-paste-application-result-2026-10-16.md)
 > is independently recovered and checked at `89fbbc51`: exact sixteen path
 > parents plus registry pastey, 137 unchanged full lock records, raw CPU105 /

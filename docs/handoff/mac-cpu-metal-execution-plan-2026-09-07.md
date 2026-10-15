@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST advisory coverage correction:** the
+> [pinned-source review and narrow authorization](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> require a genuine registry audit plus conservative fixed-database coverage
+> of all source-absent identities. A 154-record count is not query coverage.
+> Review the additive implementation/tests before actual hosted execution;
+> no applied-lock result, model, paid-worker, owner, Apple or publication
+> approval is inferred. Full non-Apple/real-weight/final-packet gates remain.
+
 > **2026-10-16 JST actual source application:** [Candle run 38758745134](kyutai-candle-paste-application-result-2026-10-16.md)
 > succeeds and its eight original evidence files pass independent lock/raw
 > metadata/source-proof comparison. Next bind strict advisory to that actual
