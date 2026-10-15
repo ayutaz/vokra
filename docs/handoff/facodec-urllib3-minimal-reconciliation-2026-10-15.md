@@ -1,5 +1,22 @@
 # FACodec urllib3 minimal reconciliation — 2026-10-15 JST
 
+## Subsequent normal acceptance — 06:00:58 UTC
+
+PR #252 exact `d6524a15276b49b6b6b34ae126c5e1d98553a179` is normally
+squash-merged as main `b5ae1b3cff45383bc00339606cc2f0a5d245e1c6`.
+Manager freshly verifies all 70 checks terminal (69 success, one intentional
+skip), all 16 required context/application pairs successful and all nine
+started workflows successful, including all 24 Unity packaging steps.
+Local main is fast-forwarded and clean. This accepts the source-only lock
+correction, not FACodec model execution or closure approval.
+
+The first documentation-link attempt (`116267756128`) failed on an existing
+unchanged Matcha-TTS fixed-tree URL returning HTTP 500. The same URL subsequently
+returns HTTP 200 and its exact commit/tree exists. One targeted retry passes
+as job `116269119638` (attempt 2); no link exclusion, recovery-rule change,
+blanket retry or reuse of the bot's old-head CI is used. The failure remains
+part of the run history. The preparation record below keeps its original scope.
+
 This source-only correction reviews Dependabot [PR #252](https://github.com/ayutaz/vokra/pull/252)
 at `c36498e4fdfd1a03c986bdfc1e778b69c9fc33d7`, against accepted main
 `154919820b71166a375d0e1307e25aef5aa06e7e`. Checks on the bot's original

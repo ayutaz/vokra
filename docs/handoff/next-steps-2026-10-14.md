@@ -2,6 +2,19 @@
 
 ## ゴールと現在地
 
+> **06:00:58 UTCの受理と修正候補（2026-10-15）:** FACodec #252 exact
+> `d6524a15`は全70 checks（69 success / 1 intentional skip）、必須16
+> context/appと開始した全9 workflowsの成功を確認して通常mergeした。main／ローカル
+> mainは`b5ae1b3c`でclean。[最小lock修正](facodec-urllib3-minimal-reconciliation-2026-10-15.md)
+> は無関係な17 CUDA marker変更を復元し、他61 package recordsを保持する。
+> [Candle semantic修正](kyutai-candle-source-metadata-ci-2026-10-15.md)は
+> `256020e6`として保存し、このmainを通常mergeした`859736ab`に統合した。
+> 独立40 tests、実592→161 records、6 parent／10 removed edges／5 retained
+> targetsの原本照合は成功。新HEADのhosted captureと実memmap2更新はまだ未検証。
+> これは全58行non-Apple前提・実weight CPU・最終clean HEAD／fresh Apple packetの
+> 完了ではなく、元の工程4のゴールと凍結63-row owner scopeは維持する。
+> 新規VAST／Scaleway・ローカルモデル実行・公開は行っていない。
+
 > **05:24 UTCのwhole-lock回収supersession（2026-10-15）:** #251 exact
 > `072df353`の実診断で31 testsが成功し、全161 package／nodeとbase lockの全依存edgeの
 > 一致を独立確認した。既存のraw-record gateで停止した失敗は保持し、実データに基づく

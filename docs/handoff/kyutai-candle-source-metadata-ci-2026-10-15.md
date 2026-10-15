@@ -53,6 +53,15 @@ operational tests:
 workflow contract tests:
 `5d65ac89e4e5c2b987051127c1ac74fe1c6c961882d2733c3accd84dba449580`.
 
+The [official registry index at fixed commit `7ddd842c`](https://raw.githubusercontent.com/rust-lang/crates.io-index/7ddd842c05edd884b506c23165a282cf9de6bf65/me/mm/memmap2)
+independently lists identical dependency declarations and feature maps for
+memmap2 0.9.5 and 0.9.11, with neither version yanked. The old checksum is
+`fd3f7eed9d3848f8b98834af67102b720745c4ec028fcd0aa0239277e7de374f`;
+the expected new checksum is
+`d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0`.
+This supports the planned precise-update shape, not an actual Cargo result,
+archive-license review or current advisory audit. No package was executed.
+
 Fresh corrected-head hosted capture and actual precise memmap2 update remain
 required. This candidate does not turn any earlier failed diagnostic green,
 approve the dependency/native/license/operator closure, or supply full-PCM,

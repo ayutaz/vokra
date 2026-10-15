@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **06:00:58 UTC source supersession (2026-10-15):** accepted main is
+> `b5ae1b3c` after normally merging FACodec #252 with all 70 checks and nine
+> workflows terminal-success (one intentional check skip). The [current plan](next-steps-2026-10-14.md)
+> records the reviewed Candle semantic correction, its 40 stdlib tests and
+> recovered-data proof, not a new hosted capture, CPU model pass or final
+> packet. Live inventory was not re-fetched and no public row or owner scope
+> is promoted; all earlier counts and dated evidence remain unchanged.
+
 > **2026-10-15 source-only continuation:** the [prioritized plan](next-steps-2026-10-14.md)
 > records accepted main `15491982`, PR #250 acceptance and the separate
 > [actual Candle metadata recovery](kyutai-candle-source-metadata-ci-2026-10-15.md).

@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **06:00:58 UTC source supersession (2026-10-15):** the [latest plan](next-steps-2026-10-14.md)
+> records accepted main `b5ae1b3c`, normal FACodec #252 acceptance and the
+> reviewed Candle semantic candidate. Its independent 40 tests and actual
+> recovered graph do not replace fresh hosted update evidence, full-PCM
+> reference, real-weight CPU or final clean-HEAD Apple packets. No inventory,
+> approval, Apple/publication gate or original step-4 scope changes.
+
 > **2026-10-15 continuation pointer:** see the [latest plan readback](next-steps-2026-10-14.md)
 > and [actual Candle diagnostic](kyutai-candle-source-metadata-ci-2026-10-15.md).
 > Accepted source PRs and recovered dependency graphs do not prove real-weight

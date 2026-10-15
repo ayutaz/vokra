@@ -1,6 +1,17 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14, continued 2026-10-15):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**06:00:58 UTC source acceptance (2026-10-15):** FACodec PR #252 was
+normally merged as main `b5ae1b3c` after all 70 checks completed (69 success,
+one intentional skip), all 16 required context/application pairs passed and
+all nine started workflows succeeded. The [minimal lock correction](handoff/facodec-urllib3-minimal-reconciliation-2026-10-15.md)
+preserves unrelated CUDA conditions; local main is fast-forwarded and clean.
+The [Candle semantic correction](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
+passes 40 independently run stdlib tests and complete recovered-data validation
+and is integrated with this main. Fresh corrected-head hosted capture remains
+necessary. None of this is real-weight CPU, Apple, owner/legal or publication
+completion; the dated observations below are preserved.
+
 **05:24 UTC diagnostic supersession (2026-10-15):** the separate
 [whole-lock capture](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
 now covers all 161 base-lock packages and dependency edges. The old raw-record
