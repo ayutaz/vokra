@@ -546,9 +546,375 @@ def _emit_lock_diagnostic(
     sys.stderr.flush()
 
 
-def validate_base_lock(original_path: Path, projected_path: Path) -> dict[str, Any]:
+def _metadata_package_key(package: dict[str, Any]) -> tuple[str, str, str | None]:
+    name, version, source = package.get("name"), package.get("version"), package.get("source")
+    if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
+        raise CaptureError("malformed Cargo metadata package identity")
+    if source is not None and not isinstance(source, str):
+        raise CaptureError("malformed Cargo metadata package source")
+    return name, version, source
+
+
+def _metadata_name(value: str) -> str:
+    # Cargo exposes dependency aliases with underscores in resolve.nodes while
+    # manifests commonly spell the same crate with hyphens.
+    return value.replace("-", "_")
+
+
+def _lock_dependency_key(
+    value: Any,
+    complete: dict[tuple[str, str, str | None], dict[str, Any]],
+) -> tuple[str, str, str | None]:
+    if not isinstance(value, str):
+        raise CaptureError("Cargo.lock dependency label is malformed")
+    parts = value.split()
+    if len(parts) not in (1, 2) or re.fullmatch(r"[A-Za-z0-9_.+-]+", parts[0]) is None:
+        raise CaptureError("Cargo.lock dependency label is malformed")
+    if len(parts) == 2 and re.fullmatch(r"[0-9][A-Za-z0-9_.+-]*", parts[1]) is None:
+        raise CaptureError("Cargo.lock dependency label is malformed")
+    candidates = [
+        key for key in complete
+        if key[0] == parts[0] and (len(parts) == 1 or key[1] == parts[1])
+    ]
+    if len(candidates) != 1:
+        raise CaptureError("Cargo.lock dependency label is unresolved or ambiguous")
+    return candidates[0]
+
+
+def _lock_package_without_dependencies(package: dict[str, Any]) -> dict[str, Any]:
+    result = dict(package)
+    result.pop("dependencies", None)
+    return result
+
+
+def _metadata_declarations(package: dict[str, Any]) -> list[dict[str, Any]]:
+    declarations = package.get("dependencies")
+    if declarations is None:
+        return []
+    if not isinstance(declarations, list):
+        raise CaptureError("Cargo metadata package dependencies are malformed")
+    result: list[dict[str, Any]] = []
+    for declaration in declarations:
+        if not isinstance(declaration, dict) or not isinstance(declaration.get("name"), str):
+            raise CaptureError("Cargo metadata dependency declaration is malformed")
+        for field in ("rename", "source", "target", "registry"):
+            value = declaration.get(field)
+            if value is not None and not isinstance(value, str):
+                raise CaptureError("Cargo metadata dependency declaration is malformed")
+        kind = declaration.get("kind")
+        if kind not in (None, "normal", "build", "dev"):
+            raise CaptureError("Cargo metadata dependency kind is unsupported")
+        if not isinstance(declaration.get("optional", False), bool):
+            raise CaptureError("Cargo metadata dependency optional flag is malformed")
+        if "uses_default_features" in declaration and not isinstance(declaration["uses_default_features"], bool):
+            raise CaptureError("Cargo metadata dependency default-feature flag is malformed")
+        features = declaration.get("features", [])
+        if not isinstance(features, list) or not all(isinstance(feature, str) for feature in features):
+            raise CaptureError("Cargo metadata dependency features are malformed")
+        req = declaration.get("req")
+        if not isinstance(req, str):
+            raise CaptureError("Cargo metadata dependency requirement is malformed")
+        result.append(declaration)
+    return result
+
+
+def _metadata_graph(metadata: dict[str, Any], *, require_complete_nodes: bool) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise CaptureError("Cargo metadata object required")
+    packages = metadata.get("packages")
+    if not isinstance(packages, list) or not packages:
+        raise CaptureError("Cargo metadata packages are required and nonempty")
+    packages_by_id: dict[str, dict[str, Any]] = {}
+    keys_by_id: dict[str, tuple[str, str, str | None]] = {}
+    ids_by_key: dict[tuple[str, str, str | None], str] = {}
+    declarations_by_id: dict[str, list[dict[str, Any]]] = {}
+    for package in packages:
+        if not isinstance(package, dict) or not isinstance(package.get("id"), str):
+            raise CaptureError("Cargo metadata package is malformed")
+        package_id = package["id"]
+        if package_id in packages_by_id:
+            raise CaptureError("Cargo metadata package id is duplicated")
+        key = _metadata_package_key(package)
+        if key in ids_by_key:
+            raise CaptureError("Cargo metadata package identity is duplicated")
+        features = package.get("features", {})
+        if not isinstance(features, dict) or not all(
+            isinstance(name, str) and isinstance(values, list) and all(isinstance(value, str) for value in values)
+            for name, values in features.items()
+        ):
+            raise CaptureError("whole Cargo package features are malformed")
+        packages_by_id[package_id] = package
+        keys_by_id[package_id] = key
+        ids_by_key[key] = package_id
+        declarations_by_id[package_id] = _metadata_declarations(package)
+
+    members = metadata.get("workspace_members")
+    if not isinstance(members, list) or len(members) != 1 or not isinstance(members[0], str):
+        raise CaptureError("whole Cargo metadata must expose exactly one workspace member")
+    member_id = members[0]
+    if member_id not in packages_by_id or packages_by_id[member_id].get("name") != "moshi":
+        raise CaptureError("whole Cargo metadata workspace member is not exactly moshi")
+    resolve = metadata.get("resolve")
+    if not isinstance(resolve, dict) or "root" not in resolve:
+        raise CaptureError("whole Cargo metadata resolve root is required")
+    root = resolve.get("root")
+    if root is None:
+        root = member_id
+    if root != member_id:
+        raise CaptureError("whole Cargo metadata root is not the moshi workspace member")
+    nodes = resolve.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise CaptureError("whole Cargo metadata resolve nodes are required and nonempty")
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+            raise CaptureError("whole Cargo resolve node is malformed")
+        node_id = node["id"]
+        if node_id in nodes_by_id or node_id not in packages_by_id:
+            raise CaptureError("whole Cargo resolve node is unknown or duplicated")
+        nodes_by_id[node_id] = node
+    if require_complete_nodes and set(nodes_by_id) != set(packages_by_id):
+        raise CaptureError("whole Cargo metadata package and node identities differ")
+    nondev_edges: dict[str, set[str]] = {}
+    for node_id, node in nodes_by_id.items():
+        deps = node.get("deps")
+        if not isinstance(deps, list):
+            raise CaptureError("whole Cargo resolve node deps are required")
+        plain_dependencies = node.get("dependencies")
+        if plain_dependencies is not None:
+            if not isinstance(plain_dependencies, list) or not all(isinstance(value, str) for value in plain_dependencies):
+                raise CaptureError("whole Cargo resolve node dependencies are malformed")
+            if len(set(plain_dependencies)) != len(plain_dependencies) or set(plain_dependencies) != {edge.get("pkg") for edge in deps if isinstance(edge, dict)}:
+                raise CaptureError("whole Cargo resolve node dependencies disagree with typed deps")
+        package_declarations = declarations_by_id[node_id]
+        features = node.get("features", [])
+        if not isinstance(features, list) or not all(isinstance(value, str) for value in features):
+            raise CaptureError("whole Cargo activated features are malformed")
+        edge_ids: set[str] = set()
+        for edge in deps:
+            if not isinstance(edge, dict) or not isinstance(edge.get("pkg"), str) or not isinstance(edge.get("name"), str):
+                raise CaptureError("whole Cargo dependency edge is malformed")
+            target_id = edge["pkg"]
+            if target_id not in packages_by_id:
+                raise CaptureError("whole Cargo dependency edge references an unknown package")
+            kinds = edge.get("dep_kinds")
+            if not isinstance(kinds, list) or not kinds:
+                raise CaptureError("whole Cargo dependency edge kinds are required")
+            aliases = [
+                declaration for declaration in package_declarations
+                if _metadata_name(str(declaration.get("rename") or declaration["name"])) == _metadata_name(edge["name"])
+            ]
+            if not aliases:
+                raise CaptureError("whole Cargo dependency edge has no manifest declaration")
+            for dep_kind in kinds:
+                if not isinstance(dep_kind, dict):
+                    raise CaptureError("whole Cargo dependency kind is malformed")
+                kind, target = dep_kind.get("kind"), dep_kind.get("target")
+                if kind not in (None, "normal", "build", "dev"):
+                    raise CaptureError("whole Cargo dependency kind is unsupported")
+                if target is not None and not isinstance(target, str):
+                    raise CaptureError("whole Cargo dependency target is malformed")
+                matching = [
+                    declaration for declaration in aliases
+                    if (kind in (None, "normal") and declaration.get("kind") in (None, "normal"))
+                    or (kind == "build" and declaration.get("kind") == "build")
+                    or (kind == "dev" and declaration.get("kind") == "dev")
+                ]
+                target_package = packages_by_id[target_id]
+                matching = [
+                    declaration for declaration in matching
+                    if declaration["name"] == target_package["name"]
+                    and declaration.get("target") == target
+                ]
+                if not matching:
+                    raise CaptureError("whole Cargo dependency kind has no manifest declaration")
+                target_source = keys_by_id[target_id][2]
+                if not any(declaration.get("source") == target_source for declaration in matching):
+                    raise CaptureError("whole Cargo dependency source disagrees with manifest")
+                if kind != "dev":
+                    edge_ids.add(target_id)
+        nondev_edges[node_id] = edge_ids
+    return {
+        "packages_by_id": packages_by_id,
+        "keys_by_id": keys_by_id,
+        "ids_by_key": ids_by_key,
+        "nodes_by_id": nodes_by_id,
+        "declarations_by_id": declarations_by_id,
+        "nondev_edges": nondev_edges,
+        "root": root,
+    }
+
+
+def _activated_dependency_aliases(package: dict[str, Any], node: dict[str, Any], declarations: list[dict[str, Any]]) -> set[str]:
+    features = package.get("features", {})
+    if not isinstance(features, dict) or not all(isinstance(name, str) and isinstance(values, list) and all(isinstance(value, str) for value in values) for name, values in features.items()):
+        raise CaptureError("whole Cargo package features are malformed")
+    activated = node.get("features", [])
+    if not isinstance(activated, list) or not all(isinstance(value, str) for value in activated):
+        raise CaptureError("whole Cargo activated features are malformed")
+    all_aliases = {
+        _metadata_name(str(declaration.get("rename") or declaration["name"])): declaration
+        for declaration in declarations
+    }
+    aliases = {name: declaration for name, declaration in all_aliases.items() if declaration.get("optional") is True}
+    active: set[str] = set()
+    queue = list(activated)
+    seen_features: set[str] = set()
+    while queue:
+        feature = queue.pop()
+        if feature in seen_features:
+            continue
+        seen_features.add(feature)
+        if feature in aliases and feature not in features:
+            active.add(feature)
+            continue
+        if feature not in features:
+            raise CaptureError("whole Cargo activated feature is undeclared")
+        for expression in features[feature]:
+            if expression.startswith("dep:"):
+                alias = _metadata_name(expression[4:])
+                if alias not in aliases:
+                    raise CaptureError("whole Cargo feature references an unknown dependency alias")
+                active.add(alias)
+                continue
+            if "/" in expression:
+                alias, _child = expression.split("/", 1)
+                weak = alias.endswith("?")
+                alias = _metadata_name(alias[:-1] if weak else alias)
+                if alias in all_aliases:
+                    if not weak and alias in aliases:
+                        active.add(alias)
+                    continue
+                if expression in features:
+                    queue.append(expression)
+                    continue
+                raise CaptureError("whole Cargo feature expression is unsupported")
+            if expression in features:
+                queue.append(expression)
+            elif _metadata_name(expression) in all_aliases and _metadata_name(expression) not in features:
+                if _metadata_name(expression) in aliases:
+                    active.add(_metadata_name(expression))
+            else:
+                raise CaptureError("whole Cargo feature expression is undeclared")
+    return active
+
+
+def _validate_cpu_metadata_against_whole(cpu_metadata: dict[str, Any], whole: dict[str, Any], base_keys: set[tuple[str, str, str | None]]) -> None:
+    # Keep the existing CPU inspection as the authoritative no-GPU execution
+    # guard.  The whole-feature graph is never passed to inspect_metadata.
+    cpu_graph = inspect_metadata(json.dumps(cpu_metadata, separators=(",", ":")))
+    cpu = _metadata_graph(cpu_metadata, require_complete_nodes=False)
+    whole_keys = whole["ids_by_key"]
+    cpu_key_by_id = cpu["keys_by_id"]
+    for package_id in cpu_graph["active_root_closure"]:
+        key = cpu_key_by_id.get(package_id)
+        if key is None or key not in base_keys or key not in whole_keys:
+            raise CaptureError("CPU metadata closure is outside the whole/base package graph")
+    for source_id in cpu_graph["active_root_closure"]:
+        source_key = cpu_key_by_id[source_id]
+        whole_source_id = whole_keys.get(source_key)
+        if whole_source_id is None:
+            raise CaptureError("CPU metadata source package is absent from whole graph")
+        if cpu["declarations_by_id"].get(source_id, []) != whole["declarations_by_id"].get(whole_source_id, []):
+            raise CaptureError("CPU metadata declarations differ from whole metadata for an active package")
+        for target_id in cpu["nondev_edges"].get(source_id, set()):
+            target_key = cpu_key_by_id[target_id]
+            if target_key not in base_keys or whole["ids_by_key"].get(target_key) not in whole["nondev_edges"].get(whole_source_id, set()):
+                raise CaptureError("CPU metadata edge is outside the whole/base graph")
+
+
+def _validate_semantic_base_projection(
+    original: dict[tuple[str, str, str | None], dict[str, Any]],
+    projected: dict[tuple[str, str, str | None], dict[str, Any]],
+    *,
+    cpu_metadata: dict[str, Any],
+    whole_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    if not set(projected).issubset(original):
+        _emit_lock_diagnostic(original, projected)
+        raise CaptureError("projected base lock introduced an unknown package")
+    whole = _metadata_graph(whole_metadata, require_complete_nodes=True)
+    if set(whole["ids_by_key"]) != set(projected):
+        raise CaptureError("whole Cargo metadata package identities differ from projected base lock")
+    _validate_cpu_metadata_against_whole(cpu_metadata, whole, set(projected))
+    removed_by_parent: dict[tuple[str, str, str | None], list[tuple[str, str, str | None]]] = {}
+    for key, package in projected.items():
+        if _lock_package_without_dependencies(package) != _lock_package_without_dependencies(original[key]):
+            raise CaptureError("projected base lock mutated retained non-dependency package fields")
+        old_dependencies = original[key].get("dependencies", [])
+        new_dependencies = package.get("dependencies", [])
+        if not isinstance(old_dependencies, list) or not isinstance(new_dependencies, list):
+            raise CaptureError("Cargo.lock dependency list is malformed")
+        old_edges = [_lock_dependency_key(value, original) for value in old_dependencies]
+        new_edges = [_lock_dependency_key(value, projected) for value in new_dependencies]
+        if len(set(old_edges)) != len(old_edges) or len(set(new_edges)) != len(new_edges):
+            raise CaptureError("Cargo.lock dependency labels are duplicated")
+        retained = [edge for edge in old_edges if edge in new_edges]
+        if new_edges != retained:
+            raise CaptureError("projected base lock changed canonical dependency additions, replacements, or order")
+        removed_by_parent[key] = [edge for edge in old_edges if edge not in new_edges]
+        whole_id = whole["ids_by_key"].get(key)
+        if whole_id is None:
+            raise CaptureError("whole Cargo metadata is missing a projected package")
+        whole_edges = {whole["keys_by_id"][target] for target in whole["nondev_edges"].get(whole_id, set())}
+        if set(new_edges) != whole_edges:
+            raise CaptureError("projected base lock canonical edges differ from whole Cargo metadata")
+
+    for parent_key, removed in removed_by_parent.items():
+        if not removed:
+            continue
+        parent_id = whole["ids_by_key"][parent_key]
+        package = whole["packages_by_id"][parent_id]
+        declarations = whole["declarations_by_id"][parent_id]
+        active_aliases = _activated_dependency_aliases(package, whole["nodes_by_id"][parent_id], declarations)
+        for target_key in removed:
+            candidates = [
+                declaration for declaration in declarations
+                if declaration.get("kind") in (None, "normal", "build")
+                and _metadata_name(str(declaration["name"])) == _metadata_name(target_key[0])
+                and declaration.get("source") == target_key[2]
+            ]
+            if not candidates:
+                raise CaptureError("removed Cargo.lock edge lacks a non-dev manifest declaration")
+            signatures = {
+                (declaration.get("name"), declaration.get("rename"), declaration.get("source"), declaration.get("req"), declaration.get("kind"), declaration.get("target"))
+                for declaration in candidates
+            }
+            if len(signatures) != 1:
+                raise CaptureError("removed Cargo.lock edge has ambiguous manifest declarations")
+            if any(declaration.get("optional") is not True for declaration in candidates):
+                raise CaptureError("removed Cargo.lock edge has a mandatory non-dev manifest declaration")
+            aliases = {_metadata_name(str(declaration.get("rename") or declaration["name"])) for declaration in candidates}
+            if aliases & active_aliases:
+                raise CaptureError("removed optional Cargo.lock edge is activated by whole Cargo features")
+    return {
+        "status": "SOURCE_ONLY_METADATA_REVIEW_PENDING",
+        "projection_status": "SUBSET_UNCHANGED",
+        "original_packages": len(original),
+        "projected_packages": len(projected),
+        "whole_metadata_packages": len(whole["packages_by_id"]),
+        "whole_metadata_review": "SOURCE_ONLY_METADATA_REVIEW_PENDING",
+    }
+
+
+def validate_base_lock(
+    original_path: Path,
+    projected_path: Path,
+    *,
+    cpu_metadata: dict[str, Any] | None = None,
+    whole_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     original = lock_packages(read_toml(original_path))
     projected = lock_packages(read_toml(projected_path))
+    if (cpu_metadata is None) != (whole_metadata is None):
+        raise CaptureError("CPU and whole Cargo metadata evidence must be supplied together")
+    if cpu_metadata is not None and whole_metadata is not None:
+        return _validate_semantic_base_projection(
+            original,
+            projected,
+            cpu_metadata=cpu_metadata,
+            whole_metadata=whole_metadata,
+        )
     projected_only = set(projected) - set(original)
     mismatches = _retained_mismatch_rows(original, projected)
     if projected_only or mismatches:
@@ -1087,7 +1453,12 @@ def capture(
         write_json(output_root / "whole_lock_metadata.json", whole_lock_evidence)
         if projection_lock_after != projection_lock_before:
             raise CaptureError("Cargo all-features metadata mutated projection Cargo.lock")
-        base_result = validate_base_lock(original_lock, base_lock)
+        base_result = validate_base_lock(
+            original_lock,
+            base_lock,
+            cpu_metadata=initial_metadata,
+            whole_metadata=whole_lock_metadata,
+        )
         update = [cargo, "update", "-p", PATCH_PACKAGE, "--precise", PATCH_MEMMAP_VERSION]
         update_result = run_bounded_subprocess(update, cwd=projection, env=env, deadline=deadline)
         if update_result["returncode"] != 0:

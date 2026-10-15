@@ -60,26 +60,31 @@ checksum = "{candle_checksum}"
 
 def metadata_json(*, gpu: bool = False, gpu_dependency: bool = False, unknown_ref: bool = False, missing_root: bool = False) -> str:
     moshi = "path+file:///tmp/projection/moshi-core#moshi@0.6.4"
-    candle = "registry+https://github.com/rust-lang/crates.io-index#candle-core@0.9.1"
+    memmap = "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.5"
     build = "registry+https://github.com/rust-lang/crates.io-index#build-helper@1.0.0"
     dev = "registry+https://github.com/rust-lang/crates.io-index#dev-helper@1.0.0"
-    dep = "registry+https://example.invalid#missing@1.0.0" if unknown_ref else candle
+    dep = "registry+https://example.invalid#missing@1.0.0" if unknown_ref else memmap
     features = ["cuda"] if gpu else []
     value = {
         "packages": [
-            {"id": moshi, "name": "moshi", "manifest_path": "/tmp/projection/moshi-core/Cargo.toml"},
-            {"id": candle, "name": "candle-core", "manifest_path": "/tmp/candle/Cargo.toml"},
-            {"id": build, "name": "build-helper", "manifest_path": "/tmp/build/Cargo.toml"},
-            {"id": dev, "name": "dev-helper", "manifest_path": "/tmp/dev/Cargo.toml"},
+            {"id": moshi, "name": "moshi", "version": "0.6.4", "source": None, "manifest_path": "/tmp/projection/moshi-core/Cargo.toml", "features": {"default": [], "cuda": [], "metal": [], "flash-attn": []}, "dependencies": [
+                {"name": "memmap2", "source": "registry+https://github.com/rust-lang/crates.io-index", "req": "^0.9.5", "kind": None, "optional": False, "rename": None, "target": None, "features": [], "uses_default_features": True},
+                {"name": "build-helper", "source": "registry+https://github.com/rust-lang/crates.io-index", "req": "^1.0.0", "kind": "build", "optional": False, "rename": None, "target": None, "features": [], "uses_default_features": True},
+                {"name": "memmap2", "source": "registry+https://github.com/rust-lang/crates.io-index", "req": "^0.9.5", "kind": "build", "optional": False, "rename": None, "target": None, "features": [], "uses_default_features": True},
+                {"name": "dev-helper", "source": "registry+https://github.com/rust-lang/crates.io-index", "req": "^1.0.0", "kind": "dev", "optional": False, "rename": None, "target": None, "features": [], "uses_default_features": True},
+            ]},
+            {"id": memmap, "name": "memmap2", "version": "0.9.5", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/tmp/memmap/Cargo.toml", "features": {}, "dependencies": []},
+            {"id": build, "name": "build-helper", "version": "1.0.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/tmp/build/Cargo.toml", "features": {}, "dependencies": []},
+            {"id": dev, "name": "dev-helper", "version": "1.0.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/tmp/dev/Cargo.toml", "features": {}, "dependencies": []},
         ],
         "workspace_members": [moshi],
         "resolve": {"nodes": [
             {"id": moshi, "features": features, "deps": [
-                {"pkg": dep, "dep_kinds": [{"kind": None, "target": None}]},
-                {"pkg": build, "dep_kinds": [{"kind": "build", "target": None}]},
-                {"pkg": dev, "dep_kinds": [{"kind": "dev", "target": None}]},
+                {"name": "memmap2" if not unknown_ref else "missing", "pkg": dep, "dep_kinds": [{"kind": None, "target": None}]},
+                {"name": "build-helper" if gpu_dependency else "memmap2", "pkg": build if gpu_dependency else memmap, "dep_kinds": [{"kind": "build", "target": None}]},
+                {"name": "dev-helper", "pkg": dev, "dep_kinds": [{"kind": "dev", "target": None}]},
             ]},
-            {"id": candle, "features": [], "deps": []},
+            {"id": memmap, "features": [], "deps": []},
             {"id": build, "features": ["cuda"] if gpu_dependency else [], "deps": []},
             {"id": dev, "features": [], "deps": []},
         ]},
@@ -87,6 +92,130 @@ def metadata_json(*, gpu: bool = False, gpu_dependency: bool = False, unknown_re
     if not missing_root:
         value["resolve"]["root"] = None
     return json.dumps(value)
+
+
+def whole_metadata_json(*, gpu: bool = False) -> str:
+    value = json.loads(metadata_json(gpu=gpu))
+    ids = {package["name"]: package["id"] for package in value["packages"]}
+    keep = {ids["moshi"], ids["memmap2"]}
+    candle = "registry+https://github.com/rust-lang/crates.io-index#candle-core@0.9.1"
+    value["packages"] = [package for package in value["packages"] if package["id"] in keep]
+    value["packages"].append({
+        "id": candle,
+        "name": "candle-core",
+        "version": "0.9.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "manifest_path": "/tmp/candle/Cargo.toml",
+        "features": {},
+        "dependencies": [],
+    })
+    value["resolve"]["nodes"] = [node for node in value["resolve"]["nodes"] if node["id"] in keep]
+    for node in value["resolve"]["nodes"]:
+        if node["id"] == ids["moshi"]:
+            node["deps"] = [
+                edge for edge in node["deps"]
+                if edge["pkg"] == ids["memmap2"]
+                and any(dep_kind.get("kind") in (None, "normal") for dep_kind in edge["dep_kinds"])
+            ]
+    value["resolve"]["nodes"].append({"id": candle, "features": [], "deps": []})
+    return json.dumps(value)
+
+
+def _small_removal_fixture(case: dict[str, object]) -> tuple[str, str, dict[str, object], dict[str, object]]:
+    registry = "registry+https://github.com/rust-lang/crates.io-index"
+    parent = str(case["parent"])
+    parent_version = str(case["parent_version"])
+    target = str(case["target"])
+    target_version = str(case["target_version"])
+    moshi_id = "path+file:///tmp/projection/moshi-core#moshi@0.6.4"
+    parent_id = f"{registry}#{parent}@{parent_version}"
+    target_id = f"{registry}#{target}@{target_version}"
+    target_declaration = json.loads(json.dumps(SOURCE_DERIVED_DECLARATIONS[target]))
+    declarations = [target_declaration]
+    for extra in case.get("extra_declarations", []):
+        if isinstance(extra, dict):
+            declarations.append(json.loads(json.dumps(extra)))
+        else:
+            name, _req = extra
+            declarations.append(json.loads(json.dumps(SOURCE_DERIVED_DECLARATIONS[name])))
+    parent_package = {
+        "id": parent_id, "name": parent, "version": parent_version, "source": registry,
+        "manifest_path": f"/tmp/{parent}/Cargo.toml", "features": case["features"], "dependencies": declarations,
+    }
+    metadata_packages = [
+            {"id": moshi_id, "name": "moshi", "version": "0.6.4", "source": None,
+             "manifest_path": "/tmp/projection/moshi-core/Cargo.toml", "features": {}, "dependencies": []},
+            parent_package,
+        ]
+    if bool(case["target_present"]):
+        metadata_packages.append({"id": target_id, "name": target, "version": target_version, "source": registry,
+                                  "manifest_path": f"/tmp/{target}/Cargo.toml", "features": {}, "dependencies": []})
+    metadata = {
+        "packages": metadata_packages,
+        "workspace_members": [moshi_id],
+        "resolve": {
+            "root": None,
+            "nodes": [
+                {"id": moshi_id, "features": [], "deps": []},
+                {"id": parent_id, "features": list(case["active_features"]), "deps": []},
+            ],
+        },
+    }
+    if bool(case["target_present"]):
+        metadata["resolve"]["nodes"].append({"id": target_id, "features": [], "deps": []})
+    cpu = {
+        "packages": [metadata["packages"][0]],
+        "workspace_members": [moshi_id],
+        "resolve": {"root": None, "nodes": [{"id": moshi_id, "features": [], "deps": []}]},
+    }
+    lock = (
+        "version = 4\n"
+        "[[package]]\n"
+        "name = \"moshi\"\nversion = \"0.6.4\"\n\n"
+        f"[[package]]\nname = \"{parent}\"\nversion = \"{parent_version}\"\nsource = \"{registry}\"\nchecksum = \"{'b' * 64}\"\ndependencies = [\"{target} {target_version}\"]\n\n"
+        f"[[package]]\nname = \"{target}\"\nversion = \"{target_version}\"\nsource = \"{registry}\"\nchecksum = \"{'a' * 64}\"\n"
+    )
+    projected = lock.replace(f'dependencies = ["{target} {target_version}"]\n', "dependencies = []\n")
+    if not bool(case["target_present"]):
+        projected = projected.replace(
+            f'[[package]]\nname = "{target}"\nversion = "{target_version}"\nsource = "{registry}"\nchecksum = "{"a" * 64}"\n',
+            "",
+        )
+    return lock, projected, cpu, metadata
+
+
+REMOVAL_CASES = (
+    {"parent": "cc", "parent_version": "1.2.19", "target": "jobserver", "target_version": "0.1.33", "req": "^0.1.30", "target_cfg": None, "features": {"jobserver": [], "parallel": ["dep:libc", "dep:jobserver"]}, "active_features": [], "extra_declarations": [("libc", "^0.2.62")]},
+    {"parent": "cc", "parent_version": "1.2.19", "target": "libc", "target_version": "0.2.171", "req": "^0.2.62", "target_cfg": "cfg(unix)", "features": {"jobserver": [], "parallel": ["dep:libc", "dep:jobserver"]}, "active_features": [], "extra_declarations": [("jobserver", "^0.1.30")]},
+    {"parent": "hashbrown", "parent_version": "0.15.2", "target": "allocator-api2", "target_version": "0.2.21", "req": "^0.2.9", "target_cfg": None, "features": {"alloc": ["dep:alloc"], "allocator-api2": ["dep:allocator-api2"], "compiler_builtins": ["dep:compiler_builtins"], "core": ["dep:core"], "default": ["default-hasher", "inline-more", "allocator-api2", "equivalent", "raw-entry"], "default-hasher": ["dep:foldhash"], "equivalent": ["dep:equivalent"], "inline-more": [], "nightly": ["allocator-api2?/nightly", "bumpalo/allocator_api"], "raw-entry": [], "rayon": ["dep:rayon"], "rustc-dep-of-std": ["nightly", "core", "compiler_builtins", "alloc", "rustc-internal-api", "raw-entry"], "rustc-internal-api": [], "serde": ["dep:serde"]}, "active_features": [], "extra_declarations": [("equivalent", "^1.0"), ("foldhash", "^0.1.2")]},
+    {"parent": "hashbrown", "parent_version": "0.15.2", "target": "equivalent", "target_version": "1.0.2", "req": "^1.0", "target_cfg": None, "features": {"alloc": ["dep:alloc"], "allocator-api2": ["dep:allocator-api2"], "compiler_builtins": ["dep:compiler_builtins"], "core": ["dep:core"], "default": ["default-hasher", "inline-more", "allocator-api2", "equivalent", "raw-entry"], "default-hasher": ["dep:foldhash"], "equivalent": ["dep:equivalent"], "inline-more": [], "nightly": ["allocator-api2?/nightly", "bumpalo/allocator_api"], "raw-entry": [], "rayon": ["dep:rayon"], "rustc-dep-of-std": ["nightly", "core", "compiler_builtins", "alloc", "rustc-internal-api", "raw-entry"], "rustc-internal-api": [], "serde": ["dep:serde"]}, "active_features": [], "extra_declarations": [("allocator-api2", "^0.2.9"), ("foldhash", "^0.1.2")]},
+    {"parent": "hashbrown", "parent_version": "0.15.2", "target": "foldhash", "target_version": "0.1.5", "req": "^0.1.2", "target_cfg": None, "features": {"alloc": ["dep:alloc"], "allocator-api2": ["dep:allocator-api2"], "compiler_builtins": ["dep:compiler_builtins"], "core": ["dep:core"], "default": ["default-hasher", "inline-more", "allocator-api2", "equivalent", "raw-entry"], "default-hasher": ["dep:foldhash"], "equivalent": ["dep:equivalent"], "inline-more": [], "nightly": ["allocator-api2?/nightly", "bumpalo/allocator_api"], "raw-entry": [], "rayon": ["dep:rayon"], "rustc-dep-of-std": ["nightly", "core", "compiler_builtins", "alloc", "rustc-internal-api", "raw-entry"], "rustc-internal-api": [], "serde": ["dep:serde"]}, "active_features": [], "extra_declarations": [("allocator-api2", "^0.2.9"), ("equivalent", "^1.0")]},
+    {"parent": "toml_datetime", "parent_version": "0.6.8", "target": "serde", "target_version": "1.0.219", "req": "^1.0.145", "target_cfg": None, "features": {"serde": ["dep:serde"]}, "active_features": [], "extra_declarations": []},
+    {"parent": "toml_edit", "parent_version": "0.22.24", "target": "serde", "target_version": "1.0.219", "req": "^1.0.145", "target_cfg": None, "features": {"default": ["parse", "display"], "display": [], "parse": ["dep:winnow"], "perf": ["dep:kstring"], "serde": ["dep:serde", "toml_datetime/serde", "dep:serde_spanned"], "unbounded": []}, "active_features": ["parse"], "extra_declarations": [("serde_spanned", "^0.6.8"), ("winnow", "^0.7.0")]},
+    {"parent": "toml_edit", "parent_version": "0.22.24", "target": "serde_spanned", "target_version": "0.6.8", "req": "^0.6.8", "target_cfg": None, "features": {"default": ["parse", "display"], "display": [], "parse": ["dep:winnow"], "perf": ["dep:kstring"], "serde": ["dep:serde", "toml_datetime/serde", "dep:serde_spanned"], "unbounded": []}, "active_features": ["parse"], "extra_declarations": [("serde", "^1.0.145"), ("winnow", "^0.7.0")]},
+    {"parent": "tracing", "parent_version": "0.1.41", "target": "log", "target_version": "0.4.27", "req": "^0.4.17", "target_cfg": None, "features": {"async-await": [], "attributes": ["tracing-attributes"], "default": ["std", "attributes"], "log": ["dep:log"], "log-always": ["log"], "max_level_debug": [], "max_level_error": [], "max_level_info": [], "max_level_off": [], "max_level_trace": [], "max_level_warn": [], "release_max_level_debug": [], "release_max_level_error": [], "release_max_level_info": [], "release_max_level_off": [], "release_max_level_trace": [], "release_max_level_warn": [], "std": ["tracing-core/std"], "tracing-attributes": ["dep:tracing-attributes"], "valuable": ["tracing-core/valuable"]}, "active_features": ["attributes", "default", "std", "tracing-attributes"], "extra_declarations": [("tracing-attributes", "^0.1.28"), ("tracing-core", "^0.1.33")]},
+    {"parent": "tracing-core", "parent_version": "0.1.33", "target": "valuable", "target_version": "0.1.1", "req": "^0.1.0", "target_cfg": "cfg(tracing_unstable)", "features": {"default": ["std", "valuable?/std"], "once_cell": ["dep:once_cell"], "std": ["once_cell"], "valuable": ["dep:valuable"]}, "active_features": ["once_cell", "std"], "extra_declarations": [("once_cell", "^1.13.0")]},
+)
+
+SOURCE_DERIVED_DECLARATIONS = {
+    "jobserver": {"features": [], "kind": None, "name": "jobserver", "optional": True, "registry": None, "rename": None, "req": "^0.1.30", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": False},
+    "libc": {"features": [], "kind": None, "name": "libc", "optional": True, "registry": None, "rename": None, "req": "^0.2.62", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": "cfg(unix)", "uses_default_features": False},
+    "allocator-api2": {"features": ["alloc"], "kind": None, "name": "allocator-api2", "optional": True, "registry": None, "rename": None, "req": "^0.2.9", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": False},
+    "equivalent": {"features": [], "kind": None, "name": "equivalent", "optional": True, "registry": None, "rename": None, "req": "^1.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": False},
+    "foldhash": {"features": [], "kind": None, "name": "foldhash", "optional": True, "registry": None, "rename": None, "req": "^0.1.2", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": False},
+    "serde": {"features": [], "kind": None, "name": "serde", "optional": True, "registry": None, "rename": None, "req": "^1.0.145", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": True},
+    "serde_spanned": {"features": ["serde"], "kind": None, "name": "serde_spanned", "optional": True, "registry": None, "rename": None, "req": "^0.6.8", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": True},
+    "winnow": {"features": [], "kind": None, "name": "winnow", "optional": True, "registry": None, "rename": None, "req": "^0.7.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": True},
+    "tracing-attributes": {"features": [], "kind": None, "name": "tracing-attributes", "optional": True, "registry": None, "rename": None, "req": "^0.1.28", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": True},
+    "tracing-core": {"features": [], "kind": None, "name": "tracing-core", "optional": False, "registry": None, "rename": None, "req": "^0.1.33", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": False},
+    "once_cell": {"features": [], "kind": None, "name": "once_cell", "optional": True, "registry": None, "rename": None, "req": "^1.13.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": True},
+    "log": {"features": [], "kind": None, "name": "log", "optional": True, "registry": None, "rename": None, "req": "^0.4.17", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": None, "uses_default_features": True},
+    "valuable": {"features": [], "kind": None, "name": "valuable", "optional": True, "registry": None, "rename": None, "req": "^0.1.0", "source": "registry+https://github.com/rust-lang/crates.io-index", "target": "cfg(tracing_unstable)", "uses_default_features": False},
+}
+
+RETAINED_REMOVAL_TARGETS = {("cc", "libc"), ("hashbrown", "equivalent"), ("toml_datetime", "serde"), ("toml_edit", "serde"), ("tracing", "log")}
+for _case in REMOVAL_CASES:
+    _case["target_present"] = (_case["parent"], _case["target"]) in RETAINED_REMOVAL_TARGETS
 
 
 class CollectorTests(unittest.TestCase):
@@ -164,6 +293,207 @@ class CollectorTests(unittest.TestCase):
         projected.write_text(LOCK.format(memmap_version="0.9.6", memmap_checksum="a" * 64, candle_checksum="b" * 64))
         with self.assertRaises(leaf.CaptureError):
             leaf.validate_base_lock(original, projected)
+
+    def _semantic_validate(
+        self,
+        *,
+        original_text: str | None = None,
+        projected_text: str | None = None,
+        cpu_value: dict[str, object] | None = None,
+        whole_value: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        original = self.root / "semantic-original.lock"
+        projected = self.root / "semantic-projected.lock"
+        original.write_text(original_text or LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64))
+        projected.write_text(projected_text or LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64))
+        cpu = cpu_value or json.loads(metadata_json())
+        whole = whole_value or json.loads(whole_metadata_json())
+        return leaf.validate_base_lock(original, projected, cpu_metadata=cpu, whole_metadata=whole)
+
+    def test_semantic_projection_accepts_canonical_alias_and_rejects_record_mutations(self) -> None:
+        aliased = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(
+            'dependencies = ["memmap2"]', 'dependencies = ["memmap2 0.9.5"]'
+        )
+        result = self._semantic_validate(projected_text=aliased)
+        self.assertEqual(result["status"], "SOURCE_ONLY_METADATA_REVIEW_PENDING")
+        self.assertEqual(result["projection_status"], "SUBSET_UNCHANGED")
+        for mutation in (
+            ('version = "0.6.4"', 'version = "0.6.5"'),
+            ('source = "registry+https://github.com/rust-lang/crates.io-index"', 'source = "git+https://example.invalid"'),
+            ('checksum = "' + "b" * 64 + '"', 'checksum = "' + "c" * 64 + '"'),
+        ):
+            with self.subTest(mutation=mutation):
+                mutated = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(*mutation)
+                with self.assertRaises(leaf.CaptureError):
+                    self._semantic_validate(projected_text=mutated)
+        unknown = aliased.replace('name = "moshi"', 'name = "moshi"\nunknown_scalar = true')
+        with self.assertRaises(leaf.CaptureError):
+            self._semantic_validate(projected_text=unknown)
+
+    def test_semantic_projection_rejects_added_reordered_and_mandatory_edges(self) -> None:
+        added = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(
+            'dependencies = ["memmap2"]', 'dependencies = ["memmap2", "candle-core"]'
+        )
+        with self.assertRaisesRegex(leaf.CaptureError, "canonical dependency"):
+            self._semantic_validate(projected_text=added)
+        ordered = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(
+            'dependencies = ["memmap2"]', 'dependencies = ["memmap2", "candle-core"]'
+        )
+        reversed_order = ordered.replace(
+            'dependencies = ["memmap2", "candle-core"]', 'dependencies = ["candle-core", "memmap2"]'
+        )
+        whole = json.loads(whole_metadata_json())
+        moshi = next(package for package in whole["packages"] if package["name"] == "moshi")
+        candle = next(package for package in whole["packages"] if package["name"] == "candle-core")
+        moshi["dependencies"].append({
+            "name": "candle-core", "source": candle["source"], "req": "^0.9.1", "kind": None,
+            "optional": False, "rename": None, "target": None, "features": [], "uses_default_features": True,
+        })
+        whole["resolve"]["nodes"][0]["deps"].append({
+            "name": "candle-core", "pkg": candle["id"], "dep_kinds": [{"kind": None, "target": None}]
+        })
+        cpu = json.loads(metadata_json())
+        cpu_moshi = next(package for package in cpu["packages"] if package["name"] == "moshi")
+        cpu_moshi["dependencies"] = json.loads(json.dumps(moshi["dependencies"]))
+        cpu["resolve"]["nodes"][0]["deps"] = []
+        with self.assertRaisesRegex(leaf.CaptureError, "canonical dependency"):
+            self._semantic_validate(original_text=ordered, projected_text=reversed_order, cpu_value=cpu, whole_value=whole)
+        mandatory_removed = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(
+            'dependencies = ["memmap2"]', 'dependencies = []'
+        )
+        whole = json.loads(whole_metadata_json())
+        whole["packages"][0]["dependencies"] = [whole["packages"][0]["dependencies"][0]]
+        whole["resolve"]["nodes"][0]["deps"] = []
+        cpu = json.loads(metadata_json())
+        cpu["packages"][0]["dependencies"] = json.loads(json.dumps(whole["packages"][0]["dependencies"]))
+        cpu["resolve"]["nodes"][0]["deps"] = []
+        with self.assertRaisesRegex(leaf.CaptureError, "mandatory non-dev"):
+            self._semantic_validate(projected_text=mandatory_removed, cpu_value=cpu, whole_value=whole)
+
+    def test_semantic_projection_rejects_inconsistent_whole_metadata(self) -> None:
+        whole = json.loads(whole_metadata_json())
+        whole["packages"] = [package for package in whole["packages"] if package["name"] != "candle-core"]
+        with self.assertRaisesRegex(leaf.CaptureError, "package identities|unknown"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"][0]["deps"][0]["pkg"] = "unknown-package-id"
+        with self.assertRaisesRegex(leaf.CaptureError, "unknown package"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"][0]["deps"][0]["name"] = "wrong-alias"
+        with self.assertRaisesRegex(leaf.CaptureError, "manifest declaration"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        next(package for package in whole["packages"] if package["name"] == "memmap2")["name"] = "wrong-target"
+        with self.assertRaisesRegex(leaf.CaptureError, "manifest declaration"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"][0]["deps"][0]["dep_kinds"][0]["target"] = "cfg(windows)"
+        with self.assertRaisesRegex(leaf.CaptureError, "manifest declaration"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"].append(dict(whole["resolve"]["nodes"][1]))
+        with self.assertRaisesRegex(leaf.CaptureError, "duplicated"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"] = [node for node in whole["resolve"]["nodes"] if node["id"] != "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.5"]
+        with self.assertRaisesRegex(leaf.CaptureError, "identities differ"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"][0]["dependencies"] = []
+        with self.assertRaisesRegex(leaf.CaptureError, "disagree"):
+            self._semantic_validate(whole_value=whole)
+        whole = json.loads(whole_metadata_json())
+        whole["resolve"]["nodes"][0]["dependencies"] = ["memmap-id"]
+        with self.assertRaisesRegex(leaf.CaptureError, "disagree"):
+            self._semantic_validate(whole_value=whole)
+
+    def test_semantic_projection_rejects_added_projected_package(self) -> None:
+        projected = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64)
+        projected += '\n[[package]]\nname = "extra"\nversion = "1.0.0"\n'
+        with self.assertRaisesRegex(leaf.CaptureError, "unknown package"):
+            self._semantic_validate(projected_text=projected)
+
+    def test_semantic_projection_rejects_active_cpu_declaration_mutations(self) -> None:
+        for field, value in (("req", "=0.1.0"), ("kind", "build"), ("target", "cfg(windows)")):
+            with self.subTest(field=field):
+                cpu = json.loads(metadata_json())
+                cpu_package = next(package for package in cpu["packages"] if package["name"] == "moshi")
+                cpu_package["dependencies"][0][field] = value
+                with self.assertRaises(leaf.CaptureError):
+                    self._semantic_validate(cpu_value=cpu)
+
+    def test_semantic_projection_requires_whole_proof_for_retained_target_and_optional_activation(self) -> None:
+        projected = LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(
+            'dependencies = ["memmap2"]', 'dependencies = []'
+        )
+        whole = json.loads(whole_metadata_json())
+        whole["packages"][0]["dependencies"] = [whole["packages"][0]["dependencies"][0]]
+        whole["packages"][0]["dependencies"][0]["optional"] = True
+        whole["resolve"]["nodes"][0]["deps"] = []
+        cpu = json.loads(metadata_json())
+        cpu["packages"][0]["dependencies"] = json.loads(json.dumps(whole["packages"][0]["dependencies"]))
+        cpu["resolve"]["nodes"][0]["deps"] = []
+        self.assertEqual(self._semantic_validate(projected_text=projected, cpu_value=cpu, whole_value=whole)["status"], "SOURCE_ONLY_METADATA_REVIEW_PENDING")
+        whole["packages"][0]["dependencies"] = [{
+            "name": "memmap2", "source": "registry+https://github.com/rust-lang/crates.io-index", "req": "^0.9.5",
+            "kind": None, "optional": True, "rename": None, "target": None, "features": [], "uses_default_features": True,
+        }]
+        whole["packages"][0]["features"] = {"default": ["dep:memmap2"]}
+        whole["resolve"]["nodes"][0]["features"] = ["default"]
+        cpu["packages"][0]["dependencies"] = json.loads(json.dumps(whole["packages"][0]["dependencies"]))
+        with self.assertRaisesRegex(leaf.CaptureError, "activated"):
+            self._semantic_validate(projected_text=projected, cpu_value=cpu, whole_value=whole)
+        whole["packages"][0]["features"] = {"default": ["memmap2?/serde"]}
+        self.assertEqual(
+            self._semantic_validate(projected_text=projected, cpu_value=cpu, whole_value=whole)["status"],
+            "SOURCE_ONLY_METADATA_REVIEW_PENDING",
+        )
+        for expression in ("memmap2", "memmap2/serde"):
+            whole["packages"][0]["features"] = {"default": [expression]}
+            with self.subTest(expression=expression):
+                with self.assertRaisesRegex(leaf.CaptureError, "activated"):
+                    self._semantic_validate(projected_text=projected, cpu_value=cpu, whole_value=whole)
+        mixed = json.loads(whole_metadata_json())
+        mixed["packages"][0]["dependencies"] = [mixed["packages"][0]["dependencies"][0]]
+        mixed["packages"][0]["dependencies"][0]["optional"] = True
+        mixed["packages"][0]["dependencies"].append(dict(mixed["packages"][0]["dependencies"][0], optional=False))
+        mixed["resolve"]["nodes"][0]["deps"] = []
+        mixed_cpu = json.loads(metadata_json())
+        mixed_cpu["packages"][0]["dependencies"] = json.loads(json.dumps(mixed["packages"][0]["dependencies"]))
+        mixed_cpu["resolve"]["nodes"][0]["deps"] = []
+        with self.assertRaisesRegex(leaf.CaptureError, "mandatory non-dev"):
+            self._semantic_validate(projected_text=projected, cpu_value=mixed_cpu, whole_value=mixed)
+
+    def test_source_derived_six_parent_removals_are_positive_with_small_shapes(self) -> None:
+        self.assertEqual(len(REMOVAL_CASES), 10)
+        self.assertEqual(len({case["parent"] for case in REMOVAL_CASES}), 6)
+        self.assertEqual(sum(bool(case["target_present"]) for case in REMOVAL_CASES), 5)
+        for case in REMOVAL_CASES:
+            with self.subTest(parent=case["parent"], target=case["target"]):
+                original, projected, cpu, whole = _small_removal_fixture(case)
+                self.assertEqual(
+                    self._semantic_validate(original_text=original, projected_text=projected, cpu_value=cpu, whole_value=whole)["status"],
+                    "SOURCE_ONLY_METADATA_REVIEW_PENDING",
+                )
+
+    def test_strict_default_rejects_retained_target_edge_deletion_without_whole_proof(self) -> None:
+        original = self.root / "strict-original.lock"
+        projected = self.root / "strict-projected.lock"
+        original.write_text(LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64))
+        projected.write_text(LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64).replace(
+            'dependencies = ["memmap2"]', 'dependencies = []'
+        ))
+        with self.assertRaises(leaf.CaptureError):
+            leaf.validate_base_lock(original, projected)
+
+    def test_semantic_projection_rejects_ambiguous_labels(self) -> None:
+        complete = {
+            ("dup", "1.0.0", None): {},
+            ("dup", "1.1.0", None): {},
+        }
+        with self.assertRaisesRegex(leaf.CaptureError, "ambiguous"):
+            leaf._lock_dependency_key("dup", complete)
 
     def test_patch_wrong_checksum_and_source_fail(self) -> None:
         base = self.root / "base.lock"
@@ -288,9 +618,10 @@ class CollectorTests(unittest.TestCase):
         metadata_path = self.root / "metadata-fixture.json"
         metadata_path.write_text(metadata if metadata is not None else metadata_json())
         whole_metadata_path = self.root / "whole-metadata-fixture.json"
-        whole_metadata_path.write_text(whole_metadata if whole_metadata is not None else metadata_json())
+        whole_metadata_path.write_text(whole_metadata if whole_metadata is not None else whole_metadata_json())
         patched_lock = self.root / "patched-fixture.lock"
         patched_lock.write_text(LOCK.format(memmap_version="0.9.11", memmap_checksum="c" * 64, candle_checksum="b" * 64))
+        post_update_marker = self.root / "post-update.marker"
         mutated_base_lock = self.root / "mutated-base-fixture.lock"
         mutated_base_lock.write_text(
             LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64)
@@ -305,8 +636,8 @@ class CollectorTests(unittest.TestCase):
             f"printf '%s\\n' \"$*\" >> {log_path}\n"
             "case \"$1\" in\n"
             f"metadata) case \"$*\" in *--all-features*) {'printf \'\\nwhole-mutation\\n\' >> \"$PWD/Cargo.lock\"; ' if mutate_whole else ''}cat {whole_metadata_path} ;; *) {'cp ' + str(mutated_base_lock) + ' \"$PWD/Cargo.lock\"; ' if mutate_base else ''}cat {metadata_path} ;; esac ;;\n"
-            f"tree) case \"$8\" in normal) printf '%s\\n' 'moshi -> candle normal' ;; build) printf '%s\\n' 'moshi -> build-helper build' ;; features) printf '%s\\n' 'moshi features: default-disabled'; {'printf \'\\nmutated\\n\' >> \"$PWD/Cargo.lock\"' if mutate_final else ':'} ;; esac ;;\n"
-            f"update) cp {patched_lock} \"$PWD/Cargo.lock\" ;;\n"
+            f"tree) case \"$8\" in normal) printf '%s\\n' 'moshi -> candle normal' ;; build) printf '%s\\n' 'moshi -> build-helper build' ;; features) printf '%s\\n' 'moshi features: default-disabled'; {'if test -f ' + str(post_update_marker) + '; then printf \'\\nmutated\\n\' >> \"$PWD/Cargo.lock\"; fi' if mutate_final else ':'} ;; esac ;;\n"
+            f"update) cp {patched_lock} \"$PWD/Cargo.lock\"; touch {post_update_marker} ;;\n"
             "*) exit 90 ;;\n"
             "esac\n"
         )
@@ -393,12 +724,14 @@ class CollectorTests(unittest.TestCase):
                 self.assertFalse(log_path.exists(), "Cargo must not run before toolchain rejection")
 
     def test_final_projection_lock_mutation_is_rejected(self) -> None:
-        with self.assertRaises(leaf.CaptureError):
-            self._run_full_capture(mutate_final=True)
+        output = self.root / "final-mutation-output"
+        with self.assertRaisesRegex(leaf.CaptureError, "projection Cargo.lock changed after patched lock receipt"):
+            self._run_full_capture(output_name=output.name, mutate_final=True)
+        self.assertFalse((output / "metadata.json").exists())
 
     def test_initial_metadata_survives_retained_base_lock_failure(self) -> None:
         output = self.root / "base-failure-output"
-        with self.assertRaisesRegex(leaf.CaptureError, "projected base lock mutated retained package: moshi"):
+        with self.assertRaisesRegex(leaf.CaptureError, "dependency label is unresolved or ambiguous"):
             self._run_full_capture(output_name=output.name, mutate_base=True)
         initial = json.loads((output / "initial_metadata.json").read_text())
         self.assertEqual(initial["status"], "INITIAL_METADATA_UNREVIEWED")
@@ -412,7 +745,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_whole_lock_evidence_survives_strict_base_failure(self) -> None:
         output = self.root / "base-failure-whole-output"
-        with self.assertRaisesRegex(leaf.CaptureError, "projected base lock mutated retained package: moshi"):
+        with self.assertRaisesRegex(leaf.CaptureError, "dependency label is unresolved or ambiguous"):
             self._run_full_capture(output_name=output.name, mutate_base=True)
         whole = json.loads((output / "whole_lock_metadata.json").read_text())
         self.assertEqual(whole["status"], "WHOLE_LOCK_METADATA_UNREVIEWED")
@@ -429,7 +762,7 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse((output / "metadata.json").exists())
 
     def test_whole_metadata_gpu_features_do_not_bypass_cpu_guard(self) -> None:
-        output, _ = self._run_full_capture(whole_metadata=metadata_json(gpu=True))
+        output, _ = self._run_full_capture(whole_metadata=whole_metadata_json(gpu=True))
         initial = json.loads((output / "initial_metadata.json").read_text())
         whole = json.loads((output / "whole_lock_metadata.json").read_text())
         self.assertEqual(initial["graph"]["gpu_features_active"], [])

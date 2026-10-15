@@ -1,5 +1,64 @@
 # Kyutai Candle source-metadata CI preparation — 2026-10-15 JST
 
+## Evidence-backed semantic projection correction
+
+The subsequent private candidate changes the production call to supply both
+the initial CPU metadata and the separate whole-lock metadata. Without both
+proofs, the original two-argument strict record-equality gate is unchanged.
+The semantic path is technical validation only and explicitly returns
+`SOURCE_ONLY_METADATA_REVIEW_PENDING`, not a license or execution approval.
+
+The new path requires original package-identity containment and exact retained
+non-dependency fields, including source, checksum and unknown fields. Cargo
+dependency labels must resolve uniquely against their respective complete
+locks. Canonical retained edges preserve their original order, without
+additions or replacements, and every projected record must match the complete
+whole-feature graph's non-dev edges. Package/node identity coverage, manifest
+dependency names/sources/kinds/targets and plain-versus-typed edges are checked.
+Active CPU packages must be contained and their declaration lists must match
+the same whole-graph identities; the 105-package CPU universe is not required
+to equal the 161-record whole lock.
+
+Every removed edge needs an unambiguous optional non-dev declaration and an
+inactive dependency alias under the whole parent feature closure. Mandatory
+declarations, including mandatory/optional mixtures, are refused. Explicit
+`dep:` activation, strong dependency-feature activation and implicit optional
+aliases are distinguished from weak dependency-feature references. This
+checks removals even when the target package remains in the base lock.
+
+Manager independently runs the candidate against the actual recovered
+592-record original and 161-record base/whole graph. Six actual-data mutations
+are separately rejected for their intended reasons: checksum changes, unknown
+fields, missing/duplicate whole nodes, a mandatory cc dependency removal and
+cc parallel-feature activation. An AST comparison confirms that existing
+helpers other than `capture` and `validate_base_lock` are unchanged, including
+the precise memmap2 patch gate, CPU GPU-feature refusal, command allowlist,
+source authentication, clean environment, bounds and deadline/process rules.
+
+The regression fixture covers ten source-derived removals across six parents,
+including five retained targets. Its small graphs/checksums are synthetic,
+not complete registry graphs or package execution. Independent raw comparison
+caught a missing hashbrown feature and a shared serde declaration from a
+different parent; these are corrected before candidate publication. The
+post-update lock-mutation regression now faults only after the fake precise
+update and asserts that exact failure, rather than failing at an earlier gate.
+
+Manager independently passes all **40 stdlib tests** on the final reviewed
+candidate and confirms every fixture's source-derived features/declarations,
+identities and retained-target facts against the recovered original data.
+Actionlint and documentation references pass. Collector SHA-256:
+`75bdaa3da0ce7a3add28a1018e7d319b48b9f18448d7c3093c55fa94fdb2773f`;
+operational tests:
+`138e4f885aae677c8929059bfa5cc769f60e79e158c80fd688137b20257a57da`;
+workflow contract tests:
+`5d65ac89e4e5c2b987051127c1ac74fe1c6c961882d2733c3accd84dba449580`.
+
+Fresh corrected-head hosted capture and actual precise memmap2 update remain
+required. This candidate does not turn any earlier failed diagnostic green,
+approve the dependency/native/license/operator closure, or supply full-PCM,
+real-weight CPU, Apple or publication evidence. The following sections retain
+their original published-head measurement boundaries.
+
 ## Actual whole-lock recovery — 05:24 UTC
 
 At exact `072df353bc6f6506144674db50d0160c9df36aee`,

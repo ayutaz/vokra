@@ -38,11 +38,31 @@ checksum = "{checksum}"
 '''
 METADATA = json.dumps(
     {
-        "packages": [{"id": "moshi-id", "name": "moshi", "manifest_path": "moshi-core/Cargo.toml"}],
+        "packages": [
+            {
+                "id": "moshi-id", "name": "moshi", "version": "0.6.4", "source": None,
+                "manifest_path": "moshi-core/Cargo.toml", "features": {"default": []},
+                "dependencies": [{
+                    "name": "memmap2", "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "req": "^0.9.5", "kind": None, "optional": False, "rename": None,
+                    "target": None, "features": [], "uses_default_features": True,
+                }],
+            },
+            {
+                "id": "memmap-id", "name": "memmap2", "version": "0.9.5",
+                "source": "registry+https://github.com/rust-lang/crates.io-index",
+                "manifest_path": "memmap/Cargo.toml", "features": {}, "dependencies": [],
+            },
+        ],
         "workspace_members": ["moshi-id"],
         "resolve": {
             "root": None,
-            "nodes": [{"id": "moshi-id", "features": [], "deps": []}],
+            "nodes": [
+                {"id": "moshi-id", "features": [], "deps": [{
+                    "name": "memmap2", "pkg": "memmap-id", "dep_kinds": [{"kind": None, "target": None}],
+                }]},
+                {"id": "memmap-id", "features": [], "deps": []},
+            ],
         },
     }
 )
