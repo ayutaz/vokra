@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16 JSTのローカル回帰受理:** [Candle実適用準備記録](kyutai-candle-paste-application-preparation-2026-10-15.md#2026-10-16-jst-independent-offline-acceptance-of-finalization-regressions)
+> の現行producerと追加回帰をrootが独立実行し、10 tests／失敗0／skip0（1.173秒）。
+> 最終書込み後のI/O失敗・期限超過からBLOCKEDへ復旧し、全root pairの親子衝突も
+> mutation前に拒否する。拒否された検索は再実行せず、安全ルールも変更していない。
+> 次はhosted source-only実適用と証跡照合・strict監査であり、実weight CPUや最終packet
+> 完了ではない。以下の旧保留記録は当時の履歴として保持し、元の工程4の範囲は維持する。
+
 > **Candle実適用のレビュー継続（2026-10-15）:** [準備記録](kyutai-candle-paste-application-preparation-2026-10-15.md)
 > にroot独立8 tests成功と、期限切れ後の最終記録に関する追加修正を分けて記録した。
 > 新候補の最終fault回帰は未受理。テスト担当の読み取り確認が安全hookに拒否されたため、

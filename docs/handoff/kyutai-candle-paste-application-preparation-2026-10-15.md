@@ -1,5 +1,60 @@
 # Candle source-only paste application review — 2026-10-15
 
+## 2026-10-16 JST: independent offline acceptance of finalization regressions
+
+This continuation supersedes the local-review and missing-regression holds
+below, not the absence of actual hosted application, strict advisory,
+macro/API compatibility, owner approval or real-weight CPU/Apple evidence.
+The original full non-Apple / authorized real-weight CPU / final clean HEAD
+and fresh Apple-packet objective remains incomplete.
+
+The owner explicitly permits review of the two application/test files and the
+presented offline stdlib command. Root replays the existing eight tests at
+producer `63a010aa…` successfully (0.554 seconds). A subsequent supplemental
+pattern-search command is refused; it is not retried or used as a reason to
+change guards. During the resumed implementation goal, Luna's producer-search
+command is also refused and stopped. No alternate read of that producer is
+used to evade the refusal. Root had already read both complete files under
+the owner's permission. Luna can therefore perform the separately delegated
+test-file edits from already reviewed content, without another source search.
+The ordinary approved offline discovery command remains the only test runner.
+
+Accepted file SHA-256 values:
+
+| File | SHA-256 |
+|---|---|
+| `apply_paste_overlay.py` | `63a010aabfaa2e0b974cce634befdf5be3cb6d4533dcc6404351292296319e76` |
+| `test_apply_paste_overlay.py` | `137f1f489448618f37a61234a7773fee5c66f3393929762b91f85c0260178740` |
+| `kyutai-candle-paste-application.yml` | `a5ab7969ae6114808790a6668d475ddd8c5132aaee1f3d4c5f5d0f5084c29232` |
+
+Luna adds two actual orchestration cases: an `OSError` after the final
+review-pending receipt is physically written, and a clock fault after that
+same write crosses the observed Cargo operation cutoff. Both must return no
+success result and recover a `SOURCE_APPLICATION_BLOCKED` receipt. The latter
+uses the original outer deadline's reserved interval, not a reset timeout.
+It also confirms that the final write was reached, rather than accidentally
+passing on an earlier fixture failure.
+
+The overlap case now covers equality and all three root pairs in both
+ancestor/descendant directions. Snapshots include directories, file kinds and
+contents. Fail-fast module/input boundaries prevent an accidentally broken
+early check from reaching external source or Cargo work. Root rejects the
+first test draft's file-only snapshot and possible external fall-through
+before acceptance. The old 0.01-second wall-clock failure case is replaced
+with a deterministic archive-I/O deadline error; the separate real signal
+deadline-interruption test is retained.
+
+Root independently runs all **10 tests / zero failures / zero skips** in
+**1.173 seconds** at 2026-10-15 15:12 UTC (2026-10-16 JST), using the exact
+offline command recorded below. `actionlint`, workflow hygiene (54 workflows,
+36 crons) and diff hygiene also pass. This accepts the model-free local
+orchestration/regression preparation, not actual upstream source application.
+No validator is mocked green and no production fixture exception is added.
+No model/package/Cargo execution, network request, provider operation or
+safety-rule change occurs in this continuation. Hosted source application,
+recovered evidence validation and strict advisory remain next; source-only
+results cannot authorize package/macro or model execution.
+
 This is an implementation-review record, **not an accepted application run**.
 The [actual hosted plan](kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
 remains accepted at `bd0384c2`; no source overlay, macro compatibility, clean

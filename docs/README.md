@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Candle offline regression acceptance (2026-10-16 JST):** root independently
+passes all ten tests at the [reviewed application candidate](handoff/kyutai-candle-paste-application-preparation-2026-10-15.md#2026-10-16-jst-independent-offline-acceptance-of-finalization-regressions),
+including final-write failure, late operation-cutoff recovery and seven root
+overlap cases. This supersedes the missing local regressions below, not actual
+hosted source application, strict advisory, package/macro compatibility,
+owner approval, real-weight CPU or final Apple packets. No model work,
+network/provider activity or safety-rule changes occur in this continuation.
+
 **Candle application review (2026-10-15):** the [source-only preparation record](handoff/kyutai-candle-paste-application-preparation-2026-10-15.md)
 separates root's eight passing offline orchestration tests from the subsequent
 late-finalization correction and still-pending causal regressions. A test-file
