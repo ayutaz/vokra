@@ -16,21 +16,27 @@ after verifying its SHA-256, then exposes that official class at
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import importlib
 import importlib.metadata
 import importlib.util
 import json
+from dataclasses import dataclass
+import os
 import sys
 import types
 from pathlib import Path
+from pathlib import PurePosixPath
 
-import numpy as np
-import torch
-from gguf import GGUFReader
+import dependency_audit as audit
 
 
 XCODEC2_VERSION = "0.1.5"
+TORCH_VERSION = "2.13.0"
+TORCHAUDIO_VERSION = "2.11.0"
 XCODEC2_SDIST_SHA256 = (
     "dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b"
 )
@@ -49,6 +55,208 @@ VECTOR_QUANTIZE_VERSION = "1.17.8"
 CODEBOOK_SIZE = 65_536
 HOP_LENGTH = 320
 HIDDEN_DIM = 1_024
+EXPECTED_DISTRIBUTIONS = {
+    "numpy": "2.0.2",
+    "gguf": "0.19.0",
+    "torch": TORCH_VERSION,
+    "torchaudio": TORCHAUDIO_VERSION,
+    "torchtune": TORCHTUNE_VERSION,
+    "vector-quantize-pytorch": VECTOR_QUANTIZE_VERSION,
+    "xcodec2": XCODEC2_VERSION,
+}
+EXPECTED_PACKAGE_FILES = {
+    "numpy": "numpy/__init__.py",
+    "gguf": "gguf/__init__.py",
+    "torch": "torch/__init__.py",
+    "torchaudio": "torchaudio/__init__.py",
+    "torchtune": "torchtune/__init__.py",
+    "vector-quantize-pytorch": "vector_quantize_pytorch/__init__.py",
+    "xcodec2": "xcodec2/__init__.py",
+}
+EXPECTED_MODULE_NAMES = {
+    "numpy",
+    "gguf",
+    "torch",
+    "torchaudio",
+    "torchtune",
+    "vector_quantize_pytorch",
+    "xcodec2",
+}
+MAX_RECORD_BYTES = 16 * 1024 * 1024
+MAX_RECORD_ENTRIES = 250_000
+MAX_PREIMPORT_BYTES = 8 * 1024 * 1024 * 1024
+# The audited public GGUF is 3,291,064,672 bytes.  This is an input contract,
+# not a local-memory allowance: VAST is required for the real artifact path.
+AUDITED_GGUF_BYTES = 3_291_064_672
+MAX_GGUF_BYTES = AUDITED_GGUF_BYTES
+MAX_CODES_BYTES = 1 * 1024 * 1024
+MAX_REFERENCE_OUTPUT_BYTES = 512 * 1024 * 1024
+REFERENCE_OUTPUT_NAMES = ("codes.u32le", "features.f32", "decoded_pcm.f32", "manifest.json")
+
+
+@dataclass(frozen=True)
+class _PreimportProof:
+    versions: dict[str, str]
+    record_digests: dict[str, dict[str, tuple[str, int]]]
+    nonce: object
+
+
+_PREIMPORT_NONCE = object()
+
+
+def _absolute_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _reject_symlink_ancestry(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            if current == Path("/var") and current.resolve() == Path("/private/var"):
+                continue
+            raise RuntimeError(f"path has symlink ancestry: {path}")
+
+
+def _bounded_size_ok(size: int, limit: int) -> bool:
+    return 0 < size <= limit
+
+
+def _regular_bounded_file(path: Path, limit: int, label: str) -> Path:
+    absolute = _absolute_path(path)
+    _reject_symlink_ancestry(absolute)
+    if absolute.is_symlink() or not absolute.is_file():
+        raise RuntimeError(f"{label} must be a regular file: {path}")
+    size = absolute.stat().st_size
+    if not _bounded_size_ok(size, limit):
+        raise RuntimeError(f"{label} exceeds the bounded size: {size} > {limit}")
+    return absolute
+
+
+def _validate_codes_file(path: Path) -> Path:
+    """Validate the bounded code input before numpy can silently drop bytes."""
+
+    absolute = _regular_bounded_file(path, MAX_CODES_BYTES, "codes input")
+    size = absolute.stat().st_size
+    if size % 4:
+        raise RuntimeError(f"codes input byte size is not uint32-aligned: {size}")
+    return absolute
+
+
+def _safe_output_dir(path: Path) -> Path:
+    absolute = _absolute_path(path)
+    if not absolute.parent.is_dir():
+        raise RuntimeError(f"output parent must already exist: {absolute.parent}")
+    _reject_symlink_ancestry(absolute.parent)
+    if absolute.exists() or absolute.is_symlink():
+        if absolute.is_symlink() or not absolute.is_dir():
+            raise RuntimeError(f"output must be a regular directory: {path}")
+        return absolute
+    absolute.mkdir()
+    _reject_symlink_ancestry(absolute)
+    return absolute
+
+
+def _atomic_write(path: Path, writer) -> None:
+    _reject_symlink_ancestry(path.parent)
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"refusing to overwrite output: {path}")
+    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            writer(stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    except Exception:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    else:
+        temporary.unlink()
+
+
+def _atomic_write_array(path: Path, values) -> None:
+    _atomic_write(path, values.tofile)
+
+
+def _atomic_write_bytes(path: Path, body: bytes) -> None:
+    _atomic_write(path, lambda stream: stream.write(body))
+
+
+def _new_output_paths(output_dir: Path) -> tuple[Path, ...]:
+    paths = tuple(output_dir / name for name in REFERENCE_OUTPUT_NAMES)
+    for path in paths:
+        if path.exists() or path.is_symlink():
+            raise RuntimeError(f"refusing to overwrite output: {path}")
+    return paths
+
+
+def _remove_outputs_created_by_us(created: list[tuple[Path, int, int]]) -> None:
+    """Recover only files whose device/inode was created by this invocation."""
+
+    for path, device, inode in reversed(created):
+        try:
+            _reject_symlink_ancestry(path.parent)
+            if path.is_symlink():
+                continue
+            stat = path.stat()
+            if stat.st_dev == device and stat.st_ino == inode:
+                path.unlink()
+        except FileNotFoundError:
+            continue
+
+
+def _record_created_output(created: list[tuple[Path, int, int]], path: Path) -> None:
+    stat = path.stat()
+    created.append((path, stat.st_dev, stat.st_ino))
+
+
+def _validate_reference_budget(code_count: int) -> None:
+    code_bytes = code_count * 4
+    feature_bytes = code_count * HIDDEN_DIM * 4
+    pcm_bytes = code_count * HOP_LENGTH * 4
+    if code_bytes > MAX_CODES_BYTES or feature_bytes + pcm_bytes > MAX_REFERENCE_OUTPUT_BYTES:
+        raise RuntimeError("reference input/output exceeds the bounded byte budget")
+
+
+def validate_execution_authorization() -> None:
+    """Honor the existing fail-closed audit contract before any import."""
+
+    try:
+        contract = audit.load_contract()
+        manifest = contract["manifest"]
+        rows = contract["rows"]
+        dependency_contract = manifest["dependency_audit"]
+        policy = manifest["policy"]
+    except Exception as exc:
+        raise RuntimeError(
+            "official XCodec2 execution is blocked by the existing audit/owner contract"
+        ) from exc
+    blocked_status = {
+        "BLOCKED_PENDING_PRIMARY_BYTES",
+        "BLOCKED_FACTUAL_COLLECTION",
+        "BLOCKED_OWNER_REVIEW",
+    }
+    unresolved_policy = (
+        not isinstance(dependency_contract, dict)
+        or dependency_contract.get("owner_review_required") is not False
+        or not isinstance(policy, dict)
+        or str(policy.get("license_classification", "")).startswith("UNRESOLVED")
+        or str(policy.get("native_payload", "")).startswith("UNRESOLVED")
+    )
+    if (
+        manifest.get("status") in blocked_status
+        or rows.get("status") in blocked_status
+        or unresolved_policy
+    ):
+        raise RuntimeError(
+            "official XCodec2 execution is blocked by the existing audit/owner contract"
+        )
 
 
 def sha256_file(path: Path) -> str:
@@ -59,12 +267,215 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def install_official_rope_import() -> None:
-    actual_version = importlib.metadata.version("torchtune")
-    if actual_version != TORCHTUNE_VERSION:
-        raise RuntimeError(
-            f"torchtune version {actual_version!r} != {TORCHTUNE_VERSION!r}"
+def _regular_path_under(root: Path, path: Path, relative: str) -> Path:
+    """Resolve a distribution member without following symlink ancestry."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise RuntimeError(f"distribution root is not a regular directory: {root}")
+    relative_path = PurePosixPath(relative)
+    if relative_path.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative_path.parts
+    ) or "\\" in relative:
+        raise RuntimeError(f"distribution member path is unsafe: {relative}")
+    current = root
+    for part in relative_path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RuntimeError(f"distribution path has symlink ancestry: {relative}")
+    if not current.is_file():
+        raise RuntimeError(f"distribution path is not a regular file: {relative}")
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved = current.resolve(strict=True)
+        resolved.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"distribution path escapes site root: {relative}") from exc
+    return current
+
+
+def _hash_bounded(path: Path, budget: list[int]) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1 << 20):
+            size += len(chunk)
+            budget[0] += len(chunk)
+            if budget[0] > MAX_PREIMPORT_BYTES:
+                raise RuntimeError("pre-import RECORD byte budget exceeded")
+            digest.update(chunk)
+    return digest.hexdigest(), size
+
+
+def _parse_record(
+    distribution: importlib.metadata.Distribution,
+    record_path: str,
+    budget: list[int],
+) -> dict[str, tuple[str, int]]:
+    root = Path(distribution.locate_file(""))
+    record_file = _regular_path_under(root, Path(distribution.locate_file(record_path)), record_path)
+    try:
+        with record_file.open("rb") as handle:
+            raw = handle.read(MAX_RECORD_BYTES + 1)
+        if len(raw) > MAX_RECORD_BYTES:
+            raise RuntimeError(f"publisher RECORD exceeds bound: {record_path}")
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"publisher RECORD is unreadable: {record_path}") from exc
+    rows: dict[str, tuple[str, int]] = {}
+    try:
+        parsed = csv.reader(io.StringIO(text, newline=""))
+        for index, row in enumerate(parsed, start=1):
+            if index > MAX_RECORD_ENTRIES:
+                raise RuntimeError("publisher RECORD entry bound exceeded")
+            if len(row) != 3:
+                raise RuntimeError(f"publisher RECORD row {index} is malformed")
+            relative, encoded_hash, encoded_size = row
+            if (
+                not relative
+                or relative in rows
+                or PurePosixPath(relative).is_absolute()
+                or "\\" in relative
+                or any(part in {"", ".", ".."} for part in PurePosixPath(relative).parts)
+            ):
+                raise RuntimeError(f"publisher RECORD path {relative!r} is invalid or duplicated")
+            if relative == record_path:
+                if encoded_hash or encoded_size:
+                    raise RuntimeError("publisher RECORD self-row must be blank")
+                rows[relative] = ("", -1)
+                continue
+            if not encoded_hash.startswith("sha256=") or not encoded_size.isdigit():
+                raise RuntimeError(f"publisher RECORD row {relative!r} lacks hash/size")
+            try:
+                digest = base64.urlsafe_b64decode(encoded_hash.removeprefix("sha256=") + "===")
+            except (ValueError, base64.binascii.Error) as exc:
+                raise RuntimeError(f"publisher RECORD hash is malformed: {relative}") from exc
+            if len(digest) != hashlib.sha256().digest_size:
+                raise RuntimeError(f"publisher RECORD hash length is invalid: {relative}")
+            rows[relative] = (digest.hex(), int(encoded_size))
+    except csv.Error as exc:
+        raise RuntimeError("publisher RECORD CSV is malformed") from exc
+    if record_path not in rows:
+        raise RuntimeError("publisher RECORD self-row is missing")
+    for relative, (expected_hash, expected_size) in rows.items():
+        if relative == record_path:
+            continue
+        actual_hash, actual_size = _hash_bounded(
+            _regular_path_under(root, Path(distribution.locate_file(relative)), relative), budget
         )
+        if actual_hash != expected_hash or actual_size != expected_size:
+            raise RuntimeError(f"publisher RECORD bytes mismatch: {relative}")
+    return rows
+
+
+def _regular_distribution_file(
+    distribution: importlib.metadata.Distribution, relative: str
+) -> Path:
+    """Resolve one RECORD-listed regular file without importing its package."""
+
+    entries = {str(entry) for entry in (distribution.files or [])}
+    if relative not in entries:
+        raise RuntimeError(
+            f"{distribution.metadata.get('Name', '<unknown>')} RECORD omits {relative}"
+        )
+    root = Path(distribution.locate_file(""))
+    return _regular_path_under(root, Path(distribution.locate_file(relative)), relative)
+
+
+def _check_top_level_origin(name: str, expected_path: Path) -> None:
+    """Reject an earlier sys.path shadow before any package code executes."""
+
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ModuleNotFoundError, ValueError) as exc:
+        raise RuntimeError(f"cannot resolve audited module origin: {name}") from exc
+    if spec is None or not spec.origin or spec.origin in {"built-in", "frozen"}:
+        raise RuntimeError(f"audited module has no regular origin: {name}")
+    try:
+        origin = Path(spec.origin).resolve(strict=True)
+        expected = expected_path.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(f"audited module origin is unreadable: {name}") from exc
+    if origin != expected:
+        raise RuntimeError(
+            f"audited module origin mismatch for {name}: {origin} != {expected}"
+        )
+
+
+def validate_preimport_runtime() -> _PreimportProof:
+    """Authenticate installed distribution/RECORD identities before imports.
+
+    ``importlib.metadata`` reads metadata and RECORD only; it does not execute
+    package code.  This is intentionally stronger than version checks while
+    retaining the blocked license/owner gate in the separate audit manifest.
+    """
+
+    if any(name in sys.modules for name in EXPECTED_MODULE_NAMES):
+        raise RuntimeError("audited runtime packages were imported before preflight")
+    versions: dict[str, str] = {}
+    record_digests: dict[str, dict[str, tuple[str, int]]] = {}
+    budget = [0]
+    for name, expected in EXPECTED_DISTRIBUTIONS.items():
+        try:
+            distribution = importlib.metadata.distribution(name)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise RuntimeError(f"audited distribution is not installed: {name}") from exc
+        actual_name = (distribution.metadata.get("Name") or "").casefold()
+        if actual_name != name.casefold():
+            raise RuntimeError(f"distribution name mismatch for {name}: {actual_name!r}")
+        actual_version = distribution.version
+        if actual_version.split("+", 1)[0] != expected:
+            raise RuntimeError(f"{name} version {actual_version!r} != audited {expected!r}")
+        # A missing RECORD means the installed payload cannot be bound to the
+        # selected distribution, even when its metadata version looks right.
+        dist_info = [
+            str(entry)
+            for entry in (distribution.files or [])
+            if str(entry).endswith(".dist-info/RECORD")
+        ]
+        if len(dist_info) != 1:
+            raise RuntimeError(f"{name} must expose exactly one RECORD")
+        record = _parse_record(distribution, dist_info[0], budget)
+        package_relative = EXPECTED_PACKAGE_FILES[name]
+        package_path = _regular_distribution_file(distribution, package_relative)
+        if package_relative not in record or record[package_relative][0] == "":
+            raise RuntimeError(f"{name} RECORD omits package entry: {package_relative}")
+        module_name = package_relative.split("/", 1)[0]
+        _check_top_level_origin(module_name, package_path)
+        record_digests[name] = record
+        versions[name] = actual_version
+    # These are the source files whose bytes are fixed by the existing oracle
+    # contract; checking them before import prevents a same-version replacement.
+    xcodec_dist = importlib.metadata.distribution("xcodec2")
+    for relative, expected_hash in (
+        ("xcodec2/vq/codec_decoder_vocos.py", DECODER_SOURCE_SHA256),
+        ("xcodec2/vq/bs_roformer5.py", TRANSFORMER_SOURCE_SHA256),
+    ):
+        record = record_digests["xcodec2"]
+        path = _regular_distribution_file(xcodec_dist, relative)
+        if relative not in record or record[relative][0] != expected_hash:
+            raise RuntimeError(f"xcodec2 source identity mismatch: {relative}")
+    rope_dist = importlib.metadata.distribution("torchtune")
+    rope_path = _regular_distribution_file(
+        rope_dist, "torchtune/modules/position_embeddings.py"
+    )
+    rope_record = record_digests["torchtune"]
+    if (
+        "torchtune/modules/position_embeddings.py" not in rope_record
+        or rope_record["torchtune/modules/position_embeddings.py"][0]
+        != TORCHTUNE_ROPE_SHA256
+    ):
+        raise RuntimeError("torchtune official RoPE source SHA-256 mismatch")
+    return _PreimportProof(versions, record_digests, _PREIMPORT_NONCE)
+
+
+def validate_patched_runtime() -> _PreimportProof:
+    """Require the reviewed Torch/TorchAudio pair before importing upstream."""
+
+    return validate_preimport_runtime()
+
+
+def install_official_rope_import() -> None:
+    validate_execution_authorization()
     distribution = importlib.metadata.distribution("torchtune")
     source_path = Path(
         distribution.locate_file("torchtune/modules/position_embeddings.py")
@@ -89,9 +500,10 @@ def install_official_rope_import() -> None:
     sys.modules["torchtune.modules"] = torchtune_modules
 
 
-def import_official_decoder():
-    if importlib.metadata.version("xcodec2") != XCODEC2_VERSION:
-        raise RuntimeError("xcodec2 package version mismatch")
+def import_official_decoder(proof: _PreimportProof):
+    validate_execution_authorization()
+    if not isinstance(proof, _PreimportProof) or proof.nonce is not _PREIMPORT_NONCE:
+        raise RuntimeError("official decoder import requires a live pre-import proof")
     install_official_rope_import()
     module = importlib.import_module("xcodec2.vq.codec_decoder_vocos")
     decoder_source = Path(module.__file__ or "")
@@ -103,7 +515,10 @@ def import_official_decoder():
     return module.CodecDecoderVocos
 
 
-def gguf_tensor(item, expected_shape: torch.Size) -> torch.Tensor:
+def _gguf_tensor_after_gate(item, expected_shape):
+    import numpy as np
+    import torch
+
     if int(item.tensor_type) != 0:
         raise TypeError(f"{item.name}: public X-Codec2 tensor is not F32")
     values = item.data.copy().reshape(-1).astype(np.float32, copy=False)
@@ -115,15 +530,32 @@ def gguf_tensor(item, expected_shape: torch.Size) -> torch.Tensor:
     return torch.from_numpy(values.reshape(tuple(expected_shape)).copy())
 
 
-def required(by_name: dict, name: str, shape: torch.Size) -> torch.Tensor:
+def gguf_tensor(item, expected_shape):
+    """Decode one tensor only after the execution authorization gate."""
+
+    validate_execution_authorization()
+    return _gguf_tensor_after_gate(item, expected_shape)
+
+
+def _required_after_gate(by_name: dict, name: str, shape):
     item = by_name.get(name)
     if item is None:
         raise RuntimeError(f"GGUF is missing official inference tensor {name!r}")
-    return gguf_tensor(item, shape)
+    return _gguf_tensor_after_gate(item, shape)
 
 
-def load_official_modules(gguf_path: Path):
-    decoder_class = import_official_decoder()
+def required(by_name: dict, name: str, shape):
+    """Resolve one tensor only after the execution authorization gate."""
+
+    validate_execution_authorization()
+    return _required_after_gate(by_name, name, shape)
+
+
+def load_official_modules(gguf_path: Path, proof: _PreimportProof):
+    decoder_class = import_official_decoder(proof)
+    import torch
+    from gguf import GGUFReader
+
     decoder = decoder_class(hop_length=HOP_LENGTH)
     fc_post_a = torch.nn.Linear(2_048, HIDDEN_DIM)
     reader = GGUFReader(str(gguf_path))
@@ -138,7 +570,7 @@ def load_official_modules(gguf_path: Path):
         elif item is None:
             raise RuntimeError(f"GGUF is missing official decoder tensor {name!r}")
         else:
-            loaded[name] = gguf_tensor(item, target.shape)
+            loaded[name] = _gguf_tensor_after_gate(item, target.shape)
     incompatible = decoder.load_state_dict(loaded, strict=False)
     if sorted(incompatible.missing_keys) != sorted(defaulted):
         raise RuntimeError(
@@ -149,8 +581,8 @@ def load_official_modules(gguf_path: Path):
 
     fc_post_a.load_state_dict(
         {
-            "weight": required(by_name, "fc_post_a.weight", fc_post_a.weight.shape),
-            "bias": required(by_name, "fc_post_a.bias", fc_post_a.bias.shape),
+            "weight": _required_after_gate(by_name, "fc_post_a.weight", fc_post_a.weight.shape),
+            "bias": _required_after_gate(by_name, "fc_post_a.bias", fc_post_a.bias.shape),
         },
         strict=True,
     )
@@ -166,19 +598,33 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    gguf_sha256 = sha256_file(args.gguf)
+    # Keep all third-party imports below the existing audit/owner gate and
+    # installed identity gate. Neither gate accepts an environment override.
+    validate_execution_authorization()
+    gguf_path = _regular_bounded_file(args.gguf, MAX_GGUF_BYTES, "GGUF input")
+    codes_path = _validate_codes_file(args.codes)
+    output_dir = _safe_output_dir(args.output)
+    output_codes_path, features_path, pcm_path, manifest_path = _new_output_paths(output_dir)
+    preimport = validate_patched_runtime()
+    torch_version = preimport.versions["torch"]
+    torchaudio_version = preimport.versions["torchaudio"]
+    import numpy as np
+    import torch
+
+    gguf_sha256 = sha256_file(gguf_path)
     if gguf_sha256 != GGUF_SHA256:
         raise RuntimeError(f"GGUF SHA-256 {gguf_sha256} != {GGUF_SHA256}")
     if importlib.metadata.version("vector-quantize-pytorch") != VECTOR_QUANTIZE_VERSION:
         raise RuntimeError("vector-quantize-pytorch version mismatch")
 
-    codes = np.fromfile(args.codes, dtype="<u4")
+    codes = np.fromfile(codes_path, dtype="<u4")
     if codes.size == 0 or np.any(codes >= CODEBOOK_SIZE):
         raise RuntimeError(f"codes must be non-empty and each below {CODEBOOK_SIZE}")
+    _validate_reference_budget(int(codes.size))
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     torch.use_deterministic_algorithms(True)
-    decoder, fc_post_a, loaded_count, defaulted = load_official_modules(args.gguf)
+    decoder, fc_post_a, loaded_count, defaulted = load_official_modules(gguf_path, preimport)
 
     code_tensor = torch.from_numpy(codes.astype(np.int64)).reshape(1, 1, -1)
     with torch.inference_mode():
@@ -196,39 +642,45 @@ def main() -> int:
     if not bool(torch.isfinite(decoded).all()):
         raise RuntimeError("official decoder emitted non-finite PCM")
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    codes_path = args.output / "codes.u32le"
-    features_path = args.output / "features.f32"
-    pcm_path = args.output / "decoded_pcm.f32"
-    np.asarray(codes, dtype="<u4").tofile(codes_path)
-    np.asarray(features.cpu().numpy(), dtype="<f4").tofile(features_path)
-    np.asarray(decoded.cpu().numpy(), dtype="<f4").tofile(pcm_path)
-    manifest = {
-        "format": "vokra-xcodec2-reference-v1",
-        "oracle": "official xcodec2==0.1.5 CodecDecoderVocos FSQ + forward",
-        "source_distribution": "xcodec2==0.1.5",
-        "source_distribution_sha256": XCODEC2_SDIST_SHA256,
-        "decoder_source_sha256": DECODER_SOURCE_SHA256,
-        "transformer_source_sha256": TRANSFORMER_SOURCE_SHA256,
-        "gguf_sha256": gguf_sha256,
-        "torchtune": TORCHTUNE_VERSION,
-        "torchtune_rope_sha256": TORCHTUNE_ROPE_SHA256,
-        "vector_quantize_pytorch": VECTOR_QUANTIZE_VERSION,
-        "torch": str(torch.__version__),
-        "official_state_tensors_loaded": loaded_count + 2,
-        "official_defaulted_deterministic_buffers": defaulted,
-        "code_count": int(codes.size),
-        "feature_shape": list(features.shape),
-        "decoded_shape": list(decoded.shape),
-        "files": {
-            path.name: sha256_file(path)
-            for path in (codes_path, features_path, pcm_path)
-        },
-    }
-    manifest_path = args.output / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    created: list[tuple[Path, int, int]] = []
+    try:
+        _atomic_write_array(output_codes_path, np.asarray(codes, dtype="<u4"))
+        _record_created_output(created, output_codes_path)
+        _atomic_write_array(features_path, np.asarray(features.cpu().numpy(), dtype="<f4"))
+        _record_created_output(created, features_path)
+        _atomic_write_array(pcm_path, np.asarray(decoded.cpu().numpy(), dtype="<f4"))
+        _record_created_output(created, pcm_path)
+        manifest = {
+            "format": "vokra-xcodec2-reference-v1",
+            "oracle": "official xcodec2==0.1.5 CodecDecoderVocos FSQ + forward",
+            "source_distribution": "xcodec2==0.1.5",
+            "source_distribution_sha256": XCODEC2_SDIST_SHA256,
+            "decoder_source_sha256": DECODER_SOURCE_SHA256,
+            "transformer_source_sha256": TRANSFORMER_SOURCE_SHA256,
+            "gguf_sha256": gguf_sha256,
+            "torchtune": TORCHTUNE_VERSION,
+            "torchtune_rope_sha256": TORCHTUNE_ROPE_SHA256,
+            "vector_quantize_pytorch": VECTOR_QUANTIZE_VERSION,
+            "torch": torch_version,
+            "torchaudio": torchaudio_version,
+            "official_state_tensors_loaded": loaded_count + 2,
+            "official_defaulted_deterministic_buffers": defaulted,
+            "code_count": int(codes.size),
+            "feature_shape": list(features.shape),
+            "decoded_shape": list(decoded.shape),
+            "files": {
+                path.name: sha256_file(path)
+                for path in (output_codes_path, features_path, pcm_path)
+            },
+        }
+        _atomic_write_bytes(
+            manifest_path,
+            (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        )
+        _record_created_output(created, manifest_path)
+    except Exception:
+        _remove_outputs_created_by_us(created)
+        raise
     print(json.dumps(manifest, sort_keys=True))
     return 0
 

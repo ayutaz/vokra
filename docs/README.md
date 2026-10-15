@@ -1,6 +1,49 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**02:44 UTC corrected-source acceptance (2026-10-15):** XCodec2 `3d5318e0`
+passed the [additional model-free VAST verification](handoff/xcodec2-source-verification-readback-2026-10-15.md#corrected-source-acceptance--2026-10-15-0244-utc):
+workspace fmt/Clippy, nine actual contract tests and three shell gates.
+Cargo's tenth passing entry was a documented real-weight early return;
+real-weight CPU parity remains NOT_RUN. Owned worker/data destruction has
+individual-null readback. Fresh published-head CI/review remain separate;
+PR #152 stays Draft, with owner/legal, 58 public rows and Apple packets
+unchanged. The earlier failed-attempt snapshots below are retained.
+
+**01:20 UTC source-verification readback (2026-10-15):** The actual
+[XCodec2 model-free VAST attempt](handoff/xcodec2-source-verification-readback-2026-10-15.md)
+failed at Clippy compilation before Rust tests. Its owned worker and data are
+destroyed with individual-null readback. Two source causes are repaired and
+statically reviewed, not remotely reverified or pushed. Real-weight CPU,
+owner/legal and final Apple packets remain incomplete; PR #152 stays Draft.
+
+**20:30:49 UTC acceptance supersession (2026-10-15 JST):** PR #248 was
+normally merged at exact `62a007fb`, against base `6f135822`, producing
+main `8bd30d9a`. All 70 checks completed (69 successful, one intentional
+skip), all 16 required context/application pairs passed and all nine
+started workflows reached terminal success, including late Unity packaging.
+Root's local main is fast-forwarded and clean. This accepts the minimal
+MeloTTS lock correction, not model execution or Apple verification.
+The [fresh public metadata readback](handoff/public-metadata-readback-2026-10-15.md)
+retains 194 public repositories, 136 code/artifact-full and 58 unresolved
+rows; it does not change the frozen 63-row owner packet. The unpublished
+[XCodec2 source-verification preparation](handoff/xcodec2-source-verification-preparation-2026-10-15.md)
+still requires remote compilation; its bundle is not a final Apple packet.
+No new paid worker, local model run or publication is authorized by this
+source acceptance. The following paragraphs are dated historical snapshots.
+
+**2026-10-15 JST acceptance readback:** PR #246 was normally merged at
+18:24:02 UTC on 2026-10-14 after all 70 checks completed (69 successful,
+one intentional skip), all 16 required context/application pairs succeeded
+and all nine started workflows reached terminal success, including Unity.
+Accepted main and clean local main are `731592f9`. The MOSS API-smoke
+source/bridge correction is accepted, not actual API, owner/legal, CPU or
+Apple execution. The five remaining open PRs are Draft #198/#191/#182/#169/#152.
+The [XCodec2 exact-byte guard candidate](handoff/xcodec2-exact-byte-guard-binding-2026-10-15.md)
+keeps #152's full unresolved scope and immutable historical oracle;
+fresh candidate CI and formal acceptance remain separate. The accepted-main
+and #246-pending statements below are preserved as earlier snapshots.
+
 **19:48:48 UTC acceptance supersession (2026-10-15 JST):** PR #249 was
 normally merged at exact `db9f9ae5`, producing main `6f135822` after all 70
 checks completed (69 successful, one intentional skip), all 16 required

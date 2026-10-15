@@ -2,6 +2,53 @@
 
 ## ゴールと現在地
 
+> **2026-10-15 02:44 UTCの修正後source検証受理:** 追加の1回を明示承認された
+> XCodec2 `3d5318e0`はVASTでworkspace fmt／Clippy、実際の契約テスト9件、
+> shell gate 3件を通過した。Cargoの10 passedにはGGUF未設定で早期returnした
+> 実weightテスト1件を含むため、実weight CPU parityはNOT_RUNのまま。
+> [実行・回収hash・削除記録](xcodec2-source-verification-readback-2026-10-15.md#corrected-source-acceptance--2026-10-15-0244-utc)
+> のとおりowned worker `56029199`と保存データはdestroyし、個別nullを確認した。
+> 次は対応するsource変更の通常pushとfresh published-head CI／レビュー。
+> #152は依存・native・license・API・owner・独立実weightの全scopeを保持してDraft。
+> 58未解決行、凍結63-row scope、実weight CPU、最終clean HEAD／Apple packetは
+> 未完了。今回のsource PASSを工程4やMetal完了へ昇格しない。以下は履歴snapshot。
+
+> **2026-10-15 01:20 UTCの実source検証readback:** 承認された改定料金条件で
+> XCodec2 `bcfa7888`をVAST `56019893`へ送り、source認証・モデル除外・fmtの後、
+> Clippyのコンパイルで停止した。Rustテストは未実行。25 E0308はSHA-256定数1件欠落と
+> 負例helperの戻り値型24件に分離し、定数64件の独立照合と最小修正のレビューまで完了。
+> [実行・修正・削除記録](xcodec2-source-verification-readback-2026-10-15.md)を参照。
+> ログ回収後、owned workerと保存データをdestroyし、個別APIのnullを確認した。
+> 修正後は未compile・未pushで、追加有料検証の承認が別途必要。今回の1回の許可を
+> 再利用しない。実weight CPU／58行の前提／凍結63-row scope／最終Apple packetは
+> 未完了であり、source失敗をCPUやAppleのPASSに置き換えない。以下は履歴snapshot。
+
+> **20:30:49 UTCのMeloTTS受理supersession（2026-10-15 JST）:** #248 exact
+> `62a007fb`／base `6f135822`は70/70 checks（69 success / 1 intentional skip）、
+> 必須16 context/appと遅いUnityを含む開始済み全9 workflowsのterminal successを
+> 確認して通常受理した。main／rootのローカルmainは`8bd30d9a`でclean。
+> 受理したのは最小lock修正であり、実weight CPUやAppleの完了ではない。
+> [fresh public metadata readback](public-metadata-readback-2026-10-15.md)の
+> 194 public／136 code-artifact-full／58未解決と凍結63-row owner scopeは不変。
+> [XCodec2 source検証準備](xcodec2-source-verification-preparation-2026-10-15.md)は
+> 未push・未compileの候補で、最新main統合とsource bundleの再生成を進める。
+> オフラインcontroller検査は実リモート検証でも最終Apple packetでもない。
+> 新規有料VAST、ローカルモデル実行、公開は開始していない。工程4の実weight CPU／
+> 最終clean HEAD／fresh Apple packetは未完了。以下の記録は当時の履歴として保持する。
+
+> **18:24:02 UTCのMOSS API-smoke受理readback（2026-10-15 JST）:** #246 exact
+> `f1fefec3`／base `d1cbed72`は全70 checks（69 success / 1 intentional skip）、
+> 必須16 context/appと開始した全9 workflowsのterminal successを確認して通常受理した。
+> 遅いUnity packagingも完了してから受理し、main／ローカルmainは`731592f9`でclean。
+> 現行API-smoke lockとbridgeの独立照合を受理しただけで、実API、依存/native/owner、
+> 実weight CPU、Appleや公開の完了ではない。以下の#246 pending snapshotは履歴。
+> 開いているPRは#198／#191／#182／#169／#152の5 Draftで、未完了scopeを維持する。
+> 次は#152の[exact-byte guard修正](xcodec2-exact-byte-guard-binding-2026-10-15.md)：
+> 小さい一時ファイルで意味が同じ改行変更も拒否し、依存・ライセンス保留と過去oracleを保持する。
+> この候補は最新mainを通常統合した未受理source変更で、fresh CIと受理は別。
+> 58未解決行、凍結63-row owner scope、承認済み実weight CPU、最終clean HEAD／
+> fresh Apple packetのゴールは未完了。新規有料監査／ローカルモデル実行／公開は開始しない。
+
 > **19:48:48 UTCのsource受理supersession（2026-10-15 JST）:** NSNet2 #249
 > exact `db9f9ae5`は70/70 checks（69 success / 1 intentional skip）、必須16
 > context/app、遅いUnityを含む全9 workflowsのterminal successを確認して通常受理した。
