@@ -89,6 +89,12 @@ Future actual overlay application must independently authenticate its source
 archives and every unchanged source member; this collection and missing
 old-tool snapshot are not substituted for that application proof.
 
+After accepting the current code, manager freezes its exact source/test and
+both data receipts in a private local evidence repository at commit
+`d22ed6c284eba19fdf29fbd086c7a4bb1d5ffb56`. This prevents subsequent edits
+from destroying the accepted resume source. It does not recover the missing
+old snapshot or imply that this private commit was published to GitHub.
+
 ## Updated registry sources: two CPU replacements, one whole-only package
 
 Exact comparison finds only two changes between the old 104 registry CPU
@@ -113,9 +119,9 @@ with no terminal LF. The [tracked compact facts](kyutai-candle-updated-source-fa
 are a deliberately distinct derivative: **123,042 bytes**, SHA-256
 `a8ddbf72f531f0f3e35b0da072d24e5daa318b2f11c4991c64a7d91107efa302`.
 They retain complete member/hash inventories, manifests, license/VCS/build
-bodies and available build-helper bodies; other Rust bodies remain in the
-original private receipt, with their hashes in the compact record. This is
-not a restamped raw capture.
+bodies; other Rust bodies, including the Anyhow probe source described below,
+remain in the original private receipt, with their hashes in the compact
+record. This is not a restamped raw capture.
 
 | Package / scope | Archive bytes | Rust bodies | Actual build fact |
 |---|---:|---:|---|
@@ -137,6 +143,39 @@ its test module is
 `7ee67add5d8bdc7b5269c54ccc2806519cf2c5b547ab62e8540dc0b8b378ccb8`.
 Both captures keep null approval, `NOT_TESTED` compatibility,
 `NOT_AUTHORIZED` model execution and `NO_UPLOAD` boundaries.
+
+### Limited source/license and build-side-effect review
+
+An independent reviewer reads the seven license/COPYRIGHT members, manifests,
+VCS bodies and the two complete build roots. Crossbeam's MIT notice names
+the Crossbeam Project Developers; Rand retains Rand-contributor and Rust
+Project attribution. Preserve these notices and both declared alternatives;
+this is a limited primary-text review, not a complete closure or owner sign-off.
+
+Manager independently reads both complete build scripts. The 443-byte
+Crossbeam root reads `CARGO_CFG_SANITIZE` and emits Cargo cfg/rerun directives;
+that root has no filesystem writes, subprocess or native-link directive.
+Rand explicitly declares `build = false`. Anyhow's 6,936-byte root is a
+different execution boundary: it reads compiler/wrapper/target/encoded-flags
+environment variables, creates `OUT_DIR/probe`, may run two compile probes,
+runs `rustc --version`, and removes its probe directory. Its probe input is
+**`src/nightly.rs`**, not an invented `build/probe.rs` or `called.rs`.
+Manager independently reads the exact **1,563-byte** body at SHA-256
+`1c0aeadfcdbe22f8f807b185dec1a7448c378bddb37689714944b60473b58049`.
+It exercises the unstable generic Error member-access API through
+`anyhow_build_probe`. The source is captured and hashed, not compiled.
+
+No explicit network or native-link directive appears in these two reviewed
+build roots. This does not make an environment-selected compiler/wrapper
+subprocess inert or prove all external dependency reachability. The raw
+receipt's `license_review: NOT_PERFORMED` is preserved rather than restamped
+as approval. Future executable compatibility work needs the exact applicable
+operator/environment gate separately.
+
+Manager freezes the accepted updated-source tool/test and original raw
+receipt in a separate private local evidence repository at commit
+`a2ece844f8f61a2ac90199ab00513889c9f92aba`. No provider or public upload
+is involved in this evidence retention.
 
 ## Next exact action, not an execution shortcut
 
