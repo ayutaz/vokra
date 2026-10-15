@@ -53,6 +53,32 @@ def _blob(data: bytes) -> str:
 
 
 class CandleMetadataWorkflowContractTests(unittest.TestCase):
+    def test_workflow_recovers_exact_six_evidence_files_without_globs_or_caches(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        expected = [
+            "source_receipt.json",
+            "source/rust/Cargo.lock",
+            "base/Cargo.lock",
+            "patched/Cargo.lock",
+            "initial_metadata.json",
+            "metadata.json",
+        ]
+        check_start = text.index("      - name: Check the bounded evidence set")
+        check_end = text.index("      - name: Upload exact bounded evidence", check_start)
+        check_block = text[check_start:check_end]
+        check_paths = [
+            candidate
+            for line in check_block.splitlines()
+            if (candidate := line.strip().rstrip("\\").strip().removesuffix("; do").strip()).endswith((".json", "Cargo.lock"))
+        ]
+        self.assertEqual(check_paths, expected)
+        upload_start = text.index("      - name: Upload exact bounded evidence")
+        upload_block = text[upload_start:]
+        upload_paths = [line.strip().rsplit("}/", 1)[-1] for line in upload_block.splitlines() if "runner.temp" in line]
+        self.assertEqual(upload_paths, expected)
+        self.assertNotIn("*", check_block + upload_block)
+        self.assertNotIn("cache", check_block.lower() + upload_block.lower())
+
     def test_checkout_is_exact_sparse_owned_allowlist_without_filter(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         start = text.index("      - name: Checkout")

@@ -235,13 +235,18 @@ class CollectorTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
-    def _full_capture_environment(self, *, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, mutate_final: bool = False) -> tuple[Path, Path]:
+    def _full_capture_environment(self, *, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, mutate_base: bool = False, mutate_final: bool = False) -> tuple[Path, Path]:
         fake_bin = self.root / "fake-bin"
         fake_bin.mkdir(exist_ok=True)
         metadata_path = self.root / "metadata-fixture.json"
         metadata_path.write_text(metadata_json())
         patched_lock = self.root / "patched-fixture.lock"
         patched_lock.write_text(LOCK.format(memmap_version="0.9.11", memmap_checksum="c" * 64, candle_checksum="b" * 64))
+        mutated_base_lock = self.root / "mutated-base-fixture.lock"
+        mutated_base_lock.write_text(
+            LOCK.format(memmap_version="0.9.5", memmap_checksum="a" * 64, candle_checksum="b" * 64)
+            .replace('dependencies = ["memmap2"]', 'dependencies = ["memmap2", "unexpected"]')
+        )
         log_path = self.root / "cargo-argv.log"
         cargo = fake_bin / "cargo"
         cargo.write_text(
@@ -250,7 +255,7 @@ class CollectorTests(unittest.TestCase):
             "test \"${RUSTUP_TOOLCHAIN:-}\" = '1.99.0'\n"
             f"printf '%s\\n' \"$*\" >> {log_path}\n"
             "case \"$1\" in\n"
-            f"metadata) cat {metadata_path} ;;\n"
+            f"metadata) {'cp ' + str(mutated_base_lock) + ' \"$PWD/Cargo.lock\"; ' if mutate_base else ''}cat {metadata_path} ;;\n"
             f"tree) case \"$8\" in normal) printf '%s\\n' 'moshi -> candle normal' ;; build) printf '%s\\n' 'moshi -> build-helper build' ;; features) printf '%s\\n' 'moshi features: default-disabled'; {'printf \'\\nmutated\\n\' >> \"$PWD/Cargo.lock\"' if mutate_final else ':'} ;; esac ;;\n"
             f"update) cp {patched_lock} \"$PWD/Cargo.lock\" ;;\n"
             "*) exit 90 ;;\n"
@@ -266,11 +271,11 @@ class CollectorTests(unittest.TestCase):
         rustc.chmod(rustc.stat().st_mode | stat.S_IXUSR)
         return fake_bin, log_path
 
-    def _run_full_capture(self, *, via_main: bool = False, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, metadata: str | None = None, mutate_final: bool = False) -> tuple[Path, Path]:
+    def _run_full_capture(self, *, via_main: bool = False, rust_version: str = "1.99.0", rust_host: str = leaf.TARGET, metadata: str | None = None, output_name: str | None = None, mutate_base: bool = False, mutate_final: bool = False) -> tuple[Path, Path]:
         if metadata is not None:
             (self.root / "metadata-fixture.json").write_text(metadata)
-        fake_bin, log_path = self._full_capture_environment(rust_version=rust_version, rust_host=rust_host, mutate_final=mutate_final)
-        output = self.root / ("main-output" if via_main else "capture-output")
+        fake_bin, log_path = self._full_capture_environment(rust_version=rust_version, rust_host=rust_host, mutate_base=mutate_base, mutate_final=mutate_final)
+        output = self.root / (output_name or ("main-output" if via_main else "capture-output"))
         fetcher = self.fixture_fetcher()
         environment = {"PATH": f"{fake_bin}:/usr/bin:/bin", "VOKRA_CANDLE_REMOTE_LINUX": "1", "VAST_API_KEY": "must-not-pass"}
         with mock.patch.dict(os.environ, environment, clear=False):
@@ -286,6 +291,15 @@ class CollectorTests(unittest.TestCase):
         packet = json.loads((output / "metadata.json").read_text())
         self.assertEqual(packet["status"], "METADATA_CAPTURED_REVIEW_PENDING")
         self.assertEqual(packet["workspace_member_packages"], ["moshi"])
+        initial = json.loads((output / "initial_metadata.json").read_text())
+        self.assertEqual(initial["status"], "INITIAL_METADATA_UNREVIEWED")
+        self.assertEqual(initial["source_commit"], leaf.SOURCE_COMMIT)
+        self.assertEqual(initial["target"], leaf.TARGET)
+        self.assertTrue(initial["metadata"]["packages"])
+        self.assertEqual(initial["approval"], None)
+        self.assertEqual(initial["upload"], "NO_UPLOAD")
+        self.assertEqual(initial["model_execution"], "NOT_AUTHORIZED")
+        self.assertLessEqual((output / "initial_metadata.json").stat().st_size, leaf.MAX_JSON_BYTES)
         self.assertTrue(packet["initial"]["trees"]["normal"].strip())
         self.assertTrue(packet["initial"]["trees"]["build"].strip())
         self.assertEqual(set(packet["lock_receipts"]), {"original", "projected_base", "patched", "final_projection"})
@@ -320,6 +334,20 @@ class CollectorTests(unittest.TestCase):
     def test_final_projection_lock_mutation_is_rejected(self) -> None:
         with self.assertRaises(leaf.CaptureError):
             self._run_full_capture(mutate_final=True)
+
+    def test_initial_metadata_survives_retained_base_lock_failure(self) -> None:
+        output = self.root / "base-failure-output"
+        with self.assertRaisesRegex(leaf.CaptureError, "projected base lock mutated retained package: moshi"):
+            self._run_full_capture(output_name=output.name, mutate_base=True)
+        initial = json.loads((output / "initial_metadata.json").read_text())
+        self.assertEqual(initial["status"], "INITIAL_METADATA_UNREVIEWED")
+        self.assertTrue(initial["metadata"]["packages"])
+        self.assertEqual(initial["approval"], None)
+        self.assertEqual(initial["upload"], "NO_UPLOAD")
+        self.assertEqual(initial["model_execution"], "NOT_AUTHORIZED")
+        self.assertTrue((output / "base/Cargo.lock").is_file())
+        self.assertFalse((output / "patched/Cargo.lock").exists())
+        self.assertFalse((output / "metadata.json").exists())
 
     def test_symlink_ancestor_and_source_trickle_deadline(self) -> None:
         real_parent = self.root / "real-parent"

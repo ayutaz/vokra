@@ -1010,6 +1010,26 @@ def capture(
             if result["returncode"] != 0:
                 raise CaptureError(f"Cargo command failed: {result['argv']}")
         graph = inspect_metadata(initial[0]["stdout"])
+        try:
+            initial_metadata = json.loads(initial[0]["stdout"])
+        except json.JSONDecodeError as exc:
+            raise CaptureError("Cargo metadata output is not JSON") from exc
+        if not isinstance(initial_metadata, dict):
+            raise CaptureError("Cargo metadata object required")
+        write_json(
+            output_root / "initial_metadata.json",
+            {
+                "status": "INITIAL_METADATA_UNREVIEWED",
+                "source_commit": SOURCE_COMMIT,
+                "target": TARGET,
+                "toolchain": toolchain,
+                "metadata": initial_metadata,
+                "graph": graph,
+                "approval": None,
+                "upload": "NO_UPLOAD",
+                "model_execution": "NOT_AUTHORIZED",
+            },
+        )
         base_lock.write_bytes(read_bytes(projection / "Cargo.lock", max_bytes=MAX_FILE_BYTES))
         if base_lock.is_symlink():
             raise CaptureError("base lock must be regular")
