@@ -1,5 +1,31 @@
 # Current 58-row static prerequisite readback — 2026-10-15 JST
 
+## Subsequent four-family input binding review
+
+A bounded read-only review at accepted main
+`154919820b71166a375d0e1307e25aef5aa06e7e` checks actual current consumers,
+not a historical audit digest or a pending candidate against main. Manager
+independently rehashes the eight dedicated project/lock files. No current
+same-contract source-binding defect is found in these four families:
+
+| Family | Project SHA-256 | Lock SHA-256 | Whole-lock rows / matching source consumers |
+|---|---|---|---|
+| BigVGAN | `66caa1eea376a26391e49b9b726627f2a19dd1a6b1ddb57a10ecae8af14637ce` | `f78c791e43d089cc9ddf2175cd29929a2c905f3b55d6aaf7ea32c885281edfda` | 12 rows; production license gate matches, with 10 active registry rows per platform plus virtual/inactive-variant records |
+| Qwen3-ASR | `aa12415124f42b414e5fee217aafab3240c0dc2290e8705a257b1482bc96bba2` | `807bf3ad2cbc236c7a83b6a5fcd2d5d36fe1a5bccd2eef4d1b659aee49b2e6d1` | 40 rows; preflight and both converter/runtime/dumper revisions match |
+| Qwen3-TTS | `277ac9a2f414a6a41fa473c956c71bb6d7680c83c011afc53cff08276d102711` | `e03f60fb15066ed5efbcd4d682c8a2f61eefc5ca261f982d1943988e84f85fd6` | 59 rows; license/API/model-free consumers and four production revisions match |
+| Parler-TTS | `eacb62df8ffc207f2d8d860607da93d1fdc6980cbb3fe657bf8664bc20675793` | `683c1c2324f3dbcd543b86fce0b71ec1c1ee32254cdf03b0361064b4b8d4901c` | 35 rows; preflight/API/project bindings and canonical package-row digest match |
+
+BigVGAN still has two pending Torch native/bundled rows, and its reviewed
+setuptools row explicitly records LGPL material: `REVIEWED` is not an
+execution approval. Qwen3-ASR has 40 pending reviews, Qwen3-TTS has 54 reviewed
+and five blocked review rows, and Parler has 35 pending reviews. Existing
+owner/operator/license/native holds remain unchanged; no normal production
+readiness command or target package was executed. VoiceDesign in the Qwen
+converter and Indic in the Parler converter are outside the respective
+four-/two-variant dedicated production contracts, not automatically drift.
+Do not invent a lock repair or repeat a paid audit from this clean binding
+result. The original 58-row inspection below retains its dated boundary.
+
 Read-only source inspection at accepted main
 `f0130b5de5c37e4441612a85ecaa4e39ae0344f9`. Three disjoint agent reports were
 reviewed by the manager, including corrections to namespace and cardinality

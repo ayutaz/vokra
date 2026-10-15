@@ -2,6 +2,14 @@
 
 ## ゴールと現在地
 
+> **05:24 UTCのwhole-lock回収supersession（2026-10-15）:** #251 exact
+> `072df353`の実診断で31 testsが成功し、全161 package／nodeとbase lockの全依存edgeの
+> 一致を独立確認した。既存のraw-record gateで停止した失敗は保持し、実データに基づく
+> 厳密な射影validatorの修正へ進む。[回収hashと境界](kyutai-candle-source-metadata-ci-2026-10-15.md)。
+> [別4系統のcurrent input照合](current-58-static-prerequisite-readback-2026-10-15.md)では
+> genuine binding defectなし。未承認reviewを通す変更や、不要な有料再監査はしない。
+> 実weight CPU・全行non-Apple完了・最終clean HEAD／Apple packetのゴールは依然未完了。
+
 > **2026-10-15の継続readback:** FocalCodec #250はexact
 > `d4eabe36`の全70 checks（69 success / 1 intentional skip）、必須16
 > context/appと開始した全9 workflowsのterminal successを確認して04:51:58 UTCに

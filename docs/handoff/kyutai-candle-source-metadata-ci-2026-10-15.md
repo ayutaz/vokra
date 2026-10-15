@@ -1,5 +1,62 @@
 # Kyutai Candle source-metadata CI preparation — 2026-10-15 JST
 
+## Actual whole-lock recovery — 05:24 UTC
+
+At exact `072df353bc6f6506144674db50d0160c9df36aee`,
+[run 38685726123](https://github.com/ayutaz/vokra/actions/runs/38685726123),
+job `116259990428` passed all **31 stdlib tests** on Linux (1.700 seconds),
+then actually recovered the complete all-features/no-platform-filter metadata.
+Capture still stopped at the unchanged base-lock retained-record gate at
+05:24:21 UTC; neither this run nor its missing-evidence check is green.
+Bounded upload succeeded. No patched lock or final receipt was produced.
+
+GitHub artifact `11950976136` contains exactly five recovered members and
+reports 170,823 ZIP bytes, expiring 2026-10-16 05:24:21 UTC. Manager independently
+hashes the extracted members, without claiming independent raw-ZIP hashing:
+
+| Member | SHA-256 |
+|---|---|
+| Whole-lock metadata, 1,264,493 bytes | `02488f07884e4f01bb8b7c32eacfc0f1324013a95c1e9551a95530511495a9ad` |
+| Initial CPU metadata | `48fce36881a0062d06f4e812e407912e65ac6e06bc1947aaba1a56a0c5f87880` |
+| Source receipt | `157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec` |
+| Original lock | `bc4348116cdf1408583311954c1baaee6bde3b4cf54cd160af50b278aa4e44ab` |
+| Projected base lock | `eafbfd9c58c0b8aa60c4298f4df7e0187c78161a8aa898d0490a98c52faf28de` |
+
+The last three hashes reproduce all three hosted attempts. Raw initial
+metadata includes run-specific filesystem/package paths; its new hash is not
+represented as byte-reproducible across runs.
+
+Manager independently parses all **161 whole-feature packages, 161 nodes and
+161 base-lock records**. Package identity sets and node IDs match exactly,
+without extras or missing records. Every base-lock canonical dependency set
+matches the complete graph's non-dev edges: **zero edge differences**.
+Before/after lock hashes are identical to the recovered base lock, and the
+embedded post-command lock text is byte-identical. The output remains below
+the unchanged 2 MiB JSON cap. These checks cover the whole lock, not only the
+smaller selected CPU graph.
+
+The six changed parents' whole-feature sets confirm no enabling feature for
+the ten removed optional edges. In particular cc has no selected features
+and only shlex as a resolved dependency; its parallel-controlled jobserver
+and libc edges are absent. The other five parents have the feature sets
+listed in the 04:59 record. This is consistent with changing the full source
+workspace to its core-only projection and resolving that feature union;
+the original workspace's feature graph itself was not executed here.
+
+This now supports designing a canonical-identity/whole-graph projection
+validator instead of treating raw dependency-label equality as semantic
+identity. Require unchanged non-dependency fields, exact graph coverage,
+no new/replaced/reordered edges and proved inactive optional removals. Do
+not add a hash waiver or infer package/native/license/advisory/owner approval.
+The implementation correction, actual precise memmap2 update, full-PCM
+reference and real-weight CPU parity remain separate uncompleted gates.
+
+At the same published head, hosted `documentation-links` job `116259990487`
+and `workflow-security` job `116259990321` subsequently pass. The earlier
+RMVPE citation failure is not ignored or carried forward as a successful run;
+the corrected fixed-tree citation has new actual CI evidence. Other current
+CI remains in progress, and the diagnostic's strict-gate failure is retained.
+
 ## Separate whole-lock diagnostic preparation
 
 The next reviewed collector has SHA-256

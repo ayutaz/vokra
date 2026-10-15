@@ -1,6 +1,13 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14, continued 2026-10-15):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**05:24 UTC diagnostic supersession (2026-10-15):** the separate
+[whole-lock capture](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
+now covers all 161 base-lock packages and dependency edges. The old raw-record
+gate still fails; a reviewed semantic correction and actual patched-lock
+evidence remain outstanding. The [four-family current binding review](handoff/current-58-static-prerequisite-readback-2026-10-15.md)
+finds no separate lock/project defect and does not approve pending reviews.
+
 **2026-10-15 continuation readback:** accepted main is `15491982` after
 ordinary PR #250 acceptance (69 successful checks, one intentional skip,
 16 required context/application pairs and nine terminal-success workflows).
