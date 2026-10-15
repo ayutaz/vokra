@@ -1,5 +1,11 @@
 # Candle manifest-only paste overlay preparation — 2026-10-15
 
+> **Actual hosted result:** the new planner succeeds at exact `bd0384c2`
+> in run `38719741790`. Manager recovers and independently accepts the
+> 187,212-byte plan, including all sixteen full-manifest deltas and 292
+> unchanged-member requirements. This supersedes only the pending hosted-plan
+> statements below; actual source application/compatibility remain unexecuted.
+
 This is preparation for an actual source-only overlay, not that application
 or a compatibility/security PASS. The [candidate audit](kyutai-candle-candidate-advisory-result-2026-10-15.md)
 still reports `paste 1.0.15` / `RUSTSEC-2024-0436`; PR #255 remains draft.
@@ -114,3 +120,63 @@ the exact lock delta and CPU/unfiltered-whole graphs, and run the full strict
 audit without a warning waiver. Actual compatibility, license/native/operator,
 independent full-PCM reference, real-weight CPU and final Apple packets remain
 separate gates. No new paid worker or model acquisition/execution occurs.
+
+## Actual hosted plan and independent recovered-data acceptance
+
+[Run 38719741790](https://github.com/ayutaz/vokra/actions/runs/38719741790),
+attempt 1, job `116371080044`, completes success at PR head
+`bd0384c2fe5591b40834a5b568ead5d69f7f14f2`. Its checkout is the PR merge
+commit `72de56cba5ed507987daab3e1c9bd0d75d340784` against then-main
+`7701cc67414d9cb84e4fe3cd6cf228a10bb8b792`, not a claimed direct-head run.
+All six hosted tests pass in **0.055 seconds**, without skips. The actual
+planner CLI returns zero and writes sixteen proposals, not applied sources.
+
+Artifact `11963583829`, named
+`kyutai-candle-paste-overlay-38719741790-1`, is **21,179 compressed bytes**.
+Both API and job log report uploaded ZIP digest
+`539f71be4199cd9a60f118ddfebf6758dfc3ea4f1daeb46ed3efa1ef29cb3403`.
+It expires at 2026-10-16 10:22:39 UTC; the recovered original is retained
+separately rather than relying on indefinite hosted retention.
+
+The artifact contains exactly one regular file, `paste-overlay-plan.json`:
+**187,212 bytes**, SHA-256
+`677d8d840d43974c9f2ae1e567feb7df49169a3f06425e58f560e83b99b21874`.
+Its original no-terminal-LF bytes match the CLI-reported hash and canonical
+JSON serialization. Manager validates the recovered data using independent
+stdlib JSON/TOML parsing, without importing or executing the planner locally:
+
+- Both exact input-receipt sizes/hashes and repository-relative paths match.
+- The ordered sixteen identities and fourteen CPU/two Metal flags match.
+- All sixteen original parsed manifests match authenticated source bodies;
+  proposed full manifests differ only in the two allowed dependency fields.
+- Every proposed text length/hash, original manifest reference, license,
+  VCS, original-manifest and Rust-source requirement matches its source receipt.
+- All **292 non-operative-manifest member requirements** match the complete
+  inventories; sixteen distinct parent package/path patches parse as TOML.
+- All plan-only, no-application, untested, no-approval, no-model and no-upload
+  fields remain unchanged; the reported JSON/network/Cargo/write limits match.
+
+The recovered JSON is frozen in a private local evidence repository at commit
+`989c7e7721df118f59cdc9362cc1fd72ba19b814`; this is not a public model upload.
+No source overlay has been applied and no macro, advisory, real-weight CPU
+or Apple result follows. The previously blocked local CLI remains unexecuted.
+
+## Independent dependency PR accepted while the planner ran
+
+[Dependabot PR #256](https://github.com/ayutaz/vokra/pull/256), exact head
+`51c52330d801e359c6e2ab1ec1efc186314d3a5d`, changes only the urllib3
+2.7.0 → 2.8.0 record in the Misaki integration's `uv.lock`. Independent
+review compares both complete 127-package locks: all other 126 records,
+top-level fields, markers and dependency edges are unchanged. The project
+manifest is unchanged and retains Python 3.12; no current hash-bound consumer
+needs rebinding. Manager reviews the exact one-file, three-line replacement.
+
+All **71 checks** finish (70 success, one intentional full-history secret-scan
+skip), all **16 required context/application pairs** pass, and all ten started
+workflows succeed, including the existing hosted Kokoro parity job. Actual
+branch protection requires an up-to-date base and enforces administrators.
+Normal head-matched squash merge succeeds without an administrative override
+at **2026-10-15 10:22:52 UTC**, producing main
+`f8d859dc9cf284372ae758c0fa06763d93e4ebdc`. The maintainer's local main is
+fast-forwarded and clean. This does not merge #255, validate its later
+integrated head, or close any pending campaign model row.

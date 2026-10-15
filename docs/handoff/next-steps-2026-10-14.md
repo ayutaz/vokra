@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **実計画の回収と#256受理（2026-10-15）:** [hosted plannerの実結果](kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
+> は6 tests／CLI成功。回収した187,212-byte JSONの全16完全manifest差分と292 member
+> 不変条件を独立照合した。次はsource-only実適用とCPU／whole graph、strict監査であり、
+> 置換互換性は未検証。Misaki urllib3のみの#256は71 checks完了（70 success／1 skip）、
+> 必須16項目と全10 workflows成功後に通常mergeし、ローカルmainはclean `f8d859dc`。
+> #255はdraft、全行non-Apple／承認済み実weight CPU／最終packetの工程4は未完了。
+
 > **manifest-only置換計画の準備（2026-10-15）:** [offline planner](kyutai-candle-paste-overlay-preparation-2026-10-15.md)
 > の全16件入力／完全TOML差分／source inventory参照検証をレビューし、正規unittestで
 > 6 tests成功。ローカルCLIはhook拒否で止め、別経路では実行しない。次は新HEADの

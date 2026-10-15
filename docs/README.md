@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Actual hosted plan / dependency acceptance (2026-10-15):** the
+[planner result and #256 readback](handoff/kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
+authenticates the actual sixteen-parent plan and 292 unchanged-member
+requirements, not source application or compatibility. Misaki's one-record
+urllib3 update is normally merged after 70 successful checks and one
+intentional skip; local main is clean `f8d859dc`. #255 stays draft, and the
+full non-Apple, real-weight CPU and final-packet gates remain incomplete.
+
 **Manifest-overlay preparation (2026-10-15):** the
 [reviewed offline planner](handoff/kyutai-candle-paste-overlay-preparation-2026-10-15.md)
 passes six independent stdlib tests against the authenticated sixteen-parent
