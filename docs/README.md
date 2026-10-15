@@ -1,5 +1,30 @@
 # Vokra documentation
 
+**Six-scope dependency candidate (2026-10-15):** DFN3, DAC, OWSM,
+Baichuan inspection, ChatTTS and VibeVoice 1.5B use the reviewed urllib3
+2.8.0 record while preserving all unrelated records and markers. See the
+[DFN3](handoff/dfn3-urllib3-minimal-reconciliation-2026-10-15.md),
+[DAC/OWSM](handoff/dac-owsm-urllib3-minimal-reconciliation-2026-10-15.md)
+and [three-scope](handoff/parity-urllib3-three-scope-reconciliation-2026-10-15.md)
+readbacks. Current factual digest consumers are coordinated, not historical
+evidence or owner approvals. Fresh integrated-head CI/acceptance is required;
+Canary's frozen cross-bound scope remains excluded. Real-weight CPU, final
+Apple packets and the full non-Apple campaign remain incomplete.
+
+**Subsequent source supplement (2026-10-15):** the [bounded 14-archive collection](handoff/kyutai-candle-build-source-supplement-2026-10-15.md)
+authenticates 218 Rust source members, including all five missing helper
+paths. Seventeen independently run offline tests and actual checksum/body
+verification pass; helper source review and macro-module inventory are
+recorded separately from execution approval. No upstream code/model runs.
+
+**07:07:47 UTC acceptance (2026-10-15):** PR #253 was normally merged as
+main `5ceb4325` after all 73 checks completed (71 success, two intentional
+skips), all 16 required context/application pairs passed and all ten started
+workflows succeeded. Local main is fast-forwarded and clean. The accepted
+104-archive receipt is collection-only. The separate [license/build review](handoff/kyutai-candle-archive-review-readback-2026-10-15.md)
+records material license terms, native-code generation and precise helper
+source gaps, not model execution, owner approval or final Apple readiness.
+
 **Latest execution plan (2026-10-14, continued 2026-10-15):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
 **06:34:34 UTC acceptance and subsequent archive facts (2026-10-15):**
 Candle PR #251 is normally merged as main `1d863280` after all 71 checks

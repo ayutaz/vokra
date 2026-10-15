@@ -15,8 +15,8 @@ package = false
 
 [tool.vokra.baichuan_audio_instruct_inspection]
 lock_status = "AUTHENTICATED_METADATA_ONLY"
-lock_sha256 = "0e8ca64e2f81060732c317fd6d10e01df7c3a5eb122426ef5d695e9813df7625"
-lock_package_rows_sha256 = "a276c50b73fcbc7f0ac22667d6d56516bf7dea7e9e420456562f128b4fa36b2b"
+lock_sha256 = "c88a3d8ef8488f84105d4530b56e522396eea9d9b931ec2916202f952aeb177d"
+lock_package_rows_sha256 = "e8989e69b0e9563d8578ae40f7d35caacf84559296eea50009a0f4db7572caad"
 lock_resolution_markers_sha256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
 lock_package_count = 14
 marker_digest_schema = "package-resolution-and-dependency-markers-v2"
@@ -41,6 +41,6 @@ license_conclusions = [
     { name = "requests", version = "2.34.2", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/requests/2.34.2/json" },
     { name = "tqdm", version = "4.70.0", license = "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.70.0/json" },
     { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json" },
-    { name = "urllib3", version = "2.7.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/urllib3/2.7.0/json" },
+    { name = "urllib3", version = "2.8.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/urllib3/2.8.0/json" },
     { name = "vokra-baichuan-audio-instruct-inspection", version = "0.1.0", license = "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE", primary_source = "repository" },
 ]

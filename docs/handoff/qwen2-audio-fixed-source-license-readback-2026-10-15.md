@@ -20,7 +20,7 @@ The agent's direct recursive API request failed DNS resolution. The manager
 subsequently retrieved the official API through the GitHub connector at
 approximately 16:11 UTC on 2026-10-14:
 
-- [Fixed commit](https://api.github.com/repos/QwenLM/Qwen2-Audio/commits/595360e82b5839c1507492ec83cae5bda6d5c7d4)
+- [Fixed commit](https://github.com/QwenLM/Qwen2-Audio/commit/595360e82b5839c1507492ec83cae5bda6d5c7d4)
   binds Git tree `0d66378d9e4b1a4d6bdba3969aa87ef777f487cd`.
 - [That exact recursive tree](https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1)
   returns `truncated=false`, 23 entries and 19 blobs. No path matches
@@ -28,6 +28,14 @@ approximately 16:11 UTC on 2026-10-14:
 - The [fixed README](https://raw.githubusercontent.com/QwenLM/Qwen2-Audio/595360e82b5839c1507492ec83cae5bda6d5c7d4/README.md)
   routes model-license questions to each model's repository. This does not
   establish an explicit source-code grant.
+
+At 08:01 UTC on 2026-10-15, PR #254's link checker received HTTP 403
+for this commit's REST endpoint. A fresh connector read independently
+returned the same full commit identity and its official HTML permalink;
+the HTML page was also inspected. The reader-facing commit link above
+therefore uses that exact permalink rather than the API endpoint. The
+original API-derived tree facts, license uncertainty and all other links
+remain unchanged. This is not a general 403 exemption or a legal approval.
 
 Filename absence is not proof that every source body, every ancestor, every
 branch or every release lacks a grant. A root `LICENSE` 404 alone would establish
