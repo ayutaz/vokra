@@ -48,6 +48,18 @@ rows / 27 active Linux rows, including urllib3 2.8.0, while preserving
 An old-lock evidence mutation is rejected for the intended exact reason:
 `dependency audit project bytes are stale`. `git diff --check` passes.
 
+The ordinary pre-commit passes all five checks. Ordinary pre-push passes all
+eight compliance regressions, then refuses its deep Cargo path on the
+maintainer Mac because the nested lock is outside the existing neutral-path
+allowlist. No local Cargo compile/test starts and no hook is changed. Manager
+independently compares the integrated candidate with recorded green VAST
+source `4263f41631bd15288f06d3cd5c6b83ea4a8fdf60`: `crates`, `tests`, root
+Cargo manifests/lock, `.cargo`, `.config` and root Rust/build configuration
+have no differences. This is source identity, not a new workspace replay or
+an installed Python compatibility result. For this corresponding source push,
+the documented `VOKRA_SKIP_HOOKS=1` path uses that remote evidence and the
+focused offline tests above; corrected-head hosted CI remains mandatory.
+
 No historical installed/native/API evidence or owner signature is relabeled
 for this new lock. In particular, the earlier `f9e095f7` audit, its 147
 publisher-license file records and 164 native files are not new measurements.
