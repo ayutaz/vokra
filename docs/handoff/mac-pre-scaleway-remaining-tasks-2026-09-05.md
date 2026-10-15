@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 JST current CPU evidence binding:** the
+> [fresh original-byte readback](kyutai-candle-current-cpu-evidence-2026-10-16.md)
+> maps CPU105 to registry90/path14/workspace1, reuses the exact 65 captured
+> license-body hashes and authenticates the 14 build/10 proc-macro roots.
+> Changed identity/provenance and native effects remain explicit. Full CPU
+> compatibility/execution authority, legal/operator, real-weight and final
+> Apple-packet gates remain; no row/count or owner disposition advances.
+
 > **2026-10-16 JST static macro frontier:** [twelve fixed source members](kyutai-candle-paste-macro-readback-2026-10-16.md)
 > match archived hashes and prove indirect gemm-c32/c64 expansion plus Metal
 > type-position usage. Zero direct text hits do not remove aliases or prove

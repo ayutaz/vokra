@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**Current CPU evidence rebound (2026-10-16 JST):** the
+[actual 105-package readback](handoff/kyutai-candle-current-cpu-evidence-2026-10-16.md)
+authenticates registry90/path14/workspace1, the exact retained 65-license-body
+hash set and all 24 current compiler-entry roots. Three identities change;
+fourteen retained name/version identities have modified path provenance.
+This closes factual reuse, not upstream-code execution/compatibility,
+legal/operator, real-weight CPU or final-packet gates. The next full CPU
+build scope needs its specific execution authority; Scaleway remains last.
+
 **Static macro frontier (2026-10-16 JST):** the
 [fixed-source readback](handoff/kyutai-candle-paste-macro-readback-2026-10-16.md)
 proves that zero direct paste hits do not make gemm-c32/c64 independent:

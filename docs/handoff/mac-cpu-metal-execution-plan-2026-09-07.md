@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST actual CPU admission scope:** the
+> [105-package original-evidence binding](kyutai-candle-current-cpu-evidence-2026-10-16.md)
+> distinguishes 90 registry, fourteen modified path parents and one Moshi
+> source, with exact license/root/feature evidence. Next obtain the specific
+> upstream build/proc-macro execution scope and validate the full locked CPU
+> library/API path, not only standalone syntax. Source/license/native/operator,
+> independent real-weight CPU and final clean-HEAD/packet obligations remain;
+> current audit-only permission does not authorize the next compiler run.
+
 > **2026-10-16 JST static macro frontier:** [fixed-source evidence](kyutai-candle-paste-macro-readback-2026-10-16.md)
 > defines cross-crate alias and Metal type-position compatibility cases;
 > no parent is dropped because a literal scan has zero hits. Compilation
