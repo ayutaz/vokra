@@ -1,5 +1,19 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **06:34:34 UTC acceptance (2026-10-15):** #251 is normally accepted as
+> main `1d863280` after all 71 checks and ten workflows completed successfully
+> (one intentional check skip). The subsequent [104-archive collection](kyutai-candle-primary-archive-facts-2026-10-15.md)
+> records authenticated primary-source facts and explicit license/VCS gaps,
+> not a license/native/operator or real-weight CPU verdict. The full unresolved
+> row inventory and final Apple-packet exit gate remain unchanged.
+
+> **06:06 UTC actual source capture (2026-10-15):** [Candle exact
+> `b111f377`](kyutai-candle-source-metadata-ci-2026-10-15.md) passes actual
+> metadata capture, precise memmap2-only update and seven-file recovery. This
+> closes that technical source diagnostic, not dependency/license/operator,
+> independent full-PCM, real-weight CPU or final packet gates. No inventory
+> refresh, public-row promotion or owner-disposition change is inferred.
+
 > **06:00:58 UTC source supersession (2026-10-15):** accepted main is
 > `b5ae1b3c` after normally merging FACodec #252 with all 70 checks and nine
 > workflows terminal-success (one intentional check skip). The [current plan](next-steps-2026-10-14.md)

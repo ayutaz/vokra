@@ -2,6 +2,28 @@
 
 ## ゴールと現在地
 
+> **06:34:34 UTCの通常受理と後続静的収集（2026-10-15）:** #251 exact
+> `b111f377`は全71 checks（70 success / 1 intentional skip）、必須16 context/app、
+> 開始した全10 workflows成功後に通常mergeし、main／ローカルはclean `1d863280`。
+> [CPU依存104 archiveの実収集](kyutai-candle-primary-archive-facts-2026-10-15.md)は全checksum
+> 一致・collection failureなし。178 license members、14 build／10 proc-macroの入口を
+> 記録したが、3件の同梱license欠如と4件の旧VCS path不明を残す。一次本文・native・
+> advisory・operator／独立full-PCMの解決が次であり、モデル実行の許可ではない。
+> 新着Dia urllib3 #253は無関係なTorch marker削除14件を戻し、current lock consumerを
+> 協調更新した候補を別途レビュー済み。新HEADのCI／通常受理が必要で、旧実測や署名を
+> 再刻印しない。全58行の非Apple前提、承認済み実weight CPU、最終clean HEAD／fresh
+> packetという工程4は未完了。Scaleway・新規有料worker・公開は開始していない。
+
+> **06:06 UTCの実診断成功（2026-10-15）:** #251 exact `b111f377`の
+> [実source-only capture](kyutai-candle-source-metadata-ci-2026-10-15.md)は40 hosted
+> testsと7ファイルの回収検査まで成功した。独立比較でもmemmap2のversion/checksum
+> だけの更新、他160 complete records不変、CPU graph 105件・GPU機能なしを確認。
+> 元の3回の失敗は保持し、新HEADの実成功と区別する。PR全体CI／通常受理は別途必要。
+> 次は選択CPU依存の一次license／native／advisory／operator scope、独立full-PCM
+> referenceの前提解決であり、metadata成功からモデル実行の承認を推定しない。
+> 全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh Apple packet
+> という元の工程4は未完了。Scaleway・公開・新規有料workerは開始していない。
+
 > **06:00:58 UTCの受理と修正候補（2026-10-15）:** FACodec #252 exact
 > `d6524a15`は全70 checks（69 success / 1 intentional skip）、必須16
 > context/appと開始した全9 workflowsの成功を確認して通常mergeした。main／ローカル

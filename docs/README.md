@@ -1,6 +1,25 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14, continued 2026-10-15):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**06:34:34 UTC acceptance and subsequent archive facts (2026-10-15):**
+Candle PR #251 is normally merged as main `1d863280` after all 71 checks
+(70 success, one intentional skip), all 16 required context/application pairs
+and all ten started workflows succeeded. Local main is synchronized and clean.
+The subsequent [104-archive primary-fact collection](handoff/kyutai-candle-primary-archive-facts-2026-10-15.md)
+binds every active registry package to its actual archive checksum, preserving
+three missing bundled-license and four legacy VCS-path facts. Collection is
+not legal/native/operator approval, real-weight CPU parity or an Apple packet.
+Earlier CI-pending notes below are retained as dated preparation snapshots.
+
+**06:06 UTC actual source capture (2026-10-15):** [Candle's corrected-head
+capture and precise update](handoff/kyutai-candle-source-metadata-ci-2026-10-15.md)
+now succeed at `b111f377`: 40 hosted tests and all seven evidence files pass.
+Independent full-record comparison confirms memmap2-only version/checksum
+changes and an otherwise identical 105-package CPU graph without GPU features.
+Ordinary PR #251 CI/acceptance and dependency/license/advisory/operator review
+remain separate. No real-weight CPU, Apple, public row or owner scope advances.
+Earlier pending statements below retain their preparation-time boundary.
+
 **06:00:58 UTC source acceptance (2026-10-15):** FACodec PR #252 was
 normally merged as main `b5ae1b3c` after all 70 checks completed (69 success,
 one intentional skip), all 16 required context/application pairs passed and
