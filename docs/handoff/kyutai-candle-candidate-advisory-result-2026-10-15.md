@@ -57,6 +57,25 @@ cases; after the exact artifact download, all nine candidate tests pass
 in 0.057 seconds with no skips. Those tests are preparation/contract
 evidence, not a substitute for the actual nonzero audit result.
 
+## Separate ordinary CI and immutable-receipt spelling checks
+
+At published head `09d2003b`, all 73 checks reach a terminal state: 69
+success, one intentional skip and three failures. Two are the retained
+baseline/candidate strict advisory results. The third is the advisory typos
+job `116350535468`: hosted typos 1.50.3 reports spellings inside the verbatim
+pastey source receipt and a registry package identifier in the successful
+pin receipt. Those bytes must not be corrected as authored prose.
+
+The narrowly reviewed follow-up excludes exactly these two authenticated
+JSON paths from spelling checks, following existing vendored-source fixture
+practice. It adds no global word override, JSON glob or security-audit waiver.
+Manager independently verifies both receipt hashes remain unchanged and
+passes the explicit `docs/handoff`, documentation-index and configuration
+scan using local typos **1.48.0**. The implementer also verifies an adjacent
+authored typo remains detectable. This local check is not a hosted 1.50.3
+rerun; a new published head still needs its own CI. The original red check
+and both failed security receipts remain historical facts.
+
 ## Original-to-candidate comparison at the same database
 
 | Original finding | Candidate observation |

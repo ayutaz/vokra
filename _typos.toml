@@ -52,6 +52,12 @@ extend-exclude = [
     "tests/fixtures/",
     "**/tests/fixtures/",
     "docs/bench-baselines/",
+    # Exact authenticated source/advisory receipts. typos v1.50.3 flags
+    # verbatim upstream prose/code tokens and registry package identifiers;
+    # these JSON bytes and their hashes are evidence, not authored prose, and
+    # must remain byte-identical.
+    "docs/handoff/kyutai-candle-pastey-source-2026-10-15.json",
+    "docs/handoff/kyutai-candle-pin-success-2026-10-15.json",
     # ABI symbol dumps and manifest lists — one-token-per-line files that
     # only ever contain mangled or C-ABI identifiers.
     "docs/abi/",
