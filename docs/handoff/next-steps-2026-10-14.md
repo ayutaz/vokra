@@ -2,6 +2,18 @@
 
 ## ゴールと現在地
 
+> **07:07:47 UTCの受理と一次資料レビュー（2026-10-15）:** #253 exact
+> `92f63d62`は全73 checks（71 success / 2 intentional skips）、必須16
+> context/appと開始した全10 workflowsの成功後に通常mergeした。main／ローカルmainは
+> `5ceb4325`でclean。104件のarchive collectionは受理済みで、別の
+> [license/build本文レビュー](kyutai-candle-archive-review-readback-2026-10-15.md)
+> は65 license本文、24 build/proc-macro rootsと4 legacy VCS manifestの範囲を記録する。
+> `pulp 0.21.4`のassembly生成と未回収helperを確認し、14件限定の補助source取得を準備する。
+> prototypeのblocking deadline／必須helper検査の欠落は取得前reviewで止め、修正と
+> causal regressionが揃うまで実収集しない。全58行のnon-Apple前提、承認済み実weight CPU、
+> 最終clean HEAD／fresh Apple packetという元の工程4のゴールは未完了であり変更しない。
+> 新規VAST／Scaleway・ローカルモデル実行・公開・owner署名は行っていない。
+
 > **06:34:34 UTCの通常受理と後続静的収集（2026-10-15）:** #251 exact
 > `b111f377`は全71 checks（70 success / 1 intentional skip）、必須16 context/app、
 > 開始した全10 workflows成功後に通常mergeし、main／ローカルはclean `1d863280`。

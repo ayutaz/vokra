@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**07:07:47 UTC acceptance (2026-10-15):** PR #253 was normally merged as
+main `5ceb4325` after all 73 checks completed (71 success, two intentional
+skips), all 16 required context/application pairs passed and all ten started
+workflows succeeded. Local main is fast-forwarded and clean. The accepted
+104-archive receipt is collection-only. The separate [license/build review](handoff/kyutai-candle-archive-review-readback-2026-10-15.md)
+records material license terms, native-code generation and precise helper
+source gaps, not model execution, owner approval or final Apple readiness.
+
 **Latest execution plan (2026-10-14, continued 2026-10-15):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
 **06:34:34 UTC acceptance and subsequent archive facts (2026-10-15):**
 Candle PR #251 is normally merged as main `1d863280` after all 71 checks
