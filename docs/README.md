@@ -1,6 +1,15 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**02:44 UTC corrected-source acceptance (2026-10-15):** XCodec2 `3d5318e0`
+passed the [additional model-free VAST verification](handoff/xcodec2-source-verification-readback-2026-10-15.md#corrected-source-acceptance--2026-10-15-0244-utc):
+workspace fmt/Clippy, nine actual contract tests and three shell gates.
+Cargo's tenth passing entry was a documented real-weight early return;
+real-weight CPU parity remains NOT_RUN. Owned worker/data destruction has
+individual-null readback. Fresh published-head CI/review remain separate;
+PR #152 stays Draft, with owner/legal, 58 public rows and Apple packets
+unchanged. The earlier failed-attempt snapshots below are retained.
+
 **01:20 UTC source-verification readback (2026-10-15):** The actual
 [XCodec2 model-free VAST attempt](handoff/xcodec2-source-verification-readback-2026-10-15.md)
 failed at Clippy compilation before Rust tests. Its owned worker and data are

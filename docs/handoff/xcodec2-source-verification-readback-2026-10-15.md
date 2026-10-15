@@ -1,5 +1,57 @@
 # XCodec2 source verification: actual compile failure and repair
 
+## Corrected source acceptance — 2026-10-15 02:44 UTC
+
+The user explicitly authorized one additional model-free verification of
+clean `3d5318e0419b791c5bee1c65d6df3edb8c0f95e8` under the revised
+USD 0.35/hour storage-inclusive ceiling, upload/download each at most
+USD 0.005/GB, 30-minute limit and owned-instance/data destruction. The
+unchanged reviewed controller recorded below was used; this is a new consumed
+one-run authorization, not reuse of the earlier failed attempt.
+
+The corrected source bundle was 23,098 bytes, SHA-256
+`cab6e79c4edc405a2d5b4bbb1591db6315438fa373bf68f6ad2452a340811a35`.
+Its prerequisites were published `eaf0e5fa` and accepted main `8bd30d9a`.
+Independent pack inspection mapped all 15 blobs to source/workflow/docs;
+no model or protected owner-manifest blob was included.
+
+Controller session 15934 started at 02:40:15 UTC, selected offer 54662351
+and created owned worker `56029199`: 16 effective cores, 96,396 raw MB RAM,
+storage CLI value 150. The quoted/claimed hourly rate was USD
+0.25233333333333335; upload/download were 0.00390625 /
+0.0026041666666666665 USD/GB. These quotes are not a final billing total.
+
+The fixed-source/filter/sparse admission, workspace format and all-target,
+all-feature Clippy with warnings denied passed. The targeted
+`parity_xcodec2_real` test binary reported **10 passed / 0 failed / 0 ignored**:
+**nine actual model-free contract tests**, plus the real-model test's
+documented early return because `VOKRA_XCODEC2_GGUF` was unset. Real-weight
+CPU parity is **NOT_RUN**, not PASS. The intentional panic diagnostics in
+negative cases were caught successfully; they are not failed tests.
+Zero-dependency, forbidden-symbol and Codex-hook gates passed. No full
+workspace test-suite replay is claimed.
+
+Both result copies name the exact corrected HEAD and report `PASS`.
+Result/log recovery and cleanup exited zero; the controller exited zero.
+At 02:44:13 UTC destruction completed, with individual API readback
+`{"instances":null}`. No account-wide inventory or billing guarantee follows.
+
+| Corrected-run evidence | SHA-256 |
+|---|---|
+| Recovered remote log | `dab9dcfe9c09256c4e6708af459e3b9eb2d7d8a488c5fad9b6e18b5b704e4b71` |
+| Recovered result | `c22c438cc3c0747117286eef418e397a3dae98efcd1367a5e9c1396ffe8204a2` |
+| Individual deletion readback | `817de4eb9b246ba142dd72761e9f1ac6f4aa9f0da57bd831acdfd81f78797057` |
+| Controller status | `11feb0e277641ab6846de31d155db317a87f0ff36aab529534f2ef4f09a7d0f0` |
+
+This accepts only the corrected source gate. Fresh published-head CI and
+review remain separate. PR #152 stays Draft with its full dependency,
+native, license, API, owner and independent real-weight scope. The 58
+unresolved public rows, frozen 63-row owner scope and final clean-HEAD
+Apple packets remain incomplete. No model acquisition/execution, HF token
+transfer, publication or local heavy Cargo occurred. The protected
+CosyVoice2 owner manifest was not inspected or changed. The failed attempt
+and then-unverified repair below remain dated historical evidence.
+
 Readback: 2026-10-15 JST. This records an actual model-free VAST attempt,
 not numerical parity, Apple verification or a completed source gate.
 

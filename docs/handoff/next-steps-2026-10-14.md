@@ -2,6 +2,17 @@
 
 ## ゴールと現在地
 
+> **2026-10-15 02:44 UTCの修正後source検証受理:** 追加の1回を明示承認された
+> XCodec2 `3d5318e0`はVASTでworkspace fmt／Clippy、実際の契約テスト9件、
+> shell gate 3件を通過した。Cargoの10 passedにはGGUF未設定で早期returnした
+> 実weightテスト1件を含むため、実weight CPU parityはNOT_RUNのまま。
+> [実行・回収hash・削除記録](xcodec2-source-verification-readback-2026-10-15.md#corrected-source-acceptance--2026-10-15-0244-utc)
+> のとおりowned worker `56029199`と保存データはdestroyし、個別nullを確認した。
+> 次は対応するsource変更の通常pushとfresh published-head CI／レビュー。
+> #152は依存・native・license・API・owner・独立実weightの全scopeを保持してDraft。
+> 58未解決行、凍結63-row scope、実weight CPU、最終clean HEAD／Apple packetは
+> 未完了。今回のsource PASSを工程4やMetal完了へ昇格しない。以下は履歴snapshot。
+
 > **2026-10-15 01:20 UTCの実source検証readback:** 承認された改定料金条件で
 > XCodec2 `bcfa7888`をVAST `56019893`へ送り、source認証・モデル除外・fmtの後、
 > Clippyのコンパイルで停止した。Rustテストは未実行。25 E0308はSHA-256定数1件欠落と
