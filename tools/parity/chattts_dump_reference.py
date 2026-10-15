@@ -44,16 +44,16 @@ TRANSFORMERS_SECURITY_ADVISORY = "GHSA-xrqw-3rrv-vx5w"
 TRANSFORMERS_SECURITY_PATCHED_MINIMUM = "5.10.0"
 ISOLATED_TRANSFORMERS_PIN = "5.10.4"
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "6099870e3685fec99e8ae68745d37ce4e71138d353cf056540d092b3d55ac4c5"
+REFERENCE_LOCK_SHA256 = "6492180bc5917fce1b17c7b806e3aa6116ac19bd6c3095792387719576f95551"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 FORBIDDEN_PACKAGES = {"soxr", "rubberband", "triton"}
 REFERENCE_DISTRIBUTION_VERSIONS = {
     "torch": {"2.7.1", "2.7.1+cpu"},
     "torchaudio": {"2.7.1", "2.7.1+cpu"},
 }
-REFERENCE_PACKAGE_INVENTORY_SHA256 = "74c0c3ef9afd095594e24afc48e0d2148717308aa317ea9762eb9b10d2f0ec7f"
-REFERENCE_LOCK_PACKAGE_ROWS_SHA256 = "19395b8e7796dc26af01df77e3b786299391c38f3f861d2e9b59e29175b1cb4c"
-REFERENCE_LICENSE_AUDIT_SHA256 = "3e5b662aa2134be84ee6645a7c483345d46550b690c582f414896c990a7f1dff"
+REFERENCE_PACKAGE_INVENTORY_SHA256 = "0cd1d7fb4f0a961a10374d6b24a9427097732d97191583426e1c1e603c7f4308"
+REFERENCE_LOCK_PACKAGE_ROWS_SHA256 = "21437ac499cf61bfd0e5c390f9e6c0c6b5d141a179d83811db8284086f873e32"
+REFERENCE_LICENSE_AUDIT_SHA256 = "ab305d332c9fcac73252f30e89c3929fb294cc343badf2a3c2324b889df3d124"
 SOURCE_LICENSE_EVIDENCE = "https://raw.githubusercontent.com/2noise/ChatTTS/77b89ee281cd479f5b1a787ada330dc975ca1f2a/LICENSE"
 WEIGHT_LICENSE_EVIDENCE = "https://huggingface.co/api/models/2Noise/ChatTTS?revision=1a3c04a8b0651689bd9242fbb55b1f4b5a9aef84"
 AUDIT_PRIMARY_METADATA = "PyPI JSON release metadata, upstream package LICENSE files, and official PyTorch CPU index metadata; wheel/native notices are reviewed separately."
@@ -113,7 +113,7 @@ REFERENCE_PACKAGE_INVENTORY = (
     ("transformers", "5.10.4", "https://pypi.org/simple", ()),
     ("typer", "0.27.2", "https://pypi.org/simple", ()),
     ("typing-extensions", "4.16.0", "https://pypi.org/simple", ()),
-    ("urllib3", "2.7.0", "https://pypi.org/simple", ()),
+    ("urllib3", "2.8.0", "https://pypi.org/simple", ()),
     ("vector-quantize-pytorch", "1.27.15", "https://pypi.org/simple", ()),
     ("vocos", "0.1.0", "https://pypi.org/simple", ()),
 )
