@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **実診断の原因特定（2026-10-15）:** [run 38709911065の原本](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+> を回収。最初の3更新は成功し、anyhow更新がadler／backtraceを含む7依存を削除した。
+> 不要となった4番目のbacktrace更新で停止したため、同じ失敗は再試行しない。
+> 次は3更新＋両packageの全lock不在検査を行い、完成candidateの全差分・CPU／whole
+> metadataを回収して再監査する。失敗原本、paste未解消、全58行non-Apple前提と
+> 実weight CPU／最終clean HEAD・fresh packetという工程4の未完了は維持する。
+
 > **依存修復の実診断準備（2026-10-15）:** main `7701cc67` を基準に、
 > [4 pinの限定診断](kyutai-candle-pin-remediation-2026-10-15.md)をレビューし、
 > 独立57 testsを実行して成功した。修正済みmemmapの後戻り、期限のリセット、

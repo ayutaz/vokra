@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-15 actual pin-attempt cause:** the [recovered attempt](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+> identifies an unnecessary fourth update after anyhow removes backtrace and
+> adler. Correct the command plan from that evidence, recover the complete
+> candidate lock/CPU/whole metadata and perform a new strict audit. The failed
+> original remains failed; full non-Apple, real-weight CPU and final packet
+> requirements remain unchanged, with Scaleway last.
+
 > **2026-10-15 source-only remediation preparation:** use the
 > [reviewed four-pin diagnostic](kyutai-candle-pin-remediation-2026-10-15.md)
 > for the next actual hosted dependency-resolution attempt. Offline tests,

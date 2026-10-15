@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**Actual dependency-resolution attempt (2026-10-15):** the
+[first pin diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+authenticates the source/baseline and performs three successful updates, then
+fails on an unnecessary fourth target: anyhow already removed backtrace and
+adler. Ten files and the original failed report are recovered. The reviewed
+next attempt uses three precise updates and explicitly requires both removed
+names absent; complete candidate metadata and a fresh strict audit remain
+outstanding. No model-row, owner, CPU/Apple or publication gate advances.
+
 **Source-only remediation preparation (2026-10-15):** the
 [four-pin diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md)
 passes 57 independently replayed offline tests, including actual recovered

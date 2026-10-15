@@ -38,6 +38,15 @@ OLD_VERSIONS = {name: old for (name, _new), old in (
 )}
 MEMMAP_OLD = "0.9.5"
 MEMMAP_PATCHED = "0.9.11"
+ANYHOW_REMOVED_CLOSURE = {
+    "addr2line": "0.21.0",
+    "adler": "1.0.2",
+    "backtrace": "0.3.71",
+    "gimli": "0.28.1",
+    "miniz_oxide": "0.7.4",
+    "object": "0.32.2",
+    "rustc-demangle": "0.1.24",
+}
 
 
 def _lock(versions: dict[str, str]) -> bytes:
@@ -89,7 +98,7 @@ class PinRemediationTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertIn("--deadline-seconds 480", workflow)
         self.assertIn("--capture-source", workflow)
-        self.assertEqual(workflow.count("Capture and run the bounded four-pin source-only diagnostic"), 1)
+        self.assertEqual(workflow.count("Capture and run the bounded source-only diagnostic"), 1)
         self.assertNotIn("continue-on-error", workflow)
         self.assertNotIn("cache:", workflow)
         check = workflow[workflow.index("Check the exact bounded evidence set"):workflow.index("Upload exact bounded evidence")]
@@ -119,6 +128,13 @@ class PinRemediationTests(unittest.TestCase):
             with self.subTest(argv=argv):
                     with self.assertRaises(DIAG.DiagnosticError):
                         DIAG._validate_argv(argv, "cargo")
+
+    def test_removed_anyhow_closure_names_are_required_absent_but_adler2_is_unrelated(self) -> None:
+        for forbidden in ("adler", "backtrace"):
+            with self.subTest(forbidden=forbidden):
+                with self.assertRaisesRegex(DIAG.DiagnosticError, "retains forbidden"):
+                    DIAG._assert_forbidden_packages_absent({(forbidden, "1.0.0", REGISTRY): {"name": forbidden, "version": "1.0.0"}})
+        DIAG._assert_forbidden_packages_absent({("adler2", "2.0.0", REGISTRY): {"name": "adler2", "version": "2.0.0"}})
 
     def test_unlocked_whole_capture_preserves_two_mib_bound_and_exact_argv(self) -> None:
         class FakeCollector:
@@ -363,30 +379,37 @@ class PinRemediationTests(unittest.TestCase):
         (root / "metadata.json").write_text(json.dumps(packet), encoding="utf-8")
         return root, original_lock, patched_lock, initial, whole
 
-    def test_run_records_four_pin_order_and_keeps_paste_unresolved(self) -> None:
+    def test_run_records_three_pin_order_and_keeps_paste_unresolved(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vokra-pin-test-", dir=str(Path(tempfile.gettempdir()).resolve())) as temp:
             root = Path(temp)
             old_files, old_urls = LEAF.SOURCE_FILES, LEAF.SOURCE_URLS
-            LEAF.SOURCE_FILES = {name: (LEAF.git_blob_sha1(original if name == "Cargo.lock" else data), len(original if name == "Cargo.lock" else data)) for name, data in SOURCE_FILES.items() for original in [_lock({**OLD_VERSIONS, "memmap2": MEMMAP_OLD})]}
+            test_versions = {**OLD_VERSIONS, **ANYHOW_REMOVED_CLOSURE}
+            LEAF.SOURCE_FILES = {name: (LEAF.git_blob_sha1(original if name == "Cargo.lock" else data), len(original if name == "Cargo.lock" else data)) for name, data in SOURCE_FILES.items() for original in [_lock({**test_versions, "memmap2": MEMMAP_OLD})]}
             LEAF.SOURCE_URLS = {name: f"https://raw.invalid/{name}" for name in SOURCE_FILES}
             try:
-                packet, base_lock, candidate_lock, initial, whole = self._make_packet(root / "packet", OLD_VERSIONS)
+                packet, base_lock, candidate_lock, initial, whole = self._make_packet(root / "packet", test_versions)
                 output, workspace = root / "output", root / "workspace"
                 candidate_cpu = json.dumps(initial["metadata"])
-                baseline_whole_value = _metadata({**OLD_VERSIONS, "memmap2": MEMMAP_PATCHED}, cpu=False)
+                baseline_whole_value = _metadata({**test_versions, "memmap2": MEMMAP_PATCHED}, cpu=False)
                 candidate_whole_value = _metadata({name: desired for name, desired in DIAG.PINS} | {"memmap2": MEMMAP_PATCHED}, cpu=False)
                 calls: list[list[str]] = []
+                checkpoint_states: list[bytes] = []
+                current_versions = dict(test_versions)
 
                 def fake_run(argv: list[str], *, cwd: Path, env: dict[str, str], deadline: float, validate: bool) -> dict[str, object]:
                     del env, deadline, validate
                     calls.append(argv)
                     if argv[1] == "update":
                         update_index = len([call for call in calls if len(call) > 1 and call[1] == "update"]) - 1
-                        current = dict(OLD_VERSIONS)
-                        current["memmap2"] = MEMMAP_PATCHED
+                        current_versions["memmap2"] = MEMMAP_PATCHED
+                        current = current_versions
+                        if DIAG.PINS[update_index][0] == "anyhow":
+                            for removed_name in ANYHOW_REMOVED_CLOSURE:
+                                current_versions.pop(removed_name, None)
                         for prior_name, prior_version in DIAG.PINS[: update_index + 1]:
-                            current[prior_name] = prior_version
+                            current_versions[prior_name] = prior_version
                         (cwd / "Cargo.lock").write_bytes(_lock(current))
+                        checkpoint_states.append((cwd / "Cargo.lock").read_bytes())
                     if tuple(argv[1:]) == DIAG.CPU_METADATA_ARGS:
                         return {"argv": argv, "returncode": 0, "stdout": candidate_cpu, "stderr": ""}
                     if tuple(argv[1:]) == DIAG.WHOLE_METADATA_ARGS:
@@ -403,6 +426,13 @@ class PinRemediationTests(unittest.TestCase):
                 self.assertEqual(result["unresolved"], {"package": "paste", "status": "EXPLICITLY_UNRESOLVED"})
                 self.assertTrue((output / "candidate_cpu_metadata.json").is_file())
                 self.assertTrue((output / "candidate_whole_metadata.json").is_file())
+                self.assertEqual(len(checkpoint_states), 3)
+                self.assertIn(b'name = "backtrace"', checkpoint_states[0])
+                self.assertIn(b'name = "adler"', checkpoint_states[0])
+                self.assertNotIn(b'name = "backtrace"', checkpoint_states[1])
+                self.assertNotIn(b'name = "adler"', checkpoint_states[1])
+                removed_names = {row["package"].split("@", 1)[0] for row in result["lock_delta"]["removed_records"]}
+                self.assertTrue(set(ANYHOW_REMOVED_CLOSURE).issubset(removed_names))
             finally:
                 LEAF.SOURCE_FILES, LEAF.SOURCE_URLS = old_files, old_urls
 

@@ -37,7 +37,6 @@ PINS: tuple[tuple[str, str], ...] = (
     ("crossbeam-epoch", "0.9.20"),
     ("anyhow", "1.0.103"),
     ("rand", "0.9.3"),
-    ("backtrace", "0.3.76"),
 )
 CPU_METADATA_ARGS = ("metadata", "--locked", "--format-version", "1", "--filter-platform", TARGET, "--no-default-features")
 # Keep this exactly aligned with the frozen collector's 2 MiB whole-metadata
@@ -242,6 +241,12 @@ def _lock_fingerprint(collector: Any, path: Path) -> dict[str, Any]:
 def _assert_lock_unchanged(before: dict[str, Any], after: dict[str, Any], *, label: str) -> None:
     if before != after:
         raise DiagnosticError(f"Cargo.lock changed during {label} metadata capture")
+
+
+def _assert_forbidden_packages_absent(candidate_lock: dict[tuple[str, str, str | None], dict[str, Any]]) -> None:
+    forbidden_remaining = sorted({key[0] for key in candidate_lock if key[0] in {"backtrace", "adler"}})
+    if forbidden_remaining:
+        raise DiagnosticError(f"candidate full lock retains forbidden removed package(s): {', '.join(forbidden_remaining)}")
 
 
 def _run_candidate(collector: Any, argv: list[str], *, cwd: Path, env: dict[str, str], deadline: float, cargo_name: str) -> dict[str, Any]:
@@ -556,6 +561,7 @@ def run(
         candidate_lock_bytes = _read_bytes(collector, projection / "Cargo.lock")
         candidate_lock_document = collector.read_toml(projection / "Cargo.lock")
         candidate_lock = collector.lock_packages(candidate_lock_document)
+        _assert_forbidden_packages_absent(candidate_lock)
         lock_delta = _ordered_lock_delta(
             collector,
             final_lock,

@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-15 actual pin-attempt cause:** [run 38709911065](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+> completes three updates; anyhow removes the old adler/backtrace chain, so
+> the fourth update targets a package no longer present and fails. The
+> original report and ten produced files are recovered. Require a corrected
+> three-update attempt, complete raw candidate graph and fresh strict audit;
+> no finding, inventory row, owner or CPU/Apple gate is promoted from logs.
+
 > **2026-10-15 source-only remediation preparation:** the
 > [four-pin diagnostic](kyutai-candle-pin-remediation-2026-10-15.md) passes
 > independently replayed offline tests and actual recovered-data sizing, not

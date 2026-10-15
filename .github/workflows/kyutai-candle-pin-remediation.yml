@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   source-only-pin-diagnostic:
-    name: source-only four-pin Cargo diagnostic
+    name: source-only Cargo pin diagnostic
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -69,7 +69,7 @@ jobs:
           test "$(rustc --version | cut -d' ' -f2)" = 1.99.0
           test "$(rustc -vV | awk '$1 == "host:" { print $2 }')" = x86_64-unknown-linux-gnu
 
-      - name: Capture and run the bounded four-pin source-only diagnostic
+      - name: Capture and run the bounded source-only diagnostic
         env:
           VOKRA_CANDLE_REMOTE_LINUX: "1"
         run: |

@@ -1,5 +1,12 @@
 # Candle four-pin diagnostic preparation — 2026-10-15
 
+> **Actual first attempt and cause correction:** published head `c538e390`
+> reaches the real solver and stops at an unnecessary fourth update. The
+> `anyhow` update already removes `backtrace` and `adler`; see the actual
+> evidence below. The corrected next experiment uses three precise updates
+> and explicitly rejects either removed package remaining. The four-pin
+> preparation below is retained as history, not today's command sequence.
+
 Accepted baseline is main `7701cc67414d9cb84e4fe3cd6cf228a10bb8b792`.
 The [actual advisory result](kyutai-candle-source-advisory-result-2026-10-15.md)
 has five findings; this document prepares a source-only dependency-resolution
@@ -120,3 +127,74 @@ Reuse that [recorded remote evidence](dia-urllib3-minimal-reconciliation-2026-10
 only for unchanged Rust inputs, following the documented source-push hook
 path; do not launch a local deep Cargo run or claim a new VAST replay.
 New wrapper/hosted diagnostics and fresh exact-head CI are separate gates.
+
+## Actual first attempt: removed package is not an update target
+
+[Run 38709911065](https://github.com/ayutaz/vokra/actions/runs/38709911065),
+job `116338436819`, uses published head
+`c538e39062cd2bbde4044e6cb465ed68f9218b3e`. Its hosted seventeen-test step
+passes with one explicit private-fixture skip (sixteen executed successes),
+then verifies the host/toolchain and authenticates the source projection.
+The real diagnostic stops at 09:03:37 UTC with wrapper exit 2, because the
+fourth precise command returns Cargo exit **101**. The strict complete-set
+step fails for the three absent final-candidate files; always-upload succeeds
+with the ten files actually produced. It is not thirteen-file acceptance.
+
+Artifact `11959593981` is **333,054 compressed bytes**. Manager recovers it
+through the official CLI. The [unaltered failed diagnostic](kyutai-candle-pin-first-attempt-2026-10-15.json)
+is **81,608 bytes**, SHA-256
+`db9240ecf426d6729fb8f92344b804bd932fb8fbf9cb84ada7b54d43d37627ab`.
+Manager independently revalidates the original/base semantic projection and
+memmap-only patch. Patched lock SHA-256 remains
+`303c49433187d5938d0f2a27d3f5ded9eb094388dd67e6702a0a8b7558eaec01`.
+The genuine post-patch CPU/whole metadata contains 105/161 packages and
+memmap2 0.9.11. Its two evidence wrappers are 849,497 / 1,205,830 bytes,
+within the unchanged 2 MiB writer cap; command captures are 499,345 /
+713,684 bytes. This verifies the earlier serialization/argv corrections on
+the actual hosted path, not the final updated graph.
+
+The first three actual update commands return zero. Their retained stderr
+and checkpoint hashes establish the next action:
+
+| Update | Actual observation / checkpoint SHA-256 |
+|---|---|
+| crossbeam-epoch 0.9.20 | Updated from 0.9.18; `4eebb62c16b9ddd8ecc720831d7e9fd7c5cc492ef0d60b9b11c44f3b369b64e4` |
+| anyhow 1.0.103 | Updated from 1.0.98 and removed seven old transitive packages; `48181d41439c6262177a83b3bf03b67b0a903caffdec77506d30205934423001` |
+| rand 0.9.3 | Updated from 0.9.0; 38,252-byte checkpoint `d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8` |
+| backtrace 0.3.76 | Exit 101: the package ID no longer matches any package |
+
+The anyhow command explicitly removes `addr2line 0.21.0`, `adler 1.0.2`,
+`backtrace 0.3.71`, `gimli 0.28.1`, `miniz_oxide 0.7.4`, `object 0.32.2`
+and `rustc-demangle 0.1.24`. The original backtrace/miniz upgrade hypothesis
+was therefore unnecessary; do not retry it unchanged or replace the failed
+receipt. The final checkpoint's raw lock was not recovered, so these logs
+and hashes alone are not a complete lock-delta or fresh advisory verdict.
+
+The next reviewed correction removes only the unnecessary backtrace command,
+retains the three exact security candidates, and adds a fail-closed assertion
+that neither `backtrace` nor `adler` exists in the final whole lock. All
+source, memmap, graph, deadline, failure-evidence and thirteen-file gates
+remain. `paste` remains unresolved. Fresh corrected-head resolution and
+complete raw candidate evidence are required before any new strict audit.
+
+The corrected causal fixture contains all seven observed old transitive
+packages, retains them through the crossbeam update, removes them only at
+the anyhow update and keeps them absent after rand. It asserts both
+intermediate states and complete final removed records. Direct rejection
+tests cover either forbidden name remaining; `adler2` is a different name,
+not an automatic alias or a reason to waive a future audit finding.
+Corrected helper/test/workflow hashes are respectively
+`7bb61d1f2adaa58e64492584f67ecf7ca2b8d5f8f3943aa2a143b767e8661f6d`,
+`1387ce6a1d32ffb6702916ed3d5d9c74fe136007703ceeae2f616f63ad1411b2`
+and `b7c98ab376ef3e459bac7ac73d23d6cfb0ff73a4f929b16044800bde905782d5`.
+Manager independently passes all eighteen focused tests, then **87 canonical
+source-only tests in 10.650 seconds**, actionlint, 51-workflow hygiene and
+documentation references. The extra canonical observer tests are not an
+upstream/model run. Fresh GitHub main readback still equals `7701cc67`.
+
+The unchanged old advisory workflow also automatically runs at this head
+and finishes failure as run `38709910644`; a later cancellation request is
+refused because it is already terminal. No cancellation or PASS is claimed.
+The known old-lock failure is distinct from this removed-package error.
+No model execution, CPU parity, owner approval, paid worker or publication
+occurs; the full original step-4 objective remains active and incomplete.
