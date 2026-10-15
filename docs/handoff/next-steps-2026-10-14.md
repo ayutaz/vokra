@@ -1,5 +1,15 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **Candle以外の重複回避（2026-10-15）:** OWSMのcurrent lockは
+> `21dc57e49571c7b47e84c91ae84166c35ca418b26635d1f4ac236d69925b1ebb`。
+> 全lock 43 recordsとLinux active 40 registry rowsを区別する。既知のtorch-complex
+> 0.4.4の一次license欠如は[既存の実調査](owsm-audit-admission-readback-2026-10-14.md#why-the-license-hold-remains-an-active-prerequisite)
+> を再利用し、同じarchiveを再取得しない。他39行のcurrent artifactに束縛した一次
+> license/native receiptは未確認だが、大容量native wheelの検査はローカルでは行わない。
+> このscope整理や旧collectorのsynthetic evidenceをlicense grant／owner承認とは扱わず、
+> OWSMの既知の外部権利待ちを計算で迂回しない。XY-TokenizerとMOSS Nanoもcurrent
+> dependency/native／topology／API gateが残り、Scalewayのみで閉じる状態ではない。
+
 > **実計画の回収と#256受理（2026-10-15）:** [hosted plannerの実結果](kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
 > は6 tests／CLI成功。回収した187,212-byte JSONの全16完全manifest差分と292 member
 > 不変条件を独立照合した。次はsource-only実適用とCPU／whole graph、strict監査であり、
