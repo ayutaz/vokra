@@ -1,5 +1,16 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **08:28:45 UTC acceptance / separate actual audit (2026-10-15):** #254 is
+> normally merged as main `7701cc67` after 71 successful checks, one intentional
+> skip, all 16 required context/app pairs and ten successful workflows. The
+> [actual Candle audit](kyutai-candle-source-advisory-result-2026-10-15.md)
+> returns authenticated `FAIL_FINDINGS` (one vulnerability/four warnings),
+> not a new row promotion. Resolve the exact dependency graph without warning
+> waivers or changing the 161-record audit into the 105-package CPU graph.
+> No fresh live inventory, owner/legal decision, real-weight CPU or final
+> Apple packet is proved. The full non-Apple scope and frozen owner packet
+> remain unchanged; the earlier snapshots below keep their dated boundaries.
+
 > **06:34:34 UTC acceptance (2026-10-15):** #251 is normally accepted as
 > main `1d863280` after all 71 checks and ten workflows completed successfully
 > (one intentional check skip). The subsequent [104-archive collection](kyutai-candle-primary-archive-facts-2026-10-15.md)

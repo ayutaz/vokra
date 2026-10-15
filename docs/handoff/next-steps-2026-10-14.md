@@ -2,6 +2,20 @@
 
 ## ゴールと現在地
 
+> **08:28:45 UTCの受理と実検出（2026-10-15）:** #254 exact `991f2a71`は
+> 全72 checks（71 success / 1 intentional skip）、必須16 context/appと開始した全10
+> workflows成功後に通常mergeした。main／ローカルmainはclean `7701cc67`。
+> 別の[Candle実監査](kyutai-candle-source-advisory-result-2026-10-15.md)は入力7件と
+> 固定tool／DBを認証後、rc=1／`FAIL_FINDINGS`。crossbeam-epochの脆弱性1件、
+> anyhow／randのunsound警告2件、adler／pasteのunmaintained警告2件を記録した。
+> 旧2回のテスト／version表示の失敗は保持し、新しい28,055-byte receiptと区別する。
+> #255はdraftとし、4件の精密dependency更新によるsource-only metadata候補を準備、
+> pasteはmaintainedな公式経路／レビュー済みsource patchの可否を別途調べる。
+> 既存161件の監査を105件へ黙って縮めず、warnings／owner／license gateを緩めない。
+> 全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh Apple packet
+> という元の工程4は未完了。HF全行inventoryの再取得・新規有料worker・モデル実行・
+> owner署名・公開は行っておらず、Scalewayは最後のまま。以下は各時点の履歴である。
+
 > **6環境の統合候補（2026-10-15）:** DFN3／DAC／OWSMと
 > [Baichuan inspection／ChatTTS／VibeVoice 1.5B](parity-urllib3-three-scope-reconciliation-2026-10-15.md)
 > のurllib3 2.8.0更新を同じ候補へ統合した。無関係なrecords／markers／edgesは保持し、

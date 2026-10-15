@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **08:28:45 UTC source acceptance / actual audit (2026-10-15):** #254 is
+> normally accepted as clean main `7701cc67` after 72 checks (71 success/one
+> intentional skip), all 16 required context/app pairs and ten workflows.
+> The separate [strict Candle result](kyutai-candle-source-advisory-result-2026-10-15.md)
+> authenticates its inputs and records one vulnerability/four warnings.
+> Remediate those exact reference dependencies, preserve the failed receipt
+> and obtain new evidence for changed inputs; do not weaken deny warnings or
+> infer owner/model approval. All-row non-Apple closure, authorized real-weight
+> CPU and final clean-HEAD/fresh Apple packets remain the original step-4
+> objective. Scaleway/publication stay later; prior dated notes are preserved.
+
 > **06:34:34 UTC acceptance (2026-10-15):** reviewed #251 is normally merged
 > as main `1d863280` after 70 successful checks, one intentional skip and ten
 > successful workflows. The [subsequent primary-archive facts](kyutai-candle-primary-archive-facts-2026-10-15.md)

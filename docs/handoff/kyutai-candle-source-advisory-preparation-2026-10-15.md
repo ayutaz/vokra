@@ -1,5 +1,11 @@
 # Candle source-only advisory preparation — 2026-10-15
 
+> Actual result supersession: the third attempt at `6a002fe6` now produces
+> an authenticated `FAIL_FINDINGS` report with one vulnerability/four warnings.
+> See the [retained result and remediation boundary](kyutai-candle-source-advisory-result-2026-10-15.md).
+> Source PR #254 is separately accepted as main `7701cc67`; audit PR #255
+> remains draft. Earlier preparation/pending statements below are historical.
+
 > Subsequent actual attempts are retained in the [hosted result record](kyutai-candle-source-advisory-result-2026-10-15.md).
 > The first stops in a causal test and the second at version verification;
 > neither reaches a completed advisory audit. The corrected candidate below

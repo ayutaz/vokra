@@ -1,5 +1,17 @@
 # Vokra documentation
 
+**08:28:45 UTC acceptance and actual reference audit (2026-10-15):**
+PR #254 is normally merged as main `7701cc67` after all 72 checks completed
+(71 success, one intentional skip), all 16 required context/application pairs
+and all ten started workflows succeeded. Local main is synchronized and clean.
+The separate [actual Candle source-lock audit](handoff/kyutai-candle-source-advisory-result-2026-10-15.md)
+authenticates its inputs and returns `FAIL_FINDINGS`: one vulnerability and
+four warnings. This is an external reference dependency scope, not new runtime
+dependencies. Remediate the exact dependency graph and retained findings;
+do not ignore warnings, restamp old receipts or infer model/Apple approval.
+PR #255 remains draft. The full non-Apple, real-weight CPU and final packet
+exit gates remain incomplete; earlier candidate notes below are historical.
+
 **Six-scope dependency candidate (2026-10-15):** DFN3, DAC, OWSM,
 Baichuan inspection, ChatTTS and VibeVoice 1.5B use the reviewed urllib3
 2.8.0 record while preserving all unrelated records and markers. See the
