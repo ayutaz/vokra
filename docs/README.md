@@ -1,6 +1,13 @@
 # Vokra documentation
 
 **Latest execution plan (2026-10-14):** [remaining tasks and acceptance gates](handoff/next-steps-2026-10-14.md).
+**01:20 UTC source-verification readback (2026-10-15):** The actual
+[XCodec2 model-free VAST attempt](handoff/xcodec2-source-verification-readback-2026-10-15.md)
+failed at Clippy compilation before Rust tests. Its owned worker and data are
+destroyed with individual-null readback. Two source causes are repaired and
+statically reviewed, not remotely reverified or pushed. Real-weight CPU,
+owner/legal and final Apple packets remain incomplete; PR #152 stays Draft.
+
 **20:30:49 UTC acceptance supersession (2026-10-15 JST):** PR #248 was
 normally merged at exact `62a007fb`, against base `6f135822`, producing
 main `8bd30d9a`. All 70 checks completed (69 successful, one intentional

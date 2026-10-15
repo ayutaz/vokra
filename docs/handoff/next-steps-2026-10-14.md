@@ -2,6 +2,16 @@
 
 ## ゴールと現在地
 
+> **2026-10-15 01:20 UTCの実source検証readback:** 承認された改定料金条件で
+> XCodec2 `bcfa7888`をVAST `56019893`へ送り、source認証・モデル除外・fmtの後、
+> Clippyのコンパイルで停止した。Rustテストは未実行。25 E0308はSHA-256定数1件欠落と
+> 負例helperの戻り値型24件に分離し、定数64件の独立照合と最小修正のレビューまで完了。
+> [実行・修正・削除記録](xcodec2-source-verification-readback-2026-10-15.md)を参照。
+> ログ回収後、owned workerと保存データをdestroyし、個別APIのnullを確認した。
+> 修正後は未compile・未pushで、追加有料検証の承認が別途必要。今回の1回の許可を
+> 再利用しない。実weight CPU／58行の前提／凍結63-row scope／最終Apple packetは
+> 未完了であり、source失敗をCPUやAppleのPASSに置き換えない。以下は履歴snapshot。
+
 > **20:30:49 UTCのMeloTTS受理supersession（2026-10-15 JST）:** #248 exact
 > `62a007fb`／base `6f135822`は70/70 checks（69 success / 1 intentional skip）、
 > 必須16 context/appと遅いUnityを含む開始済み全9 workflowsのterminal successを
