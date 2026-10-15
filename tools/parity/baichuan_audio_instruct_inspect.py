@@ -118,8 +118,8 @@ COMPONENT_COUNT = 5
 FORMAT = "vokra-baichuan-audio-instruct-inspection-v1"
 REFERENCE_PROJECT = Path(__file__).with_name("baichuan_audio_instruct")
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "0e8ca64e2f81060732c317fd6d10e01df7c3a5eb122426ef5d695e9813df7625"
-REFERENCE_PACKAGE_ROWS_SHA256 = "a276c50b73fcbc7f0ac22667d6d56516bf7dea7e9e420456562f128b4fa36b2b"
+REFERENCE_LOCK_SHA256 = "c88a3d8ef8488f84105d4530b56e522396eea9d9b931ec2916202f952aeb177d"
+REFERENCE_PACKAGE_ROWS_SHA256 = "e8989e69b0e9563d8578ae40f7d35caacf84559296eea50009a0f4db7572caad"
 REFERENCE_RESOLUTION_MARKERS_SHA256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
 REFERENCE_PACKAGE_COUNT = 14
 DEPENDENCY_LICENSE_AUDIT_STATUS = "BLOCKED_UNREVIEWED_TRANSITIVE"
@@ -140,7 +140,7 @@ DEPENDENCY_LICENSE_CONCLUSIONS = {
     "requests==2.34.2": ("Apache-2.0_REVIEWED", "https://pypi.org/pypi/requests/2.34.2/json"),
     "tqdm==4.70.0": ("MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", "https://pypi.org/pypi/tqdm/4.70.0/json"),
     "typing-extensions==4.16.0": ("PSF-2.0_BLOCKED_BY_POLICY", "https://pypi.org/pypi/typing-extensions/4.16.0/json"),
-    "urllib3==2.7.0": ("MIT_REVIEWED", "https://pypi.org/pypi/urllib3/2.7.0/json"),
+    "urllib3==2.8.0": ("MIT_REVIEWED", "https://pypi.org/pypi/urllib3/2.8.0/json"),
     "vokra-baichuan-audio-instruct-inspection==0.1.0": ("FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE", "repository"),
 }
 LICENSE_BLOCKERS = (

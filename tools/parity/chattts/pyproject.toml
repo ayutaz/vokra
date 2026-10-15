@@ -74,9 +74,9 @@ excluded_upstream_optional = [
 ]
 torch_index = "https://download.pytorch.org/whl/cpu"
 forbidden_packages = ["soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
-lock_sha256 = "6099870e3685fec99e8ae68745d37ce4e71138d353cf056540d092b3d55ac4c5"
-package_inventory_sha256 = "74c0c3ef9afd095594e24afc48e0d2148717308aa317ea9762eb9b10d2f0ec7f"
-lock_package_rows_sha256 = "19395b8e7796dc26af01df77e3b786299391c38f3f861d2e9b59e29175b1cb4c"
+lock_sha256 = "6492180bc5917fce1b17c7b806e3aa6116ac19bd6c3095792387719576f95551"
+package_inventory_sha256 = "0cd1d7fb4f0a961a10374d6b24a9427097732d97191583426e1c1e603c7f4308"
+lock_package_rows_sha256 = "21437ac499cf61bfd0e5c390f9e6c0c6b5d141a179d83811db8284086f873e32"
 
 [tool.vokra.chattts_reference.license_audit]
 status = "BLOCKED_UNRESOLVED"
@@ -84,7 +84,7 @@ primary_metadata = "PyPI JSON release metadata, upstream package LICENSE files, 
 source_route = "AGPLv3+ source is independent VAST-only reference code and must never be copied into Vokra runtime/product artifacts."
 weight_route = "CC-BY-NC-4.0 weights are inspection/reference-only and are not eligible for model-zoo publication."
 blocker = "Owner approval is required before dedicated uv sync or authenticated model/source acquisition. The lock contains PSF-2.0 typing-extensions, MPL-2.0 certifi/tqdm files, Unlicense filelock, and bundled numerical-library notices; no project exception/sign-off exists."
-record_sha256 = "3e5b662aa2134be84ee6645a7c483345d46550b690c582f414896c990a7f1dff"
+record_sha256 = "ab305d332c9fcac73252f30e89c3929fb294cc343badf2a3c2324b889df3d124"
 package_records = [
     { name = "annotated-doc", version = "0.0.5", license = "MIT", primary_source = "https://pypi.org/pypi/annotated-doc/0.0.5/json", route = "reference-only" },
     { name = "anyio", version = "4.14.2", license = "MIT", primary_source = "https://pypi.org/pypi/anyio/4.14.2/json", route = "reference-only" },
@@ -135,7 +135,7 @@ package_records = [
     { name = "transformers", version = "5.10.4", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/transformers/5.10.4/json", route = "reference-only" },
     { name = "typer", version = "0.27.2", license = "MIT", primary_source = "https://pypi.org/pypi/typer/0.27.2/json", route = "reference-only" },
     { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json", route = "reference-only" },
-    { name = "urllib3", version = "2.7.0", license = "MIT", primary_source = "https://pypi.org/pypi/urllib3/2.7.0/json", route = "reference-only" },
+    { name = "urllib3", version = "2.8.0", license = "MIT", primary_source = "https://pypi.org/pypi/urllib3/2.8.0/json", route = "reference-only" },
     { name = "vector-quantize-pytorch", version = "1.27.15", license = "MIT", primary_source = "https://pypi.org/pypi/vector-quantize-pytorch/1.27.15/json", route = "reference-only" },
     { name = "vocos", version = "0.1.0", license = "MIT", primary_source = "https://pypi.org/pypi/vocos/0.1.0/json", route = "reference-only" },
 ]
