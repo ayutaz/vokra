@@ -1,5 +1,16 @@
 # Vokra documentation
 
+**Six-scope dependency candidate (2026-10-15):** DFN3, DAC, OWSM,
+Baichuan inspection, ChatTTS and VibeVoice 1.5B use the reviewed urllib3
+2.8.0 record while preserving all unrelated records and markers. See the
+[DFN3](handoff/dfn3-urllib3-minimal-reconciliation-2026-10-15.md),
+[DAC/OWSM](handoff/dac-owsm-urllib3-minimal-reconciliation-2026-10-15.md)
+and [three-scope](handoff/parity-urllib3-three-scope-reconciliation-2026-10-15.md)
+readbacks. Current factual digest consumers are coordinated, not historical
+evidence or owner approvals. Fresh integrated-head CI/acceptance is required;
+Canary's frozen cross-bound scope remains excluded. Real-weight CPU, final
+Apple packets and the full non-Apple campaign remain incomplete.
+
 **Subsequent source supplement (2026-10-15):** the [bounded 14-archive collection](handoff/kyutai-candle-build-source-supplement-2026-10-15.md)
 authenticates 218 Rust source members, including all five missing helper
 paths. Seventeen independently run offline tests and actual checksum/body

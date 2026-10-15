@@ -2,6 +2,16 @@
 
 ## ゴールと現在地
 
+> **6環境の統合候補（2026-10-15）:** DFN3／DAC／OWSMと
+> [Baichuan inspection／ChatTTS／VibeVoice 1.5B](parity-urllib3-three-scope-reconciliation-2026-10-15.md)
+> のurllib3 2.8.0更新を同じ候補へ統合した。無関係なrecords／markers／edgesは保持し、
+> current factual digest consumerだけを協調更新、旧実測・署名・実行拒否は変更しない。
+> Canaryのcross-bound scopeは除外。統合後の通常pre-commit全5検査は成功したが、
+> 新しい公開HEADのCI／通常受理が次。Candleのcurrent advisoryは別PRで実検証し、
+> source-only成功からowner/legal／独立PCM／実weight CPUの完了を推定しない。
+> 全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh packetという
+> 元の工程4は未完了。Scalewayは最後とし、新規有料worker・モデル実行・公開は行わない。
+
 > **続くsource補完（2026-10-15）:** [14件限定の実取得](kyutai-candle-build-source-supplement-2026-10-15.md)
 > は独立17 testsと実checksum照合が成功し、218 Rust member／215 unique bodies、
 > 不足していたhelper5件を回収した。helper本文の限定reviewと10 proc-macroのmodule
