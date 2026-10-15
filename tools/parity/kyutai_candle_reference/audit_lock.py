@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import selectors
 import shutil
 import signal
@@ -418,14 +417,21 @@ def verify_auditor(auditor: str, *, cwd: Path, env: dict[str, str], deadline: fl
     if not binary.is_file() or binary.is_symlink():
         raise AuditError("cargo-audit path is not a regular file")
     version = runner((resolved, "audit", "--version"), cwd=cwd, env=env, deadline=deadline, stdout_cap=4096, stderr_cap=4096)
+    def mismatch() -> AuditError:
+        error = AuditError("cargo-audit version mismatch")
+        setattr(error, "version_evidence", _command_evidence(version))
+        return error
     if version.returncode != 0 or version.timed_out or version.stdout_truncated or version.stderr_truncated:
-        raise AuditError("cargo-audit version mismatch")
-    text = (version.stdout + version.stderr).decode("utf-8", "replace")
-    match = re.search(r"(?<![A-Za-z0-9])cargo-audit\s+([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?)(?![A-Za-z0-9])", text)
-    if match is None or match.group(1) != CARGO_AUDIT_VERSION:
-        raise AuditError("cargo-audit version mismatch")
+        raise mismatch()
+    try:
+        text = (version.stdout + version.stderr).decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        raise mismatch()
+    expected_line = f"cargo-audit-audit {CARGO_AUDIT_VERSION}"
+    if text.strip() != expected_line:
+        raise mismatch()
     digest = _sha256(_read_bounded(binary, MAX_AUDITOR_BYTES))
-    return {"cargo_audit_version": match.group(1), "version_string": text.strip(), "version_output": text, "binary_path": str(binary), "binary_sha256": digest, "release_commit": CARGO_AUDIT_RELEASE_COMMIT, "install_action_commit": INSTALL_ACTION_COMMIT}
+    return {"cargo_audit_version": CARGO_AUDIT_VERSION, "version_string": text.strip(), "version_output": text, "binary_path": str(binary), "binary_sha256": digest, "release_commit": CARGO_AUDIT_RELEASE_COMMIT, "install_action_commit": INSTALL_ACTION_COMMIT}
 
 
 def _exact_int(value: Any, name: str, *, minimum: int = 0) -> int:
@@ -539,6 +545,9 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
         _write_json(output, evidence)
         return rc
     except Exception as exc:
+        version_evidence = getattr(exc, "version_evidence", None)
+        if isinstance(version_evidence, dict):
+            evidence["tool"]["version_check"] = version_evidence
         evidence["error"] = {"type": type(exc).__name__, "message": str(exc)}
         try:
             _write_json(output, evidence)

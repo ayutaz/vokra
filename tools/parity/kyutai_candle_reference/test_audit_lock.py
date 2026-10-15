@@ -402,12 +402,30 @@ class AuditLockTests(unittest.TestCase):
             def runner_for(text: bytes, *, rc: int = 0, truncated: bool = False):
                 return lambda *args, **kwargs: audit_lock.CommandResult(tuple(args[0]), rc, text, b"", truncated, False)
             env = {"PATH": str(root), "HOME": str(root / "home")}
-            good = audit_lock.verify_auditor("cargo-audit", cwd=root, env=env, deadline=audit_lock._now() + 5, runner=runner_for(b"cargo-audit 0.22.2\n"))
+            good = audit_lock.verify_auditor("cargo-audit", cwd=root, env=env, deadline=audit_lock._now() + 5, runner=runner_for(b"cargo-audit-audit 0.22.2\n"))
             self.assertEqual(good["cargo_audit_version"], "0.22.2")
             self.assertEqual(good["binary_path"], str(binary))
-            for text, rc, truncated in ((b"cargo-audit 0.22.20\n", 0, False), (b"cargo-audit 0.22.2\n", 1, False), (b"cargo-audit 0.22.2\n", 0, True)):
-                with self.assertRaises(audit_lock.AuditError):
+            for text, rc, truncated in ((b"cargo-audit-audit 0.22.20\n", 0, False), (b"cargo-audit 0.22.2\n", 0, False), (b"cargo-audit-audit 0.22.2-alpha\n", 0, False), (b"cargo-audit-audit 0.22.2+build\n", 0, False), (b"cargo-audit-audit 0.22.2\nextra\n", 0, False), (b"cargo-audit-audit 0.22.2\n", 1, False), (b"cargo-audit-audit 0.22.2\n", 0, True)):
+                with self.assertRaises(audit_lock.AuditError) as caught:
                     audit_lock.verify_auditor("cargo-audit", cwd=root, env=env, deadline=audit_lock._now() + 5, runner=runner_for(text, rc=rc, truncated=truncated))
+                self.assertEqual(caught.exception.version_evidence["stdout"], text.decode())
+                self.assertEqual(caught.exception.version_evidence["stdout_truncated"], truncated)
+
+    def test_version_mismatch_evidence_is_retained_by_orchestration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cwd, home, db, artifact = (root / name for name in ("cwd", "home", "db", "artifact"))
+            cwd.mkdir(); home.mkdir(); db.mkdir(); artifact.mkdir()
+            raw = audit_lock.CommandResult(("/trusted/cargo-audit", "audit", "--version"), 1, b"cargo-audit-audit 0.22.20\n", b"bad", False, False)
+            error = audit_lock.AuditError("cargo-audit version mismatch")
+            setattr(error, "version_evidence", audit_lock._command_evidence(raw))
+            def fail_verifier(*args, **kwargs):
+                raise error
+            with mock.patch.dict(os.environ, {"HOME": str(root), "GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}, clear=False):
+                rc = audit_lock.run_audit(artifact_root=artifact, db=db, cwd=cwd, cargo_home=home, auditor="cargo-audit", repository="ayutaz/vokra", output=root / "report.json", verifier=fail_verifier, host_guard=lambda _env: None)
+            evidence = json.loads((root / "report.json").read_text())
+            self.assertEqual(rc, 2)
+            self.assertEqual(evidence["tool"]["version_check"]["stdout"], "cargo-audit-audit 0.22.20\n")
 
     def test_workflow_contract_has_reviewed_triggers_and_pins(self) -> None:
         workflow = Path(__file__).parents[3] / ".github/workflows/kyutai-candle-source-advisory.yml"

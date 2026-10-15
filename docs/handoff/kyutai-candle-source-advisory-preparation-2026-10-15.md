@@ -1,5 +1,11 @@
 # Candle source-only advisory preparation — 2026-10-15
 
+> Subsequent actual attempts are retained in the [hosted result record](kyutai-candle-source-advisory-result-2026-10-15.md).
+> The first stops in a causal test and the second at version verification;
+> neither reaches a completed advisory audit. The corrected candidate below
+> still requires fresh hosted evidence. Earlier preparation-time non-execution
+> statements are not later execution verdicts.
+
 This prepares a separate advisory leg at accepted main
 `5ceb432545cc1d9bdf2ff5c5ff289d683276539a`. It does not repeat the authenticated
 Candle source/metadata capture and does not execute a target crate or model.
@@ -73,10 +79,17 @@ independently reruns all eleven tests in **4.167 seconds**, including both
 causal paths, and actionlint/diff checks pass. Actual hosted execution and the
 advisory verdict still require separate evidence.
 
-Reviewed workflow/wrapper/test SHA-256 values respectively are
+After the actual hosted version-contract failure, the verifier requires the
+observed exact `cargo-audit-audit 0.22.2` line and retains bounded mismatch
+diagnostics. Manager independently passes all **12 tests in 4.179 seconds**,
+including wrong-prefix/version, prerelease/build/extra-line, nonzero/truncated
+output and orchestration evidence regressions. Tool/action/database pins,
+audit scope and fail-closed findings policy remain unchanged.
+
+Final reviewed workflow/wrapper/test SHA-256 values respectively are
 `cf48f1c684bc517a64494ed0ae1b8b830c20cae11f7aada79558b87e10b6939b`,
-`ae7cad9210ad76e1af52799aba8ab76b60450ddc775a3abdfbf6813201cf11d1`
-and `a7615e304d2d79afd29d5fbc06e4c35fb01712a81142a4c0f324518876530134`.
+`bb2a5afeee95c27a788093dcd85f54fc6be2cfae14c742fbae3eaa0d8dca176d`
+and `b2f6876f6b0785c38cd630dd47fd877f15b9eaee0a8ddd547af2bc0eaf80b0ab`.
 These are source and synthetic-test identities, not an advisory verdict.
 
 No actual hosted advisory run, cargo-audit installation/execution, target
