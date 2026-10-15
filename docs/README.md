@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**Source-only remediation preparation (2026-10-15):** the
+[four-pin diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md)
+passes 57 independently replayed offline tests, including actual recovered
+metadata sizing. Its hosted dependency resolution is not yet measured.
+The [pastey primary archive](handoff/kyutai-candle-pastey-source-readback-2026-10-15.md)
+and bundled license bytes are authenticated, not macro/API compatibility or
+execution approval. The original five findings and draft #255 remain open;
+real-weight CPU and final Apple packets are unfinished.
+
 **08:28:45 UTC acceptance and actual reference audit (2026-10-15):**
 PR #254 is normally merged as main `7701cc67` after all 72 checks completed
 (71 success, one intentional skip), all 16 required context/application pairs

@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-15 source-only remediation preparation:** the
+> [four-pin diagnostic](kyutai-candle-pin-remediation-2026-10-15.md) passes
+> independently replayed offline tests and actual recovered-data sizing, not
+> a new hosted solver or security verdict. The
+> [pastey archive/license facts](kyutai-candle-pastey-source-readback-2026-10-15.md)
+> do not establish macro compatibility or execution approval. All five
+> original findings, draft #255 and full non-Apple/real-weight/final-packet
+> gates remain open. No inventory refresh or model-row promotion follows.
+
 > **08:28:45 UTC acceptance / separate actual audit (2026-10-15):** #254 is
 > normally merged as main `7701cc67` after 71 successful checks, one intentional
 > skip, all 16 required context/app pairs and ten successful workflows. The

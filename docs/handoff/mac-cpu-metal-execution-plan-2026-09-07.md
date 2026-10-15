@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-15 source-only remediation preparation:** use the
+> [reviewed four-pin diagnostic](kyutai-candle-pin-remediation-2026-10-15.md)
+> for the next actual hosted dependency-resolution attempt. Offline tests,
+> real metadata sizing and [pastey primary-source facts](kyutai-candle-pastey-source-readback-2026-10-15.md)
+> do not close the five findings, macro/API/license/operator scope or real
+> CPU parity. Preserve all non-Apple prerequisites and final clean-HEAD/fresh
+> packet gates; Scaleway and publication are not authorized by this record.
+
 > **08:28:45 UTC source acceptance / actual audit (2026-10-15):** #254 is
 > normally accepted as clean main `7701cc67` after 72 checks (71 success/one
 > intentional skip), all 16 required context/app pairs and ten workflows.

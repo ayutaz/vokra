@@ -1,5 +1,14 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **依存修復の実診断準備（2026-10-15）:** main `7701cc67` を基準に、
+> [4 pinの限定診断](kyutai-candle-pin-remediation-2026-10-15.md)をレビューし、
+> 独立57 testsを実行して成功した。修正済みmemmapの後戻り、期限のリセット、
+> 実metadataの容量上限超過などを実行前に修正。新構成のhosted依存解決は未実施。
+> [pasteyの実archive／license本文](kyutai-candle-pastey-source-readback-2026-10-15.md)
+> は認証したが互換性未検証で、元の5 findingは未解消・#255はdraftのまま。
+> 全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh packetの
+> 工程4は未完了。新規有料worker、モデル実行、公開、owner署名は行わない。
+
 ## ゴールと現在地
 
 > **08:28:45 UTCの受理と実検出（2026-10-15）:** #254 exact `991f2a71`は
