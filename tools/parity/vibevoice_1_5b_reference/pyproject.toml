@@ -41,8 +41,8 @@ transformers_security_patched_minimum = "5.10.0"
 isolated_transformers_pin = "transformers==5.10.4"
 isolated_huggingface_hub_pin = "huggingface-hub==1.29.0"
 transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
-lock_sha256 = "ba80c08b17b2d04356264b9f9d42393e9c8be66bc0cd9fda6139dc007d943909"
-lock_package_rows_sha256 = "1ea002fe37f4ddc4df9f7535b5ae3a42661fc1eaa0a28e8ae6dbba0fa7e9649b"
+lock_sha256 = "c53133843ca81d3854e2676566b1f3b61a6b5d80a84b31aecf90f8362c3f5dd8"
+lock_package_rows_sha256 = "e74bb016e7bd12d09a37fc6b1be959a3bd9f3d9ee6872950d7c6c493537468b0"
 lock_package_count = 44
 lock_package_rows_schema = "package-resolution-and-dependency-markers-v2"
 lock_resolution_markers = ["sys_platform != 'darwin'", "sys_platform == 'darwin'"]
@@ -78,7 +78,7 @@ primary_evidence = [
 ]
 license_conclusion_map = "version-keyed name==version mapping emitted by vibevoice_1_5b_dump_reference.py from authenticated package_rows"
 license_conclusion_count = 44
-license_audit_rows_sha256 = "987a1f7204c2d7f2baa1c537ebaa06ca4bc872d2aae60f25a78393967da7bf8c"
+license_audit_rows_sha256 = "91034b0a115c6c7cebede9f89375980e6541f33f59229d22cd178e3874c599f3"
 
 license_conclusions = [
     { name = "annotated-doc", version = "0.0.5", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/annotated-doc/0.0.5/json", route = "reference-only" },
@@ -122,7 +122,7 @@ license_conclusions = [
     { name = "transformers", version = "5.10.4", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/transformers/5.10.4/json", route = "reference-only" },
     { name = "typer", version = "0.27.2", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/typer/0.27.2/json", route = "reference-only" },
     { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json", route = "reference-only" },
-    { name = "urllib3", version = "2.7.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/urllib3/2.7.0/json", route = "reference-only" },
+    { name = "urllib3", version = "2.8.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/urllib3/2.8.0/json", route = "reference-only" },
     { name = "vokra-vibevoice-1-5b-reference", version = "0.1.0", license = "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE", primary_source = "repository", route = "not-distributed" },
     { name = "zipp", version = "4.1.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/zipp/4.1.0/json", route = "reference-only" },
 ]
