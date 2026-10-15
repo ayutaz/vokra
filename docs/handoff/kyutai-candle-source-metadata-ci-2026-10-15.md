@@ -1,5 +1,66 @@
 # Kyutai Candle source-metadata CI preparation — 2026-10-15 JST
 
+## Normal acceptance and subsequent static collection — 06:34 UTC
+
+PR #251 is normally squash-merged at 06:34:34 UTC as main
+`1d86328008c505aeeed3740009faf3558ac7ba37`, after 70 successful checks,
+one intentional skip, all 16 required context/application pairs and all ten
+started workflows succeeded at exact `b111f377`. Local main is fast-forwarded
+and clean. This accepts the reviewed source correction and actual metadata
+diagnostic, not the dependency/native/legal/operator or real-weight gates.
+The subsequent [104-archive primary-fact record](kyutai-candle-primary-archive-facts-2026-10-15.md)
+advances the separate source review without changing those approval fields.
+
+## Actual semantic capture and precise update — 06:06 UTC
+
+At exact `b111f377bfbfc2f8d079f10791d61befb2d3ff5d`,
+[run 38690241603](https://github.com/ayutaz/vokra/actions/runs/38690241603),
+job `116274220275` succeeds. All **40 stdlib tests** pass on the hosted
+Linux worker in 1.751 seconds. Fixed Rust 1.99.0/Linux checks, actual source
+capture, the complete seven-file evidence check and bounded upload all pass.
+Actual capture completes at 06:06:47 UTC; ordinary PR CI is a separate gate.
+This supersedes the preparation-only pending statements below, not the
+earlier failed runs themselves.
+
+Artifact `11951567227` reports 210,734 ZIP bytes and expires at
+2026-10-16 06:06:47 UTC. Manager recovers exactly the seven regular members
+below, without symlinks, and independently hashes the extracted bytes. The
+reported ZIP digest is not claimed as independently verified.
+
+| Member | Bytes | Independently computed SHA-256 |
+|---|---:|---|
+| `source_receipt.json` | 8320 | `157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec` |
+| `source/rust/Cargo.lock` | 150274 | `bc4348116cdf1408583311954c1baaee6bde3b4cf54cd160af50b278aa4e44ab` |
+| `base/Cargo.lock` | 39842 | `eafbfd9c58c0b8aa60c4298f4df7e0187c78161a8aa898d0490a98c52faf28de` |
+| `patched/Cargo.lock` | 39843 | `303c49433187d5938d0f2a27d3f5ded9eb094388dd67e6702a0a8b7558eaec01` |
+| `initial_metadata.json` | 898699 | `904ba6da53c222ad8feda4c5a82d90dac12b9c84defa6ef081a613e7c9b4b736` |
+| `whole_lock_metadata.json` | 1264493 | `61982123e29c2d51f3147d1b2a4755252da4b040ccae741a42c42d594a220e00` |
+| `metadata.json` | 324957 | `99a22ac5c6ab9b34e5b21c7ceee308011ae42bf880d3c711403e9aeec1847a02` |
+
+The first three hashes reproduce all four hosted attempts. Raw metadata
+includes run-specific paths, so its whole-file hash is not represented as
+cross-run byte-reproducible.
+
+Manager independently revalidates the 592-record original to 161-record base
+projection and the precise update. A separate full-record comparison proves
+that **only memmap2 version/checksum change**: 0.9.5 to 0.9.11, with the
+expected official-registry checksum already recorded below. All other 160
+complete package records and root lock fields are exact, not merely
+normalized. Initial and post-update CPU graphs are identical after only that
+one package-ID relabel: 105 active packages, no GPU feature activation. The
+whole metadata command preserves the base lock byte-identically. All four
+final lock receipts bind to the recovered files, including the final
+projection matching the patched lock.
+
+Final status remains `METADATA_CAPTURED_REVIEW_PENDING`, with null approval,
+`NO_UPLOAD`, model execution `NOT_AUTHORIZED`, and license/advisory audits
+`NOT_RUN`. This is not upstream compilation/build-script execution, a native
+payload/license review, full-PCM reference, model conversion or real-weight
+CPU/Metal parity. The selected CPU declaration set includes Unicode/ISC
+terms requiring separate primary-source review; metadata declarations alone
+do not grant an exception to the runtime dependency policy. No local model,
+paid worker, owner decision or publication is introduced.
+
 ## Evidence-backed semantic projection correction
 
 The subsequent private candidate changes the production call to supply both

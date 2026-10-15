@@ -1,5 +1,22 @@
 # Dia reference dependency approval
 
+## 2026-10-15 urllib3 candidate supersession (still blocked)
+
+The reviewed [PR #253 correction](../../../docs/handoff/dia-urllib3-minimal-reconciliation-2026-10-15.md)
+updates only urllib3 to 2.8.0 in the dedicated lock and preserves the existing
+Torch platform dependency markers. The current lock SHA-256 is
+`8356b43556bb3c94a75556b57b839cce15d4b4e899d8df033404c6b2ccf1c5de`;
+the project hash is unchanged. The six current factual consumers bind these
+new bytes while retaining all blocked execution and publication conditions.
+
+The former `06d1f306...` candidate inputs and the `f9e095f7` installed audit
+below are historical measurements, not fresh evidence for this lock. No
+installed/native/API audit or owner approval is carried forward or restamped.
+The 31-row lock / 27-row active Linux inventory is checked without installing
+or importing packages. `BLOCKED_UNREVIEWED_TRANSITIVE`, the upstream pin
+compatibility hold and `NO_UPLOAD` remain unchanged. Corrected-head PR CI and
+normal acceptance are still required.
+
 ## 2026-09-30 Torch security-refresh candidate (blocked)
 
 The dedicated candidate lock now resolves CPU Torch `2.13.0` and
