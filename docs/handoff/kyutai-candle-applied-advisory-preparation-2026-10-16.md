@@ -1,5 +1,10 @@
 # Candle applied-lock advisory coverage — 2026-10-16 JST
 
+> **Actual result:** [run 38765578560](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> succeeds; root independently accepts the original report, native registry
+> leg and all seventeen supplemental identities. This supersedes not-yet-run
+> statements below, not their dated preparation context or remaining gates.
+
 ## Scope and authorization
 
 The owner explicitly authorizes the audit wrapper, focused tests and dedicated

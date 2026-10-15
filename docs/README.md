@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**Actual applied-lock advisory accepted (2026-10-16 JST):**
+[run 38765578560 and original report](handoff/kyutai-candle-applied-advisory-result-2026-10-16.md)
+prove zero native vulnerabilities/warnings for registry137 at the fixed DB,
+plus explicit same-database absence coverage of parents16/workspace1.
+All seventeen post-download tests pass without skips. This is not generic
+security, compatibility, legal/owner, real-weight CPU or Apple completion;
+PR #255 remains draft and the full step-4/final-packet obligations remain.
+
 **Applied-lock coverage correction (2026-10-16 JST):** the
 [pinned-auditor primary-source review](handoff/kyutai-candle-applied-advisory-preparation-2026-10-16.md)
 proves that ordinary cargo-audit skips source-absent records. The actual lock

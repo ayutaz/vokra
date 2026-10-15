@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16 JSTの実監査受理:** [run 38765578560と原本照合](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> で通常監査137件は固定DBに対して脆弱性0／警告0、補完parent16＋workspace1も完了。
+> 実証跡download後の17 testsは失敗0／skip0。旧構成の監査失敗・owner判断は変更しない。
+> 次はsource／license／native／operatorとmacro／API互換性の前提整理、その後に独立PCMと
+> 別途承認した実weight CPU。全non-Apple／最終clean HEAD・fresh packetの工程4は未完了。
+> #255はdraft、Scaleway／公開は後段のまま。
+
 > **2026-10-16 JSTの監査範囲訂正:** [固定版auditorの一次ソース確認](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
 > でsource欠如recordの照合除外を確定した。実lock154件はregistry137＋変更parent16＋
 > Moshi本体1に分かれる。同じ固定DBの補完照合と通常strict監査を組み合わせ、件数だけで

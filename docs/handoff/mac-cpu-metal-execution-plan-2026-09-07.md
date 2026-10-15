@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST actual fixed-DB advisory acceptance:** [run 38765578560](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> succeeds with independently checked original bytes: registry137 native
+> zero findings plus source-absent parents16/workspace1 supplemental coverage.
+> Next close compatibility/source/license/native/operator prerequisites;
+> independent full-PCM/authorized real-weight CPU and final clean-HEAD/fresh
+> packets remain distinct unfinished steps. Scaleway/publication stay later.
+
 > **2026-10-16 JST advisory coverage correction:** the
 > [pinned-source review and narrow authorization](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
 > require a genuine registry audit plus conservative fixed-database coverage

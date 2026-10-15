@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 JST actual fixed-DB advisory acceptance:** the
+> [original applied-lock result](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> authenticates native registry137 with zero vulnerabilities/warnings and
+> supplemental parents16/workspace1 at the same DB. Seventeen post-download
+> tests pass without skips. Compatibility/license/owner/real-weight/final
+> packet and Apple gates remain; no inventory or frozen disposition changes.
+
 > **2026-10-16 JST advisory coverage correction:** [pinned primary sources](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
 > prove that ordinary cargo-audit skips source-absent records. Account for
 > registry137, modified parents16 and workspace1 separately using the same
