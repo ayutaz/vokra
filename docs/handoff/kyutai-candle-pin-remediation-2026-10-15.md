@@ -1,5 +1,12 @@
 # Candle four-pin diagnostic preparation — 2026-10-15
 
+> **Corrected actual resolution succeeds:** run `38711006458` at `27a28413`
+> produces all thirteen evidence files. Manager independently verifies the
+> complete 161-to-154 record change, 151 identical retained records and
+> 105-package CPU graph. This supersedes the resolution failure, not the
+> original five-finding audit. The new candidate still needs its own strict
+> audit; paste, compatibility/license/operator and real-weight gates remain.
+
 > **Actual first attempt and cause correction:** published head `c538e390`
 > reaches the real solver and stops at an unnecessary fourth update. The
 > `anyhow` update already removes `backtrace` and `adler`; see the actual
@@ -198,3 +205,68 @@ refused because it is already terminal. No cancellation or PASS is claimed.
 The known old-lock failure is distinct from this removed-package error.
 No model execution, CPU parity, owner approval, paid worker or publication
 occurs; the full original step-4 objective remains active and incomplete.
+
+## Corrected actual resolution and independent acceptance
+
+[Run 38711006458](https://github.com/ayutaz/vokra/actions/runs/38711006458),
+job `116342064821`, completes the exact corrected production path at
+`27a2841384220c078aa37ff93ea8f9fc8a18594f`. Its source-only diagnostic,
+strict complete-evidence check and upload all succeed. Artifact
+`11961100426`, named `kyutai-candle-pin-remediation-38711006458-1`, is
+**457,074 compressed bytes**. Manager recovers all **thirteen regular files**,
+totaling **7,040,218 bytes**, and independently verifies:
+
+- The [complete candidate lock](kyutai-candle-candidate-2026-10-15.lock) is
+  **38,252 bytes**, SHA-256
+  `d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8`.
+  It exactly matches the first failed attempt's third-update checkpoint;
+  the new run now recovers the actual bytes and final native graphs.
+- Whole-lock records change from **161 to 154**. All **151 retained complete
+  records**, their relative order and all top-level TOML fields are unchanged.
+  The only version replacements are crossbeam-epoch 0.9.18 to 0.9.20,
+  anyhow 1.0.98 to 1.0.103 and rand 0.9.0 to 0.9.3. Exactly the seven old
+  anyhow-chain packages listed above disappear. No other package is added.
+- The full memmap2 0.9.11 and paste 1.0.15 records are identical to the
+  authenticated patched baseline. The removed adler/backtrace names are
+  absent, not ignored or renamed in place.
+- Candidate native CPU/whole metadata contains **105 / 154 packages**.
+  Whole identities equal the complete candidate lock; CPU identities are
+  contained in it, resolve-node identities/edges are valid and CPU nodes
+  activate no GPU feature. All seven actual commands return zero.
+- The [original successful resolution diagnostic](kyutai-candle-pin-success-2026-10-15.json)
+  is **228,834 bytes**, SHA-256
+  `5ee83d9cf3e2976b6350a7cd45346f27bfb40e4194616dcfb52e89c7f9385e44`.
+  Its status remains `PIN_REMEDIATION_SOURCE_ONLY_REVIEW_PENDING`, paste is
+  explicitly unresolved/not waived, approval is null, model execution is
+  `NOT_AUTHORIZED` and publication is `NO_UPLOAD`.
+
+The exact recovered member bindings below are for this producer only. They
+do not replace the old seven-member producer or its five-finding receipt.
+Paths are beneath the artifact root, using `capture` for
+`vokra-candle-pin-capture-38711006458-1` and `result` for
+`vokra-candle-pin-result-38711006458-1`.
+
+| Member | Bytes | SHA-256 |
+|---|---:|---|
+| capture/base/Cargo.lock | 39,842 | `eafbfd9c58c0b8aa60c4298f4df7e0187c78161a8aa898d0490a98c52faf28de` |
+| capture/initial_metadata.json | 896,267 | `c4712fec75c50bf1b0c2813bc0456994c7e383e145d3a5ec41c42dec9095bbc5` |
+| capture/metadata.json | 324,861 | `3a988e3219f9b25d128ec52c27798aaf93f07909e6ad9ef8269d9faee8319fff` |
+| capture/patched/Cargo.lock | 39,843 | `303c49433187d5938d0f2a27d3f5ded9eb094388dd67e6702a0a8b7558eaec01` |
+| capture/source/rust/Cargo.lock | 150,274 | `bc4348116cdf1408583311954c1baaee6bde3b4cf54cd160af50b278aa4e44ab` |
+| capture/source_receipt.json | 8,320 | `157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec` |
+| capture/whole_lock_metadata.json | 1,261,025 | `3ed8961b442e32541af940ab0b84b00f93de7942c8de34b852f4b59af68301a6` |
+| result/baseline_cpu_metadata.json | 849,497 | `6964ac9b62708caa3cd794cf26055628e455a5768f9312476049c468ca3c7e0d` |
+| result/baseline_whole_metadata.json | 1,205,830 | `cc3728fc52f80ea0554ca3cb9916de0bd45ebe7fa8d5379f541873ef0d7bed99` |
+| result/candidate.lock | 38,252 | `d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8` |
+| result/candidate_cpu_metadata.json | 849,118 | `9c351398903613d266f41d4d9769f488780aba5c4592312cee54b732c634f043` |
+| result/candidate_whole_metadata.json | 1,148,255 | `959357f105d4118301fc0be3bf94bc6f49944e4df5122cb6a8124bfc2b6c2793` |
+| result/pin_diagnostic.json | 228,834 | `5ee83d9cf3e2976b6350a7cd45346f27bfb40e4194616dcfb52e89c7f9385e44` |
+
+Next is a separately authenticated strict advisory audit of this exact
+154-record candidate, then the genuine maintained paste replacement path.
+Do not filter to CPU packages, reuse the old lock's auditor verdict, waive a
+warning or rewrite old receipts. Dependency resolution is not a source/macro
+compatibility, license/operator or model parity verdict. PR #255 stays draft
+and complete exact-head PR/CI acceptance remains separate. No paid worker,
+model acquisition/execution, final Apple packet, inventory refresh or public
+artifact update occurs. The original full step-4 objective is not complete.

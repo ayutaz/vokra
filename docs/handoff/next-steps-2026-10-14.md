@@ -1,5 +1,11 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **修正版の実依存解決成功（2026-10-15）:** [run 38711006458](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+> から13ファイルを回収。全lock 161→154、保持151 complete records／root fields不変、
+> 3版更新とanyhow配下7依存の削除だけを独立確認した。CPU 105、memmap／pasteは不変。
+> 次は154件candidateのstrict再監査と真正なpaste代替経路。元の5 findingの解消判定、
+> source／license／operator、実weight CPU、全58行と最終packetの完了は推定しない。
+
 > **実診断の原因特定（2026-10-15）:** [run 38709911065の原本](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
 > を回収。最初の3更新は成功し、anyhow更新がadler／backtraceを含む7依存を削除した。
 > 不要となった4番目のbacktrace更新で停止したため、同じ失敗は再試行しない。

@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-15 corrected source-only resolution:** the [actual thirteen-file
+> result](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+> is independently verified, including the complete 161-to-154 lock delta and
+> unchanged 105-package CPU universe. Next audit this exact candidate and
+> resolve genuine paste compatibility/source scope. Do not substitute this
+> success for any full non-Apple, real-weight CPU or final-packet gate;
+> Scaleway remains last and no publication is inferred.
+
 > **2026-10-15 actual pin-attempt cause:** the [recovered attempt](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
 > identifies an unnecessary fourth update after anyhow removes backtrace and
 > adler. Correct the command plan from that evidence, recover the complete

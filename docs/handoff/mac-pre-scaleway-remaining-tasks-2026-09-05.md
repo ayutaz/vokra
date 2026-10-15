@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-15 corrected source-only resolution:** [run 38711006458](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+> succeeds and all thirteen files are recovered. Independent full-record
+> comparison proves 161-to-154 whole lock, 151 unchanged retained records,
+> three precise version changes and seven removed anyhow-chain packages.
+> CPU remains 105; strict candidate advisory and paste replacement are next,
+> not model/owner/real-weight/Apple or final-packet completion.
+
 > **2026-10-15 actual pin-attempt cause:** [run 38709911065](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
 > completes three updates; anyhow removes the old adler/backtrace chain, so
 > the fourth update targets a package no longer present and fails. The

@@ -1,13 +1,14 @@
 # Vokra documentation
 
-**Actual dependency-resolution attempt (2026-10-15):** the
-[first pin diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
-authenticates the source/baseline and performs three successful updates, then
-fails on an unnecessary fourth target: anyhow already removed backtrace and
-adler. Ten files and the original failed report are recovered. The reviewed
-next attempt uses three precise updates and explicitly requires both removed
-names absent; complete candidate metadata and a fresh strict audit remain
-outstanding. No model-row, owner, CPU/Apple or publication gate advances.
+**Corrected dependency resolution succeeds (2026-10-15):** the
+[actual corrected diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+produces all thirteen evidence files. Manager independently verifies the
+161-to-154 whole-lock change, 151 identical retained records, three exact
+updates and removal of the seven old anyhow-chain packages. CPU metadata
+still has 105 packages; memmap and paste records remain unchanged. The
+first failed attempt is retained. A fresh strict candidate audit and genuine
+paste replacement remain next; no model-row, owner, CPU/Apple or publication
+gate advances.
 
 **Source-only remediation preparation (2026-10-15):** the
 [four-pin diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md)
