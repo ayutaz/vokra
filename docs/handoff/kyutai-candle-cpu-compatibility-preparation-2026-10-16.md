@@ -183,3 +183,33 @@ The resumed checker review identifies Rust toolchain environment, mutable
 Cargo-cache snapshot and child-cleanup defects. Correct and causally test
 these before the one permitted remote job; no activation or compatibility
 success is implied by the hook repair or the earlier twelve synthetic tests.
+
+### Reviewed candidate admitted to its one actual job
+
+Manager reviews the corrected checker, tests and one-shot workflow. The
+candidate binds the installed Rust 1.99 toolchain separately from fresh
+HOME/Cargo settings, snapshots selected registry source trees rather than
+mutable Cargo operational caches, checks checkout HEAD, retains original
+bounded compiler streams and compares CPU graph/source/lock after building.
+The uncalled API harness uses the authenticated Moshi module paths and an
+explicit compilation target. No model is constructed or executed.
+
+Manager's independent offline fixture run reports **16 tests: 15 pass and
+one Linux-only orphan-process test is skipped on macOS**, in 0.426 seconds.
+The hosted job must execute that case; the local skip is not a Linux cleanup
+result. Other tests include source-vs-operational-cache mutation and mocked
+orchestration/build failure; mocks are not upstream compilation evidence.
+Actionlint passes. The previously recorded Rust-input equality with green
+VAST `4263f416` is rechecked, and all eight compliance regressions pass again.
+The new hooks have their own passing full contract gate. Corresponding source
+push may use the documented pre-push skip to avoid forbidden local workspace
+Cargo; it does not waive these focused checks or authorize a new paid worker.
+
+Reviewed checker SHA-256:
+`d0f7d4f655e79619a7352ea8271d9387ebd70de6917eccc021fe63819f5bc267`.
+Reviewed test SHA-256:
+`574e01b26027809c5b4e4a4a035c5818279b816d3050024fe5331acf0713629a`.
+Reviewed workflow SHA-256:
+`3ba3acd6e33637f9560169029144fdc9e320d5ab17cd8dfd65748ae74aa1da0d`.
+This is admission, not the actual job result; no retry or second build is
+authorized by it.
