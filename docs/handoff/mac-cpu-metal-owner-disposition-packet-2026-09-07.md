@@ -1,5 +1,10 @@
 # Mac CPU / Metal owner disposition packet (2026-09-07)
 
+> **2026-10-16 source-PR acceptance boundary:** [#255 acceptance](candle-pr255-acceptance-2026-10-16.md)
+> changes source/CI status only. It supplies no new signer, model/operator
+> approval, license decision or replacement/withdrawal/publication decision.
+> All frozen row counts and exact signed or pending scopes below stay intact.
+
 > **2026-10-16 continuation boundary:** the [six-stage readback](goal6-execution-readback-2026-10-16.md)
 > records unchanged public metadata and an additional bounded model-free
 > technical job. Neither changes this frozen denominator, any signer, scope

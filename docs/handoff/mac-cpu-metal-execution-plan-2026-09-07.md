@@ -1,5 +1,11 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 normal source acceptance:** [#255 is merged](candle-pr255-acceptance-2026-10-16.md)
+> as main `662b49c4` after complete exact-head CI. Model-free confirmation
+> and PR acceptance close stages 1–2 only. Continue per-row non-Apple and
+> owner/source/reference closure, approved real-weight CPU, final clean
+> HEAD/packet, then Scaleway CPU/Metal/no-fallback and final result audit.
+
 > **2026-10-16 actual technical checkpoint:** the [Candle confirmation](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
 > passes seventeen Linux tests, the full CPU library and uncalled API probe.
 > This is stage 1 only. Fresh PR acceptance, every non-Apple prerequisite,

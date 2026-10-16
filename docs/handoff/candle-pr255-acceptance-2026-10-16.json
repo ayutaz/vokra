@@ -1,0 +1,755 @@
+{
+  "record_kind": "MANAGER_DERIVED_GITHUB_API_READBACK_NOT_NATIVE_ATTESTATION",
+  "observed_date_utc": "2026-10-16",
+  "scope": "PR255_SOURCE_CI_ACCEPTANCE_ONLY",
+  "campaign_complete": false,
+  "owner_legal_approval": null,
+  "model_execution_authorized_by_this_record": false,
+  "publication": "NO_UPLOAD",
+  "pull_request": {
+    "baseRefOid": "f8d859dc9cf284372ae758c0fa06763d93e4ebdc",
+    "headRefOid": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+    "isDraft": false,
+    "mergeCommit": {
+      "oid": "662b49c4c1272b477e5c6c6badd6e7c9dfec8d91"
+    },
+    "mergedAt": "2026-10-16T10:55:41Z",
+    "state": "MERGED",
+    "url": "https://github.com/ayutaz/vokra/pull/255"
+  },
+  "protection": {
+    "checks": [
+      {
+        "app_id": 15368,
+        "context": "build (ubuntu-latest)"
+      },
+      {
+        "app_id": 15368,
+        "context": "build (macos-latest)"
+      },
+      {
+        "app_id": 15368,
+        "context": "build (windows-latest)"
+      },
+      {
+        "app_id": 15368,
+        "context": "test (ubuntu-latest)"
+      },
+      {
+        "app_id": 15368,
+        "context": "test (macos-latest)"
+      },
+      {
+        "app_id": 15368,
+        "context": "test (windows-latest)"
+      },
+      {
+        "app_id": 15368,
+        "context": "fmt"
+      },
+      {
+        "app_id": 15368,
+        "context": "clippy"
+      },
+      {
+        "app_id": 15368,
+        "context": "parity"
+      },
+      {
+        "app_id": 15368,
+        "context": "license"
+      },
+      {
+        "app_id": 57789,
+        "context": "CodeQL"
+      },
+      {
+        "app_id": 15368,
+        "context": "dependency-review"
+      },
+      {
+        "app_id": 15368,
+        "context": "documentation-links"
+      },
+      {
+        "app_id": 15368,
+        "context": "workflow-security"
+      },
+      {
+        "app_id": 15368,
+        "context": "pins.yaml ↔ workflow sync"
+      },
+      {
+        "app_id": 15368,
+        "context": "gitleaks"
+      }
+    ],
+    "strict": true
+  },
+  "check_runs": {
+    "checks": [
+      {
+        "app_id": 57789,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/runs/116933671059",
+        "name": "CodeQL",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116933550366",
+        "name": "python-wheel-build",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116933450869",
+        "name": "unity-package",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116932520639",
+        "name": "python-native-wheels / Verify four-wheel release set",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116930502310",
+        "name": "parity",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116928861129",
+        "name": "python-native-wheels / macOS / arm64",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116928861017",
+        "name": "python-native-wheels / Windows x86_64",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116928860804",
+        "name": "python-native-wheels / Linux x86_64 / manylinux 2.28",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116928860725",
+        "name": "python-native-wheels / macOS / x86_64",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405090/job/116926371489",
+        "name": "full-parity silero-vad-v5",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925995247",
+        "name": "python-native-wheels / Normalize version",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925995044",
+        "name": "parity-matrix (1)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925995023",
+        "name": "test (macos-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925995002",
+        "name": "fmt",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994968",
+        "name": "build (windows-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994933",
+        "name": "build (ubuntu-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994915",
+        "name": "ios-build",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994883",
+        "name": "test (ubuntu-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994856",
+        "name": "license",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994853",
+        "name": "test (windows-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994838",
+        "name": "parity-matrix (0)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994834",
+        "name": "build (macos-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404952/job/116925994466",
+        "name": "clippy",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925349172",
+        "name": "apple-silicon-worker-contracts",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925349020",
+        "name": "server-deployment",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348981",
+        "name": "gpu-backends (ubuntu-latest, qnn)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348948",
+        "name": "gpu-backends (macos-latest, coreml)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348940",
+        "name": "gpu-backends (macos-latest, metal)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348935",
+        "name": "gpu-backends (ubuntu-latest, cuda)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348916",
+        "name": "build-target-vulkan-only",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348882",
+        "name": "cpu-isa-server-tier (ubuntu-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348843",
+        "name": "build-windows-arm64",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348842",
+        "name": "riscv-cross-build",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348815",
+        "name": "cpu-isa-server-tier (macos-latest)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405061/job/116925348522",
+        "name": "bench-regression",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107223",
+        "name": "excluded-workspace (vokra-piper-g2p)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107172",
+        "name": "server-compat (macos-latest, aarch64-apple-darwin, false)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107135",
+        "name": "capi-smoke",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107111",
+        "name": "hf-mac-coverage (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107099",
+        "name": "excluded-workspace (vokra-cli-bench-server)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107095",
+        "name": "doc-examples",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107087",
+        "name": "server-compat (windows-latest, x86_64-pc-windows-msvc, false)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107035",
+        "name": "excluded-workspace (vokra-android)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107018",
+        "name": "python-parity-oracles",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925107008",
+        "name": "python-license-audit",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106984",
+        "name": "cargo-audit (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106950",
+        "name": "fa-v3-confinement (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106930",
+        "name": "shell-self-tests",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106890",
+        "name": "abi-surface (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106888",
+        "name": "msrv",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106857",
+        "name": "rustdoc (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106855",
+        "name": "server-compat (ubuntu-latest, x86_64-unknown-linux-musl, true)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106853",
+        "name": "excluded-workspace (vokra-server-bench)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106828",
+        "name": "doctests (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106817",
+        "name": "hf-mac-coverage-unit",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106803",
+        "name": "excluded-workspace (vokra-misaki-g2p)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106802",
+        "name": "repo-hygiene",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106776",
+        "name": "unity-capi-lints",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106759",
+        "name": "catalog-audit",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106711",
+        "name": "typos (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404823/job/116925106526",
+        "name": "agent-quality",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "skipped",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404864/job/116925106453",
+        "name": "gitleaks full history",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886405090/job/116925106424",
+        "name": "full-parity-plan",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404800/job/116925105911",
+        "name": "coverage (advisory)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404844/job/116925105529",
+        "name": "dependency-review",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404844/job/116925105344",
+        "name": "workflow-security",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404864/job/116925105320",
+        "name": "gitleaks",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404844/job/116925105139",
+        "name": "documentation-links",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404971/job/116925104662",
+        "name": "source-only paste overlay metadata application (not build/parity)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404795/job/116925104157",
+        "name": "pure offline manifest overlay plan (not application/parity)",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404716/job/116925103278",
+        "name": "codeql-rust",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404858/job/116925101537",
+        "name": "pins.yaml ↔ workflow sync",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404782/job/116925101120",
+        "name": "source-only Cargo pin diagnostic",
+        "status": "completed"
+      },
+      {
+        "app_id": 15368,
+        "conclusion": "success",
+        "details_url": "https://github.com/ayutaz/vokra/actions/runs/38886404700/job/116925100670",
+        "name": "source-only Candle applied advisory evidence",
+        "status": "completed"
+      }
+    ],
+    "total_count": 74
+  },
+  "workflow_runs": [
+    {
+      "conclusion": "success",
+      "databaseId": 38886404795,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404795",
+      "workflowName": "kyutai-candle-paste-overlay"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404700,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404700",
+      "workflowName": "kyutai-candle-applied-advisory"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404864,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404864",
+      "workflowName": "secret-scan"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404858,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404858",
+      "workflowName": "pins-sync-check"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404782,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404782",
+      "workflowName": "kyutai-candle-pin-remediation"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404971,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404971",
+      "workflowName": "Kyutai Candle paste overlay source-only application"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886405061,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886405061",
+      "workflowName": "CI Platform"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404716,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404716",
+      "workflowName": "CodeQL"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404800,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404800",
+      "workflowName": "Coverage"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404844,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404844",
+      "workflowName": "CI Security"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886405090,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886405090",
+      "workflowName": "nightly-full-parity"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404823,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404823",
+      "workflowName": "CI Quality"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 38886404952,
+      "headSha": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+      "status": "completed",
+      "url": "https://github.com/ayutaz/vokra/actions/runs/38886404952",
+      "workflowName": "CI"
+    }
+  ],
+  "superseded_cancellation": {
+    "oldHead": "9b58b64f120c9c1f306c1f967e696c52b1038e9f",
+    "currentHead": "cd5ffed0d72a66bf44bea9ff9ac7e05f1cbbf74d",
+    "cancelled": [
+      38885206802,
+      38885206528
+    ],
+    "normalCancelRequestedPreviously": true,
+    "forceCancel": {
+      "run": 38885206802,
+      "time": "2026-10-16T10:21:24Z",
+      "reason": "One queued reusable wheel child remained after normal cancel, blocking new concurrency group",
+      "verifiedStatus": "completed",
+      "verifiedConclusion": "cancelled"
+    },
+    "newRun": 38886404952,
+    "newRunStatus": "queued",
+    "newJobsCreatedAt": "2026-10-16T10:21:24Z"
+  },
+  "upstream_readback": {
+    "observedAt": "2026-10-16T10:41:12Z",
+    "main": "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362",
+    "issue429": {
+      "state": "open",
+      "comments": 0,
+      "updated_at": "2026-10-05T00:04:02Z"
+    },
+    "pull408": {
+      "state": "open",
+      "merged": false
+    },
+    "pull415": {
+      "state": "open",
+      "merged": false
+    },
+    "consequence": "No new upstream supported patched PyTorch route or owner/model execution authority inferred. Candle model-free CPU compatibility is separate, full PCM oracle still missing."
+  }
+}
