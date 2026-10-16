@@ -1,6 +1,136 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16追加実検証成功:** [Candle確認run 38885265971](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> はLinux全17 tests／skip0、CPU library buildと未呼出API署名確認が成功。
+> rootが原本12 streamのhashとnative compiler／依存graphを照合し、工程1のみ受理した。
+> 旧失敗原本は保持。fresh CI／#255受理、全non-Apple前提、独立実weight CPU、
+> 最終clean HEAD／packet、Scaleway CPU/Metal/no-fallback、結果記録は引き続き未完了。
+
+> **2026-10-16の6工程継続:** [現行実行記録と完了条件](goal6-execution-readback-2026-10-16.md)
+> を参照。公開一覧の実再取得は旧194行TSVとhash一致し、136 full／58未解決のまま。
+> Candleはlibrary build成功・API harness失敗で、修正後の追加1回・最大20分の
+> model-free Linux確認を別scopeとして準備中。旧監査routingとdeadline回帰の修正を
+> レビューし、fresh CI／#255受理後も、全non-Apple前提・実weight CPU・最終packet・
+> Apple CPU/Metal/no-fallback・結果記録までを維持する。owner署名や公開許可は推定しない。
+
+> **2026-10-16 JSTのmacro静的readback:** [固定sourceとarchive hashの照合](kyutai-candle-paste-macro-readback-2026-10-16.md)
+> でgemm-c32/c64両版の間接macro経路とMetal両版の型位置展開を確認した。直接paste検索0件
+> でも未使用とは判断せず16 parentを維持する。12 source filesは既存hash一致、pasteyの
+> entry-point名は存在するがcompiler／macro互換性は未実行・未承認。次の実行scopeは
+> cross-crate aliasと型位置を含めてsource／license／native／operator条件を確定する。
+> 全non-Apple前提・独立PCM／実weight CPU・最終HEAD／packetという工程4は未完了。
+
+> **2026-10-16 JSTの実監査受理:** [run 38765578560と原本照合](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> で通常監査137件は固定DBに対して脆弱性0／警告0、補完parent16＋workspace1も完了。
+> 実証跡download後の17 testsは失敗0／skip0。旧構成の監査失敗・owner判断は変更しない。
+> 次はsource／license／native／operatorとmacro／API互換性の前提整理、その後に独立PCMと
+> 別途承認した実weight CPU。全non-Apple／最終clean HEAD・fresh packetの工程4は未完了。
+> #255はdraft、Scaleway／公開は後段のまま。
+
+> **2026-10-16 JSTの監査範囲訂正:** [固定版auditorの一次ソース確認](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> でsource欠如recordの照合除外を確定した。実lock154件はregistry137＋変更parent16＋
+> Moshi本体1に分かれる。同じ固定DBの補完照合と通常strict監査を組み合わせ、件数だけで
+> PASSにしない。依頼者は限定したコード／テスト／workflow／記録更新とGitHub CIを許可。
+> 実監査結果はまだなく、モデル／有料worker／owner署名／Apple／公開の許可は含まない。
+> 全non-Apple前提・承認済み実weight CPU・最終clean HEAD／fresh packetの工程4は未完了。
+
+> **2026-10-16 JSTの実適用受理:** [run 38758745134と8ファイル回収](kyutai-candle-paste-application-result-2026-10-16.md)
+> はsource-only SUCCESS。root独立照合で154 lock／137完全record不変、16 path parent＋
+> registry pasteyへの置換、raw CPU105／whole154、308／292 member証跡を確認した。
+> 次はこの実producerに束縛したstrict監査と、path化した16件を含む照合範囲の検証。
+> 数だけでsecurity PASSにせず旧監査も緩めない。#255はdraftで、全non-Apple前提・
+> 承認済み実weight CPU・最終clean HEAD／fresh Apple packetという工程4は未完了。
+
+> **2026-10-16 JSTのローカル回帰受理:** [Candle実適用準備記録](kyutai-candle-paste-application-preparation-2026-10-15.md#2026-10-16-jst-independent-offline-acceptance-of-finalization-regressions)
+> の現行producerと追加回帰をrootが独立実行し、10 tests／失敗0／skip0（1.173秒）。
+> 最終書込み後のI/O失敗・期限超過からBLOCKEDへ復旧し、全root pairの親子衝突も
+> mutation前に拒否する。拒否された検索は再実行せず、安全ルールも変更していない。
+> 次はhosted source-only実適用と証跡照合・strict監査であり、実weight CPUや最終packet
+> 完了ではない。以下の旧保留記録は当時の履歴として保持し、元の工程4の範囲は維持する。
+
+> **Candle実適用のレビュー継続（2026-10-15）:** [準備記録](kyutai-candle-paste-application-preparation-2026-10-15.md)
+> にroot独立8 tests成功と、期限切れ後の最終記録に関する追加修正を分けて記録した。
+> 新候補の最終fault回帰は未受理。テスト担当の読み取り確認が安全hookに拒否されたため、
+> 再経路実行やルール変更をせず、対象review／offline testsだけの限定許可を確認中。
+> 実装は未commit／未公開、#255はdraft。実source適用、strict監査、全行non-Apple、
+> 承認済み実weight CPUと最終clean HEAD／fresh Apple packetの工程4は未完了のまま。
+
+> **Candle以外の重複回避（2026-10-15）:** OWSMのcurrent lockは
+> `21dc57e49571c7b47e84c91ae84166c35ca418b26635d1f4ac236d69925b1ebb`。
+> 全lock 43 recordsとLinux active 40 registry rowsを区別する。既知のtorch-complex
+> 0.4.4の一次license欠如は[既存の実調査](owsm-audit-admission-readback-2026-10-14.md#why-the-license-hold-remains-an-active-prerequisite)
+> を再利用し、同じarchiveを再取得しない。他39行のcurrent artifactに束縛した一次
+> license/native receiptは未確認だが、大容量native wheelの検査はローカルでは行わない。
+> このscope整理や旧collectorのsynthetic evidenceをlicense grant／owner承認とは扱わず、
+> OWSMの既知の外部権利待ちを計算で迂回しない。XY-TokenizerとMOSS Nanoもcurrent
+> dependency/native／topology／API gateが残り、Scalewayのみで閉じる状態ではない。
+
+> **実計画の回収と#256受理（2026-10-15）:** [hosted plannerの実結果](kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
+> は6 tests／CLI成功。回収した187,212-byte JSONの全16完全manifest差分と292 member
+> 不変条件を独立照合した。次はsource-only実適用とCPU／whole graph、strict監査であり、
+> 置換互換性は未検証。Misaki urllib3のみの#256は71 checks完了（70 success／1 skip）、
+> 必須16項目と全10 workflows成功後に通常mergeし、ローカルmainはclean `f8d859dc`。
+> #255はdraft、全行non-Apple／承認済み実weight CPU／最終packetの工程4は未完了。
+
+> **manifest-only置換計画の準備（2026-10-15）:** [offline planner](kyutai-candle-paste-overlay-preparation-2026-10-15.md)
+> の全16件入力／完全TOML差分／source inventory参照検証をレビューし、正規unittestで
+> 6 tests成功。ローカルCLIはhook拒否で止め、別経路では実行しない。次は新HEADの
+> hosted計画生成とartifact照合、その後の実適用・CPU／whole graph・strict監査。
+> 置換適用／互換性／security PASSは未主張。元の全58行non-Apple、承認済み実weight
+> CPU、最終clean HEAD／fresh packetの工程4は未完了で、Scalewayは最後のまま。
+
+> **不足ソースの実補完（2026-10-15）:** [paste依存元16件と更新依存3件](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+> のmanifest／license本文・source inventoryを回収し、rootが照合した。最初の14件成功と
+> Metal上限停止の原本は保持し、公式サイズに限定した別経路で不足2件だけを取得した。
+> 旧collectorの同一snapshot未回収は明示したまま。次は数値Rustを変えないmanifest-only
+> pastey alias案と実適用・全graph／strict監査。collectionを互換性／owner承認とは扱わず、
+> 全58行non-Apple、承認済み実weight CPU、最終clean HEAD／fresh packetの工程4は未完了。
+
+> **新候補の実監査結果（2026-10-15）:** [run 38713528857の原本](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> を回収し、入力13件とnative stdout、固定DBの実行前後一致を独立照合した。
+> 全154件でrc=1／`FAIL_FINDINGS`。同じ固定DBでは脆弱性0、pasteの保守終了警告1件となり、
+> 元の5指摘のうち4件は新候補に出ない。ツールエラーではないため変更なしの再試行はしない。
+> 次は全parentをカバーする真正なpaste代替と互換性確認。警告無視やroot-only aliasでは閉じない。
+> #255はdraft。全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh packet
+> という元の工程4は未完了。新規有料worker／モデル実行／owner署名／公開は行わない。
+
+> **修正版の実依存解決成功（2026-10-15）:** [run 38711006458](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+> から13ファイルを回収。全lock 161→154、保持151 complete records／root fields不変、
+> 3版更新とanyhow配下7依存の削除だけを独立確認した。CPU 105、memmap／pasteは不変。
+> 次は154件candidateのstrict再監査と真正なpaste代替経路。元の5 findingの解消判定、
+> source／license／operator、実weight CPU、全58行と最終packetの完了は推定しない。
+
+> **実診断の原因特定（2026-10-15）:** [run 38709911065の原本](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+> を回収。最初の3更新は成功し、anyhow更新がadler／backtraceを含む7依存を削除した。
+> 不要となった4番目のbacktrace更新で停止したため、同じ失敗は再試行しない。
+> 次は3更新＋両packageの全lock不在検査を行い、完成candidateの全差分・CPU／whole
+> metadataを回収して再監査する。失敗原本、paste未解消、全58行non-Apple前提と
+> 実weight CPU／最終clean HEAD・fresh packetという工程4の未完了は維持する。
+
+> **依存修復の実診断準備（2026-10-15）:** main `7701cc67` を基準に、
+> [4 pinの限定診断](kyutai-candle-pin-remediation-2026-10-15.md)をレビューし、
+> 独立57 testsを実行して成功した。修正済みmemmapの後戻り、期限のリセット、
+> 実metadataの容量上限超過などを実行前に修正。新構成のhosted依存解決は未実施。
+> [pasteyの実archive／license本文](kyutai-candle-pastey-source-readback-2026-10-15.md)
+> は認証したが互換性未検証で、元の5 findingは未解消・#255はdraftのまま。
+> 全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh packetの
+> 工程4は未完了。新規有料worker、モデル実行、公開、owner署名は行わない。
+
 ## ゴールと現在地
+
+> **08:28:45 UTCの受理と実検出（2026-10-15）:** #254 exact `991f2a71`は
+> 全72 checks（71 success / 1 intentional skip）、必須16 context/appと開始した全10
+> workflows成功後に通常mergeした。main／ローカルmainはclean `7701cc67`。
+> 別の[Candle実監査](kyutai-candle-source-advisory-result-2026-10-15.md)は入力7件と
+> 固定tool／DBを認証後、rc=1／`FAIL_FINDINGS`。crossbeam-epochの脆弱性1件、
+> anyhow／randのunsound警告2件、adler／pasteのunmaintained警告2件を記録した。
+> 旧2回のテスト／version表示の失敗は保持し、新しい28,055-byte receiptと区別する。
+> #255はdraftとし、4件の精密dependency更新によるsource-only metadata候補を準備、
+> pasteはmaintainedな公式経路／レビュー済みsource patchの可否を別途調べる。
+> 既存161件の監査を105件へ黙って縮めず、warnings／owner／license gateを緩めない。
+> 全58行non-Apple前提、承認済み実weight CPU、最終clean HEAD／fresh Apple packet
+> という元の工程4は未完了。HF全行inventoryの再取得・新規有料worker・モデル実行・
+> owner署名・公開は行っておらず、Scalewayは最後のまま。以下は各時点の履歴である。
 
 > **6環境の統合候補（2026-10-15）:** DFN3／DAC／OWSMと
 > [Baichuan inspection／ChatTTS／VibeVoice 1.5B](parity-urllib3-three-scope-reconciliation-2026-10-15.md)

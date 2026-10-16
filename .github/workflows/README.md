@@ -1,5 +1,31 @@
 # Vokra CI/CD workflow 目次
 
+**2026-10-16 Candle routing supplement:** the current checkout contains 56
+workflow definitions. The dated 10/08 inventory below is historical, not the
+current total. This change does not alter the 16 protected context/app pairs
+or branch-protection settings.
+
+| Candle definition | Trigger / purpose |
+|---|---|
+| `kyutai-candle-source-metadata.yml` | path-filtered PR / manual; source metadata only |
+| `kyutai-candle-pin-remediation.yml` | path-filtered PR / manual; precise lock diagnostic |
+| `kyutai-candle-paste-overlay.yml` | path-filtered PR / manual; pure offline overlay plan |
+| `kyutai-candle-paste-application.yml` | path-filtered PR / manual; authenticated source-only application |
+| `kyutai-candle-source-advisory.yml` | manual-only historical fixed baseline; original failures remain failures |
+| `kyutai-candle-candidate-advisory.yml` | manual-only historical fixed pre-application candidate; original warnings remain findings |
+| `kyutai-candle-applied-advisory.yml` | path-filtered PR / manual; strict current applied-lock audit and shared regression contract |
+| `kyutai-candle-cpu-compatibility.yml` | PR #255 only, fresh one-shot confirmation label, first attempt, maximum 20 minutes; model-free CPU library/API build |
+
+The historical baseline/candidate are not the corrected producer. Keeping
+them as reproducible manual diagnostics does not suppress findings: their
+fixed artifacts, database, auditor, warning policy and nonzero exit
+propagation are unchanged. The current applied gate covers registry137 and
+explicitly verifies the same-database absence of all seventeen source-absent
+records; no warning ignore, `continue-on-error` or branch-protection waiver
+is introduced. Changes to any of the three audit definitions trigger its
+shared contract. See the [six-stage record](../../docs/handoff/goal6-execution-readback-2026-10-16.md)
+for actual run status; this index is not a compatibility or model verdict.
+
 本ドキュメントは Vokra の GitHub Actions workflow の運用 index です。
 cron 時刻・trigger・job の実行内容は各 workflow の実定義、required check name は
 GitHub branch protection API が一次資料です。本文や comment と実定義に差異が

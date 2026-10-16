@@ -1,5 +1,118 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 actual technical checkpoint:** the [Candle confirmation](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> passes seventeen Linux tests, the full CPU library and uncalled API probe.
+> This is stage 1 only. Fresh PR acceptance, every non-Apple prerequisite,
+> actual real-weight CPU and final clean HEAD/packet still precede Scaleway.
+
+> **2026-10-16 full-objective continuation:** use the [six-stage acceptance table](goal6-execution-readback-2026-10-16.md).
+> Close corrected Candle compatibility and fresh PR CI, then every non-Apple
+> prerequisite and approved real-weight VAST CPU leg; freeze final clean HEAD
+> and fresh packets before Scaleway CPU/Metal/no-fallback, then record results.
+> Neither a code-full catalog label nor a library build closes these stages.
+
+> **2026-10-16 JST actual CPU attempt:** [run 38838522884](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+> builds the full CPU library successfully, then fails only in the uncalled
+> API harness because its host proc-macro search path is missing. Review the
+> offline-tested correction and obtain a new bounded actual-job scope; do
+> not retry the consumed one-shot permission or promote a partial result.
+> Full non-Apple/owner/real-weight/final-packet and Apple gates remain.
+
+> **2026-10-16 JST bounded compatibility authorization:** the
+> [owner-approved technical scope](kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
+> allows one model-free GitHub Linux job within twenty minutes. Review the
+> full locked CPU library/API and one-shot activation contract first; source
+> inspection is not a compile result. Real-weight CPU, all-row non-Apple
+> closure and final clean-HEAD/packet requirements remain, with Scaleway last.
+
+> **2026-10-16 JST actual CPU admission scope:** the
+> [105-package original-evidence binding](kyutai-candle-current-cpu-evidence-2026-10-16.md)
+> distinguishes 90 registry, fourteen modified path parents and one Moshi
+> source, with exact license/root/feature evidence. Next obtain the specific
+> upstream build/proc-macro execution scope and validate the full locked CPU
+> library/API path, not only standalone syntax. Source/license/native/operator,
+> independent real-weight CPU and final clean-HEAD/packet obligations remain;
+> current audit-only permission does not authorize the next compiler run.
+
+> **2026-10-16 JST static macro frontier:** [fixed-source evidence](kyutai-candle-paste-macro-readback-2026-10-16.md)
+> defines cross-crate alias and Metal type-position compatibility cases;
+> no parent is dropped because a literal scan has zero hits. Compilation
+> and upstream-code execution still require their exact prerequisite scope.
+> Full non-Apple/real-weight/final-packet obligations remain unchanged, with
+> Scaleway and publication later.
+
+> **2026-10-16 JST actual fixed-DB advisory acceptance:** [run 38765578560](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> succeeds with independently checked original bytes: registry137 native
+> zero findings plus source-absent parents16/workspace1 supplemental coverage.
+> Next close compatibility/source/license/native/operator prerequisites;
+> independent full-PCM/authorized real-weight CPU and final clean-HEAD/fresh
+> packets remain distinct unfinished steps. Scaleway/publication stay later.
+
+> **2026-10-16 JST advisory coverage correction:** the
+> [pinned-source review and narrow authorization](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> require a genuine registry audit plus conservative fixed-database coverage
+> of all source-absent identities. A 154-record count is not query coverage.
+> Review the additive implementation/tests before actual hosted execution;
+> no applied-lock result, model, paid-worker, owner, Apple or publication
+> approval is inferred. Full non-Apple/real-weight/final-packet gates remain.
+
+> **2026-10-16 JST actual source application:** [Candle run 38758745134](kyutai-candle-paste-application-result-2026-10-16.md)
+> succeeds and its eight original evidence files pass independent lock/raw
+> metadata/source-proof comparison. Next bind strict advisory to that actual
+> producer and prove path-parent coverage; metadata success is not a new
+> security, compatibility or model verdict. Full non-Apple, authorized
+> real-weight CPU and final clean-HEAD/fresh Apple packets remain the step-4
+> objective, with Scaleway/publication still later.
+
+> **2026-10-15 exact source supplement:** reuse the [authenticated sixteen-parent/three-update inputs](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+> rather than repeating the source capture. Prepare the narrow manifest-only
+> alias plan, then independently authenticate actual application, complete
+> dependency/metadata delta and a new strict audit. Collection and the known
+> old-tool retention gap do not close compatibility/legal/operator or model
+> gates. Full all-row non-Apple, real-weight CPU and final clean-HEAD/fresh
+> packets remain the original step-4 objective; Scaleway stays last.
+
+> **2026-10-15 actual candidate advisory:** the [authenticated 154-record audit](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> returns rc 1 / `FAIL_FINDINGS`: zero vulnerabilities and one paste warning
+> at the fixed DB, down from five original findings. Resolve genuine
+> replacement compatibility/source scope next; do not retry unchanged or
+> weaken warnings. Full all-row non-Apple, authorized real-weight CPU and
+> final clean-HEAD/fresh packet requirements remain incomplete; Scaleway last.
+
+> **2026-10-15 corrected source-only resolution:** the [actual thirteen-file
+> result](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+> is independently verified, including the complete 161-to-154 lock delta and
+> unchanged 105-package CPU universe. Next audit this exact candidate and
+> resolve genuine paste compatibility/source scope. Do not substitute this
+> success for any full non-Apple, real-weight CPU or final-packet gate;
+> Scaleway remains last and no publication is inferred.
+
+> **2026-10-15 actual pin-attempt cause:** the [recovered attempt](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+> identifies an unnecessary fourth update after anyhow removes backtrace and
+> adler. Correct the command plan from that evidence, recover the complete
+> candidate lock/CPU/whole metadata and perform a new strict audit. The failed
+> original remains failed; full non-Apple, real-weight CPU and final packet
+> requirements remain unchanged, with Scaleway last.
+
+> **2026-10-15 source-only remediation preparation:** use the
+> [reviewed four-pin diagnostic](kyutai-candle-pin-remediation-2026-10-15.md)
+> for the next actual hosted dependency-resolution attempt. Offline tests,
+> real metadata sizing and [pastey primary-source facts](kyutai-candle-pastey-source-readback-2026-10-15.md)
+> do not close the five findings, macro/API/license/operator scope or real
+> CPU parity. Preserve all non-Apple prerequisites and final clean-HEAD/fresh
+> packet gates; Scaleway and publication are not authorized by this record.
+
+> **08:28:45 UTC source acceptance / actual audit (2026-10-15):** #254 is
+> normally accepted as clean main `7701cc67` after 72 checks (71 success/one
+> intentional skip), all 16 required context/app pairs and ten workflows.
+> The separate [strict Candle result](kyutai-candle-source-advisory-result-2026-10-15.md)
+> authenticates its inputs and records one vulnerability/four warnings.
+> Remediate those exact reference dependencies, preserve the failed receipt
+> and obtain new evidence for changed inputs; do not weaken deny warnings or
+> infer owner/model approval. All-row non-Apple closure, authorized real-weight
+> CPU and final clean-HEAD/fresh Apple packets remain the original step-4
+> objective. Scaleway/publication stay later; prior dated notes are preserved.
+
 > **06:34:34 UTC acceptance (2026-10-15):** reviewed #251 is normally merged
 > as main `1d863280` after 70 successful checks, one intentional skip and ten
 > successful workflows. The [subsequent primary-archive facts](kyutai-candle-primary-archive-facts-2026-10-15.md)

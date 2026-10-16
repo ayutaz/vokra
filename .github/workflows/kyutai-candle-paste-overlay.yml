@@ -1,0 +1,82 @@
+name: kyutai-candle-paste-overlay
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/kyutai-candle-paste-overlay.yml"
+      - "tools/parity/kyutai_candle_reference/prepare_paste_overlay.py"
+      - "tools/parity/kyutai_candle_reference/test_prepare_paste_overlay.py"
+      - "docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json"
+      - "docs/handoff/kyutai-candle-pastey-source-2026-10-15.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kyutai-candle-paste-overlay-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  paste-overlay-plan:
+    name: pure offline manifest overlay plan (not application/parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout bounded source receipts and planner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/kyutai-candle-paste-overlay.yml
+            tools/parity/kyutai_candle_reference/prepare_paste_overlay.py
+            tools/parity/kyutai_candle_reference/test_prepare_paste_overlay.py
+            docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json
+            docs/handoff/kyutai-candle-pastey-source-2026-10-15.json
+          sparse-checkout-cone-mode: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.8.17"
+
+      - name: Install Python 3.12 for stdlib checks
+        run: uv python install 3.12
+
+      - name: Run offline planner self-tests
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+        run: |
+          set -euo pipefail
+          uv run --no-project --offline --python 3.12 python -m unittest discover \
+            -s tools/parity/kyutai_candle_reference \
+            -p test_prepare_paste_overlay.py -v
+
+      - name: Generate pure offline manifest overlay plan
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+        run: |
+          set -euo pipefail
+          plan_root="$RUNNER_TEMP/vokra-candle-paste-overlay-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          plan="$plan_root/paste-overlay-plan.json"
+          test ! -e "$plan_root"
+          mkdir -p "$plan_root"
+          test ! -e "$plan"
+          uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/prepare_paste_overlay.py \
+            --output "$plan"
+          test -f "$plan"
+          test "$(wc -c < "$plan")" -le 2097152
+
+      - name: Upload bounded plan-only evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kyutai-candle-paste-overlay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vokra-candle-paste-overlay-${{ github.run_id }}-${{ github.run_attempt }}/paste-overlay-plan.json
+          if-no-files-found: error
+          retention-days: 1

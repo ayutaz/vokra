@@ -1,5 +1,113 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 model-free confirmation:** the [actual Candle job](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> passes CPU library/API compatibility. No public model row is promoted by
+> this compiler result; 58 metadata-non-full rows, code-full execution duties,
+> owner/legal, independent real PCM, real-weight CPU and final Apple remain.
+
+> **2026-10-16 fresh metadata readback:** the [six-stage execution record](goal6-execution-readback-2026-10-16.md)
+> retains the complete recovered TSV, byte-identical to the 10/14 inventory:
+> 194 repositories, 136 code/artifact-full and 58 non-full. No row is promoted
+> to real-weight CPU or Apple pass. The frozen owner packet and historical
+> evidence below remain unchanged; Scaleway is still the final compute stage.
+
+> **2026-10-16 JST actual CPU attempt:** the
+> [original receipt/native streams](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+> prove full-library build success, not overall compatibility: the final
+> API probe fails on an omitted host dependency search path. Its correction
+> has offline regression evidence only; another actual job needs new bounded
+> authority. No row/count, owner, real-weight or Apple/final-packet promotion.
+
+> **2026-10-16 JST bounded compatibility authorization:** the
+> [new preparation scope](kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
+> permits one model-free Linux compiler job, not a passed compatibility or
+> model result. Review the actual CPU105/feature/source-bound implementation
+> and synthetic evidence before activation. Full non-Apple/real-weight/final
+> packet and owner/legal obligations remain; no row/count changes.
+
+> **2026-10-16 JST current CPU evidence binding:** the
+> [fresh original-byte readback](kyutai-candle-current-cpu-evidence-2026-10-16.md)
+> maps CPU105 to registry90/path14/workspace1, reuses the exact 65 captured
+> license-body hashes and authenticates the 14 build/10 proc-macro roots.
+> Changed identity/provenance and native effects remain explicit. Full CPU
+> compatibility/execution authority, legal/operator, real-weight and final
+> Apple-packet gates remain; no row/count or owner disposition advances.
+
+> **2026-10-16 JST static macro frontier:** [twelve fixed source members](kyutai-candle-paste-macro-readback-2026-10-16.md)
+> match archived hashes and prove indirect gemm-c32/c64 expansion plus Metal
+> type-position usage. Zero direct text hits do not remove aliases or prove
+> compatibility. Compiler/native/operator, independent real-weight CPU and
+> final Apple-packet gates remain; no inventory/disposition changes follow.
+
+> **2026-10-16 JST actual fixed-DB advisory acceptance:** the
+> [original applied-lock result](kyutai-candle-applied-advisory-result-2026-10-16.md)
+> authenticates native registry137 with zero vulnerabilities/warnings and
+> supplemental parents16/workspace1 at the same DB. Seventeen post-download
+> tests pass without skips. Compatibility/license/owner/real-weight/final
+> packet and Apple gates remain; no inventory or frozen disposition changes.
+
+> **2026-10-16 JST advisory coverage correction:** [pinned primary sources](kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+> prove that ordinary cargo-audit skips source-absent records. Account for
+> registry137, modified parents16 and workspace1 separately using the same
+> authenticated database. The narrow audit/CI work is authorized, not yet an
+> executed applied-lock PASS or model/owner/Apple/publication approval.
+> No inventory count, frozen disposition or full step-4 exit gate changes.
+
+> **2026-10-16 JST actual source application:** [Candle's eight-file result](kyutai-candle-paste-application-result-2026-10-16.md)
+> is independently recovered and checked at `89fbbc51`: exact sixteen path
+> parents plus registry pastey, 137 unchanged full lock records, raw CPU105 /
+> whole154 and authenticated source-proof metadata. Strict advisory coverage,
+> compatibility/owner, real-weight CPU and final packets remain unproved.
+> No inventory row/count or frozen owner disposition is changed.
+
+> **2026-10-15 exact source supplement:** the [sixteen paste parents and three updated registry packages](kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+> are authenticated as source-collection facts, with the first partial result
+> retained and only two missing Metal archives fetched afterward. Preserve
+> the documented tool-retention gap and owner/execution boundaries. The next
+> manifest-only overlay/application/strict-audit gates are not yet complete;
+> no public row, real-weight CPU or final Apple packet is promoted.
+
+> **2026-10-15 actual candidate advisory:** the [154-record report](kyutai-candle-candidate-advisory-result-2026-10-15.md)
+> is independently recovered and authenticated: rc 1 / `FAIL_FINDINGS`,
+> zero vulnerabilities and one paste unmaintained warning at the fixed DB.
+> Four original findings no longer occur; genuine paste replacement and
+> compatibility are next, without waivers or a reduced audit universe.
+> No inventory row, owner, real-weight CPU or final Apple-packet gate advances.
+
+> **2026-10-15 corrected source-only resolution:** [run 38711006458](kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+> succeeds and all thirteen files are recovered. Independent full-record
+> comparison proves 161-to-154 whole lock, 151 unchanged retained records,
+> three precise version changes and seven removed anyhow-chain packages.
+> CPU remains 105; strict candidate advisory and paste replacement are next,
+> not model/owner/real-weight/Apple or final-packet completion.
+
+> **2026-10-15 actual pin-attempt cause:** [run 38709911065](kyutai-candle-pin-remediation-2026-10-15.md#actual-first-attempt-removed-package-is-not-an-update-target)
+> completes three updates; anyhow removes the old adler/backtrace chain, so
+> the fourth update targets a package no longer present and fails. The
+> original report and ten produced files are recovered. Require a corrected
+> three-update attempt, complete raw candidate graph and fresh strict audit;
+> no finding, inventory row, owner or CPU/Apple gate is promoted from logs.
+
+> **2026-10-15 source-only remediation preparation:** the
+> [four-pin diagnostic](kyutai-candle-pin-remediation-2026-10-15.md) passes
+> independently replayed offline tests and actual recovered-data sizing, not
+> a new hosted solver or security verdict. The
+> [pastey archive/license facts](kyutai-candle-pastey-source-readback-2026-10-15.md)
+> do not establish macro compatibility or execution approval. All five
+> original findings, draft #255 and full non-Apple/real-weight/final-packet
+> gates remain open. No inventory refresh or model-row promotion follows.
+
+> **08:28:45 UTC acceptance / separate actual audit (2026-10-15):** #254 is
+> normally merged as main `7701cc67` after 71 successful checks, one intentional
+> skip, all 16 required context/app pairs and ten successful workflows. The
+> [actual Candle audit](kyutai-candle-source-advisory-result-2026-10-15.md)
+> returns authenticated `FAIL_FINDINGS` (one vulnerability/four warnings),
+> not a new row promotion. Resolve the exact dependency graph without warning
+> waivers or changing the 161-record audit into the 105-package CPU graph.
+> No fresh live inventory, owner/legal decision, real-weight CPU or final
+> Apple packet is proved. The full non-Apple scope and frozen owner packet
+> remain unchanged; the earlier snapshots below keep their dated boundaries.
+
 > **06:34:34 UTC acceptance (2026-10-15):** #251 is normally accepted as
 > main `1d863280` after all 71 checks and ten workflows completed successfully
 > (one intentional check skip). The subsequent [104-archive collection](kyutai-candle-primary-archive-facts-2026-10-15.md)

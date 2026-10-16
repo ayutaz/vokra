@@ -1,5 +1,166 @@
 # Vokra documentation
 
+**2026-10-16 actual CPU/API confirmation:** [run 38885265971 and independent recovery](handoff/kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+pass the full CPU library and uncalled API probe at exact `9b58b64f`,
+with all seventeen Linux fixture tests and no skips. This closes only the
+model-free compatibility stage. Ordinary PR CI/acceptance is pending;
+non-Apple row/license/operator/reference, real-weight CPU, final packet and
+Apple CPU/Metal/no-fallback remain open. Earlier preparation snapshots below
+retain their original unrun/failed boundaries.
+
+**2026-10-16 six-stage continuation:** the [current execution readback](handoff/goal6-execution-readback-2026-10-16.md)
+preserves the full non-Apple/real-weight/final-packet/Apple/result objective.
+A fresh metadata-only retrieval reproduces the exact dated 194-row inventory
+hash and 136 full / 58 non-full classification, not hardware validation.
+The first Candle library build succeeds but its API harness fails; a
+corrected, separately authorized confirmation remains unrun. Historical
+audit routing and a timing-sensitive regression are under review, #255 is
+draft, and no owner/legal, real-weight or Apple gate advances.
+
+**CPU compatibility attempt reviewed (2026-10-16 JST):** the
+[original result and cause](handoff/kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+prove a successful full CPU library build, but the final API harness fails
+on its missing host proc-macro search path. The reviewed correction is
+offline-tested, not rerun. The one-job permission is consumed; PR #255 stays
+draft and model/owner/real-weight/Apple/final-packet gates remain unfinished.
+
+**Bounded CPU compatibility authorized (2026-10-16 JST):** the
+[review/execution preparation](handoff/kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
+records one model-free GitHub Linux job, at most twenty minutes, including
+upstream build/proc-macro execution. Actual CPU105/feature/source identity,
+full-library and signature checks must be verified before any pass. No
+model, paid-worker, legal signature, Apple or publication gate advances.
+
+**Current CPU evidence rebound (2026-10-16 JST):** the
+[actual 105-package readback](handoff/kyutai-candle-current-cpu-evidence-2026-10-16.md)
+authenticates registry90/path14/workspace1, the exact retained 65-license-body
+hash set and all 24 current compiler-entry roots. Three identities change;
+fourteen retained name/version identities have modified path provenance.
+This closes factual reuse, not upstream-code execution/compatibility,
+legal/operator, real-weight CPU or final-packet gates. The next full CPU
+build scope needs its specific execution authority; Scaleway remains last.
+
+**Static macro frontier (2026-10-16 JST):** the
+[fixed-source readback](handoff/kyutai-candle-paste-macro-readback-2026-10-16.md)
+proves that zero direct paste hits do not make gemm-c32/c64 independent:
+both versions reach paste through exported gemm-common macros. Metal uses
+type-position expansion. Twelve selected source files match archive hashes;
+entry-point names are present in pastey, but compilation/compatibility is
+not run or approved. No parent alias, owner/model gate or final-packet scope
+is removed on the basis of a text scan.
+
+**Actual applied-lock advisory accepted (2026-10-16 JST):**
+[run 38765578560 and original report](handoff/kyutai-candle-applied-advisory-result-2026-10-16.md)
+prove zero native vulnerabilities/warnings for registry137 at the fixed DB,
+plus explicit same-database absence coverage of parents16/workspace1.
+All seventeen post-download tests pass without skips. This is not generic
+security, compatibility, legal/owner, real-weight CPU or Apple completion;
+PR #255 remains draft and the full step-4/final-packet obligations remain.
+
+**Applied-lock coverage correction (2026-10-16 JST):** the
+[pinned-auditor primary-source review](handoff/kyutai-candle-applied-advisory-preparation-2026-10-16.md)
+proves that ordinary cargo-audit skips source-absent records. The actual lock
+contains 137 registry packages, sixteen modified path parents and one Moshi
+workspace package. Prepare explicit same-database supplemental accounting;
+154 parsed records alone cannot prove coverage. The narrow audit/CI work is
+now authorized, but has not yet produced an applied-lock audit result. Model,
+paid-worker, owner/legal, Apple and publication gates remain unchanged.
+
+**Actual Candle application accepted (2026-10-16 JST):** the
+[successful source-only run and eight-file recovery](handoff/kyutai-candle-paste-application-result-2026-10-16.md)
+prove the sixteen path-parent transitions plus registry pastey, with 137
+unchanged complete lock records and independently checked CPU/whole raw
+graphs. This is not a strict security, package/macro, owner or model verdict.
+Verify full advisory coverage next; all non-Apple, real-weight CPU and final
+clean-HEAD/fresh Apple-packet obligations remain open. PR #255 stays draft.
+
+**Candle offline regression acceptance (2026-10-16 JST):** root independently
+passes all ten tests at the [reviewed application candidate](handoff/kyutai-candle-paste-application-preparation-2026-10-15.md#2026-10-16-jst-independent-offline-acceptance-of-finalization-regressions),
+including final-write failure, late operation-cutoff recovery and seven root
+overlap cases. This supersedes the missing local regressions below, not actual
+hosted source application, strict advisory, package/macro compatibility,
+owner approval, real-weight CPU or final Apple packets. No model work,
+network/provider activity or safety-rule changes occur in this continuation.
+
+**Candle application review (2026-10-15):** the [source-only preparation record](handoff/kyutai-candle-paste-application-preparation-2026-10-15.md)
+separates root's eight passing offline orchestration tests from the subsequent
+late-finalization correction and still-pending causal regressions. A test-file
+read is refused by the safety hook; no guard bypass or alternate execution
+follows. The application implementation is not committed/published or accepted
+as an actual hosted run. PR #255 remains draft; full non-Apple prerequisites,
+authorized real-weight CPU and final clean-HEAD Apple packets are incomplete.
+
+**Actual hosted plan / dependency acceptance (2026-10-15):** the
+[planner result and #256 readback](handoff/kyutai-candle-paste-overlay-preparation-2026-10-15.md#actual-hosted-plan-and-independent-recovered-data-acceptance)
+authenticates the actual sixteen-parent plan and 292 unchanged-member
+requirements, not source application or compatibility. Misaki's one-record
+urllib3 update is normally merged after 70 successful checks and one
+intentional skip; local main is clean `f8d859dc`. #255 stays draft, and the
+full non-Apple, real-weight CPU and final-packet gates remain incomplete.
+
+**Manifest-overlay preparation (2026-10-15):** the
+[reviewed offline planner](handoff/kyutai-candle-paste-overlay-preparation-2026-10-15.md)
+passes six independent stdlib tests against the authenticated sixteen-parent
+receipts. Direct local CLI execution is refused and not worked around;
+actual plan generation/recovery is assigned to hosted CI. No overlay is
+applied, no macro compatibility or clean security audit is claimed, and the
+full non-Apple/real-weight/final-packet objective remains incomplete.
+
+**Exact missing source inputs recovered (2026-10-15):** the
+[sixteen-parent and three-updated-package readback](handoff/kyutai-candle-paste-parent-source-readback-2026-10-15.md)
+records authenticated manifests/licenses/source inventories, a retained
+fourteen-parent partial result and a successful two-Metal-only supplement.
+An old-tool snapshot retention gap remains explicit. Next prepare the
+manifest-only pastey overlay and independently verify its actual application;
+collection is not compatibility, legal/operator, real-weight or Apple approval.
+
+**Actual candidate advisory result (2026-10-15):** the
+[recovered 154-record strict audit](handoff/kyutai-candle-candidate-advisory-result-2026-10-15.md)
+returns `FAIL_FINDINGS` / rc 1: zero reported vulnerabilities and one
+`paste 1.0.15` unmaintained warning at the same fixed database. All thirteen
+producer inputs and native output are independently rehashed; four prior
+findings no longer occur. Genuine replacement compatibility remains next,
+not an unchanged retry, warning waiver or model/owner/Apple promotion.
+PR #255 stays draft; full non-Apple/real-weight/final-packet gates remain open.
+
+**Exact candidate advisory preparation (2026-10-15):** the
+[new fixed 154-record profile](handoff/kyutai-candle-candidate-advisory-preparation-2026-10-15.md)
+preserves the old 161-record contract and strict warning policy. Manager
+passes twelve legacy and nine candidate tests, including the real recovered
+artifact. The new hosted audit and its actual result remain next; no fresh
+security, macro/API, owner or model verdict is inferred.
+
+**Corrected dependency resolution succeeds (2026-10-15):** the
+[actual corrected diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md#corrected-actual-resolution-and-independent-acceptance)
+produces all thirteen evidence files. Manager independently verifies the
+161-to-154 whole-lock change, 151 identical retained records, three exact
+updates and removal of the seven old anyhow-chain packages. CPU metadata
+still has 105 packages; memmap and paste records remain unchanged. The
+first failed attempt is retained. A fresh strict candidate audit and genuine
+paste replacement remain next; no model-row, owner, CPU/Apple or publication
+gate advances.
+
+**Source-only remediation preparation (2026-10-15):** the
+[four-pin diagnostic](handoff/kyutai-candle-pin-remediation-2026-10-15.md)
+passes 57 independently replayed offline tests, including actual recovered
+metadata sizing. Its hosted dependency resolution is not yet measured.
+The [pastey primary archive](handoff/kyutai-candle-pastey-source-readback-2026-10-15.md)
+and bundled license bytes are authenticated, not macro/API compatibility or
+execution approval. The original five findings and draft #255 remain open;
+real-weight CPU and final Apple packets are unfinished.
+
+**08:28:45 UTC acceptance and actual reference audit (2026-10-15):**
+PR #254 is normally merged as main `7701cc67` after all 72 checks completed
+(71 success, one intentional skip), all 16 required context/application pairs
+and all ten started workflows succeeded. Local main is synchronized and clean.
+The separate [actual Candle source-lock audit](handoff/kyutai-candle-source-advisory-result-2026-10-15.md)
+authenticates its inputs and returns `FAIL_FINDINGS`: one vulnerability and
+four warnings. This is an external reference dependency scope, not new runtime
+dependencies. Remediate the exact dependency graph and retained findings;
+do not ignore warnings, restamp old receipts or infer model/Apple approval.
+PR #255 remains draft. The full non-Apple, real-weight CPU and final packet
+exit gates remain incomplete; earlier candidate notes below are historical.
+
 **Six-scope dependency candidate (2026-10-15):** DFN3, DAC, OWSM,
 Baichuan inspection, ChatTTS and VibeVoice 1.5B use the reviewed urllib3
 2.8.0 record while preserving all unrelated records and markers. See the

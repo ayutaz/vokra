@@ -1,0 +1,132 @@
+name: kyutai-candle-candidate-advisory
+
+# The historical candidate producer is retained for evidence recovery and
+# manual reruns. Its fixed pre-application diagnostic is not a current PR
+# gate; the applied profile is the current pull-request audit.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: kyutai-candle-candidate-advisory
+  cancel-in-progress: true
+
+jobs:
+  candidate-advisory:
+    name: source-only Candle candidate advisory evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout bounded first-party wrapper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/kyutai-candle-candidate-advisory.yml
+            .github/workflows/kyutai-candle-source-advisory.yml
+            .github/workflows/kyutai-candle-applied-advisory.yml
+            tools/parity/kyutai_candle_reference/audit_lock.py
+            tools/parity/kyutai_candle_reference/test_audit_lock.py
+            tools/parity/kyutai_candle_reference/test_candidate_audit_lock.py
+          sparse-checkout-cone-mode: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.8.17"
+
+      - name: Install Python 3.12 for stdlib checks
+        run: uv python install 3.12
+
+      - name: Run bounded wrapper self-tests
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+        run: |
+          set -euo pipefail
+          uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/test_audit_lock.py --self-test
+          uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/test_candidate_audit_lock.py
+
+      - name: Download exact candidate producer artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: "11961100426"
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 38711006458
+          path: ${{ runner.temp }}/vokra-candle-candidate-advisory-artifact
+          digest-mismatch: error
+
+      - name: Re-run candidate artifact tests against downloaded evidence
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+          VOKRA_CANDLE_CANDIDATE_ARTIFACT_ROOT: ${{ runner.temp }}/vokra-candle-candidate-advisory-artifact
+        run: |
+          set -euo pipefail
+          uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/test_candidate_audit_lock.py
+
+      - name: Checkout pinned RustSec advisory database
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: RustSec/advisory-db
+          ref: edb58f5974b83eb8302332821cb6d389777aa351
+          fetch-depth: 1
+          path: .audit/rustsec-advisory-db
+          persist-credentials: false
+
+      - name: Install pinned cargo-audit without source-build fallback
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+
+      - name: Run source-only candidate advisory audit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+        run: |
+          set -euo pipefail
+          audit_root="$RUNNER_TEMP/vokra-candle-candidate-advisory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          audit_cwd="$RUNNER_TEMP/vokra-candle-candidate-audit-cwd-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cargo_home="$RUNNER_TEMP/vokra-candle-candidate-audit-cargo-home-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          report="$audit_root/advisory-report.json"
+          test ! -e "$audit_root"
+          mkdir -p "$audit_root" "$audit_cwd" "$cargo_home"
+          test ! -e "$audit_cwd/.cargo/audit.toml"
+          test ! -e "$cargo_home/audit.toml"
+          set +e
+          uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/audit_lock.py \
+            --profile candidate \
+            --artifact-root "$RUNNER_TEMP/vokra-candle-candidate-advisory-artifact" \
+            --db "$GITHUB_WORKSPACE/.audit/rustsec-advisory-db" \
+            --cwd "$audit_cwd" \
+            --cargo-home "$cargo_home" \
+            --output "$report" \
+            --repository "$GITHUB_REPOSITORY" \
+            --deadline-seconds 480
+          rc=$?
+          set -e
+          test -f "$report"
+          echo "candidate_advisory_wrapper_returncode=$rc"
+          exit "$rc"
+
+      - name: Upload bounded candidate advisory evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kyutai-candle-candidate-advisory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vokra-candle-candidate-advisory-${{ github.run_id }}-${{ github.run_attempt }}/advisory-report.json
+          if-no-files-found: error
+          retention-days: 1

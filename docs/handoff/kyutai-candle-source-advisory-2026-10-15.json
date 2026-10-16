@@ -1,0 +1,401 @@
+{
+  "advisory_audit": "FAIL",
+  "advisory_database": {
+    "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "no_fetch": true,
+    "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT",
+    "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+  },
+  "approval": null,
+  "artifact": {
+    "members": {
+      "base/Cargo.lock": {
+        "bytes": 39842,
+        "sha256": "eafbfd9c58c0b8aa60c4298f4df7e0187c78161a8aa898d0490a98c52faf28de"
+      },
+      "initial_metadata.json": {
+        "bytes": 898699,
+        "sha256": "904ba6da53c222ad8feda4c5a82d90dac12b9c84defa6ef081a613e7c9b4b736"
+      },
+      "metadata.json": {
+        "bytes": 324957,
+        "sha256": "99a22ac5c6ab9b34e5b21c7ceee308011ae42bf880d3c711403e9aeec1847a02"
+      },
+      "patched/Cargo.lock": {
+        "bytes": 39843,
+        "sha256": "303c49433187d5938d0f2a27d3f5ded9eb094388dd67e6702a0a8b7558eaec01"
+      },
+      "source/rust/Cargo.lock": {
+        "bytes": 150274,
+        "sha256": "bc4348116cdf1408583311954c1baaee6bde3b4cf54cd160af50b278aa4e44ab"
+      },
+      "source_receipt.json": {
+        "bytes": 8320,
+        "sha256": "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"
+      },
+      "whole_lock_metadata.json": {
+        "bytes": 1264493,
+        "sha256": "61982123e29c2d51f3147d1b2a4755252da4b040ccae741a42c42d594a220e00"
+      }
+    },
+    "total_bytes": 2726428
+  },
+  "audit": {
+    "classification": "FAIL_FINDINGS",
+    "command": {
+      "argv": [
+        "/home/runner/.cargo/bin/cargo-audit",
+        "audit",
+        "--file",
+        "/home/runner/work/_temp/vokra-candle-source-advisory-artifact/patched/Cargo.lock",
+        "--db",
+        "/home/runner/work/vokra/vokra/.audit/rustsec-advisory-db",
+        "--no-fetch",
+        "--no-yanked",
+        "--quiet",
+        "--json",
+        "--deny",
+        "warnings"
+      ],
+      "returncode": 1,
+      "stderr": "",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_truncated": false,
+      "stdout": "{\"database\":{\"advisory-count\":1329,\"last-commit\":null,\"last-updated\":null},\"lockfile\":{\"dependency-count\":161},\"settings\":{\"target_arch\":[],\"target_os\":[],\"severity\":null,\"ignore\":[],\"informational_warnings\":[\"unmaintained\",\"unsound\",\"notice\"]},\"vulnerabilities\":{\"found\":true,\"count\":1,\"list\":[{\"advisory\":{\"id\":\"RUSTSEC-2026-0204\",\"package\":\"crossbeam-epoch\",\"title\":\"Invalid pointer dereference in `fmt::Pointer` impl for `Atomic` and `Shared` when the underlying pointer is invalid\",\"description\":\"Affected versions of `fmt::Display` dereference the underlying pointer. This causes a invalid pointer dereference e.g., when a pointer created with `Atomic::null` or `Shared::null`. `fmt::Debug` impls and pre-0.9 `fmt::Display` impls, which do not dereference pointers, are not affected by this issue.\",\"date\":\"2026-07-06\",\"aliases\":[],\"related\":[],\"collection\":\"crates\",\"categories\":[],\"keywords\":[\"NULL-pointer-dereference\"],\"cvss\":null,\"informational\":null,\"references\":[],\"source\":null,\"url\":\"https://github.com/crossbeam-rs/crossbeam/pull/1276\",\"withdrawn\":null,\"license\":\"CC0-1.0\",\"expect-deleted\":false},\"versions\":{\"patched\":[\">=0.9.20\"],\"unaffected\":[\"<0.9.0\"]},\"affected\":null,\"package\":{\"name\":\"crossbeam-epoch\",\"version\":\"0.9.18\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"checksum\":\"5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e\",\"dependencies\":[{\"name\":\"crossbeam-utils\",\"version\":\"0.8.21\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\"}],\"replace\":null}}]},\"warnings\":{\"unmaintained\":[{\"kind\":\"unmaintained\",\"package\":{\"name\":\"adler\",\"version\":\"1.0.2\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"checksum\":\"f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe\",\"replace\":null},\"advisory\":{\"id\":\"RUSTSEC-2025-0056\",\"package\":\"adler\",\"title\":\"adler crate is unmaintained, use adler2 instead\",\"description\":\"The `adler` crate is no longer actively maintained. If you rely on this crate, consider switching to a maintained alternative.\\n\\n## Recommended alternatives\\n\\n- [`adler2`](https://crates.io/crates/adler2)\",\"date\":\"2025-09-05\",\"aliases\":[],\"related\":[],\"collection\":\"crates\",\"categories\":[],\"keywords\":[],\"cvss\":null,\"informational\":\"unmaintained\",\"references\":[],\"source\":null,\"url\":\"https://github.com/jonas-schievink/adler\",\"withdrawn\":null,\"license\":\"CC0-1.0\",\"expect-deleted\":false},\"affected\":null,\"versions\":{\"patched\":[],\"unaffected\":[]}},{\"kind\":\"unmaintained\",\"package\":{\"name\":\"paste\",\"version\":\"1.0.15\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"checksum\":\"57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a\",\"replace\":null},\"advisory\":{\"id\":\"RUSTSEC-2024-0436\",\"package\":\"paste\",\"title\":\"paste - no longer maintained\",\"description\":\"The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \\nthat this project is not longer maintained as well as archived the repository\\n\\n## Possible Alternative(s)\\n\\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\\n\\n[`pastey`]: https://crates.io/crates/pastey\\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros\",\"date\":\"2024-10-07\",\"aliases\":[],\"related\":[],\"collection\":\"crates\",\"categories\":[],\"keywords\":[],\"cvss\":null,\"informational\":\"unmaintained\",\"references\":[],\"source\":null,\"url\":\"https://github.com/dtolnay/paste\",\"withdrawn\":null,\"license\":\"CC0-1.0\",\"expect-deleted\":false},\"affected\":null,\"versions\":{\"patched\":[],\"unaffected\":[]}}],\"unsound\":[{\"kind\":\"unsound\",\"package\":{\"name\":\"anyhow\",\"version\":\"1.0.98\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"checksum\":\"e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487\",\"dependencies\":[{\"name\":\"backtrace\",\"version\":\"0.3.71\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\"}],\"replace\":null},\"advisory\":{\"id\":\"RUSTSEC-2026-0190\",\"package\":\"anyhow\",\"title\":\"Unsoundness in `Error::downcast_mut()`\",\"description\":\"Affected versions of this crate violate borrow rules, resulting in undefined behavior, when the user adds context to an error via `Error::context` and then later calls `Error::downcast_mut` on the returned `Error`.\\n\\nThe flaw was corrected in commit `6e8c000` by revising how the mutable reference is constructed, avoiding inclusion of a shared reference in the resulting borrow chain.\\n\\n## Example\\n\\n```rust\\nuse anyhow::Error;\\nuse std::fmt;\\n\\n#[derive(Debug)]\\nstruct ErrorContext(&'static str);\\n\\nimpl fmt::Display for ErrorContext {\\n    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\\n        fmt::Display::fmt(&self.0, f)\\n    }\\n}\\n\\nfn main() {\\n    let mut error = Error::msg(\\\"inner error\\\").context(ErrorContext(\\\"old context\\\"));\\n    let context: &mut ErrorContext = error.downcast_mut().unwrap();\\n    context.0 = \\\"new context\\\";\\n    println!(\\\"{:?}\\\", error);\\n}\\n```\\n\\n## Miri output\\n\\n```\\nerror: Undefined Behavior: trying to retag from <1538> for Unique permission at alloc602[0x38], but that tag only grants SharedReadOnly permission for this location\\n   --> src/ptr.rs:170:18\\n    |\\n170 |         unsafe { &mut *self.ptr.as_ptr() }\\n    |                  ^^^^^^^^^^^^^^^^^^^^^^^ this error occurs as part of retag at alloc602[0x38..0x48]\\n    |\\n    = help: this indicates a potential bug in the program: it performed an invalid operation, but the Stacked Borrows rules it violated are still experimental\\n    = help: see https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md for further information\\nhelp: <1538> was created by a SharedReadOnly retag at offsets [0x38..0x48]\\n   --> src/ptr.rs:89:18\\n    |\\n 89 |             ptr: NonNull::from(ptr),\\n    |                  ^^^^^^^^^^^^^^^^^^\\n    = note: stack backtrace:\\n            0: anyhow::ptr::Mut::<'_, ErrorContext>::deref_mut\\n                at src/ptr.rs:170:18: 170:41\\n            1: anyhow::error::<impl anyhow::Error>::downcast_mut::<ErrorContext>\\n                at src/error.rs:560:18: 560:46\\n            2: main\\n                at examples/downcast_mut.rs:15:38: 15:58\\n```\",\"date\":\"2026-06-25\",\"aliases\":[],\"related\":[],\"collection\":\"crates\",\"categories\":[\"memory-corruption\"],\"keywords\":[\"unsound\",\"downcast_mut\"],\"cvss\":null,\"informational\":\"unsound\",\"references\":[],\"source\":null,\"url\":\"https://github.com/dtolnay/anyhow/issues/451\",\"withdrawn\":null,\"license\":\"CC0-1.0\",\"expect-deleted\":false},\"affected\":{\"arch\":[],\"os\":[],\"functions\":{\"anyhow::Error::downcast_mut\":[\"<1.0.103\"]}},\"versions\":{\"patched\":[\">=1.0.103\"],\"unaffected\":[]}},{\"kind\":\"unsound\",\"package\":{\"name\":\"rand\",\"version\":\"0.9.0\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"checksum\":\"3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94\",\"dependencies\":[{\"name\":\"rand_chacha\",\"version\":\"0.9.0\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\"},{\"name\":\"rand_core\",\"version\":\"0.9.3\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\"},{\"name\":\"zerocopy\",\"version\":\"0.8.24\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\"}],\"replace\":null},\"advisory\":{\"id\":\"RUSTSEC-2026-0097\",\"package\":\"rand\",\"title\":\"Rand is unsound with a custom logger using `rand::rng()`\",\"description\":\"It has been reported (by [@lopopolo](https://github.com/lopopolo)) that the `rand` library is [unsound](https://rust-lang.github.io/unsafe-code-guidelines/glossary.html#soundness-of-code--of-a-library) (i.e. that safe code using the public API can cause Undefined Behaviour) when all the following conditions are met:\\n\\n- The `log` and `thread_rng` features are enabled\\n- A [custom logger](https://docs.rs/log/latest/log/#implementing-a-logger) is defined\\n- The custom logger accesses `rand::rng()` (previously `rand::thread_rng()`) and calls any `TryRng` (previously `RngCore`) methods on `ThreadRng`\\n- The `ThreadRng` (attempts to) reseed while called from the custom logger (this happens every 64 kB of generated data)\\n- Trace-level logging is enabled or warn-level logging is enabled and the random source (the `getrandom` crate) is unable to provide a new seed\\n\\n`TryRng` (previously `RngCore`) methods for `ThreadRng` use `unsafe` code to cast `*mut BlockRng<ReseedingCore>` to `&mut BlockRng<ReseedingCore>`. When all the above conditions are met this results in an aliased mutable reference, violating the Stacked Borrows rules. Miri is able to detect this violation in sample code. Since construction of [aliased mutable references is Undefined Behaviour](https://doc.rust-lang.org/stable/nomicon/references.html), the behaviour of optimized builds is hard to predict.\",\"date\":\"2026-04-09\",\"aliases\":[\"GHSA-cq8v-f236-94qc\"],\"related\":[],\"collection\":\"crates\",\"categories\":[],\"keywords\":[],\"cvss\":null,\"informational\":\"unsound\",\"references\":[],\"source\":null,\"url\":\"https://github.com/rust-random/rand/pull/1763\",\"withdrawn\":null,\"license\":\"CC0-1.0\",\"expect-deleted\":false},\"affected\":{\"arch\":[],\"os\":[],\"functions\":{\"rand::rng\":[\">=0.9.0\"],\"rand::thread_rng\":[\"<0.10.0, >=0.7.0\"]}},\"versions\":{\"patched\":[\">=0.10.1\",\"<0.10.0, >=0.9.3\",\"<0.9.0, >=0.8.6\"],\"unaffected\":[\"<0.7.0\"]}}]}}\n",
+      "stdout_bytes": 9521,
+      "stdout_sha256": "a4e7d8bdb191f362ef352d7ad24c125baa3f0bf6688f91824056c822b8f8b66e",
+      "stdout_truncated": false,
+      "timed_out": false
+    },
+    "git_after": {
+      "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+      "tracked_untracked_status": "clean",
+      "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+    },
+    "git_before": {
+      "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+      "tracked_untracked_status": "clean",
+      "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+    },
+    "report": {
+      "database": {
+        "advisory-count": 1329,
+        "last-commit": null,
+        "last-updated": null
+      },
+      "lockfile": {
+        "dependency-count": 161
+      },
+      "settings": {
+        "ignore": [],
+        "informational_warnings": [
+          "unmaintained",
+          "unsound",
+          "notice"
+        ],
+        "severity": null,
+        "target_arch": [],
+        "target_os": []
+      },
+      "vulnerabilities": {
+        "count": 1,
+        "found": true,
+        "list": [
+          {
+            "advisory": {
+              "aliases": [],
+              "categories": [],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2026-07-06",
+              "description": "Affected versions of `fmt::Display` dereference the underlying pointer. This causes a invalid pointer dereference e.g., when a pointer created with `Atomic::null` or `Shared::null`. `fmt::Debug` impls and pre-0.9 `fmt::Display` impls, which do not dereference pointers, are not affected by this issue.",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2026-0204",
+              "informational": null,
+              "keywords": [
+                "NULL-pointer-dereference"
+              ],
+              "license": "CC0-1.0",
+              "package": "crossbeam-epoch",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "Invalid pointer dereference in `fmt::Pointer` impl for `Atomic` and `Shared` when the underlying pointer is invalid",
+              "url": "https://github.com/crossbeam-rs/crossbeam/pull/1276",
+              "withdrawn": null
+            },
+            "affected": null,
+            "package": {
+              "checksum": "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e",
+              "dependencies": [
+                {
+                  "name": "crossbeam-utils",
+                  "source": "registry+https://github.com/rust-lang/crates.io-index",
+                  "version": "0.8.21"
+                }
+              ],
+              "name": "crossbeam-epoch",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "0.9.18"
+            },
+            "versions": {
+              "patched": [
+                ">=0.9.20"
+              ],
+              "unaffected": [
+                "<0.9.0"
+              ]
+            }
+          }
+        ]
+      },
+      "warnings": {
+        "unmaintained": [
+          {
+            "advisory": {
+              "aliases": [],
+              "categories": [],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2025-09-05",
+              "description": "The `adler` crate is no longer actively maintained. If you rely on this crate, consider switching to a maintained alternative.\n\n## Recommended alternatives\n\n- [`adler2`](https://crates.io/crates/adler2)",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2025-0056",
+              "informational": "unmaintained",
+              "keywords": [],
+              "license": "CC0-1.0",
+              "package": "adler",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "adler crate is unmaintained, use adler2 instead",
+              "url": "https://github.com/jonas-schievink/adler",
+              "withdrawn": null
+            },
+            "affected": null,
+            "kind": "unmaintained",
+            "package": {
+              "checksum": "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe",
+              "name": "adler",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "1.0.2"
+            },
+            "versions": {
+              "patched": [],
+              "unaffected": []
+            }
+          },
+          {
+            "advisory": {
+              "aliases": [],
+              "categories": [],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2024-10-07",
+              "description": "The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \nthat this project is not longer maintained as well as archived the repository\n\n## Possible Alternative(s)\n\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\n\n[`pastey`]: https://crates.io/crates/pastey\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2024-0436",
+              "informational": "unmaintained",
+              "keywords": [],
+              "license": "CC0-1.0",
+              "package": "paste",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "paste - no longer maintained",
+              "url": "https://github.com/dtolnay/paste",
+              "withdrawn": null
+            },
+            "affected": null,
+            "kind": "unmaintained",
+            "package": {
+              "checksum": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
+              "name": "paste",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "1.0.15"
+            },
+            "versions": {
+              "patched": [],
+              "unaffected": []
+            }
+          }
+        ],
+        "unsound": [
+          {
+            "advisory": {
+              "aliases": [],
+              "categories": [
+                "memory-corruption"
+              ],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2026-06-25",
+              "description": "Affected versions of this crate violate borrow rules, resulting in undefined behavior, when the user adds context to an error via `Error::context` and then later calls `Error::downcast_mut` on the returned `Error`.\n\nThe flaw was corrected in commit `6e8c000` by revising how the mutable reference is constructed, avoiding inclusion of a shared reference in the resulting borrow chain.\n\n## Example\n\n```rust\nuse anyhow::Error;\nuse std::fmt;\n\n#[derive(Debug)]\nstruct ErrorContext(&'static str);\n\nimpl fmt::Display for ErrorContext {\n    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        fmt::Display::fmt(&self.0, f)\n    }\n}\n\nfn main() {\n    let mut error = Error::msg(\"inner error\").context(ErrorContext(\"old context\"));\n    let context: &mut ErrorContext = error.downcast_mut().unwrap();\n    context.0 = \"new context\";\n    println!(\"{:?}\", error);\n}\n```\n\n## Miri output\n\n```\nerror: Undefined Behavior: trying to retag from <1538> for Unique permission at alloc602[0x38], but that tag only grants SharedReadOnly permission for this location\n   --> src/ptr.rs:170:18\n    |\n170 |         unsafe { &mut *self.ptr.as_ptr() }\n    |                  ^^^^^^^^^^^^^^^^^^^^^^^ this error occurs as part of retag at alloc602[0x38..0x48]\n    |\n    = help: this indicates a potential bug in the program: it performed an invalid operation, but the Stacked Borrows rules it violated are still experimental\n    = help: see https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md for further information\nhelp: <1538> was created by a SharedReadOnly retag at offsets [0x38..0x48]\n   --> src/ptr.rs:89:18\n    |\n 89 |             ptr: NonNull::from(ptr),\n    |                  ^^^^^^^^^^^^^^^^^^\n    = note: stack backtrace:\n            0: anyhow::ptr::Mut::<'_, ErrorContext>::deref_mut\n                at src/ptr.rs:170:18: 170:41\n            1: anyhow::error::<impl anyhow::Error>::downcast_mut::<ErrorContext>\n                at src/error.rs:560:18: 560:46\n            2: main\n                at examples/downcast_mut.rs:15:38: 15:58\n```",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2026-0190",
+              "informational": "unsound",
+              "keywords": [
+                "unsound",
+                "downcast_mut"
+              ],
+              "license": "CC0-1.0",
+              "package": "anyhow",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "Unsoundness in `Error::downcast_mut()`",
+              "url": "https://github.com/dtolnay/anyhow/issues/451",
+              "withdrawn": null
+            },
+            "affected": {
+              "arch": [],
+              "functions": {
+                "anyhow::Error::downcast_mut": [
+                  "<1.0.103"
+                ]
+              },
+              "os": []
+            },
+            "kind": "unsound",
+            "package": {
+              "checksum": "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487",
+              "dependencies": [
+                {
+                  "name": "backtrace",
+                  "source": "registry+https://github.com/rust-lang/crates.io-index",
+                  "version": "0.3.71"
+                }
+              ],
+              "name": "anyhow",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "1.0.98"
+            },
+            "versions": {
+              "patched": [
+                ">=1.0.103"
+              ],
+              "unaffected": []
+            }
+          },
+          {
+            "advisory": {
+              "aliases": [
+                "GHSA-cq8v-f236-94qc"
+              ],
+              "categories": [],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2026-04-09",
+              "description": "It has been reported (by [@lopopolo](https://github.com/lopopolo)) that the `rand` library is [unsound](https://rust-lang.github.io/unsafe-code-guidelines/glossary.html#soundness-of-code--of-a-library) (i.e. that safe code using the public API can cause Undefined Behaviour) when all the following conditions are met:\n\n- The `log` and `thread_rng` features are enabled\n- A [custom logger](https://docs.rs/log/latest/log/#implementing-a-logger) is defined\n- The custom logger accesses `rand::rng()` (previously `rand::thread_rng()`) and calls any `TryRng` (previously `RngCore`) methods on `ThreadRng`\n- The `ThreadRng` (attempts to) reseed while called from the custom logger (this happens every 64 kB of generated data)\n- Trace-level logging is enabled or warn-level logging is enabled and the random source (the `getrandom` crate) is unable to provide a new seed\n\n`TryRng` (previously `RngCore`) methods for `ThreadRng` use `unsafe` code to cast `*mut BlockRng<ReseedingCore>` to `&mut BlockRng<ReseedingCore>`. When all the above conditions are met this results in an aliased mutable reference, violating the Stacked Borrows rules. Miri is able to detect this violation in sample code. Since construction of [aliased mutable references is Undefined Behaviour](https://doc.rust-lang.org/stable/nomicon/references.html), the behaviour of optimized builds is hard to predict.",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2026-0097",
+              "informational": "unsound",
+              "keywords": [],
+              "license": "CC0-1.0",
+              "package": "rand",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "Rand is unsound with a custom logger using `rand::rng()`",
+              "url": "https://github.com/rust-random/rand/pull/1763",
+              "withdrawn": null
+            },
+            "affected": {
+              "arch": [],
+              "functions": {
+                "rand::rng": [
+                  ">=0.9.0"
+                ],
+                "rand::thread_rng": [
+                  "<0.10.0, >=0.7.0"
+                ]
+              },
+              "os": []
+            },
+            "kind": "unsound",
+            "package": {
+              "checksum": "3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94",
+              "dependencies": [
+                {
+                  "name": "rand_chacha",
+                  "source": "registry+https://github.com/rust-lang/crates.io-index",
+                  "version": "0.9.0"
+                },
+                {
+                  "name": "rand_core",
+                  "source": "registry+https://github.com/rust-lang/crates.io-index",
+                  "version": "0.9.3"
+                },
+                {
+                  "name": "zerocopy",
+                  "source": "registry+https://github.com/rust-lang/crates.io-index",
+                  "version": "0.8.24"
+                }
+              ],
+              "name": "rand",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "0.9.0"
+            },
+            "versions": {
+              "patched": [
+                ">=0.10.1",
+                "<0.10.0, >=0.9.3",
+                "<0.9.0, >=0.8.6"
+              ],
+              "unaffected": [
+                "<0.7.0"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "report_facts": {
+      "database_advisory_count": 1329,
+      "database_last_commit": null,
+      "database_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT",
+      "lock_dependency_count": 161,
+      "vulnerability_count": 1,
+      "vulnerability_found": true,
+      "warning_counts": {
+        "unmaintained": 2,
+        "unsound": 2
+      },
+      "warning_entries": 4
+    }
+  },
+  "cpu_active_packages": 105,
+  "license_review": "NOT_PERFORMED",
+  "lock_records": 161,
+  "model_execution": "NOT_AUTHORIZED",
+  "patched_lock_sha256": "303c49433187d5938d0f2a27d3f5ded9eb094388dd67e6702a0a8b7558eaec01",
+  "producer": {
+    "artifact_id": 11951567227,
+    "artifact_name": "kyutai-candle-source-metadata-38690241603-1",
+    "artifact_size": 210734,
+    "expires_at": "2026-10-16T06:06:47Z",
+    "head_sha": "b111f377bfbfc2f8d079f10791d61befb2d3ff5d",
+    "run_attempt": 1,
+    "run_id": 38690241603
+  },
+  "root_runtime_audit": "NOT_RUN",
+  "scope": "candle_cpu_patched_lock",
+  "status": "FAIL",
+  "tool": {
+    "binary_path": "/home/runner/.cargo/bin/cargo-audit",
+    "binary_sha256": "66f9c8f530950d106c1869ce27ef5a4008bcea53c7716c3ed8117586337ee7d8",
+    "cargo_audit_version": "0.22.2",
+    "install_action_commit": "183e4297cca2404691e9380e1307288dced5c82a",
+    "release_commit": "281452c35cf0870969042374110f099a411bc185",
+    "version_output": "cargo-audit-audit 0.22.2\n",
+    "version_string": "cargo-audit-audit 0.22.2"
+  },
+  "upload": "NO_UPLOAD",
+  "yanked_check": "NOT_CHECKED"
+}

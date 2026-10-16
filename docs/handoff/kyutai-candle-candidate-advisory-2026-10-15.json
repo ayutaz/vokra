@@ -1,0 +1,211 @@
+{
+  "advisory_audit": "FAIL",
+  "advisory_database": {
+    "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "no_fetch": true,
+    "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT",
+    "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+  },
+  "approval": null,
+  "artifact": {
+    "members": {
+      "vokra-candle-pin-capture-38711006458-1/base/Cargo.lock": {
+        "bytes": 39842,
+        "sha256": "eafbfd9c58c0b8aa60c4298f4df7e0187c78161a8aa898d0490a98c52faf28de"
+      },
+      "vokra-candle-pin-capture-38711006458-1/initial_metadata.json": {
+        "bytes": 896267,
+        "sha256": "c4712fec75c50bf1b0c2813bc0456994c7e383e145d3a5ec41c42dec9095bbc5"
+      },
+      "vokra-candle-pin-capture-38711006458-1/metadata.json": {
+        "bytes": 324861,
+        "sha256": "3a988e3219f9b25d128ec52c27798aaf93f07909e6ad9ef8269d9faee8319fff"
+      },
+      "vokra-candle-pin-capture-38711006458-1/patched/Cargo.lock": {
+        "bytes": 39843,
+        "sha256": "303c49433187d5938d0f2a27d3f5ded9eb094388dd67e6702a0a8b7558eaec01"
+      },
+      "vokra-candle-pin-capture-38711006458-1/source/rust/Cargo.lock": {
+        "bytes": 150274,
+        "sha256": "bc4348116cdf1408583311954c1baaee6bde3b4cf54cd160af50b278aa4e44ab"
+      },
+      "vokra-candle-pin-capture-38711006458-1/source_receipt.json": {
+        "bytes": 8320,
+        "sha256": "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"
+      },
+      "vokra-candle-pin-capture-38711006458-1/whole_lock_metadata.json": {
+        "bytes": 1261025,
+        "sha256": "3ed8961b442e32541af940ab0b84b00f93de7942c8de34b852f4b59af68301a6"
+      },
+      "vokra-candle-pin-result-38711006458-1/baseline_cpu_metadata.json": {
+        "bytes": 849497,
+        "sha256": "6964ac9b62708caa3cd794cf26055628e455a5768f9312476049c468ca3c7e0d"
+      },
+      "vokra-candle-pin-result-38711006458-1/baseline_whole_metadata.json": {
+        "bytes": 1205830,
+        "sha256": "cc3728fc52f80ea0554ca3cb9916de0bd45ebe7fa8d5379f541873ef0d7bed99"
+      },
+      "vokra-candle-pin-result-38711006458-1/candidate.lock": {
+        "bytes": 38252,
+        "sha256": "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8"
+      },
+      "vokra-candle-pin-result-38711006458-1/candidate_cpu_metadata.json": {
+        "bytes": 849118,
+        "sha256": "9c351398903613d266f41d4d9769f488780aba5c4592312cee54b732c634f043"
+      },
+      "vokra-candle-pin-result-38711006458-1/candidate_whole_metadata.json": {
+        "bytes": 1148255,
+        "sha256": "959357f105d4118301fc0be3bf94bc6f49944e4df5122cb6a8124bfc2b6c2793"
+      },
+      "vokra-candle-pin-result-38711006458-1/pin_diagnostic.json": {
+        "bytes": 228834,
+        "sha256": "5ee83d9cf3e2976b6350a7cd45346f27bfb40e4194616dcfb52e89c7f9385e44"
+      }
+    },
+    "total_bytes": 7040218
+  },
+  "audit": {
+    "classification": "FAIL_FINDINGS",
+    "command": {
+      "argv": [
+        "/home/runner/.cargo/bin/cargo-audit",
+        "audit",
+        "--file",
+        "/home/runner/work/_temp/vokra-candle-candidate-advisory-artifact/vokra-candle-pin-result-38711006458-1/candidate.lock",
+        "--db",
+        "/home/runner/work/vokra/vokra/.audit/rustsec-advisory-db",
+        "--no-fetch",
+        "--no-yanked",
+        "--quiet",
+        "--json",
+        "--deny",
+        "warnings"
+      ],
+      "returncode": 1,
+      "stderr": "",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_truncated": false,
+      "stdout": "{\"database\":{\"advisory-count\":1329,\"last-commit\":null,\"last-updated\":null},\"lockfile\":{\"dependency-count\":154},\"settings\":{\"target_arch\":[],\"target_os\":[],\"severity\":null,\"ignore\":[],\"informational_warnings\":[\"unmaintained\",\"unsound\",\"notice\"]},\"vulnerabilities\":{\"found\":false,\"count\":0,\"list\":[]},\"warnings\":{\"unmaintained\":[{\"kind\":\"unmaintained\",\"package\":{\"name\":\"paste\",\"version\":\"1.0.15\",\"source\":\"registry+https://github.com/rust-lang/crates.io-index\",\"checksum\":\"57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a\",\"replace\":null},\"advisory\":{\"id\":\"RUSTSEC-2024-0436\",\"package\":\"paste\",\"title\":\"paste - no longer maintained\",\"description\":\"The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \\nthat this project is not longer maintained as well as archived the repository\\n\\n## Possible Alternative(s)\\n\\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\\n\\n[`pastey`]: https://crates.io/crates/pastey\\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros\",\"date\":\"2024-10-07\",\"aliases\":[],\"related\":[],\"collection\":\"crates\",\"categories\":[],\"keywords\":[],\"cvss\":null,\"informational\":\"unmaintained\",\"references\":[],\"source\":null,\"url\":\"https://github.com/dtolnay/paste\",\"withdrawn\":null,\"license\":\"CC0-1.0\",\"expect-deleted\":false},\"affected\":null,\"versions\":{\"patched\":[],\"unaffected\":[]}}]}}\n",
+      "stdout_bytes": 1732,
+      "stdout_sha256": "ed99fcfdf31e0a245627ded5a372f94f18ce15893037338cfe5e22dd4c31831e",
+      "stdout_truncated": false,
+      "timed_out": false
+    },
+    "git_after": {
+      "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+      "tracked_untracked_status": "clean",
+      "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+    },
+    "git_before": {
+      "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+      "tracked_untracked_status": "clean",
+      "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+    },
+    "report": {
+      "database": {
+        "advisory-count": 1329,
+        "last-commit": null,
+        "last-updated": null
+      },
+      "lockfile": {
+        "dependency-count": 154
+      },
+      "settings": {
+        "ignore": [],
+        "informational_warnings": [
+          "unmaintained",
+          "unsound",
+          "notice"
+        ],
+        "severity": null,
+        "target_arch": [],
+        "target_os": []
+      },
+      "vulnerabilities": {
+        "count": 0,
+        "found": false,
+        "list": []
+      },
+      "warnings": {
+        "unmaintained": [
+          {
+            "advisory": {
+              "aliases": [],
+              "categories": [],
+              "collection": "crates",
+              "cvss": null,
+              "date": "2024-10-07",
+              "description": "The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \nthat this project is not longer maintained as well as archived the repository\n\n## Possible Alternative(s)\n\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\n\n[`pastey`]: https://crates.io/crates/pastey\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros",
+              "expect-deleted": false,
+              "id": "RUSTSEC-2024-0436",
+              "informational": "unmaintained",
+              "keywords": [],
+              "license": "CC0-1.0",
+              "package": "paste",
+              "references": [],
+              "related": [],
+              "source": null,
+              "title": "paste - no longer maintained",
+              "url": "https://github.com/dtolnay/paste",
+              "withdrawn": null
+            },
+            "affected": null,
+            "kind": "unmaintained",
+            "package": {
+              "checksum": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
+              "name": "paste",
+              "replace": null,
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "version": "1.0.15"
+            },
+            "versions": {
+              "patched": [],
+              "unaffected": []
+            }
+          }
+        ]
+      }
+    },
+    "report_facts": {
+      "database_advisory_count": 1329,
+      "database_last_commit": null,
+      "database_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT",
+      "lock_dependency_count": 154,
+      "vulnerability_count": 0,
+      "vulnerability_found": false,
+      "warning_counts": {
+        "unmaintained": 1
+      },
+      "warning_entries": 1
+    }
+  },
+  "candidate_lock_sha256": "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8",
+  "cpu_active_packages": null,
+  "license_review": "NOT_PERFORMED",
+  "lock_records": 154,
+  "model_execution": "NOT_AUTHORIZED",
+  "producer": {
+    "artifact_id": 11961100426,
+    "artifact_name": "kyutai-candle-pin-remediation-38711006458-1",
+    "artifact_size": 457074,
+    "expires_at": "2026-10-16T09:11:04Z",
+    "head_sha": "27a2841384220c078aa37ff93ea8f9fc8a18594f",
+    "run_attempt": 1,
+    "run_id": 38711006458
+  },
+  "root_runtime_audit": "NOT_RUN",
+  "scope": "candle_candidate_whole_lock",
+  "status": "FAIL",
+  "tool": {
+    "binary_path": "/home/runner/.cargo/bin/cargo-audit",
+    "binary_sha256": "66f9c8f530950d106c1869ce27ef5a4008bcea53c7716c3ed8117586337ee7d8",
+    "cargo_audit_version": "0.22.2",
+    "install_action_commit": "183e4297cca2404691e9380e1307288dced5c82a",
+    "release_commit": "281452c35cf0870969042374110f099a411bc185",
+    "version_output": "cargo-audit-audit 0.22.2\n",
+    "version_string": "cargo-audit-audit 0.22.2"
+  },
+  "upload": "NO_UPLOAD",
+  "yanked_check": "NOT_CHECKED"
+}
