@@ -1,9 +1,12 @@
 name: kyutai-candle-applied-advisory
 
 on:
+  # The applied profile remains the current pull-request audit gate.
   pull_request:
     paths:
       - ".github/workflows/kyutai-candle-applied-advisory.yml"
+      - ".github/workflows/kyutai-candle-source-advisory.yml"
+      - ".github/workflows/kyutai-candle-candidate-advisory.yml"
       - "tools/parity/kyutai_candle_reference/audit_lock.py"
       - "tools/parity/kyutai_candle_reference/test_audit_lock.py"
       - "tools/parity/kyutai_candle_reference/test_applied_audit_lock.py"
@@ -33,6 +36,7 @@ jobs:
           sparse-checkout: |
             .github/workflows/kyutai-candle-applied-advisory.yml
             .github/workflows/kyutai-candle-source-advisory.yml
+            .github/workflows/kyutai-candle-candidate-advisory.yml
             tools/parity/kyutai_candle_reference/audit_lock.py
             tools/parity/kyutai_candle_reference/test_audit_lock.py
             tools/parity/kyutai_candle_reference/test_applied_audit_lock.py

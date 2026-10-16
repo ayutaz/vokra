@@ -1,5 +1,12 @@
 # Candle CPU compatibility preparation — 2026-10-16 JST
 
+> **Additional confirmation scope:** the owner approves one further actual
+> model-free Linux job, at most 20 minutes, using the new
+> `candle-cpu-compatibility-confirm-once-20261016` activation label.
+> The first failed job and consumed label remain unchanged. See the
+> [six-stage readback](goal6-execution-readback-2026-10-16.md) for current
+> review/activation status; this is not a second result or model approval.
+
 ## Bounded technical authorization, not a result
 
 The owner explicitly approves creation/review/execution of the proposed

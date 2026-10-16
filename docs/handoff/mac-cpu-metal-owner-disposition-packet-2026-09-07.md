@@ -1,5 +1,10 @@
 # Mac CPU / Metal owner disposition packet (2026-09-07)
 
+> **2026-10-16 continuation boundary:** the [six-stage readback](goal6-execution-readback-2026-10-16.md)
+> records unchanged public metadata and an additional bounded model-free
+> technical job. Neither changes this frozen denominator, any signer, scope
+> hash, license decision or model/publication authorization.
+
 > **2026-10-14 planning boundary:** The [updated execution plan](next-steps-2026-10-14.md) changes priority, not signer, scope, license or execution authority. Resolve source/package/native evidence first and retain this immutable packet's denominator and decisions; no new approval follows from the completed private static audit or green PR CI.
 
 > **2026-10-13 current routing / supersession:** The [current readback](documentation-refresh-2026-10-13.md) supersedes older live-status pointers only. The [static dependency audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) does not approve licenses/native payloads or change any signer, scope hash or decision. Preserve this packet's frozen 63-row denominator; the live public inventory has 58 unresolved rows. PR #199 is now merged, without altering this model-scope packet.

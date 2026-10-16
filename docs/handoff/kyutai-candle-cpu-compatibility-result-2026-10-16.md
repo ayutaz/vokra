@@ -1,5 +1,10 @@
 # Candle CPU compatibility attempt — 2026-10-16 JST
 
+> **Subsequent authorization, not a changed verdict:** one additional
+> model-free confirmation job is approved with a fresh activation label.
+> See the [current six-stage readback](goal6-execution-readback-2026-10-16.md).
+> The first run, failed receipt and evidence below remain immutable.
+
 ## Verdict: full library builds; API harness fails; overall not accepted
 
 [Run 38838522884](https://github.com/ayutaz/vokra/actions/runs/38838522884),

@@ -1,12 +1,9 @@
 name: kyutai-candle-candidate-advisory
 
+# The historical candidate producer is retained for evidence recovery and
+# manual reruns. Its fixed pre-application diagnostic is not a current PR
+# gate; the applied profile is the current pull-request audit.
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/kyutai-candle-candidate-advisory.yml"
-      - "tools/parity/kyutai_candle_reference/audit_lock.py"
-      - "tools/parity/kyutai_candle_reference/test_audit_lock.py"
-      - "tools/parity/kyutai_candle_reference/test_candidate_audit_lock.py"
   workflow_dispatch:
 
 permissions:
@@ -33,6 +30,7 @@ jobs:
           sparse-checkout: |
             .github/workflows/kyutai-candle-candidate-advisory.yml
             .github/workflows/kyutai-candle-source-advisory.yml
+            .github/workflows/kyutai-candle-applied-advisory.yml
             tools/parity/kyutai_candle_reference/audit_lock.py
             tools/parity/kyutai_candle_reference/test_audit_lock.py
             tools/parity/kyutai_candle_reference/test_candidate_audit_lock.py

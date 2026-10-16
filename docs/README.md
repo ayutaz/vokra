@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**2026-10-16 six-stage continuation:** the [current execution readback](handoff/goal6-execution-readback-2026-10-16.md)
+preserves the full non-Apple/real-weight/final-packet/Apple/result objective.
+A fresh metadata-only retrieval reproduces the exact dated 194-row inventory
+hash and 136 full / 58 non-full classification, not hardware validation.
+The first Candle library build succeeds but its API harness fails; a
+corrected, separately authorized confirmation remains unrun. Historical
+audit routing and a timing-sensitive regression are under review, #255 is
+draft, and no owner/legal, real-weight or Apple gate advances.
+
 **CPU compatibility attempt reviewed (2026-10-16 JST):** the
 [original result and cause](handoff/kyutai-candle-cpu-compatibility-result-2026-10-16.md)
 prove a successful full CPU library build, but the final API harness fails

@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16の6工程継続:** [現行実行記録と完了条件](goal6-execution-readback-2026-10-16.md)
+> を参照。公開一覧の実再取得は旧194行TSVとhash一致し、136 full／58未解決のまま。
+> Candleはlibrary build成功・API harness失敗で、修正後の追加1回・最大20分の
+> model-free Linux確認を別scopeとして準備中。旧監査routingとdeadline回帰の修正を
+> レビューし、fresh CI／#255受理後も、全non-Apple前提・実weight CPU・最終packet・
+> Apple CPU/Metal/no-fallback・結果記録までを維持する。owner署名や公開許可は推定しない。
+
 > **2026-10-16 JSTのmacro静的readback:** [固定sourceとarchive hashの照合](kyutai-candle-paste-macro-readback-2026-10-16.md)
 > でgemm-c32/c64両版の間接macro経路とMetal両版の型位置展開を確認した。直接paste検索0件
 > でも未使用とは判断せず16 parentを維持する。12 source filesは既存hash一致、pasteyの

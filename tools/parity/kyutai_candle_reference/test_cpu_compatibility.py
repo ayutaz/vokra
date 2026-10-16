@@ -292,7 +292,8 @@ class CpuCompatibilityContractTests(unittest.TestCase):
     def test_workflow_is_one_shot_and_builds_not_checks(self) -> None:
         workflow = (REPO / ".github/workflows/kyutai-candle-cpu-compatibility.yml").read_text(encoding="utf-8")
         self.assertIn("types: [labeled]", workflow)
-        self.assertIn("candle-cpu-compatibility-once-20261016", workflow)
+        self.assertIn("candle-cpu-compatibility-confirm-once-20261016", workflow)
+        self.assertNotIn("candle-cpu-compatibility-once-20261016", workflow)
         self.assertNotIn("workflow_dispatch", workflow)
         self.assertIn("timeout-minutes: 20", workflow)
         self.assertIn("runs-on: ubuntu-22.04", workflow)

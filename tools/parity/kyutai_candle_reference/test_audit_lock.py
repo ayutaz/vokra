@@ -254,8 +254,33 @@ class AuditLockTests(unittest.TestCase):
                 raise SystemExit(0)
             """).lstrip())
             descendant.chmod(descendant.stat().st_mode | stat.S_IXUSR)
-            held = audit_lock.run_command((str(descendant), str(marker), str(heartbeat)), cwd=root, env=env, deadline=audit_lock._now() + 0.4, stdout_cap=128, stderr_cap=32)
+            # Give process startup ample time. Once the fixture has actually
+            # forked and published both readiness markers, advance the
+            # injected clock past the fixed outer deadline. This exercises the
+            # real timeout/owned-process-group cleanup path without a startup
+            # race against a sub-second wall-clock cutoff.
+            real_now = audit_lock._now
+            outer_deadline = real_now() + 30.0
+            cutoff_consumed = False
+
+            def deterministic_now() -> float:
+                nonlocal cutoff_consumed
+                if not cutoff_consumed and marker.exists() and heartbeat.exists():
+                    cutoff_consumed = True
+                    return outer_deadline + 1.0
+                return real_now()
+
+            with mock.patch.object(audit_lock, "_now", side_effect=deterministic_now):
+                held = audit_lock.run_command(
+                    (str(descendant), str(marker), str(heartbeat)),
+                    cwd=root,
+                    env=env,
+                    deadline=outer_deadline,
+                    stdout_cap=128,
+                    stderr_cap=32,
+                )
             self.assertTrue(held.timed_out)
+            self.assertTrue(cutoff_consumed)
             for _ in range(100):
                 if marker.exists() and heartbeat.exists():
                     break
@@ -428,23 +453,63 @@ class AuditLockTests(unittest.TestCase):
             self.assertEqual(evidence["tool"]["version_check"]["stdout"], "cargo-audit-audit 0.22.20\n")
 
     def test_workflow_contract_has_reviewed_triggers_and_pins(self) -> None:
-        workflow = Path(__file__).parents[3] / ".github/workflows/kyutai-candle-source-advisory.yml"
-        text = workflow.read_text()
-        for needle in ("pull_request:", "workflow_dispatch:", audit_lock.DOWNLOAD_ACTION_COMMIT, audit_lock.INSTALL_ACTION_COMMIT, audit_lock.ADVISORY_DB_COMMIT, "artifact-ids: \"11951567227\"", "fallback: none", "set -euo pipefail", "set +e"):
-            self.assertIn(needle, text)
+        root = Path(__file__).parents[3]
+        workflow_dir = root / ".github/workflows"
+        workflows = {
+            name: (workflow_dir / name).read_text()
+            for name in (
+                "kyutai-candle-source-advisory.yml",
+                "kyutai-candle-candidate-advisory.yml",
+                "kyutai-candle-applied-advisory.yml",
+            )
+        }
+        source = workflows["kyutai-candle-source-advisory.yml"]
+        candidate = workflows["kyutai-candle-candidate-advisory.yml"]
+        applied = workflows["kyutai-candle-applied-advisory.yml"]
+        self.assertNotIn("pull_request:", source)
+        self.assertNotIn("pull_request:", candidate)
+        self.assertIn("pull_request:", applied)
+        for workflow_name in workflows:
+            self.assertIn(f'      - ".github/workflows/{workflow_name}"', applied)
+        for text in workflows.values():
+            self.assertIn("workflow_dispatch:", text)
+            self.assertIn(audit_lock.DOWNLOAD_ACTION_COMMIT, text)
+            self.assertIn(audit_lock.INSTALL_ACTION_COMMIT, text)
+            self.assertIn(audit_lock.ADVISORY_DB_COMMIT, text)
+            self.assertIn("fallback: none", text)
+            self.assertIn("set -euo pipefail", text)
+            self.assertIn("set +e", text)
+            self.assertIn("rc=$?", text)
+            self.assertIn('exit "$rc"', text)
+            self.assertNotIn("continue-on-error:", text)
+            self.assertNotIn("--ignore", text)
+            for workflow_name in workflows:
+                self.assertIn(f".github/workflows/{workflow_name}", text)
+        self.assertIn('artifact-ids: "11951567227"', source)
+        self.assertIn('artifact-ids: "11961100426"', candidate)
+        self.assertIn('artifact-ids: "11985400172"', applied)
+        self.assertIn("run-id: 38758745134", applied)
+        self.assertIn("--profile applied", applied)
+        self.assertNotIn("--profile applied", source)
+        self.assertNotIn("--profile applied", candidate)
         self.assertNotIn("--token", audit_lock.main.__code__.co_names)
-        self.assertIn("permissions:\n  contents: read\n  actions: read", text)
-        self.assertIn("sparse-checkout-cone-mode: false", text)
-        self.assertIn("persist-credentials: false", text)
-        self.assertIn("set -e\n          test -f", text)
-        self.assertNotIn("cargo test", text)
-        self.assertNotIn("cargo build", text)
-        self.assertNotIn("cargo run", text)
-        self.assertNotIn("cargo metadata", text)
-        self.assertNotIn("uv sync", text)
-        self.assertNotIn("huggingface", text.lower())
-        for path in (".github/workflows/kyutai-candle-source-advisory.yml", "tools/parity/kyutai_candle_reference/audit_lock.py", "tools/parity/kyutai_candle_reference/test_audit_lock.py"):
-            self.assertIn(path, text)
+        for text in workflows.values():
+            self.assertIn("permissions:\n  contents: read\n  actions: read", text)
+            self.assertIn("sparse-checkout-cone-mode: false", text)
+            self.assertIn("persist-credentials: false", text)
+            self.assertIn("set -e\n          test -f", text)
+            self.assertNotIn("cargo test", text)
+            self.assertNotIn("cargo build", text)
+            self.assertNotIn("cargo run", text)
+            self.assertNotIn("cargo metadata", text)
+            self.assertNotIn("uv sync", text)
+            self.assertNotIn("huggingface", text.lower())
+        for path in (
+            ".github/workflows/kyutai-candle-source-advisory.yml",
+            "tools/parity/kyutai_candle_reference/audit_lock.py",
+            "tools/parity/kyutai_candle_reference/test_audit_lock.py",
+        ):
+            self.assertIn(path, source)
 
 
 if __name__ == "__main__":

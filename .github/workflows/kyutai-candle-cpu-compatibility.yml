@@ -31,7 +31,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action == 'labeled' &&
-      github.event.label.name == 'candle-cpu-compatibility-once-20261016' &&
+      github.event.label.name == 'candle-cpu-compatibility-confirm-once-20261016' &&
       github.event.pull_request.number == 255 &&
       github.run_attempt == 1 &&
       github.repository == 'ayutaz/vokra' &&

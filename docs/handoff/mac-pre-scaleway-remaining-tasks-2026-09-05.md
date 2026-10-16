@@ -1,5 +1,11 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 fresh metadata readback:** the [six-stage execution record](goal6-execution-readback-2026-10-16.md)
+> retains the complete recovered TSV, byte-identical to the 10/14 inventory:
+> 194 repositories, 136 code/artifact-full and 58 non-full. No row is promoted
+> to real-weight CPU or Apple pass. The frozen owner packet and historical
+> evidence below remain unchanged; Scaleway is still the final compute stage.
+
 > **2026-10-16 JST actual CPU attempt:** the
 > [original receipt/native streams](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
 > prove full-library build success, not overall compatibility: the final

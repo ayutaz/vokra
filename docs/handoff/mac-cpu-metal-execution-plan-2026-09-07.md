@@ -1,5 +1,11 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 full-objective continuation:** use the [six-stage acceptance table](goal6-execution-readback-2026-10-16.md).
+> Close corrected Candle compatibility and fresh PR CI, then every non-Apple
+> prerequisite and approved real-weight VAST CPU leg; freeze final clean HEAD
+> and fresh packets before Scaleway CPU/Metal/no-fallback, then record results.
+> Neither a code-full catalog label nor a library build closes these stages.
+
 > **2026-10-16 JST actual CPU attempt:** [run 38838522884](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
 > builds the full CPU library successfully, then fails only in the uncalled
 > API harness because its host proc-macro search path is missing. Review the
