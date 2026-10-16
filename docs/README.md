@@ -1,5 +1,12 @@
 # Vokra documentation
 
+**Bounded CPU compatibility authorized (2026-10-16 JST):** the
+[review/execution preparation](handoff/kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
+records one model-free GitHub Linux job, at most twenty minutes, including
+upstream build/proc-macro execution. Actual CPU105/feature/source identity,
+full-library and signature checks must be verified before any pass. No
+model, paid-worker, legal signature, Apple or publication gate advances.
+
 **Current CPU evidence rebound (2026-10-16 JST):** the
 [actual 105-package readback](handoff/kyutai-candle-current-cpu-evidence-2026-10-16.md)
 authenticates registry90/path14/workspace1, the exact retained 65-license-body

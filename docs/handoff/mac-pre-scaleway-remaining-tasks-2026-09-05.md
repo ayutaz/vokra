@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 JST bounded compatibility authorization:** the
+> [new preparation scope](kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
+> permits one model-free Linux compiler job, not a passed compatibility or
+> model result. Review the actual CPU105/feature/source-bound implementation
+> and synthetic evidence before activation. Full non-Apple/real-weight/final
+> packet and owner/legal obligations remain; no row/count changes.
+
 > **2026-10-16 JST current CPU evidence binding:** the
 > [fresh original-byte readback](kyutai-candle-current-cpu-evidence-2026-10-16.md)
 > maps CPU105 to registry90/path14/workspace1, reuses the exact 65 captured

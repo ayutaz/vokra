@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST bounded compatibility authorization:** the
+> [owner-approved technical scope](kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
+> allows one model-free GitHub Linux job within twenty minutes. Review the
+> full locked CPU library/API and one-shot activation contract first; source
+> inspection is not a compile result. Real-weight CPU, all-row non-Apple
+> closure and final clean-HEAD/packet requirements remain, with Scaleway last.
+
 > **2026-10-16 JST actual CPU admission scope:** the
 > [105-package original-evidence binding](kyutai-candle-current-cpu-evidence-2026-10-16.md)
 > distinguishes 90 registry, fourteen modified path parents and one Moshi
