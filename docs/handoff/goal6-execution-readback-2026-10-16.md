@@ -1,5 +1,12 @@
 # Six-stage execution readback — 2026-10-16
 
+> **10:55:41 UTC normal acceptance:** [PR #255 and final CI audit](candle-pr255-acceptance-2026-10-16.md)
+> establish accepted main `662b49c4`: 73 success / one intentional skip,
+> sixteen required context/app pairs and thirteen successful workflows.
+> Maintainer main is synchronized and clean. Stages 1–2 are accepted;
+> stages 3–6 and all model/owner/real-weight/Apple obligations remain open.
+> The earlier unmerged/live-CI observations below are historical snapshots.
+
 ## Scope and current evidence
 
 The active objective remains all six stages below, not merely the Candle

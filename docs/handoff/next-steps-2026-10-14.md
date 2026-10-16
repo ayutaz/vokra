@@ -1,5 +1,11 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16 #255通常マージ:** [全CI受理記録](candle-pr255-acceptance-2026-10-16.md)
+> で73 success／意図したskip1、必須16 context/App、開始した13 workflows成功を確認し、
+> exact `cd5ffed0`を通常merge。main／maintainer mainはclean `662b49c4`。
+> 工程1・2のみ完了。全行non-Apple前提・owner判断・独立実weight CPU・最終packet・
+> Scaleway CPU/Metal/no-fallback・結果記録は未完了で、公開は別条件のまま。
+
 > **2026-10-16追加実検証成功:** [Candle確認run 38885265971](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
 > はLinux全17 tests／skip0、CPU library buildと未呼出API署名確認が成功。
 > rootが原本12 streamのhashとnative compiler／依存graphを照合し、工程1のみ受理した。

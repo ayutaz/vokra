@@ -1,5 +1,10 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 source acceptance:** [#255 normal merge and final CI](candle-pr255-acceptance-2026-10-16.md)
+> produce clean main `662b49c4` after 73 successful checks / one intentional
+> skip, all sixteen protected pairs and thirteen workflows. This closes the
+> Candle source-CI checkpoint, not any real-weight/Apple row or owner scope.
+
 > **2026-10-16 model-free confirmation:** the [actual Candle job](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
 > passes CPU library/API compatibility. No public model row is promoted by
 > this compiler result; 58 metadata-non-full rows, code-full execution duties,

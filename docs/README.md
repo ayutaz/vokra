@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**2026-10-16 PR #255 accepted:** [normal merge and exact CI audit](handoff/candle-pr255-acceptance-2026-10-16.md)
+record main `662b49c4`, 73 successful checks / one intentional skip,
+all sixteen protected context/application pairs and all thirteen workflows
+successful. Maintainer main is synchronized and clean; model-free stages
+1–2 are closed. All non-Apple model prerequisites, independent real-weight
+CPU, final fresh packet, Apple CPU/Metal/no-fallback and final result audit
+remain open. Earlier pending/failed snapshots below retain their dated scope.
+
 **2026-10-16 actual CPU/API confirmation:** [run 38885265971 and independent recovery](handoff/kyutai-candle-cpu-confirmation-result-2026-10-16.md)
 pass the full CPU library and uncalled API probe at exact `9b58b64f`,
 with all seventeen Linux fixture tests and no skips. This closes only the
