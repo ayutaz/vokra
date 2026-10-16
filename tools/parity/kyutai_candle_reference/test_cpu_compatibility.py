@@ -133,6 +133,41 @@ class CpuCompatibilityContractTests(unittest.TestCase):
             (source / "src.rs").write_text("pub fn changed() {}\n", encoding="utf-8")
             self.assertNotEqual(before, CHECKER._selected_source_scope(metadata, cargo_home, deadline=time.monotonic() + 5))
 
+    def test_api_probe_binds_target_and_host_dependencies_and_propagates_failure(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vokra-api-probe-") as temporary:
+            root = Path(temporary)
+            target_dir = root / "target"
+            target_deps = target_dir / CHECKER.TARGET / "debug" / "deps"
+            host_deps = target_dir / "debug" / "deps"
+            target_deps.mkdir(parents=True)
+            host_deps.mkdir(parents=True)
+            (target_deps / "libmoshi-test.rlib").write_bytes(b"moshi")
+            (host_deps / "libbytemuck_derive-test.so").write_bytes(b"host")
+            evidence_dir = root / "evidence"
+            receipt = {"commands": []}
+            captured: list[list[str]] = []
+
+            def fake_stage(stage, *, receipt, evidence_dir, argv, cwd, env, deadline, max_output=2 * 1024 * 1024):
+                self.assertEqual(stage, "api_probe")
+                captured.append(argv)
+                Path(argv[-1]).write_bytes(b"probe")
+                return {"stdout": ""}
+
+            with mock.patch.object(CHECKER, "_run_stage", side_effect=fake_stage):
+                CHECKER._run_api_probe(root=root, target_dir=target_dir, deadline=time.monotonic() + 5, env={}, receipt=receipt, evidence_dir=evidence_dir)
+            command = captured[0]
+            self.assertIn(f"dependency={target_deps}", command)
+            self.assertIn(f"dependency={host_deps}", command)
+            self.assertIn("--target", command)
+            self.assertIn(CHECKER.TARGET, command)
+
+            def fail_stage(stage, *, receipt, evidence_dir, argv, cwd, env, deadline, max_output=2 * 1024 * 1024):
+                raise CHECKER.BoundedCommandError("probe failure", {"argv": argv, "returncode": 1, "stdout": "", "stderr": "missing host dependency", "stdout_bytes": b"", "stderr_bytes": b"missing host dependency", "stdout_sha256": "", "stderr_sha256": "", "timed_out": False, "truncated": False})
+
+            with mock.patch.object(CHECKER, "_run_stage", side_effect=fail_stage):
+                with self.assertRaises(CHECKER.BoundedCommandError):
+                    CHECKER._run_api_probe(root=root, target_dir=target_dir, deadline=time.monotonic() + 5, env={}, receipt=receipt, evidence_dir=evidence_dir)
+
     def test_mocked_orchestration_reaches_build_and_probe_and_fails_closed(self) -> None:
         proof = {
             "source_proof_pre": {"files_checked": 23, "unchanged_files": 21, "entries": [{}] * 23},

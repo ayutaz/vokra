@@ -593,6 +593,19 @@ def _find_moshi_rlib(target_dir: Path) -> Path:
     return candidates[-1]
 
 
+def _validate_host_dependency_dir(target_dir: Path) -> Path:
+    host_deps = target_dir / "debug" / "deps"
+    if not host_deps.is_dir() or host_deps.is_symlink():
+        raise CompatibilityError("fresh host dependency directory is missing or non-regular")
+    artifacts = [
+        path for path in host_deps.iterdir()
+        if path.name.endswith((".rlib", ".so", ".dylib"))
+    ]
+    if not artifacts or any(path.is_symlink() or not path.is_file() for path in artifacts):
+        raise CompatibilityError("fresh host dependency artifacts are missing or unsafe")
+    return host_deps
+
+
 def _artifact_ids(result: dict[str, Any], *, package_identities: dict[str, str] | None = None) -> list[str]:
     ids: list[str] = []
     observed: dict[str, set[str]] = {}
@@ -644,6 +657,7 @@ def _metadata_package_identities(path: Path) -> dict[str, str]:
 
 def _run_api_probe(*, root: Path, target_dir: Path, deadline: float, env: dict[str, str], receipt: dict[str, Any], evidence_dir: Path) -> dict[str, Any]:
     rlib = _find_moshi_rlib(target_dir)
+    host_deps = _validate_host_dependency_dir(target_dir)
     probe = root / "compatibility-api-probe.rs"
     probe.write_text(
         """extern crate moshi;
@@ -664,7 +678,7 @@ fn signatures() {
         encoding="utf-8",
     )
     output = root / "compatibility-api-probe.rlib"
-    command = NAMESPACE_PREFIX + ["rustc", "--crate-type", "lib", "--edition", "2021", "--target", TARGET, str(probe), "--extern", f"moshi={rlib}", "-L", f"dependency={rlib.parent}", "-o", str(output)]
+    command = NAMESPACE_PREFIX + ["rustc", "--crate-type", "lib", "--edition", "2021", "--target", TARGET, str(probe), "--extern", f"moshi={rlib}", "-L", f"dependency={rlib.parent}", "-L", f"dependency={host_deps}", "-o", str(output)]
     result = _run_stage("api_probe", receipt=receipt, evidence_dir=evidence_dir, argv=command, cwd=root, env=env, deadline=deadline, max_output=512 * 1024)
     if not output.is_file() or output.stat().st_size > 16 * 1024 * 1024:
         raise CompatibilityError("API probe output is missing or oversized")

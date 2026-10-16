@@ -1,5 +1,12 @@
 # Vokra documentation
 
+**CPU compatibility attempt reviewed (2026-10-16 JST):** the
+[original result and cause](handoff/kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+prove a successful full CPU library build, but the final API harness fails
+on its missing host proc-macro search path. The reviewed correction is
+offline-tested, not rerun. The one-job permission is consumed; PR #255 stays
+draft and model/owner/real-weight/Apple/final-packet gates remain unfinished.
+
 **Bounded CPU compatibility authorized (2026-10-16 JST):** the
 [review/execution preparation](handoff/kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
 records one model-free GitHub Linux job, at most twenty minutes, including

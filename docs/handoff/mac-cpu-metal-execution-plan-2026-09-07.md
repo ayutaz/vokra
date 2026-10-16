@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 JST actual CPU attempt:** [run 38838522884](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+> builds the full CPU library successfully, then fails only in the uncalled
+> API harness because its host proc-macro search path is missing. Review the
+> offline-tested correction and obtain a new bounded actual-job scope; do
+> not retry the consumed one-shot permission or promote a partial result.
+> Full non-Apple/owner/real-weight/final-packet and Apple gates remain.
+
 > **2026-10-16 JST bounded compatibility authorization:** the
 > [owner-approved technical scope](kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
 > allows one model-free GitHub Linux job within twenty minutes. Review the

@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 JST actual CPU attempt:** the
+> [original receipt/native streams](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+> prove full-library build success, not overall compatibility: the final
+> API probe fails on an omitted host dependency search path. Its correction
+> has offline regression evidence only; another actual job needs new bounded
+> authority. No row/count, owner, real-weight or Apple/final-packet promotion.
+
 > **2026-10-16 JST bounded compatibility authorization:** the
 > [new preparation scope](kyutai-candle-cpu-compatibility-preparation-2026-10-16.md)
 > permits one model-free Linux compiler job, not a passed compatibility or

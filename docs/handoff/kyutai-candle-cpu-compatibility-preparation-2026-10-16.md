@@ -213,3 +213,26 @@ Reviewed workflow SHA-256:
 `3ba3acd6e33637f9560169029144fdc9e320d5ab17cd8dfd65748ae74aa1da0d`.
 This is admission, not the actual job result; no retry or second build is
 authorized by it.
+
+### Actual one-shot activation
+
+The clean reviewed candidate is committed/published as
+`ece1d9b2041ad325f3a1416d168f9d174a6a7450`. Manager verifies that exact PR
+head/base, the original unexpired artifact/digest and unused activation label,
+then creates the unique label and applies it once at **02:04 UTC**.
+[Run 38838522884](https://github.com/ayutaz/vokra/actions/runs/38838522884),
+attempt 1 / job `116772969390`, is the only activated compatibility job.
+Initial observation is queued with no steps executed; that is not a pass or
+a compiler result. The PR title/body now point to the new head and this run,
+while preserving older head-bound evidence as history. No reapplication,
+retry, second job, model run or paid-worker allocation occurs.
+
+### Actual outcome supersedes the queued snapshot
+
+The [recovered run result](kyutai-candle-cpu-compatibility-result-2026-10-16.md)
+records sixteen passing hosted tests and a successful 42.495-second full CPU
+library build, but final API-harness failure due to a missing host proc-macro
+search path. The overall job remains failed. The reviewed path correction
+has seventeen offline tests (one explicit macOS skip), not a second actual
+run. The single-job allowance is used; further activation needs a new bounded
+scope. No model/owner/Apple/final-packet gate advances from this partial result.
