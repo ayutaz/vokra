@@ -155,3 +155,19 @@ Already-authorized implementation and offline synthetic tests remain
 separate, but manager acceptance and one-shot activation remain pending
 until the exact source review is permitted. The compatibility job has not
 been launched and its one-attempt allowance remains unused.
+
+### Independent offline verification of the corrected candidate
+
+Manager reruns the explicitly allowed fixture-backed `--self-test` through
+offline UV/Python 3.12: **12 tests pass, zero failures, zero skips**, in
+0.407 seconds. `actionlint` for the new workflow and the repository workflow
+hygiene gate also pass. These are synthetic/contract tests, not execution of
+the upstream library or a compatibility result. The candidate's three files
+remain untracked/uncommitted pending manager source review.
+
+Submitting the same read-only inventory through the normal escalated
+permission route is also refused by the local-model PreToolUse guard. No
+alternate reader, hook bypass, source push or actual Linux job follows.
+Next resolve this exact read-only false positive without authorizing local
+model execution, then review the candidate and only afterward activate the
+one permitted remote job. No compatibility success is asserted here.
