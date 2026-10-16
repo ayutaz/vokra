@@ -1,5 +1,11 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-16追加実検証成功:** [Candle確認run 38885265971](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> はLinux全17 tests／skip0、CPU library buildと未呼出API署名確認が成功。
+> rootが原本12 streamのhashとnative compiler／依存graphを照合し、工程1のみ受理した。
+> 旧失敗原本は保持。fresh CI／#255受理、全non-Apple前提、独立実weight CPU、
+> 最終clean HEAD／packet、Scaleway CPU/Metal/no-fallback、結果記録は引き続き未完了。
+
 > **2026-10-16の6工程継続:** [現行実行記録と完了条件](goal6-execution-readback-2026-10-16.md)
 > を参照。公開一覧の実再取得は旧194行TSVとhash一致し、136 full／58未解決のまま。
 > Candleはlibrary build成功・API harness失敗で、修正後の追加1回・最大20分の

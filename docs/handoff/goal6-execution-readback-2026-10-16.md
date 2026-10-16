@@ -45,8 +45,9 @@ not a substitute. The frozen 63-row owner packet is not rewritten.
 | 5. Final packet and Apple hardware | Freeze reviewed clean HEAD, regenerate/hash packets, then use Scaleway last | Apple CPU/reference, Metal/reference and Metal/CPU parity with explicit no-fallback, per exact model/packet |
 | 6. Results and completion audit | Record actual outcomes in follow-up PR/docs and verify cleanup | All rows accounted for, evidence linked, fresh CI accepted, unnecessary instance/storage absent; publication conditions separately recorded |
 
-All six stages are incomplete at this readback. A technical gate for one
-family cannot close the campaign. Scaleway cannot repair missing source,
+Stage 1 is subsequently accepted by the confirmation record below; stages
+2–6 remain incomplete. A technical gate for one family cannot close the
+campaign. Scaleway cannot repair missing source,
 licenses, runtime implementation or independent reference.
 
 ## Immediate Candle decision
@@ -122,3 +123,60 @@ is also refused; no alternate body read or hook change follows.
 No VAST/Scaleway resource is created by this metadata/CI phase. This is not
 a fresh provider-wide assertion that unrelated accounts have no resources.
 Local model execution remains prohibited; credentials are not read.
+
+## Published activation and live wait
+
+The reviewed change is committed as
+`9b58b64f120c9c1f306c1f967e696c52b1038e9f` after all five normal
+pre-commit gates pass, then non-force pushed to existing PR #255.
+The source push uses the documented corresponding-VAST-input path to avoid
+prohibited local workspace Cargo; new focused checks are recorded above.
+Manager verifies exact published head/base and original artifact availability.
+The fresh label is created and applied once at 10:08:44 UTC.
+An initial label-creation request is rejected for description length
+(HTTP 422); shortening the description succeeds. That rejected metadata
+request starts no workflow and is not another compiler attempt.
+
+[Run 38885265971](https://github.com/ayutaz/vokra/actions/runs/38885265971),
+attempt 1 / job `116921359664`, is created at 10:08:45 UTC on this exact
+head. The observed state is queued, with no job steps yet executed.
+The registered watcher tracks this same run; no restart or retry follows
+from observation delay. Fresh current-applied audit run `38885206600`
+and ordinary CI also remain queued at this observation. A queued receipt
+is not a pass, failure, compiler result or model evidence.
+
+Fresh open-PR readback lists six drafts: #255, #198, #191, #182, #169 and
+#152. The server main remains `f8d859dc`. #191 is still exact
+`63cadf3c` with 76 success / five skip / one required documentation-links
+failure. Its source/CPU and upstream/license/full-PCM duties are not merged
+or superseded by #255's model-free Candle library probe.
+
+## Actual confirmation acceptance
+
+The queued snapshot above is superseded by the
+[successful actual confirmation](kyutai-candle-cpu-confirmation-result-2026-10-16.md).
+Run `38885265971` finishes successfully at 10:13:44 UTC; all seventeen
+Linux tests pass with no skips. Manager recovers the original evidence,
+rehashes all twelve streams, checks all six command statuses and native
+compiler records, and independently verifies package/features/typed-edge
+equality against the original graph. Full library rc 0 / 44.981 seconds and
+uncalled API rc 0 / 0.048 seconds close the model-free technical stage only.
+The machine receipt remains unchanged and pending-review-labelled; technical
+acceptance does not invent an owner/license/model approval.
+
+The new strict current-applied audit also completes success:
+[run 38885206600](https://github.com/ayutaz/vokra/actions/runs/38885206600),
+job `116921164059`, at 10:14:01 UTC. Both local-refused artifact tests and
+the actual audit execute on GitHub. Hosted legacy tests pass 12/12 in 5.471s;
+the pre-download applied suite explicitly skips fourteen artifact cases,
+then all seventeen tests pass without skips after download in 0.179s.
+Manager recovers the new report from artifact `12039433253` and checks its
+SHA-256 `b740e2e3331fd0c5befd82b3d92e87aa2e995613bf81ce7c2da1e5a2ee825805`,
+byte-identical to the previously accepted report. Native rc 0,
+vulnerabilities 0 / warnings 0 / ignore empty, fixed clean DB commit/tree
+before/after, registry137 and supplemental16+1 are unchanged. Supplemental
+coverage is still same-DB absence only, not a generic native audit or legal
+approval. The remaining ordinary CI is live;
+PR #255 is not yet accepted. Any subsequent evidence-only documentation
+head must receive fresh ordinary CI; this confirmation remains bound to
+`9b58b64f` and is not rerun for documentation-only changes.

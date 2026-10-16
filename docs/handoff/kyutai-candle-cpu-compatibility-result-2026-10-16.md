@@ -1,5 +1,9 @@
 # Candle CPU compatibility attempt — 2026-10-16 JST
 
+> **Later separate confirmation:** the [new authorized job](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> succeeds for CPU library/API compatibility. This file still records the
+> first failed attempt, not an overwritten verdict or real-weight result.
+
 > **Subsequent authorization, not a changed verdict:** one additional
 > model-free confirmation job is approved with a fresh activation label.
 > See the [current six-stage readback](goal6-execution-readback-2026-10-16.md).

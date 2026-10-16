@@ -1,5 +1,11 @@
 # Candle CPU compatibility preparation — 2026-10-16 JST
 
+> **Actual confirmation supersession:** [run 38885265971](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> succeeds at exact `9b58b64f`, including seventeen Linux tests, full CPU
+> library and uncalled API probe. Original receipts are independently checked.
+> The earlier failed run and preparation snapshots below remain historical;
+> no real-weight, owner/legal, Apple or publication gate is inferred.
+
 > **Additional confirmation scope:** the owner approves one further actual
 > model-free Linux job, at most 20 minutes, using the new
 > `candle-cpu-compatibility-confirm-once-20261016` activation label.

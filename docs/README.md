@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**2026-10-16 actual CPU/API confirmation:** [run 38885265971 and independent recovery](handoff/kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+pass the full CPU library and uncalled API probe at exact `9b58b64f`,
+with all seventeen Linux fixture tests and no skips. This closes only the
+model-free compatibility stage. Ordinary PR CI/acceptance is pending;
+non-Apple row/license/operator/reference, real-weight CPU, final packet and
+Apple CPU/Metal/no-fallback remain open. Earlier preparation snapshots below
+retain their original unrun/failed boundaries.
+
 **2026-10-16 six-stage continuation:** the [current execution readback](handoff/goal6-execution-readback-2026-10-16.md)
 preserves the full non-Apple/real-weight/final-packet/Apple/result objective.
 A fresh metadata-only retrieval reproduces the exact dated 194-row inventory

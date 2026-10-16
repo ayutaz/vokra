@@ -1,5 +1,10 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-16 actual technical checkpoint:** the [Candle confirmation](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> passes seventeen Linux tests, the full CPU library and uncalled API probe.
+> This is stage 1 only. Fresh PR acceptance, every non-Apple prerequisite,
+> actual real-weight CPU and final clean HEAD/packet still precede Scaleway.
+
 > **2026-10-16 full-objective continuation:** use the [six-stage acceptance table](goal6-execution-readback-2026-10-16.md).
 > Close corrected Candle compatibility and fresh PR CI, then every non-Apple
 > prerequisite and approved real-weight VAST CPU leg; freeze final clean HEAD

@@ -1,5 +1,10 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-16 model-free confirmation:** the [actual Candle job](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
+> passes CPU library/API compatibility. No public model row is promoted by
+> this compiler result; 58 metadata-non-full rows, code-full execution duties,
+> owner/legal, independent real PCM, real-weight CPU and final Apple remain.
+
 > **2026-10-16 fresh metadata readback:** the [six-stage execution record](goal6-execution-readback-2026-10-16.md)
 > retains the complete recovered TSV, byte-identical to the 10/14 inventory:
 > 194 repositories, 136 code/artifact-full and 58 non-full. No row is promoted
