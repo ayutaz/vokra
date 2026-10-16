@@ -17,6 +17,7 @@ readonly REVIEWED_ARCHIVE_MANIFEST="/private/tmp/vokra-realtime-historical-lock-
 readonly REVIEWED_ARCHIVE_HELPER="/private/tmp/vokra-ecapa-target-identity-20261002/tools/parity/vibevoice_realtime_0_5b_reference/audit_dependency_archives.py"
 readonly REVIEWED_ARCHIVE_LEAF="/private/tmp/vokra-realtime-dependency-archive-collection-20261002.py"
 readonly REVIEWED_ARCHIVE_UV_SHA256="58488ae8dbd0773134c92c85e901430e33f99d975bd7f929d26aa9ab0c2f9390"
+readonly REVIEWED_CANDLE_SOURCE_READ_COMMAND="rg -n '^def |^NAMESPACE|^API_PROBE|_probe_source|use moshi|CARGO_HTTP' tools/parity/kyutai_candle_reference/check_cpu_compatibility.py"
 
 model_marker() {
     printf '%s' "$1" | grep -Eiq \
@@ -318,6 +319,14 @@ analyse_segment() {
 
 analyse_command() {
     local command="$1" segment reason
+    # This one source-inspection command is intentionally byte-exact.  Its
+    # quoted alternation contains literal pipes, so the generic defensive
+    # segment splitter would otherwise mistake those regex bytes for shell
+    # separators.  Do not broaden this exception or change hook_segments:
+    # every wrapper, alteration, or chained command must still be inspected.
+    if [ "$command" = "$REVIEWED_CANDLE_SOURCE_READ_COMMAND" ]; then
+        return 1
+    fi
     while IFS= read -r segment; do
         [ -n "$(hook_trim "$segment")" ] || continue
         if reason="$(analyse_segment "$segment")"; then
@@ -342,6 +351,18 @@ self_test() {
     }
 
     echo 'guard-local-models --self-test'
+    check 'reviewed Candle source read exact literal' allow "$REVIEWED_CANDLE_SOURCE_READ_COMMAND"
+    check 'reviewed Candle source read chained model' block "$REVIEWED_CANDLE_SOURCE_READ_COMMAND && vokra-cli run --model ./tiny.gguf"
+    check 'reviewed Candle source read semicolon model' block "$REVIEWED_CANDLE_SOURCE_READ_COMMAND; vokra-cli run --model ./tiny.gguf"
+    check 'reviewed Candle source read pipe model' block "$REVIEWED_CANDLE_SOURCE_READ_COMMAND | vokra-cli run --model ./tiny.gguf"
+    check 'reviewed Candle source read newline model' block "$REVIEWED_CANDLE_SOURCE_READ_COMMAND
+vokra-cli run --model ./tiny.gguf"
+    check 'reviewed Candle source read altered pattern' block "${REVIEWED_CANDLE_SOURCE_READ_COMMAND/^def /'^def|'}"
+    check 'reviewed Candle source read unquoted pattern' block "rg -n ^def |^NAMESPACE|^API_PROBE|_probe_source|use moshi|CARGO_HTTP tools/parity/kyutai_candle_reference/check_cpu_compatibility.py"
+    check 'reviewed Candle source read single-quoted substitution' block "rg -n '\$(printf pattern)' tools/parity/kyutai_candle_reference/check_cpu_compatibility.py"
+    candle_dollar='$'
+    quoted_candle_substitution="rg -n \"${candle_dollar}(printf pattern)\" tools/parity/kyutai_candle_reference/check_cpu_compatibility.py"
+    check 'reviewed Candle source read double-quoted substitution' block "$quoted_candle_substitution"
     check 'small GGUF execution' block 'vokra-cli run --model ./tiny.gguf'
     check 'checkpoint conversion' block 'vokra-cli convert --input ./model.safetensors'
     check 'target path model execution' block './target/release/vokra-cli run --model ./model.gguf'

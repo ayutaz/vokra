@@ -171,3 +171,15 @@ alternate reader, hook bypass, source push or actual Linux job follows.
 Next resolve this exact read-only false positive without authorizing local
 model execution, then review the candidate and only afterward activate the
 one permitted remote job. No compatibility success is asserted here.
+
+### Read-only blocker resolved; implementation review resumed
+
+The owner's subsequent permission enables a [byte-exact source-read guard
+correction](candle-source-read-guard-correction-2026-10-16.md), with all
+original model/download rules preserved. Manager reviews the complete guard
+diff, independently passes its self-test and successfully executes the
+previously refused command. This supersedes the read-only blocker above.
+The resumed checker review identifies Rust toolchain environment, mutable
+Cargo-cache snapshot and child-cleanup defects. Correct and causally test
+these before the one permitted remote job; no activation or compatibility
+success is implied by the hook repair or the earlier twelve synthetic tests.
