@@ -1,5 +1,20 @@
 # Vokra documentation
 
+**2026-10-17 next-preview preparation:** the user requests release stages
+1–3 only, plus an evidence-based comparison for announcements. See the
+[v0.4.0 preview scope and acceptance conditions](handoff/release-0.4.0-preview-preparation-2026-10-17.md)
+and [competitive positioning](handoff/competitive-positioning-2026-10-17.md).
+Baseline main is `d15ce4cb`. The latest PR readback has six open PRs;
+#259 is Closed without merge, not a completed patched compiler/model gate.
+Target version selection and Unreleased notes do not create a release.
+The user has authorized the bounded preparation PR and one hosted Linux CPU
+smoke (at most 30 minutes). Source tests and fixed-revision public JSON checks
+are being moved to model-free hosted CI after local hook refusals; exact model
+pins and actual CPU results remain unverified. The user separately authorized
+the existing pre-commit check's read-only fixture-ledger access; no protected
+fixture or owner manifest is changed. No local models, tag, release, model
+upload or X post occurs.
+
 **2026-10-17 current status:** start with the
 [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md).
 Verified baseline main is `5f1dfc1e`; seven PRs remain open. PR #259 exact

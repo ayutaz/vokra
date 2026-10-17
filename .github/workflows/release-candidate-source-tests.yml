@@ -1,0 +1,83 @@
+name: Release candidate source tests
+
+# Model-free PR preparation.  The manual CPU model smoke remains separate.
+on:
+  pull_request:
+    paths:
+      - "tools/parity/release_candidate_cpu_smoke.py"
+      - "tools/parity/test_release_candidate_cpu_smoke.py"
+      - "tools/parity/release_candidate_model_metadata.py"
+      - "tools/parity/test_release_candidate_model_metadata.py"
+      - ".github/workflows/release-candidate-cpu-smoke.yml"
+      - ".github/workflows/release-candidate-source-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    name: model-free source and metadata checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout smoke sources only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/parity/release_candidate_cpu_smoke.py
+            /tools/parity/test_release_candidate_cpu_smoke.py
+            /tools/parity/release_candidate_model_metadata.py
+            /tools/parity/test_release_candidate_model_metadata.py
+            /.github/workflows/release-candidate-cpu-smoke.yml
+            /.github/workflows/release-candidate-source-tests.yml
+            !/tools/parity/cosyvoice2_llm_reference/**
+            !/tests/parity/silero_vad/**
+
+      - name: Verify protected trees are excluded
+        run: |
+          set -euo pipefail
+          test ! -e tools/parity/cosyvoice2_llm_reference
+          test ! -e tests/parity/silero_vad
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+
+      - name: Ensure Python 3.12 is available
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+
+      - name: Run offline mocked regressions
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-release-cpu-source-uv
+        run: |
+          set -euo pipefail
+          UV_OFFLINE=1 uv run --no-project --offline --python 3.12 python tools/parity/test_release_candidate_cpu_smoke.py
+          UV_OFFLINE=1 uv run --no-project --offline --python 3.12 python tools/parity/test_release_candidate_model_metadata.py
+
+      - name: Fetch fixed public metadata only
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-release-cpu-source-uv
+          PINS_OUTPUT: ${{ runner.temp }}/vokra-release-cpu-source/pins.json
+          RECEIPT: ${{ runner.temp }}/vokra-release-cpu-source/metadata-receipt.json
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python tools/parity/release_candidate_model_metadata.py \
+            --pins-output "${PINS_OUTPUT}" --receipt "${RECEIPT}"
+
+      # Only compact pin/identity records are recoverable; API payloads and
+      # resolver/model URLs are never saved or uploaded.
+      - name: Upload compact metadata records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-candidate-source-metadata-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/vokra-release-cpu-source/pins.json
+            ${{ runner.temp }}/vokra-release-cpu-source/metadata-receipt.json
+          if-no-files-found: error
+          retention-days: 3

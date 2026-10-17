@@ -12,6 +12,45 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+### Added
+
+- Native Mimi backend dispatch for ELU and additional learned compute seams,
+  plus a bounded Kyutai STT streaming-LM API and visible-context attention.
+  These are implementation/source milestones, not a newly validated complete
+  PCM transcription or full-catalog Apple Metal claim (#185–#187).
+- Same-run native desktop release producers and a complete CLI/C ABI payload
+  verifier for Linux, macOS arm64 and Windows, including checksums, SBOMs and
+  the Linux musl CLI. This is release tooling, not an assertion that the
+  existing v0.3.0 assets have been replaced (#199).
+
+### Fixed
+
+- Tighten Kyutai source/lock projection and Candle model-free CPU/API checks;
+  reject incomplete or unbound checkpoint, API and dependency evidence in
+  the affected reference/preflight tools. Successful source checks remain
+  separate from independent real-weight model validation (#230, #235,
+  #239, #241, #246, #249, #251, #255).
+- Correct selected non-Apple source contracts and compile-free commit tooling,
+  retaining explicit unsupported paths and the runtime's first-party-only
+  dependency boundary (#247).
+
+### Security
+
+- Update reviewed Torch/Transformers/Lightning reference environments and
+  scoped urllib3, multidict, Mako and server dependency closures. Reference
+  environments with unresolved source/native/license/operator gates remain
+  blocked; these updates do not certify every optional tool or model.
+- Patch the isolated server's rustls dependency and reject credential-printing
+  VAST diagnostics; model acquisition and large Cargo verification remain
+  remote-only (#196, #238, #244).
+
+### Documentation
+
+- Refresh current/public English and Japanese status entry points and dated
+  verification routing, preserving historical results, the frozen owner
+  decision scope and the distinction between code coverage and real-device
+  validation (#200, #233, #257, #260).
+
 ## [0.3.0] — 2026-09-17
 
 ### Changed
