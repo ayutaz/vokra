@@ -301,3 +301,101 @@ Source inspection confirms that this regression reads workflow/Rust source
 only, without Cargo, model loading or network operations. No safety hook or
 guard override was changed. The five checks must be independently accepted
 by the new hosted setup job before model work or numerical acceptance.
+
+## Accepted source, normal merge, and first candidate failure
+
+The corrected exact head `b34ea539e24801a6ab39601793925dfef367aa5d` passed
+the actual hosted checks, not merely their static preparation:
+
+- Both JA and explicit ZH setup jobs independently ran the five workflow
+  regressions successfully.
+- [JA run 39053237243, job 117455971809](https://github.com/ayutaz/vokra/actions/runs/39053237243/job/117455971809)
+  matched all three selected GGUF hashes and reported `1 passed; 0 failed;
+  0 ignored` (11 other tests filtered, 58.95 seconds). The AMD EPYC 9V74
+  runner exposed four logical CPUs and Torch AVX512. Waveform max absolute
+  delta was `3.769518e-2`; mel-loss RMS was `1.636336e-1`.
+- [ZH run 39053248247, job 117457238630](https://github.com/ayutaz/vokra/actions/runs/39053248247/job/117457238630)
+  matched all four hashes and reported `1 passed; 0 failed; 0 ignored`
+  (11 other tests filtered, 48.32 seconds). The Intel Xeon Platinum 8573C
+  runner exposed four logical CPUs and Torch AVX512. ZH BERT max absolute
+  delta was `1.907349e-5`, waveform max absolute delta `7.108895e-2`, and
+  mel-loss RMS `2.006014e-1`.
+
+These are the selected JA/ZH fixture-G2P replay paths within unchanged suite
+bounds, not production G2P or all-model/platform acceptance. UTMOS was
+explicitly skipped in both runs. No numerical bound or owner/legal decision
+was changed.
+
+All fourteen started workflows completed successfully at that head. A fresh,
+paginated API audit verified 91 completed check runs (success or intentional
+skip) and all sixteen required context/application pairs specifically
+successful, with strict branch protection and administrator enforcement
+unchanged. PR [#263](https://github.com/ayutaz/vokra/pull/263) was normally
+squash-merged at `2026-10-17T17:42:04Z`, producing main
+`6355c94e6376566bbbc1870353452fa2fc79c116`. Local main was synchronized and
+clean. The PR head and merged main have the identical source tree
+`79e2b9ed93c5b819f2b5763470bd3f9c0ff00e7e`; earlier VAST/numerical receipts
+retain their original commit identities rather than being restamped.
+
+The first actual RC workflow,
+[39054950513](https://github.com/ayutaz/vokra/actions/runs/39054950513),
+was dispatched once at this exact merged main with tag `v0.4.0-rc.1`.
+Input validation, all three OS producers, and complete payload assembly /
+manifest / checksum / SBOM verification succeeded. The downloaded-payload
+consumers then all failed before native clean-install or model acceptance:
+
+- Windows clean install: job `117463400995`;
+- Linux clean install: job `117463401000`;
+- packaged Linux model smoke: job `117463401050`;
+- macOS arm64 clean install: job `117463401053`.
+
+Each reports `CLI payload is not executable` for the Linux CLI while running
+`desktop_release.py verify`. The shared `_verify_primary` routine requires
+the Unix owner-execute bit even for transported files and foreign-platform
+payloads. [The official artifact transport documentation](https://github.com/actions/upload-artifact#permission-loss)
+documents that zipped artifact transfer normalizes file permissions to
+`644`. Assembly had restored executable bits, but a subsequent artifact
+download lost them again; on Windows, Unix executable-mode semantics must
+not be used to authenticate an ELF payload.
+
+Publication was correctly skipped. Independent tag/ref and Release API
+readback confirmed no `v0.4.0-rc.1` tag, draft or public Release; Latest
+remained `v0.3.0`. No candidate model run is accepted from this failed
+attempt. The follow-up separates portable byte/content verification from
+build-time permissions and native post-install execution, retaining every
+hash, size, filename, architecture, ZIP, header, SBOM/version and actual
+native execution gate. Focused fake-payload regressions, fresh normal PR CI,
+and a new exact-merged-main RC workflow must pass before publication.
+
+## Portable payload correction — focused acceptance
+
+The follow-up branch is `codex/fix-rc-payload-verification-20261018`, based
+on merged main `6355c94e`. Portable `verify_dist` no longer treats host Unix
+mode bits as payload identity. Manifest generation on the assembly host
+still requires executable Unix CLIs. Native consumer jobs still restore
+their native CLI mode before actual help/model execution; the Windows ZIP
+contract and C ABI version checks are unchanged. No workflow, Rust source,
+model pin, numerical bound, protected tree or safety hook is changed.
+
+Manager review corrected an initially incomplete static order assertion:
+missing fragments must fail rather than let `find() == -1` satisfy an order
+comparison. The final helper requires both fragments and correct ordering;
+its self-test rejects missing and reversed fragments. Fake-payload regression
+diagnostics independently distinguish hash/size drift, wrong architecture
+and the retained assembly executable-mode guard.
+
+The manager independently ran the normal direct Python 3.12 entry points
+through offline `uv run` with a writable temporary UV cache:
+
+- desktop payload regressions: 19 tests passed;
+- RC workflow oracle: 36 checks passed, plus ordering-helper self-tests;
+- release artifact-handoff oracle: 24 checks passed;
+- documentation references, workflow hygiene (59 workflows), eight
+  compliance scanner regressions and `git diff --check`: passed.
+
+The first bare workflow-hygiene invocation could not access the default UV
+cache; rerunning with the established writable temporary cache passed. No
+hook refusal was bypassed, no local Cargo compilation or model operation
+was run, and no paid worker was created. This focused acceptance is not a
+fresh hosted candidate or publication result. Normal PR CI and a new
+exact-merged-main RC execution remain required.

@@ -201,7 +201,12 @@ class DesktopReleaseTests(unittest.TestCase):
             manifest_args = argparse.Namespace(version="1.2.3", dist_dir=str(out))
             desktop.write_manifest(manifest_args)
             desktop.verify_dist(manifest_args)
-            self.assertTrue((out / "vokra-cli-1.2.3-x86_64-linux").stat().st_mode & stat.S_IXUSR)
+            for cli_name in (
+                "vokra-cli-1.2.3-x86_64-linux",
+                "vokra-cli-1.2.3-x86_64-linux-musl",
+                "vokra-cli-1.2.3-aarch64-macos",
+            ):
+                self.assertTrue((out / cli_name).stat().st_mode & stat.S_IXUSR)
             first_zip = (out / "vokra-cli-1.2.3-x86_64-windows.zip").read_bytes()
             second_zip = root / "second.zip"
             desktop._write_windows_zip(root / "cli-windows", second_zip)
@@ -209,6 +214,50 @@ class DesktopReleaseTests(unittest.TestCase):
             document = json.loads((out / "vokra-desktop-manifest.json").read_text())
             self.assertEqual(document["assets"], sorted(document["assets"], key=lambda item: item["name"]))
             self.assertEqual(document["assets"][0].keys(), {"name", "role", "sha256", "size", "target"})
+
+    def test_transport_mode_loss_is_ignored_but_content_drift_is_not(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args, out = make_valid_dist(Path(tmp))
+            for name in (
+                "vokra-cli-1.2.3-x86_64-linux",
+                "vokra-cli-1.2.3-x86_64-linux-musl",
+                "vokra-cli-1.2.3-aarch64-macos",
+            ):
+                (out / name).chmod(0o644)
+            # upload-artifact/download-artifact can normalize Unix modes to
+            # 0644; portable verification must still validate bytes, hashes,
+            # architecture, and the manifest.
+            desktop.verify_dist(args)
+
+            linux = out / "vokra-cli-1.2.3-x86_64-linux"
+            data = bytearray(linux.read_bytes())
+            data[20] ^= 0x01
+            linux.write_bytes(data)
+            with self.assertRaisesRegex(desktop.DesktopReleaseError, "manifest hash/size mismatch"):
+                desktop.verify_dist(args)
+
+    def test_manifest_generation_retains_assembly_mode_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args, out = make_valid_dist(Path(tmp))
+            for name in (
+                "vokra-cli-1.2.3-x86_64-linux",
+                "vokra-cli-1.2.3-x86_64-linux-musl",
+                "vokra-cli-1.2.3-aarch64-macos",
+            ):
+                (out / name).chmod(0o644)
+            with self.assertRaisesRegex(desktop.DesktopReleaseError, "not executable"):
+                desktop.write_manifest(args)
+
+    def test_architecture_corruption_fails_after_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args, out = make_valid_dist(Path(tmp))
+            linux = out / "vokra-cli-1.2.3-x86_64-linux"
+            linux.chmod(0o644)
+            data = bytearray(linux.read_bytes())
+            data[18:20] = (0xB7).to_bytes(2, "little")
+            linux.write_bytes(data)
+            with self.assertRaisesRegex(desktop.DesktopReleaseError, "expected ELF x86_64 binary"):
+                desktop.verify_dist(args)
 
     def test_missing_sidecar_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
