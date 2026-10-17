@@ -12,11 +12,14 @@ on:
       - "tools/release/desktop_release.py"
       - "tools/release/test_desktop_release.py"
       - "tools/release/test_release_artifact_handoff.py"
+      - "tools/release/rc_distribution_identity.py"
+      - "tools/release/test_rc_distribution_identity.py"
       - "tools/release/test_rc_release_workflow.py"
       - "tools/release/version_contract.py"
       - "scripts/sbom/generate_spdx.py"
       - ".github/workflows/release.yml"
       - ".github/workflows/release-rc1-gh-only.yml"
+      - ".gitattributes"
       - "tools/parity/release_candidate_rc1_pins.json"
       - "crates/vokra-cli/**"
       - "crates/vokra-capi/**"
@@ -126,6 +129,7 @@ jobs:
       - name: Run desktop release unit and handoff regressions
         run: |
           uv run --no-project --python 3.12 python tools/release/test_desktop_release.py
+          uv run --no-project --python 3.12 python tools/release/test_rc_distribution_identity.py
           uv run --no-project --python 3.12 python tools/release/test_release_artifact_handoff.py
           uv run --no-project --python 3.12 python tools/release/test_version_contract.py
           uv run --no-project --python 3.12 python tools/release/test_rc_release_workflow.py

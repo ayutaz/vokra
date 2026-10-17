@@ -8,7 +8,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -110,6 +112,62 @@ def make_valid_dist(root: Path) -> tuple[argparse.Namespace, Path]:
 
 
 class DesktopReleaseTests(unittest.TestCase):
+    def test_header_eol_pin_survives_windows_checkout(self) -> None:
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is required to exercise checkout EOL conversion")
+        attributes = (HERE.parents[1] / ".gitattributes").read_bytes()
+        normalized_attributes = attributes.replace(b"\r\n", b"\n")
+        pin = b"include/vokra.h text eol=lf"
+        self.assertIn(pin, normalized_attributes)
+
+        def checkout_bytes(attribute_bytes: bytes, *, index_only: bool = False) -> bytes:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                (repo / ".gitattributes").write_bytes(attribute_bytes)
+                (repo / "include").mkdir()
+                header = repo / "include" / "vokra.h"
+                header.write_bytes(b"alpha;\nbeta;\n")
+                (repo / "empty-gitconfig").write_bytes(b"")
+                env = {
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": str(repo / "empty-gitconfig"),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                }
+
+                def run(*args: str, checkout: bool = False) -> None:
+                    command = [git]
+                    if checkout:
+                        command.extend(("-c", "core.autocrlf=true", "-c", "core.eol=crlf"))
+                    command.extend(args)
+                    subprocess.run(
+                        command,
+                        cwd=repo,
+                        env=env,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+
+                run("init", "--quiet")
+                run("add", ".gitattributes", "include/vokra.h")
+                if index_only:
+                    (repo / ".gitattributes").unlink()
+                header.unlink()
+                run("checkout", "--", "include/vokra.h", checkout=True)
+                return header.read_bytes()
+
+        self.assertEqual(checkout_bytes(normalized_attributes), b"alpha;\nbeta;\n")
+        self.assertEqual(checkout_bytes(normalized_attributes, index_only=True), b"alpha;\nbeta;\n")
+
+        missing_pin = normalized_attributes.replace(pin + b"\n", b"", 1)
+        wrong_pin = normalized_attributes.replace(pin, b"include/vokra.h text eol=crlf", 1)
+        self.assertEqual(checkout_bytes(missing_pin), b"alpha;\r\nbeta;\r\n")
+        self.assertEqual(checkout_bytes(wrong_pin), b"alpha;\r\nbeta;\r\n")
+        self.assertEqual(checkout_bytes(missing_pin, index_only=True), b"alpha;\r\nbeta;\r\n")
+        self.assertEqual(checkout_bytes(wrong_pin, index_only=True), b"alpha;\r\nbeta;\r\n")
+
     def test_binary_identity_rejects_wrong_and_empty_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

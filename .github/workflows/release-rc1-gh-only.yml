@@ -224,6 +224,22 @@ jobs:
             --pins-json "$PINS_PATH" --cli "$CLI" \
             --audio tests/fixtures/audio/jfk-30s.wav --receipt "$RECEIPT" \
             --expected-head "$EXPECTED_HEAD"
+      - name: Bind smoke receipt to verified RC distribution
+        env:
+          EXPECTED_HEAD: ${{ needs.validate-input.outputs.source_sha }}
+          RECEIPT: ${{ runner.temp }}/vokra-rc1-cpu-smoke/receipt.json
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-rc1-cpu-smoke-uv
+        run: |
+          set -euo pipefail
+          CLI="$GITHUB_WORKSPACE/dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux"
+          MANIFEST="$GITHUB_WORKSPACE/dist/desktop/vokra-desktop-manifest.json"
+          uv run --no-project --python 3.12 python tools/release/rc_distribution_identity.py \
+            --receipt "$RECEIPT" --manifest "$MANIFEST" --cli "$CLI" \
+            --version "$RC_VERSION" --source-head "$EXPECTED_HEAD" \
+            --github-run-id "$GITHUB_RUN_ID_VALUE" \
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT_VALUE"
       - name: Upload bounded RC smoke receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
