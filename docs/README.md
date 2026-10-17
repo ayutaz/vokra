@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**2026-10-17 representative CPU result:** [actual model receipt and limits](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
+supersede the unrun preparation snapshot below. PR #261 is normally merged
+as `9ee5834d` after 70 successful checks / one intentional skip and all sixteen
+required context/application pairs. Hosted regressions passed 17 + 7 tests;
+the separately authorized single native run passed Whisper base ASR and
+Silero VAD v5 speech/silence on Linux CPU. No numerical-parity, performance,
+Apple/Metal or full-catalog completion claim follows. Next comes packaging
+and distribution verification; `v0.4.0-rc.1` remains a candidate, not a release.
+
 **2026-10-17 next-preview preparation:** the user requests release stages
 1–3 only, plus an evidence-based comparison for announcements. See the
 [v0.4.0 preview scope and acceptance conditions](handoff/release-0.4.0-preview-preparation-2026-10-17.md)

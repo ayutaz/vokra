@@ -55,17 +55,23 @@ speech.cppの整備状況を参考にし、現時点でVokraが上回るとは�
 
 ## 告知案と公開条件
 
+同日の[実CPU検証](release-0.4.0-preview-cpu-results-2026-10-17.md)で、main
+`9ee5834d`のWhisper base ASR／Silero VAD v5のspeech/silenceはLinux CPUで成功した。
+これで具体的な開発状況は説明できるが、配布版の公開、Apple対応、精度・速度の優位性は
+依然として証明していない。下のpreview公開用templateは実Releaseができてから使う。
+
 ### 現時点で使える開発状況の説明案
 
 > Rust製の音声推論・音声処理runtime「Vokra」を開発しています。
 > デフォルトruntimeの外部Cargo依存はゼロ。音声frontendやstreaming stateを含め、
 > Rustアプリへ組み込むための基盤を目指しています。
-> 次版では検証した音声認識・VAD経路と、対応範囲・再現手順をまとめる予定です。
+> Whisper baseの音声認識とSilero VAD v5をLinux CPUで実音声検証しました。
+> 開発版の対応範囲・制限と検証結果を公開しています。配布版は準備中です。
 
 ### 検証後だけ使うpreview告知テンプレート
 
 > Vokraの次版previewを準備しました。
-> Rust-nativeな音声runtimeとして、まず〔receiptで確認したASR/VADと環境〕を公開。
+> Rust-nativeな音声runtimeとして、Whisper baseのASRとSilero VAD v5をLinux CPUで検証。
 > 〔実際に確認した導入手順／デモ〕から試せます。
 > 全モデル対応・Metal検証完了ではありません。対応範囲と制限：〔URL〕
 
