@@ -17,6 +17,8 @@
 # their exact bytes for Git-blob verification.
 tools/parity/kyutai_candle_reference/pinned-asr.rs -filter -diff -merge -text
 tools/parity/kyutai_candle_reference/pinned-LICENSE -filter -diff -merge -text
+tools/parity/kyutai_candle_reference/pinned-transformer.rs -filter -diff -merge -text
+tools/parity/kyutai_candle_reference/pinned-lm.rs -filter -diff -merge -text
 
 # WeSpeaker source/license fixtures are verified by SHA-256 and Git-blob
 # identity; preserve the exact upstream bytes across checkout platforms.
