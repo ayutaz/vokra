@@ -1,5 +1,12 @@
 # Current 58-row prerequisite inventory
 
+> **2026-10-17 current routing:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
+> link this row-specific inventory to the current PR queue. The retained
+> 10/16 TSV is hash-identical to the 10/14 snapshot below; this documentation
+> update does not perform a new public inventory or advance execution
+> readiness. `NOT_PROVEN`, `UNKNOWN_EXCLUDED`, all 58 rows and the separate
+> frozen 63-row owner denominator retain their original meanings.
+
 Read-only management inventory, 2026-10-14. No model/archive was acquired,
 loaded or executed; no cloud worker was created; no approval, owner field or
 protected manifest was changed or read.

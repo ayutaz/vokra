@@ -137,7 +137,14 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 
 ## 6. owner / contributor 境界
 
-新しい **2026-10-13 metadata snapshot** は exact GitHub `main` の
+**2026-10-17 current routing:** [現況と残タスク](handoff/current-status-and-remaining-tasks-2026-10-17.md)は
+baseline main `5f1dfc1e`、未マージ7 PR、#259の通常CI成功と追加パッチの実compile/API
+未実施を記録する。保持している10月16日のinventoryは194 repositories、
+136 code/artifact-full／58 non-fullであり、新しいbackend／Apple parity証跡ではない。
+非Apple前提と承認済み実weight CPUを解決後、最終packetとScalewayへ進む。
+CPU fallback、owner判断や公開許可は推定しない。
+
+過去の **2026-10-13 metadata snapshot** は exact GitHub `main` の
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` を基準にし、repository 194、
 GGUF repository 193、GGUF file 198 を報告する。CPU は `full=136`、
 `partial=43`、`no-runtime-binder=14`、`not-artifact=1`、Metal は

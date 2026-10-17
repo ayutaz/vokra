@@ -62,6 +62,16 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 現行の workspace release line は `0.3.0` である。
 
+**2026-10-17 current campaign snapshot:** baseline main `5f1dfc1e`には、
+受理済みのmodel-free Candle CPU/API対応が含まれる。PR #259の通常CIは72成功・
+意図したskip1件で完了したが、追加observerパッチの実upstream library/API検証は
+未実施のためDraftを維持する。最新の保持inventoryは10月16日の194 repositories、
+136 code/artifact-full／58 non-fullである。この文書更新ではinventoryを再取得せず、
+API/header再生成、実weight CPU、Apple parityの完了も主張しない。
+[現況と残タスク](handoff/current-status-and-remaining-tasks-2026-10-17.md)に、未マージ7 PRと
+非Apple前提 → VAST → 最終packet → Scaleway → 結果記録・cleanupの順序をまとめる。
+以下のhistorical snapshotは当時の範囲を保持する。
+
 **2026-10-13 metadata snapshot:** exact GitHub `main` checkout は
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`。fresh metadata/card-only
 audit は repository 194、GGUF repository 193、GGUF file 198 を報告している。

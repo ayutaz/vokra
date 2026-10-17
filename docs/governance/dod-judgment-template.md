@@ -1,5 +1,10 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
+> **2026-10-17 current routing:** the [current status and remaining tasks](../handoff/current-status-and-remaining-tasks-2026-10-17.md)
+> replace older current campaign/PR pointers. This remains a judgment
+> template, not an executed review: no GA verdict, milestone date, metric,
+> owner approval or tag is supplied by source CI or this documentation update.
+
 > **2026-10-13 current routing / supersession:** The [2026-10-13 snapshot](../handoff/documentation-refresh-2026-10-13.md) is the current main/release pointer. This remains an unfilled GA judgment template; static audit PASS, merged packaging source and metadata counts do not authorize a GA verdict or tag.
 
 > **Current state (2026-10-08):** exact GitHub `main` is
