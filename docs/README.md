@@ -1,6 +1,23 @@
 # Vokra documentation
 
-**2026-10-17 RC packaging:** [candidate validation and publication plan](handoff/release-0.4.0-rc1-packaging-2026-10-17.md)
+**2026-10-18 published RC:** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+is GitHub release `416018534`, published from exact source/tag
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a` with `draft=false` and
+`prerelease=true`; Latest remains `v0.3.0` and 22 assets are uploaded. Final
+hosted run [`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813)
+passed all 10 jobs: three-OS producers, fresh transferred native CLI help/C ABI
+exact-version checks, Linux assembled-CLI Whisper/Silero functional smoke, and
+publication byte round-trip. The recovered receipt SHA-256 is
+`d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`; its
+distribution identity binds the Linux CLI SHA-256
+`2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4` (13,344,272
+bytes) and manifest SHA-256
+`32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`. This is
+CPU-only preview evidence, not macOS/Windows model inference, Apple
+Metal/no-fallback, full-catalog completion, performance, or numerical parity;
+model/Space/HF/registry/X/Scaleway artifacts were not updated.
+
+**Historical prepublication note (2026-10-17):** [candidate validation and publication plan](handoff/release-0.4.0-rc1-packaging-2026-10-17.md)
 records the new request to complete version synchronization, packaged-binary
 verification and GitHub pre-release publication. Baseline main is `fab4638a`.
 The candidate is `v0.4.0-rc.1`, not yet a published release; Latest remains
@@ -9,7 +26,7 @@ This does not close the separate all-model Apple campaign.
 The candidate installation guide is staged in [English](release-0.4.0-rc1.md)
 and [Japanese](release-0.4.0-rc1.ja.md); download assets are not yet published.
 
-**2026-10-17 representative CPU result:** [actual model receipt and limits](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
+**Historical 2026-10-17 representative CPU result:** [actual model receipt and limits](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
 supersede the unrun preparation snapshot below. PR #261 is normally merged
 as `9ee5834d` after 70 successful checks / one intentional skip and all sixteen
 required context/application pairs. Hosted regressions passed 17 + 7 tests;
@@ -413,8 +430,10 @@ environment they name.
 
 | Need | Document |
 |---|---|
-| What to do next | [2026-10-17 current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md): seven open PRs and exact scope confirmations, non-Apple/owner gates, VAST CPU, final packet, then Scaleway and result/cleanup audit |
-| Latest execution readback | [2026-10-17 current CI and six-stage readback](handoff/current-status-and-remaining-tasks-2026-10-17.md): #259 ordinary CI accepted as evidence only, patched compilation NOT_RUN; original model-free stages 1–2 closed and stages 3–6 open |
+| Published RC installation | [English](release-0.4.0-rc1.md) / [日本語](release-0.4.0-rc1.ja.md): `v0.4.0-rc.1` CPU-only preview, with its published asset and platform limitations |
+| RC acceptance record | [2026-10-17 RC packaging and acceptance](handoff/release-0.4.0-rc1-packaging-2026-10-17.md): exact source/tag `d84d311e98d0abb2987b5c4e96157ae8f2068e1a`, hosted run `39062234813`, and the verified asset/receipt evidence |
+| Dated campaign — What to do next | [2026-10-17 current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md): seven open PRs and exact scope confirmations, non-Apple/owner gates, VAST CPU, final packet, then Scaleway and result/cleanup audit; this is a campaign snapshot, not the current RC status |
+| Dated campaign — Latest execution readback | [2026-10-17 current CI and six-stage readback](handoff/current-status-and-remaining-tasks-2026-10-17.md): #259 ordinary CI accepted as evidence only, patched compilation NOT_RUN; original model-free stages 1–2 closed and stages 3–6 open; this is a campaign snapshot, not the current RC status |
 | Historical whole-workspace source run | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): exact `4263f416` source gates green (8,223 passed), earlier failed attempts retained, owned VAST worker/storage destroyed; not a new-head model/Apple result |
 | All unresolved public rows | [2026-10-14 58-row prerequisite inventory](handoff/current-58-prerequisite-inventory-2026-10-14.md): exact metadata denominator, per-row first prerequisites, and protected-input exclusion; not an execution approval |
 | Latest static prerequisite review | [2026-10-15 58-row readback](handoff/current-58-static-prerequisite-readback-2026-10-15.md): 57 source/static observations plus one protected exclusion; current first prerequisites, pending PR scopes and corrections to namespace/count comparisons, not production readiness or CPU evidence |
@@ -526,6 +545,11 @@ and the model roster remain pre-1.0 and may change. The C header and Python
 prototype table are checked for exact function-set equality; documentation
 therefore avoids copying a function count that would drift on the next ABI
 addition.
+
+The published [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+is a CPU-only GitHub preview. Its hosted Linux model smoke and cross-platform
+packaging checks do not claim macOS/Windows model inference, Apple
+Metal/no-fallback, full-catalog completion, performance, or numerical parity.
 
 The exact release scope, GitHub-only channel decision, security-alert triage
 and final gate list are recorded in the

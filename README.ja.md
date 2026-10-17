@@ -14,7 +14,20 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **リリース候補の準備（2026-10-17）:** `v0.4.0-rc.1`の配布準備中で、公開済みLatestは
+> **公開済みリリース候補（2026-10-18 JST）:** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1) は
+> GitHub release `416018534` として、exact source/tag
+> `d84d311e98d0abb2987b5c4e96157ae8f2068e1a`から公開済みです（`draft=false`、
+> `prerelease=true`）。Latestは`v0.3.0`のままで、assetは22件です。最終hosted run
+> [`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813) は10 jobすべて成功し、
+> 3 OS producer、転送後のnative CLI `--help`とC ABIのexact version確認、Linux assembled CLIの
+> Whisper/Silero機能smoke、公開byte round-tripを完了しました。回収receiptのSHA-256は
+> `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`で、Linux CLIの
+> `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`（13,344,272 bytes）と
+> manifestの`32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`にbindされています。
+> これはCPU-only previewです。macOS/Windowsのmodel推論、Apple Metal/no-fallback、全catalog完了、
+> performance、数値parityを主張せず、model/Space/HF/registry/X/Scaleway artifactも更新していません。
+>
+> **過去の公開前記録（2026-10-17）:** `v0.4.0-rc.1`の配布準備中で、公開済みLatestは
 > 引き続き`v0.3.0`です。source `9ee5834d`では、Whisper base ASRとSilero VAD v5の
 > 音声・無音判定がhosted Linux CPUの機能smokeに成功しました。数値parityや
 > Apple/Metal検証ではありません。[実CPU検証結果](docs/handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)と
@@ -22,7 +35,7 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 > [候補版の導入ガイド](docs/release-0.4.0-rc1.ja.md)も準備していますが、取得先assetが
 > 既に存在するという意味ではありません。
 >
-> **現在の対応状況（2026-10-17）:** 配布準備のbaseline mainは`fab4638a`です。
+> **過去の対応状況（2026-10-17、公開済みRCによりsupersede）:** 配布準備のbaseline mainは`fab4638a`です。
 > PR #255のmodel-free CPU/API検証と通常受理は完了しました。PR #259はマージせず
 > closedとなり、追加observerパッチの実upstream compilation/APIの受理結果はありません。
 > このsnapshot時点で他のPRは6件openです。最新の保持inventoryは10月16日の

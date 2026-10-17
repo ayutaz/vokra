@@ -515,3 +515,125 @@ before atomic replacement; an error fails the job and cannot authorize
 publication. No refused model-driver inspection/execution was retried through
 an alternative route. Fresh hosted CI and the new final-source RC are still
 unrun at this checkpoint.
+
+## Header/identity correction accepted and third candidate dispatched
+
+PR [#265](https://github.com/ayutaz/vokra/pull/265) exact head
+`6a4e3b048391f08ab76cd4037ccbfd7f95d92d55` passed all ten started workflows.
+A fresh, paginated manager audit verified all 74 completed check runs:
+73 successful and the intentional full-history gitleaks skip. All sixteen
+required context/application pairs specifically succeeded. Strict branch
+protection and administrator enforcement remained enabled, and no admin
+merge bypass was used.
+
+Desktop completeness
+[run 39060302361, assembly job 117479935470](https://github.com/ayutaz/vokra/actions/runs/39060302361/job/117479935470)
+successfully built all three OS payloads and verified the actual native
+C ABI, complete distribution manifest, checksums and separate SBOMs. The
+manager independently inspected the actual hosted log: 20 desktop tests,
+10 distribution-identity tests, 24 handoff checks, 17 version checks and
+40 RC workflow checks executed successfully. This supersedes their earlier
+unrun-hosted checkpoint, not the still-unaccepted new candidate model or
+publication gates.
+
+The normal squash merge at `2026-10-17T19:22:46Z` produced main
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`. Accepted PR and merged main source
+trees both equal `67e7485b31a403e112e478aa09ad40db458098da`. Maintainer main
+and origin/main were synchronized and clean before dispatch. The original
+VAST receipt remains at `3d4a88f5`; the accepted correction's Rust crates
+and root Cargo.toml/Cargo.lock Git identities still match that original
+compiled source. No new paid worker or local model operation was needed.
+
+Independent pre-dispatch readback confirmed exact live main `d84d311e`, no
+RC tag/draft/Release, Latest `v0.3.0` and all five external-registry/global
+desktop-AAR enable variables still false. Prior candidate runs were terminal;
+neither was retried unchanged. The corrected third candidate
+[run 39062234813](https://github.com/ayutaz/vokra/actions/runs/39062234813)
+was dispatched once at this exact source with fixed tag `v0.4.0-rc.1`.
+Its initial input job is `117482384192`; builds, transferred-payload native
+QA, fresh functional smoke/distribution identity and actual publication
+remain unaccepted at this dispatch checkpoint. Append their actual results
+and independent asset audit below before claiming the four-step goal complete.
+
+## 2026-10-18 published RC and independent exact-identity audit
+
+The third candidate above completed successfully at exact source
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`. All ten actual jobs in
+[run 39062234813](https://github.com/ayutaz/vokra/actions/runs/39062234813)
+succeeded, including the three platform producers, complete assembly,
+fresh transferred-payload QA on Linux/macOS arm64/Windows x86_64, the
+assembled Linux CLI's real-model smoke and the GitHub-only publisher.
+Manager inspection of the actual native QA logs confirms distribution
+verification, CLI help (both glibc and musl on Linux) and native C ABI
+loading with expected version `0.4.0-rc.1`. The publisher uploaded the
+assembled payload, downloaded it again on its hosted worker, passed
+`diff -rq` and strict distribution verification, then published explicitly
+with `--prerelease --latest=false`.
+
+The actual [GitHub prerelease](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+is release ID `416018534`, published at `2026-10-17T19:37:51Z`
+(2026-10-18 JST). A separate API readback confirms `draft=false`,
+`prerelease=true`, exactly 22 uploaded assets, and both `target_commitish`
+and the lightweight tag's commit equal the exact source above. Latest
+remains `v0.3.0`. All five existing external-registry/global desktop-AAR
+enable variables remain false. No tag or asset is regenerated for the
+subsequent documentation-only update.
+
+The manager recovered only the 1,548-byte compressed JSON receipt artifact
+`12111439059` and fifteen small public metadata/header/checksum files
+(71,457 bytes combined). No executable, library, ZIP or model was
+downloaded onto or executed on the maintainer Mac. The raw receipt SHA-256
+is `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`.
+It records `PASS`, exact source, run `39062234813`, attempt `1`, and:
+
+- Linux CLI `vokra-cli-0.4.0-rc.1-x86_64-linux`: 13,344,272 bytes,
+  SHA-256 `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`;
+- manifest SHA-256
+  `32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`.
+
+An independent 49-assertion comparison verifies the exact 22-name inventory,
+all ten manifest entries' byte sizes and hashes against public API digests,
+all fifteen recovered files' hashes against the API, all eleven checksum
+sidecars' payload names/digests, and the receipt's CLI/manifest/source/run
+identity. The receipt retains both reviewed model revision/size/hash pins:
+Whisper base `dddd93ff6301a82aa3750d398cb2e0a599cd9e83` and Silero VAD v5
+`3670dfed054980307eeb1711c6329c29b80bdf14`, 293,043,104 bytes combined.
+All three commands use the exact assembled CLI with explicit CPU backend
+and return zero. ASR contains the JFK keyphrase; VAD reports 214 speech
+frames out of 343 for speech and zero out of 343 for generated silence.
+The input remains 176,000 mono 16 kHz PCM16 frames (11 seconds), despite
+its historical `jfk-30s.wav` filename. Semantic checks explicitly pass.
+
+This is CPU-only preview distribution and representative Linux functional
+evidence, not numerical parity, WER/CER, performance, macOS/Windows model
+inference, Apple Metal/no-fallback or full-catalog completion. Source and
+model licences remain separate. No owner/legal decision, model row,
+numerical bound, safety hook, HF model/Space, external registry, X post or
+Scaleway resource is changed by this publication. The earlier failed
+candidates and exact-source receipts above remain historical evidence.
+
+The remaining closeout is the current/public English/Japanese guide update,
+normal documentation PR/CI/merge, release-note evidence append and final
+clean-main audit. The four-step goal is not marked complete at this checkpoint.
+
+### Documentation closeout candidate
+
+Branch `codex/rc1-publication-results-20261018` updates only seven Markdown
+files: both root READMEs, the documentation index, both RC installation
+guides, the SBV2 fixture README and this dated record. The manager reviewed
+the Luna-owned six-document diff against the actual public release, receipt,
+manifest and hosted logs. Historical checkpoints remain explicitly dated;
+the SBV2 correction identifies the two earlier accepted runs' exact source
+and CPU/ISA, retains UTMOS SKIP and does not change numerical bounds.
+
+Manager checks pass: documentation-example self-tests and default scope
+(144 blocks / 26 documents, with its existing 30 deferred blocks explicitly
+not verified), documentation-reference self-tests (17 cases) and all legs,
+community English/Japanese checks, runbook and parity-sidecar citations,
+owner-checklist drift, platform support, ABI changelog, zero dependencies,
+workflow hygiene (59 workflows) and `git diff --check`. Both new guide shell
+recipes pass syntax-only `bash -n`; no download or model command is executed.
+The workflow-hygiene invocation initially lacked the task-local UV cache
+setting and was refused on the default cache path. The normal invocation
+with `UV_CACHE_DIR=/private/tmp/vokra-uv-check UV_OFFLINE=1` passes without
+changing repository guards. Normal documentation PR/CI/merge remains next.
