@@ -101,6 +101,64 @@ behavior textually, prove exact reversal, and exercise no-overwrite,
 distinct-path, symlink, unsafe-ancestor, and partial-write handling. They do
 not compile, import, or run upstream/model code.
 
+### Hosted source-processing evidence (2026-10-17)
+
+At reviewed head `777d7881a0dc4ea207e32153cec9541f0d71cfc9`,
+[source-test run 38998090705](https://github.com/ayutaz/vokra/actions/runs/38998090705)
+succeeds on Ubuntu, macOS and Windows. The manager independently checks each
+original job log: fifteen cache tests, seventeen ASR tests and the explicit
+cache self-test pass on each platform, without failures or skips. These are
+source-processing tests, not upstream Rust compilation or model execution.
+
+The earlier head's typos v1.50.3 failure reports the verbatim upstream API
+identifiers `Tensor::arange` and `from_mmaped_safetensors`. The two exact
+authenticated fixture paths are excluded under the existing vendored-source
+policy; their bytes are unchanged and no global word override is added.
+Superseded still-running CI jobs are cancelled after the fresh-head jobs are
+confirmed; the original failure remains historical evidence, not a pass.
+
+## Patched-library compatibility preparation (2026-10-17)
+
+`check_cache_observer_compatibility.py` is a separate, unactivated remote-only
+runner. It normally imports the unchanged CPU checker helpers; it does not
+monkey-patch the historical checker or change any frozen producer. Its new
+opt-in marker is distinct from the consumed PR #255 technical scopes.
+
+The prepared sequence authenticates the original eight-file application
+delivery and frozen helpers, replays the original applier into fresh roots,
+authenticates the actual projection's four source/license inputs, and applies
+the existing observer patch. All three output bindings and byte-exact
+reversals are checked. Detailed projection/vendor/selected-registry snapshots
+must show exactly the three intended source changes, with no manifest, lock
+or dependency-source change. The before-build snapshot is explicitly patched.
+
+The intended remote path then builds the full locked offline CPU library,
+checks the unchanged 105-package graph and compiler-artifact identities, and
+compiles an uncalled API probe for both observers and actual cache/item field
+types. Network-namespace and no-new-privileges checks, Rust/Cargo 1.99.0,
+fresh target/output paths, a shared 900-second deadline and bounded original
+streams are retained. Snapshots are checked immediately after build and again
+after the API probe. Failures remain non-success and preserve bounded evidence.
+
+Manager independently passes all 27 new offline tests, in addition to the
+15 cache and 17 ASR source tests. The orchestration tests mock every external
+stage; they do not compile or execute upstream code. Negative tests cover
+changed provenance/approval/gates, wrong output bindings, partial patches,
+failed reversals, stale or overlapping outputs, wrong toolchain, source drift,
+compiler failure and timeout retention. This is preparation, not an actual
+compatibility result.
+
+Original application artifact `11985400172` is no longer retrievable (API
+404 on 2026-10-17). The preserved private evidence commit
+`e9f236e9c6a811160e9cc69518aef0b49c6f9b45` is clean and its eight files,
+4,333,048 bytes total, independently match every SHA-256 in the
+[original application record](../../../docs/handoff/kyutai-candle-paste-application-result-2026-10-16.md).
+No replacement artifact has been uploaded and the private repository root
+must not be passed as an eight-file delivery because it also contains `.git`.
+An actual job needs a reviewed delivery of only those exact eight files and
+a fresh bounded execution scope; neither consumed compiler label is reused.
+No actual compiler activation workflow or label is supplied by this preparation.
+
 ## Explicit holds
 
 - Rust compilation, Moshi/Candle runtime, model execution, CPU, and Metal:

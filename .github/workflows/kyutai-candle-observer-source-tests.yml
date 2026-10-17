@@ -8,8 +8,11 @@ on:
       - .gitattributes
       - tools/parity/kyutai_candle_reference/asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
+      - tools/parity/kyutai_candle_reference/check_cache_observer_compatibility.py
       - tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
       - tools/parity/kyutai_candle_reference/pinned-asr.rs
       - tools/parity/kyutai_candle_reference/pinned-LICENSE
       - tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -21,8 +24,11 @@ on:
       - .gitattributes
       - tools/parity/kyutai_candle_reference/asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
+      - tools/parity/kyutai_candle_reference/check_cache_observer_compatibility.py
       - tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
       - tools/parity/kyutai_candle_reference/pinned-asr.rs
       - tools/parity/kyutai_candle_reference/pinned-LICENSE
       - tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -54,8 +60,11 @@ jobs:
             .github/workflows/kyutai-candle-observer-source-tests.yml
             tools/parity/kyutai_candle_reference/asr_observer_patch.py
             tools/parity/kyutai_candle_reference/cache_observer_patch.py
+            tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
+            tools/parity/kyutai_candle_reference/check_cache_observer_compatibility.py
             tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
             tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+            tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
             tools/parity/kyutai_candle_reference/pinned-asr.rs
             tools/parity/kyutai_candle_reference/pinned-LICENSE
             tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -72,8 +81,11 @@ jobs:
           test -f .gitattributes
           test -f tools/parity/kyutai_candle_reference/asr_observer_patch.py
           test -f tools/parity/kyutai_candle_reference/cache_observer_patch.py
+          test -f tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
+          test -f tools/parity/kyutai_candle_reference/check_cache_observer_compatibility.py
           test -f tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
           test -f tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+          test -f tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
           test -f tools/parity/kyutai_candle_reference/pinned-asr.rs
           test -f tools/parity/kyutai_candle_reference/pinned-LICENSE
           test -f tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -123,3 +135,14 @@ jobs:
           uv run --no-project --offline --python 3.12 python
           tools/parity/kyutai_candle_reference/cache_observer_patch.py
           --self-test
+
+      - name: Run compatibility runner offline tests (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-kyutai-candle-observer-uv-cache
+        run: >-
+          uv run --no-project --offline --python 3.12 python -m unittest
+          discover -s tools/parity/kyutai_candle_reference
+          -p 'test_cache_observer_compatibility.py' -v
