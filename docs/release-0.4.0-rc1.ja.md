@@ -2,10 +2,21 @@
 
 [English](release-0.4.0-rc1.md) | **日本語**
 
-CPU-onlyの`v0.4.0-rc.1` previewを対象としたガイドです。**ソースの版番号だけでは
-公開済みとは判断できません。** [GitHub releasesページ](https://github.com/ayutaz/vokra/releases)から正確な
-`v0.4.0-rc.1` pre-releaseと検証済みassetの存在を確認した場合だけ、以下の手順を使用してください。公開前には取得先に
-候補版は存在しません。他のtagのassetで代用しないでください。
+公開済みCPU-onlyの`v0.4.0-rc.1` previewを対象としたガイドです。[GitHubの正確な
+releaseページ](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)でpre-releaseと検証済みassetを確認してから
+downloadしてください。他のtagのassetで代用しないでください。
+
+## 公開証跡
+
+releaseはGitHub release `416018534`として`2026-10-17T19:37:51Z`に、exact source/tag
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`から公開されています（`draft=false`、
+`prerelease=true`）。Latestは`v0.3.0`のままで、assetは22件です。最終hosted run
+[`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813)は10 jobすべて成功し、
+3 OS producer、転送後のnative CLI help/C ABI exact version確認、Linux assembled CLIのWhisper/Silero
+機能smoke、公開byte round-tripを完了しました。回収receipt SHA-256は
+`d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`です。distribution identityは
+Linux CLIを13,344,272 bytes、SHA-256 `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`、
+manifest SHA-256を`32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`として記録します。
 
 ## Scope
 
@@ -13,10 +24,10 @@ CPU-onlyのdesktop CLI・C ABIを配布するpreviewです。optional GPU backen
 モデルweightの更新、外部package registryへの公開、API/ABI安定の保証は含みません。
 対応はモデル別です。binaryのbuildや`--help`成功は、そのOSでのモデル推論を証明しません。
 
-Whisper base ASRとSilero VAD v5の音声・無音判定は、過去のsource `9ee5834d`で
-hosted Linux CPUの機能smokeに成功しました。候補版の配布binaryは公開前に別途検証する
-条件です。実際の受理HEADとrunは、記録された候補版受入結果を確認してください。
-いずれも独立数値parity、品質・速度benchmark、Apple/Metal検証ではありません。
+Whisper base ASRとSilero VAD v5の音声・無音判定は、公開済みassembled Linux CLIを使い、
+source/tag `d84d311e98d0abb2987b5c4e96157ae8f2068e1a`のrun
+[`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813)で機能smokeに成功しました。
+これはCPUの機能smokeだけで、独立数値parity、品質・速度benchmark、Apple/Metal検証ではありません。
 [原本結果と制限](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)と
 [候補版受入記録](handoff/release-0.4.0-rc1-packaging-2026-10-17.md)を参照してください。
 
@@ -36,7 +47,7 @@ CLI/C ABI別のSPDX SBOM、native library、`vokra.h`も含めます。異なる
 
 ## Linux installation
 
-公開後、モデル実行が許可された環境の空directoryで使用します。
+モデル実行が許可された環境の空directoryで使用します。
 この手順はmaintainer Macでのモデル実行許可ではありません。
 
 ```sh
@@ -68,7 +79,7 @@ ZIPのSHA-256を照合してください。空directoryに展開し、そのdire
 
 ## Reproduce the bounded Linux ASR example
 
-候補版公開後、固定revisionのモデルと正確なrelease tagの音声fixtureを取得します。
+公開済みreleaseについて、固定revisionのモデルと正確なrelease tagの音声fixtureを取得します。
 モデルはmodel cardのlicenseで別途配布されるもので、runtime releaseによりlicenseや
 再配布条件が変わるわけではありません。
 
@@ -87,9 +98,9 @@ printf '%s\n' '58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f 
   --backend cpu --model whisper-base.gguf --input jfk-30s.wav
 ```
 
-fixtureは過去のfile名と異なり11秒です。過去のtranscriptには
-“ask not what your country can do for you”が含まれます。
-正確な処理速度や認識精度をreleaseの保証とは扱いません。
+fixtureは過去のfile名と異なり11秒です。公開済みassembled CLIのhosted Linux
+CPU smokeでも、transcriptには “ask not what your country can do for you”
+が含まれました。正確な処理速度や認識精度をreleaseの保証とは扱いません。
 
 ## Known limitations and reporting
 

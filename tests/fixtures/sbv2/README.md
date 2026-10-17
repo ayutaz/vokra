@@ -6,9 +6,11 @@ This directory is the fixture set for **Task 28**'s real-checkpoint SBV2
 `parity_sbv2_real_waveform_matches_reference_dump`) and the loader smoke
 tests that sit next to it (`crates/vokra-models/tests/sbv2_gguf_loader.rs`,
 `crates/vokra-bert/tests/deberta_v2_loader.rs`). The end-to-end parity
-consumer is no longer `#[ignore]`d: it clean-skips when its gitignored real
-fixtures are absent and runs under plain `cargo test` once provisioned. This
-directory ships no real checkpoint data, only:
+consumer remains intentionally `#[ignore]`d: an authorized hosted workflow
+selects it only after authenticated real fixtures and an independent reference
+packet are present, using `--ignored --exact --nocapture --color never`. Plain
+`cargo test` does not prove that the numerical consumer ran. This directory
+ships no real checkpoint data, only:
 
 - this `README.md` (the recipe below),
 - four `*.gguf.sha256` **real committed SHA256 sidecars** (the original
@@ -271,7 +273,7 @@ CONVERTER-EMIT-EXPLICIT-ZEROS).
 CARGO_BUILD_JOBS=1 cargo test -p vokra-models --test sbv2_gguf_loader -- --ignored
 CARGO_BUILD_JOBS=1 cargo test -p vokra-bert --test deberta_v2_loader -- --ignored
 CARGO_BUILD_JOBS=1 cargo test -p vokra-models --test parity_sbv2_real \
-  parity_sbv2_real_waveform_matches_reference_dump -- --exact --nocapture
+  parity_sbv2_real_waveform_matches_reference_dump -- --ignored --exact --nocapture --color never
 ```
 
 A missing fixture at this point is a **loud, actionable panic** naming
@@ -430,9 +432,24 @@ completed the surrounding conversion, hash, and reference gates, but the ZH
 log still reported `0 passed; 0 failed; 1 ignored`. The Rust consumer remains
 explicitly ignored and requires its authenticated absolute fixture path and
 `fixture-replay` G2P mode; the corrected workflow now selects that one test
-and rejects an ignored or zero-test exit. Numeric acceptance at the corrected
-head is therefore still pending a run whose log reports exactly one passed,
-zero failed, zero ignored, and zero measured tests.
+and rejects an ignored or zero-test exit. The earlier zero-test log is retained
+as historical evidence, not as numeric acceptance.
+
+The dedicated hosted parity runs subsequently accepted the numeric consumer:
+Both runs used source `b34ea539e24801a6ab39601793925dfef367aa5d`, with the
+source identity confirmed through the hosted API. JA run
+[`39053237243`](https://github.com/ayutaz/vokra/actions/runs/39053237243)
+(job `117455971809`) on AMD EPYC 9V74 (4 cores, Torch AVX512) reported
+waveform max `0.03769518` and mel RMS `0.1636336`; ZH run
+[`39053248247`](https://github.com/ayutaz/vokra/actions/runs/39053248247)
+(job `117457238630`) on Intel Xeon Platinum 8573C (4 cores, Torch AVX512)
+reported BERT-ZH max `0.00001907349`, waveform max `0.07108895`, and mel
+RMS `0.2006014`. Both runs used the explicit
+`--ignored --exact --nocapture --color never` consumer and reported exactly
+one passed, zero failed, zero ignored. UTMOS remains an explicit SKIP, the
+existing bounds are unchanged, and production Mandarin G2P is not validated
+by this fixture-replay parity. These runs do not advance Apple/Metal or
+full-catalog completion and do not change the license/provenance gates.
 
 Historical (pre-`6580061`) format was a **comment-only** placeholder
 containing the word `placeholder`, mirroring the convention

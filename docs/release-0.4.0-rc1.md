@@ -2,11 +2,25 @@
 
 **English** | [日本語](release-0.4.0-rc1.ja.md)
 
-This guide targets the CPU-only `v0.4.0-rc.1` preview. **A source version is
-not proof of publication.** Use the commands only after locating the exact
-`v0.4.0-rc.1` pre-release and its verified assets on the [GitHub releases page](https://github.com/ayutaz/vokra/releases).
-Before publication, these URLs intentionally
-do not provide a candidate; do not substitute another tag's assets.
+This guide targets the published CPU-only `v0.4.0-rc.1` preview. Confirm the
+exact pre-release and its verified assets on the [GitHub release page](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+before downloading; do not substitute another tag's assets.
+
+## Publication evidence
+
+The release is GitHub release `416018534`, published at
+`2026-10-17T19:37:51Z` from exact source/tag
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`, with `draft=false` and
+`prerelease=true`. Latest remains `v0.3.0`; the release contains 22 uploaded
+assets. Final hosted run [`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813)
+passed all 10 jobs, including three-OS producers, fresh transferred native CLI
+help/C ABI exact-version checks, Linux assembled-CLI Whisper/Silero functional
+smoke, and publication byte round-trip. The recovered receipt SHA-256 is
+`d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`; its
+distribution identity records the Linux CLI as 13,344,272 bytes with SHA-256
+`2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4` and the
+manifest SHA-256 as
+`32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`.
 
 ## Scope
 
@@ -16,12 +30,12 @@ package registries, or promise API/ABI stability. Model coverage remains
 per-model; a binary build or `--help` test does not prove model inference on
 that platform.
 
-Whisper base ASR and Silero VAD v5 speech/silence passed an earlier hosted
-Linux CPU functional smoke at source `9ee5834d`. The candidate's packaged
-binary is subject to separate validation before publication; consult the
-candidate record for the actual accepted HEAD and run, if recorded.
-Neither test is independent
-numerical parity, a quality/performance benchmark, or Apple/Metal acceptance.
+Whisper base ASR and Silero VAD v5 speech/silence passed functional smoke on
+the published assembled Linux CLI at source/tag
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a` in run
+[`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813).
+This is functional CPU smoke only: it is not independent numerical parity, a
+quality/performance benchmark, or Apple/Metal acceptance.
 See the [original result and limits](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
 and [candidate acceptance record](handoff/release-0.4.0-rc1-packaging-2026-10-17.md).
 
@@ -41,9 +55,8 @@ libraries and `vokra.h`. Do not substitute assets from another tag/run.
 
 ## Linux installation
 
-After publication, use an empty directory on a machine where model execution
-is permitted. These instructions are not authorization to run models on the
-maintainer Mac.
+Use an empty directory on a machine where model execution is permitted. These
+instructions are not authorization to run models on the maintainer Mac.
 
 ```sh
 mkdir vokra-rc1
@@ -76,7 +89,7 @@ The ZIP contains exactly one `vokra-cli.exe`.
 
 ## Reproduce the bounded Linux ASR example
 
-After the candidate is published, fetch the fixed model revision and the
+For this published release, fetch the fixed model revision and the
 audio fixture from that exact release tag. The model remains separately
 distributed under its model-card licence; a runtime release does not change
 its licence or redistribution conditions.
@@ -96,9 +109,10 @@ printf '%s\n' '58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f 
   --backend cpu --model whisper-base.gguf --input jfk-30s.wav
 ```
 
-The fixture is 11 seconds despite its historical filename. The earlier
-transcript contains “ask not what your country can do for you”. Exact
-performance and transcription accuracy are not release guarantees.
+The fixture is 11 seconds despite its historical filename. The hosted Linux CPU
+smoke for this published assembled CLI produced a transcript containing “ask
+not what your country can do for you”. Exact performance and transcription
+accuracy are not release guarantees.
 
 ## Known limitations and reporting
 
