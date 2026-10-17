@@ -100,3 +100,108 @@ claiming items 2–3 complete. No fresh paid worker was started during preparati
 The all-model campaign remains separate: non-Apple source/dependency/license/
 implementation/reference closure, approved real-weight CPU parity, final
 clean HEAD/fresh packet, Scaleway Apple CPU/Metal/no-fallback, and final audit.
+
+## 2026-10-18 continuation — source verification not yet accepted
+
+The resumed request covers the four-step plan through the actual GitHub
+non-Latest pre-release. Preparation is committed as
+`3d4a88f573c95707a37df546ac40e691d005325f`; the public main baseline remains
+`fab4638a`. No RC branch push, PR, tag or Release has occurred at this checkpoint.
+
+The earlier authentication hold is superseded: the existing repository `.env`
+credential works when supplied through UV's environment-file support to the
+safe wrapper. No credential is printed, copied to a worker or replaced.
+
+Pre-build lifecycle diagnostics exposed separate admission/readiness problems:
+
+- Consecutive searches can return different offer IDs for the same machine
+  and quote. The private controller now binds an explicitly reviewed machine
+  and price to the current response's offer ID; it does not substitute a
+  different machine or accept a changed quote.
+- The installed CLI's default search does not include the SDK's explicit
+  `rented=false` condition. Both the query and the local response validator
+  must require `rentable=true` and `rented=false`.
+- An instance may exist before its connection fields are ready. The current
+  CLI's direct SSH helper reads `ports["22/tcp"][0]["HostPort"]` with
+  `public_ipaddr`; a legacy `direct_port_start` value alone is not sufficient
+  evidence of the SSH endpoint. Exact instance/label validation and bounded
+  readiness are required before connecting. The earlier combined endpoint
+  error does not identify which individual field was unready.
+
+Three short-lived workers were created and destroyed with their stored data:
+`56416236` (16:07:11–16:07:17 UTC), `56416558` (16:10:16–16:10:21 UTC), and
+`56416871` (16:13:04–16:13:08 UTC), all on 2026-10-17 UTC / 2026-10-18 JST.
+Each controller cleanup recorded `instances: null`, and the manager independently
+confirmed the individual absence. These are failed startup attempts, not
+compilation/model evidence. Other admission failures occurred before creation.
+
+The controller's conservative hourly ceiling was revised from USD 0.20 to
+USD 0.25 including 200 GB storage, with the thirty-minute work/cleanup bound
+retained; metered network transfer is separate. Each actual run still requires
+its exact current quote. The controller and mocked lifecycle regressions are
+private operational helpers, not changes to repository safety hooks.
+
+At this checkpoint the updated SSH mapping regression is being finalized.
+Exact-source Clippy/CPU builds, normal PR CI/merge, candidate payload/model
+validation and publication remain unaccepted. Append actual recovered evidence
+below before advancing any of those gates. No local model acquisition/execution,
+HF/Space publication, external registry publication, X post or Scaleway worker
+is part of this continuation.
+
+## 2026-10-18 successful model-free VAST source verification
+
+This result supersedes the pending source-verification checkpoint above,
+not the still-unrun candidate-distribution/model/publication gates.
+
+One further startup attempt, `56418229`, reached connection-port assignment
+but rejected a multiple-record mapping (16:22:44–16:23:33 UTC). It was
+destroyed with its data and independently read back as absent. The corrected
+controller validates all `22/tcp` records, deduplicates a shared HostPort,
+prefers an explicit IPv4 binding and still refuses genuinely ambiguous ports.
+
+Final worker `56418617`, machine `14503`, verified exact source
+`3d4a88f573c95707a37df546ac40e691d005325f`. Live readback confirmed 32 effective
+cores, 200 GB storage and USD `0.24814814814814815`/hour. It was created at
+16:26:05 UTC and destroyed at 16:33:13 UTC on 2026-10-17 (2026-10-18 JST),
+within the thirty-minute limit. Only small text/JSON evidence was recovered;
+no binary or model was recovered onto the maintainer Mac.
+
+All twelve stages returned zero:
+
+- zero-dependency gate; version contract 17; changelog 13; desktop tests 16;
+  artifact-handoff checks 24; RC workflow checks 34; workspace format check;
+- `CARGO_BUILD_JOBS=32 cargo clippy --workspace --all-targets --locked -- -D warnings`
+  (41.89 seconds). Cargo emitted warning summaries in the recovered tail;
+  successful exit is not a claim that the log contains no warnings;
+- CPU-only release CLI build (2 minutes 40 seconds) and C ABI build
+  (1 minute 59 seconds), followed by CLI help and native C ABI version smoke
+  against expected `0.4.0-rc.1`.
+
+The original receipt is:
+
+```json
+{"status":"PASS","scope":"model-free-release-candidate-static-and-compile","head":"3d4a88f573c95707a37df546ac40e691d005325f","version":"0.4.0-rc.1","stage":"capi_native_smoke"}
+```
+
+Recovered evidence SHA-256 values:
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Original receipt | `92939fe832e7e1dfac978d6b937ab190553f0b5dd125cac098d76d773cfc8727` |
+| Bounded stage logs | `4454e62d97c8ddf92334a4af5fac4d53305ab5b07bb4d4ea54077a6cb2aa3b90` |
+| Controller status | `a90f9dfb9981a605334ab0411200173d160597041b01e8ce230696b8e5a3e590` |
+| Reviewed source bundle | `4e1759b97b4738aaf8bf2df2a165762781b2e64a4df8fd0e4b647a6c44be721f` |
+| Final private controller | `b360afd8e75517c9c685c8d2dfad5b23b7019e9b4c2ce040f521ebbab3206e4d` |
+
+Cleanup returned `destroyed-and-null-readback`; the manager independently
+confirmed the exact worker's `instances: null`. All four earlier created
+startup workers named above were also destroyed. No worker is retained for
+this source verification.
+
+Subsequent changes in this branch at acceptance are documentation-only; do
+not relabel this receipt with a later documentation or merge SHA. Fresh normal
+PR CI must accept that final head. After normal merge, the RC workflow must
+still build and validate the actual payload, rerun the two-model hosted Linux
+CPU smoke, pass native clean-install QA and verify the public release/assets
+at its exact merged source SHA. No model test or Apple/Metal result is proved
+by this VAST run.
