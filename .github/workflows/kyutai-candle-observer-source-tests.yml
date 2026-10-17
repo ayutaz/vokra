@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - .github/workflows/kyutai-candle-observer-source-tests.yml
+      - .github/workflows/kyutai-candle-cache-observer-compatibility.yml
+      - .github/workflows/kyutai-candle-cpu-compatibility.yml
       - .gitattributes
       - tools/parity/kyutai_candle_reference/asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/cache_observer_patch.py
@@ -13,6 +15,7 @@ on:
       - tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
       - tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
+      - tools/parity/kyutai_candle_reference/test_cache_observer_workflow.py
       - tools/parity/kyutai_candle_reference/pinned-asr.rs
       - tools/parity/kyutai_candle_reference/pinned-LICENSE
       - tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -21,6 +24,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/kyutai-candle-observer-source-tests.yml
+      - .github/workflows/kyutai-candle-cache-observer-compatibility.yml
+      - .github/workflows/kyutai-candle-cpu-compatibility.yml
       - .gitattributes
       - tools/parity/kyutai_candle_reference/asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/cache_observer_patch.py
@@ -29,6 +34,7 @@ on:
       - tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
       - tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
       - tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
+      - tools/parity/kyutai_candle_reference/test_cache_observer_workflow.py
       - tools/parity/kyutai_candle_reference/pinned-asr.rs
       - tools/parity/kyutai_candle_reference/pinned-LICENSE
       - tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -58,6 +64,8 @@ jobs:
           sparse-checkout: |
             .gitattributes
             .github/workflows/kyutai-candle-observer-source-tests.yml
+            .github/workflows/kyutai-candle-cache-observer-compatibility.yml
+            .github/workflows/kyutai-candle-cpu-compatibility.yml
             tools/parity/kyutai_candle_reference/asr_observer_patch.py
             tools/parity/kyutai_candle_reference/cache_observer_patch.py
             tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
@@ -65,6 +73,7 @@ jobs:
             tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
             tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
             tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
+            tools/parity/kyutai_candle_reference/test_cache_observer_workflow.py
             tools/parity/kyutai_candle_reference/pinned-asr.rs
             tools/parity/kyutai_candle_reference/pinned-LICENSE
             tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -79,6 +88,8 @@ jobs:
           test ! -e tools/parity/cosyvoice2_llm_reference
           test ! -e tests/parity/silero_vad
           test -f .gitattributes
+          test -f .github/workflows/kyutai-candle-cache-observer-compatibility.yml
+          test -f .github/workflows/kyutai-candle-cpu-compatibility.yml
           test -f tools/parity/kyutai_candle_reference/asr_observer_patch.py
           test -f tools/parity/kyutai_candle_reference/cache_observer_patch.py
           test -f tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
@@ -86,6 +97,7 @@ jobs:
           test -f tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
           test -f tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
           test -f tools/parity/kyutai_candle_reference/test_cache_observer_compatibility.py
+          test -f tools/parity/kyutai_candle_reference/test_cache_observer_workflow.py
           test -f tools/parity/kyutai_candle_reference/pinned-asr.rs
           test -f tools/parity/kyutai_candle_reference/pinned-LICENSE
           test -f tools/parity/kyutai_candle_reference/pinned-transformer.rs
@@ -146,3 +158,14 @@ jobs:
           uv run --no-project --offline --python 3.12 python -m unittest
           discover -s tools/parity/kyutai_candle_reference
           -p 'test_cache_observer_compatibility.py' -v
+
+      - name: Run workflow contract tests (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-kyutai-candle-observer-uv-cache
+        run: >-
+          uv run --no-project --offline --python 3.12 python -m unittest
+          discover -s tools/parity/kyutai_candle_reference
+          -p 'test_cache_observer_workflow.py' -v

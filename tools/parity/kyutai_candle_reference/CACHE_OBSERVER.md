@@ -157,7 +157,20 @@ No replacement artifact has been uploaded and the private repository root
 must not be passed as an eight-file delivery because it also contains `.git`.
 An actual job needs a reviewed delivery of only those exact eight files and
 a fresh bounded execution scope; neither consumed compiler label is reused.
-No actual compiler activation workflow or label is supplied by this preparation.
+A dormant label-only workflow is now prepared in
+`.github/workflows/kyutai-candle-cache-observer-compatibility.yml`. Its exact
+PR/repository/first-attempt guards, read-only permission and twenty-minute
+job limit are checked by eight offline workflow-contract tests. It selects
+the eight exact future evidence files in the reviewed checkout and passes
+that same absolute workspace directory to the checker. The delivery is still
+absent: do not activate the job until a fresh execution scope and the exact
+eight-file delivery are accepted. No activation label has been applied.
+
+The prepared job retains only bounded receipt/stream evidence for seven days;
+it never uploads inputs, source workspaces, build targets or models. Ordinary
+source-processing CI checks the workflow contract without invoking its
+compiler path or materializing the future evidence delivery. Neither this
+configuration nor a passing offline contract test is a compiler result.
 
 ## Explicit holds
 
