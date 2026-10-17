@@ -399,3 +399,119 @@ hook refusal was bypassed, no local Cargo compilation or model operation
 was run, and no paid worker was created. This focused acceptance is not a
 fresh hosted candidate or publication result. Normal PR CI and a new
 exact-merged-main RC execution remain required.
+
+## Portable correction merged; second candidate and Windows header finding
+
+PR [#264](https://github.com/ayutaz/vokra/pull/264) exact head
+`18f0cec869f2e8afc5da931f1a4b163b6df13733` passed all ten started workflows.
+The manager's paginated API audit found 74 completed checks: 73 successful
+and the intentional full-history gitleaks skip. All sixteen required
+context/application pairs specifically succeeded; strict branch protection
+and administrator enforcement remained enabled. Desktop completeness
+[run 39056318045](https://github.com/ayutaz/vokra/actions/runs/39056318045),
+assembly job `117466718752`, independently executed the real three-platform
+payload/manifest/SBOM checks, 19 desktop tests, 24 handoff checks, 17 version
+checks and 36 RC workflow checks successfully.
+
+The normal squash merge at `2026-10-17T18:25:40Z` produced main
+`6eb7672355936bc85a7f2196b28f56a0cfe3be3a`; accepted PR and main source trees
+both equal `da16bc91db56cbcab61eccc512a54350c69ba91c`. Maintainer main was
+synchronized and clean before the next dispatch. An independent Git object
+comparison also proves that this source and original VAST source `3d4a88f5`
+have identical Rust `crates/` tree `a8b8d6fc79178874965f04e981fd9f6016b8d294`,
+root Cargo.toml blob `5b87abf98ea3bd15ce869654b1570a452d441fb8` and Cargo.lock
+blob `529efd1e4990319b0b84e48fc64c65a8b747cc3f`. All intervening paths are
+documentation, SBV2 workflow/static checks/hash sidecars or release Python
+tooling, not Rust/build changes. New tooling has its own focused and hosted
+acceptance; the original VAST receipt retains its original SHA.
+
+The second exact-source candidate,
+[run 39058067179](https://github.com/ayutaz/vokra/actions/runs/39058067179),
+was dispatched once at `6eb76723`, after checking the absence of the RC tag,
+draft and Release and confirming Latest `v0.3.0`. It is terminal failure:
+
+- input validation `117470064794`, Windows producer `117470471945`, Linux
+  producer `117470471964`, macOS producer `117470472020` and complete payload
+  assembly `117474633829` succeeded;
+- actual downloaded-payload Linux QA `117474754090` and macOS arm64 QA
+  `117474754089` succeeded;
+- exact packaged Linux CPU model smoke `117474754189` succeeded;
+- Windows QA `117474754153` failed before native execution with
+  `header does not match the checked-in cbindgen contract: dist\desktop\vokra.h`;
+- publisher `117474842582` was correctly skipped. Independent APIs again
+  confirmed no RC tag/draft/Release and Latest unchanged at `v0.3.0`.
+
+Before Windows QA ran, manager/implementer read-only review identified the
+missing explicit EOL attribute on `include/vokra.h`. A real Git conversion
+reproduced the cause: canonical LF header SHA-256 is
+`482f721f71d497be7c12f487b8bf9d575bd8bfefcf7c1518e0380a42a6207f63`, while
+`core.autocrlf=true` checkout filtering without the pin produces
+`d50aa6b6c3cb5b78cb0ce02178275b103a0986de398fda07c64f148b7488037a`.
+The actual Windows failure then confirmed that prediction. Artifact transfer
+preserved the Linux-assembled header bytes; the Windows comparison target
+was changed by checkout. Preserve strict header byte equality and add an
+explicit LF attribute, with positive and missing/wrong-pin controls using
+real Git conversion in isolated temporary repositories. Do not retry the
+unchanged failed candidate or normalize away payload drift in the verifier.
+
+Only the 1,377-byte compressed JSON receipt artifact `12109899421` was
+recovered; no model or binary was downloaded onto the maintainer Mac.
+The recovered receipt SHA-256 is
+`d70a60eb872818a65a2bd4b327b42231ae001c28c9a6be0ee7691eb044537d80`.
+It records `PASS` at exact `6eb76723`, the unchanged Whisper/Silero revision,
+size and hash pins, and the 352,078-byte / 176,000-frame / mono 16 kHz input
+with expected SHA-256. All three CPU command return codes are zero. ASR
+contains the JFK keyphrase; VAD reports 214 speech frames out of 343 for
+speech and zero out of 343 for silence. These are functional results, not
+numerical parity, WER/CER, performance, macOS/Windows model inference or Metal.
+They are accepted only for this failed-publication candidate's exact source,
+not a future release source.
+
+The original functional receipt schema records source heads and command
+paths, but not the CLI digest, run ID or attempt. The follow-up will retain
+those original fields and add independently checked distribution identity
+after successful hosted smoke: exact source/run/attempt plus the CLI's
+verified manifest hash/size and manifest digest. The byte/JSON-only annotator
+must not execute a model or CLI, and must fail before publication on any
+identity mismatch. The final public artifact audit still requires a new
+normal PR/CI/merge, a fresh exact-source candidate, successful Windows native
+QA and direct receipt/manifest/public-asset consistency. No completion or
+publication is claimed by this second attempt.
+
+### Header and distribution-identity correction — offline acceptance
+
+Branch `codex/fix-rc-header-eol-20261018` adds only the explicit header EOL
+attribute, focused release tooling/tests/workflow wiring and this record.
+Strict header byte equality, every distribution verification gate, the
+original model driver, fixed model pins, numerical bounds, Rust/build
+inputs and safety hooks remain unchanged. The normal Desktop completeness
+path also watches `.gitattributes`, so a future pin-only regression cannot
+silently miss the new test.
+
+The manager independently reviewed the complete implementation and ran:
+
+- 20 desktop tests, including actual `autocrlf=true` Git checkout with LF,
+  missing-pin and wrong-pin controls. Both worktree attributes and the
+  index-only fallback used by sparse checkouts are exercised; no temporary
+  commits or maintainer Git metadata changes are needed;
+- 10 distribution-identity tests using only synthetic JSON/byte payloads:
+  exact CLI/manifest/source/run binding, original-field preservation,
+  schema/runtime/semantic/safety/argv/backend/return-code refusals, missing
+  or symlinked inputs, and unchanged receipt plus cleanup on failed atomic
+  replacement;
+- 40 RC workflow checks and 24 artifact-handoff checks;
+- actionlint for both changed workflows, workflow hygiene across 59
+  workflows, documentation references, eight compliance regressions and
+  `git diff --check`.
+
+The new annotator runs only after successful hosted CPU smoke and before
+receipt upload. It validates the original schema-1 Linux functional result,
+requires all three successful CPU commands to name the intended assembled
+CLI, reuses strict distribution verification, then compares actual CLI
+bytes with the manifest and records the source/run/attempt and both digests.
+It does not execute the CLI or a model, acquire weights, change the original
+functional fields or create a legal/numerical/Metal claim. Validation occurs
+before atomic replacement; an error fails the job and cannot authorize
+publication. No refused model-driver inspection/execution was retried through
+an alternative route. Fresh hosted CI and the new final-source RC are still
+unrun at this checkpoint.
