@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-17 current routing:** use the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
+> at baseline main `5f1dfc1e`. Seven PRs remain open; #259 has green ordinary
+> CI but is Draft pending actual patched upstream compilation/API verification.
+> The retained 10/16 inventory is 194 rows / 136 code-artifact-full / 58 non-full,
+> not a new retrieval or hardware pass. Non-Apple/owner, real-weight CPU,
+> final packet, Apple/no-fallback and result audit remain open. Preserve every
+> dated row/evidence below; no catalog row or owner scope is promoted here.
+
 > **2026-10-16 source acceptance:** [#255 normal merge and final CI](candle-pr255-acceptance-2026-10-16.md)
 > produce clean main `662b49c4` after 73 successful checks / one intentional
 > skip, all sixteen protected pairs and thirteen workflows. This closes the

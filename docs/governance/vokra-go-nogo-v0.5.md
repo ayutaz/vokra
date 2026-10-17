@@ -1,5 +1,10 @@
 # Go / No-go review record — v0.5 (M2)
 
+> **2026-10-17 current routing:** the [current status and remaining tasks](../handoff/current-status-and-remaining-tasks-2026-10-17.md)
+> supply the current campaign/PR pointer. This remains an owner-review
+> template, not an executed review or Go verdict. No metric, signature,
+> milestone date or publication decision is invented by this update.
+
 > **2026-10-13 current routing / supersession:** The [2026-10-13 snapshot](../handoff/documentation-refresh-2026-10-13.md) supplies the current main/release pointer. This remains an unfilled owner-review template, not an executed review or Go verdict; no metric or approval is invented.
 
 > **Current state (2026-10-08; exact GitHub `main`

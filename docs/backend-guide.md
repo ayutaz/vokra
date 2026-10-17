@@ -144,7 +144,15 @@ the meta block below).
 
 ## 6. Owner / contributor boundary
 
-A fresh **2026-10-13 metadata snapshot** uses exact GitHub `main`
+**2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
+record baseline main `5f1dfc1e`, seven open PRs and #259's green ordinary CI
+with patched upstream compilation/API still unrun. The retained 10/16
+inventory is 136 code/artifact-full / 58 non-full across 194 repositories,
+not new backend or Apple parity evidence. Resolve non-Apple prerequisites
+and approved real-weight CPU before final packets and Scaleway; no CPU
+fallback or owner/publication approval is inferred.
+
+The historical **2026-10-13 metadata snapshot** uses exact GitHub `main`
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` and reports 194 repositories,
 193 GGUF-bearing repositories and 198 GGUF files: CPU
 `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal

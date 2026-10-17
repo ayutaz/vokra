@@ -1,5 +1,20 @@
 # Vokra documentation
 
+**2026-10-17 current status:** start with the
+[current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md).
+Verified baseline main is `5f1dfc1e`; seven PRs remain open. PR #259 exact
+`481ab7e2` has 72 successful checks / one intentional skip, all sixteen strict
+required context/application pairs and ten successful workflows, but remains
+Draft because its additional upstream patch is not compiled/API-verified.
+Original stages 1–2 are accepted; stages 3–6 remain open. The last retained
+194-row inventory is dated 2026-10-16 (136 code/artifact-full / 58 non-full),
+not a new HF retrieval or Apple result. The record separates immediate
+scope confirmations from owner/legal, real-weight VAST and final Scaleway work.
+
+The dated checkpoints below preserve what was known at each observation.
+Their older pending/draft/HEAD statements are not current-state replacements
+for the 2026-10-17 record.
+
 **2026-10-16 PR #255 accepted:** [normal merge and exact CI audit](handoff/candle-pr255-acceptance-2026-10-16.md)
 record main `662b49c4`, 73 successful checks / one intentional skip,
 all sixteen protected context/application pairs and all thirteen workflows
@@ -339,7 +354,7 @@ branch; it is no longer the current main baseline.
 The dated metadata snapshot below retains
 its 2026-10-13 source boundary. Model and Apple completion are not implied.
 
-**Current-state review:** 2026-10-13 JST
+**Historical current-state review:** 2026-10-13 JST
 
 **Read-only external baseline:** GitHub `main` at
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` (API read on 2026-10-13),
@@ -365,8 +380,9 @@ environment they name.
 
 | Need | Document |
 |---|---|
-| What to do next | [2026-10-14 prioritized plan](handoff/next-steps-2026-10-14.md): local safety changes and PRs first, exact non-Apple gates, VAST CPU, final packet, then Scaleway |
-| Latest execution readback | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): exact `4263f416` source gates green (8,223 passed), earlier failed attempts retained, owned VAST worker/storage destroyed, and remaining gates |
+| What to do next | [2026-10-17 current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md): seven open PRs and exact scope confirmations, non-Apple/owner gates, VAST CPU, final packet, then Scaleway and result/cleanup audit |
+| Latest execution readback | [2026-10-17 current CI and six-stage readback](handoff/current-status-and-remaining-tasks-2026-10-17.md): #259 ordinary CI accepted as evidence only, patched compilation NOT_RUN; original model-free stages 1–2 closed and stages 3–6 open |
+| Historical whole-workspace source run | [2026-10-14 source and admission record](handoff/execution-readback-2026-10-14.md): exact `4263f416` source gates green (8,223 passed), earlier failed attempts retained, owned VAST worker/storage destroyed; not a new-head model/Apple result |
 | All unresolved public rows | [2026-10-14 58-row prerequisite inventory](handoff/current-58-prerequisite-inventory-2026-10-14.md): exact metadata denominator, per-row first prerequisites, and protected-input exclusion; not an execution approval |
 | Latest static prerequisite review | [2026-10-15 58-row readback](handoff/current-58-static-prerequisite-readback-2026-10-15.md): 57 source/static observations plus one protected exclusion; current first prerequisites, pending PR scopes and corrections to namespace/count comparisons, not production readiness or CPU evidence |
 | MMS current evidence admission | [2026-10-15 production-gate readback](handoff/mms-current-evidence-admission-readback-2026-10-15.md): current dependency/API bindings validate and intentionally omitted wheel size is covered by its archive receipt; native/package/owner and full-model parity holds remain |

@@ -15,7 +15,18 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Current audit snapshot (2026-10-13):** the workspace is `0.3.0` development;
+> **Current campaign snapshot (2026-10-17):** baseline main is `5f1dfc1e`.
+> PR #255's model-free CPU/API and normal acceptance are complete. PR #259
+> has 72 successful checks and one intentional skip, but remains Draft:
+> its additional observer patch still needs actual upstream library/API
+> compilation. Seven PRs remain open. The latest retained inventory is the
+> 2026-10-16 snapshot: 194 repositories, 136 code/artifact-full and 58 non-full;
+> it is not a fresh inventory or an Apple hardware pass count. Per-model
+> non-Apple prerequisites, owner/legal decisions, independent real-weight CPU,
+> final packets and Apple CPU/Metal/no-fallback remain incomplete. See the
+> [current status and remaining tasks](docs/handoff/current-status-and-remaining-tasks-2026-10-17.md).
+>
+> **Historical audit snapshot (2026-10-13):** the workspace is `0.3.0` development;
 > the latest VibeVoice Realtime-0.5B closure audit was a static-only VAST
 > audit on disposable worker `55648877`. It authenticated the selected source,
 > lock, collector, and provenance inputs, then verified recovery and destruction

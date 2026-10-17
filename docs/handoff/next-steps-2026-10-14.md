@@ -1,5 +1,12 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-17の現況:** [現況と残タスク](current-status-and-remaining-tasks-2026-10-17.md)を
+> 最新の入口とする。baseline mainは`5f1dfc1e`、未マージPRは7件。#259は72成功／
+> 意図したskip1で通常CI完了だが、追加パッチの実compile/API未実施のためDraft。
+> #258はmain追従前、#191/#182/#169/#152はmainとの競合あり。個別scope確認、
+> 全対象non-Apple/owner前提、承認済み実weight CPU、最終HEAD/packet、最後のScaleway、
+> 結果記録・cleanupの順序を維持する。以下の旧観測・測定・署名範囲は当時の履歴として保持する。
+
 > **2026-10-16 #255通常マージ:** [全CI受理記録](candle-pr255-acceptance-2026-10-16.md)
 > で73 success／意図したskip1、必須16 context/App、開始した13 workflows成功を確認し、
 > exact `cd5ffed0`を通常merge。main／maintainer mainはclean `662b49c4`。
