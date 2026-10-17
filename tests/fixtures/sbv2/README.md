@@ -376,7 +376,7 @@ tensor listed in the real manifest:
 
 ## Sidecar format (the four `.gguf.sha256` files)
 
-**Status (updated 2026-09-07)**: all four sidecars carry **real
+**Status (updated 2026-10-18)**: all four sidecars carry **real
 `sha256sum`-format** lines. The original three were committed in `6580061`;
 the ZH sidecar belongs to the explicit four-file leg. The JP-Extra sidecar
 was regenerated after commit `0ee8359c` corrected the embedded model/source
@@ -393,6 +393,47 @@ gate `[ -s <sidecar> ] && ! grep -q "placeholder" <sidecar>` sketched in
 `parity-sbv2-real.yml` proceeds to its real dumper + convert + parity
 steps rather than skipping.
 
+All four sidecars were refreshed for the `0.4.0-rc.1` producer stamp at
+exact source `e74cf61d9a90390977a2cad3acd6b32bbf06335a`. Parity-sbv2-real
+run `39050477672` (job `117448888195`) measured the following exact JA outputs:
+SBV2 `df3ed32b9f5bf91af40992b667c2f4acbbd00a208041c5aba2d4ad2afd03ff37`,
+DeBERTa v2 JA `86eb8a160614540bc181194158eabd9a7dea4ee4c234e146795e9ab6c4dec0f2`,
+and DeBERTa v3 EN `64e2d9ac8e0261759b4b2496a96f91943e1d4946d808df954bcd655177f8b800`.
+The explicit ZH run [`39051604000`](https://github.com/ayutaz/vokra/actions/runs/39051604000)
+(job `117451197711`) measured `chinese-roberta-wwm-ext-large.gguf` as
+`3c51b48b3ed046cc240c22331daee4408a492725bafc3ac6b95206321f92c43c`.
+The same three JA hashes were reproduced byte-for-byte by the explicit ZH
+run; both runs stopped at the strict sidecar check before numerical
+acceptance.
+The exact `fab4638a` main-to-candidate diff has no changes under
+`crates/vokra-convert`, `crates/vokra-core`, or `crates/vokra-models`; this is
+scope evidence only, not an independent tensor-byte comparison. The byte
+change is explained by the existing writer contract: `vokra.schema.producer`
+includes `vokra-core`'s `CARGO_PKG_VERSION`, so the package bump from `0.3.0`
+to `0.4.0-rc.1` changes the serialized GGUF metadata.
+The prior `0.3.0` SHA-256 values remain as comments in the sidecars and are
+recorded here for provenance. The last passed pinned real run was
+[`38279577089`](https://github.com/ayutaz/vokra/actions/runs/38279577089);
+the [`39050477672`](https://github.com/ayutaz/vokra/actions/runs/39050477672)
+JA run and the explicit ZH run's regenerated GGUF hash steps failed before
+numeric acceptance, so this refresh records measured bytes only and does not
+claim tensor identity or a passing numeric-parity result. A new exact-head
+real run must pass the existing source/hash/tensor/numerical gates before
+these sidecars are accepted as current evidence.
+
+Workflow success is not, by itself, numerical-consumer evidence. The prior
+green run [`38279577089`](https://github.com/ayutaz/vokra/actions/runs/38279577089)
+and the corrected-head JA and ZH runs
+[`39052084074`](https://github.com/ayutaz/vokra/actions/runs/39052084074) and
+[`39052099776`](https://github.com/ayutaz/vokra/actions/runs/39052099776)
+completed the surrounding conversion, hash, and reference gates, but the ZH
+log still reported `0 passed; 0 failed; 1 ignored`. The Rust consumer remains
+explicitly ignored and requires its authenticated absolute fixture path and
+`fixture-replay` G2P mode; the corrected workflow now selects that one test
+and rejects an ignored or zero-test exit. Numeric acceptance at the corrected
+head is therefore still pending a run whose log reports exactly one passed,
+zero failed, zero ignored, and zero measured tests.
+
 Historical (pre-`6580061`) format was a **comment-only** placeholder
 containing the word `placeholder`, mirroring the convention
 `tests/fixtures/audio/jfk-30s.wav.sha256` used before its real audio
@@ -404,8 +445,10 @@ the body with a real `sha256sum` line.
 
 Step 4 above ("Hash and commit") is the canonical way to keep these
 sidecars in sync when an owner regenerates the GGUFs — do not
-`sha256sum` a stale local file and mix comment lines with a real hash
-line.
+`sha256sum` a stale local file or add a second active hash line. Historical
+provenance may remain as `#` comments; each sidecar must have exactly one
+current, non-comment `sha256sum` record, which is the record consumed by the
+strict CI and worker gates.
 
 ## Known limitations (read before assuming the recipe "just works" end to end)
 

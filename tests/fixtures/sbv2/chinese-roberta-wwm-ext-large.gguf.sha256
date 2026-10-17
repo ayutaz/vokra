@@ -1,1 +1,3 @@
-a1a1df298fedb585b5278a2c048c5a11515968e2fdf43b856354f964c3e89b59  chinese-roberta-wwm-ext-large.gguf
+# Historical v0.3.0 producer SHA-256: a1a1df298fedb585b5278a2c048c5a11515968e2fdf43b856354f964c3e89b59
+# v0.4.0-rc.1 measured by parity-sbv2-real run 39051604000 (job 117451197711).
+3c51b48b3ed046cc240c22331daee4408a492725bafc3ac6b95206321f92c43c  chinese-roberta-wwm-ext-large.gguf

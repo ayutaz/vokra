@@ -14,10 +14,18 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **現在の対応状況（2026-10-17）:** baseline main は `5f1dfc1e` です。
-> PR #255のmodel-free CPU/API検証と通常受理は完了しました。PR #259はCIが72成功・
-> 意図したskip1件ですが、追加observerパッチの実upstream library/APIコンパイルが
-> 未実施のためDraftです。未マージPRは7件です。最新の保持inventoryは10月16日の
+> **リリース候補の準備（2026-10-17）:** `v0.4.0-rc.1`の配布準備中で、公開済みLatestは
+> 引き続き`v0.3.0`です。source `9ee5834d`では、Whisper base ASRとSilero VAD v5の
+> 音声・無音判定がhosted Linux CPUの機能smokeに成功しました。数値parityや
+> Apple/Metal検証ではありません。[実CPU検証結果](docs/handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)と
+> [候補版の受入計画](docs/handoff/release-0.4.0-rc1-packaging-2026-10-17.md)を参照してください。
+> [候補版の導入ガイド](docs/release-0.4.0-rc1.ja.md)も準備していますが、取得先assetが
+> 既に存在するという意味ではありません。
+>
+> **現在の対応状況（2026-10-17）:** 配布準備のbaseline mainは`fab4638a`です。
+> PR #255のmodel-free CPU/API検証と通常受理は完了しました。PR #259はマージせず
+> closedとなり、追加observerパッチの実upstream compilation/APIの受理結果はありません。
+> このsnapshot時点で他のPRは6件openです。最新の保持inventoryは10月16日の
 > snapshotで、194 repositories、136 code/artifact-full、58 non-fullです。
 > 今回の再取得値でもApple実機の合格数でもありません。モデル別の非Apple前提、
 > owner/legal判断、独立実weight CPU、最終packet、Apple CPU/Metal/no-fallbackは

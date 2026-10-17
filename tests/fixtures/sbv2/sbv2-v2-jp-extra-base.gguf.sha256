@@ -1,1 +1,3 @@
-b544487b5e603e2012f7e056f2f836dc2eacd5af52e34f896581dc02ad5097b9  sbv2-v2-jp-extra-base.gguf
+# Historical v0.3.0 producer SHA-256: b544487b5e603e2012f7e056f2f836dc2eacd5af52e34f896581dc02ad5097b9
+# v0.4.0-rc.1 measured by parity-sbv2-real run 39050477672 (job 117448888195).
+df3ed32b9f5bf91af40992b667c2f4acbbd00a208041c5aba2d4ad2afd03ff37  sbv2-v2-jp-extra-base.gguf

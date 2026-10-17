@@ -12,6 +12,24 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+## [0.4.0-rc.1]
+
+### Preview scope
+
+- Release candidate for evaluation, not an API/ABI stability promise or full
+  model-catalog completion. The intended desktop CLI/C ABI payload is CPU-only;
+  optional GPU support and per-model Apple CPU/Metal/no-fallback acceptance
+  remain separate work. No external package registry or model-weight update
+  is part of this GitHub preview.
+- At source `9ee5834d`, hosted Linux CPU functional smoke passed Whisper base
+  ASR and Silero VAD v5 speech/silence with fixed model revisions and hashes
+  (#261, #262). This is not independent numerical parity, WER/CER, a performance
+  benchmark, or proof of other models or platforms. The candidate's actual
+  packaged binary must pass its own release validation before publication.
+- Installation and model/backend limitations are documented in the
+  [preview guide](https://github.com/ayutaz/vokra/blob/v0.4.0-rc.1/docs/release-0.4.0-rc1.md)
+  ([日本語](https://github.com/ayutaz/vokra/blob/v0.4.0-rc.1/docs/release-0.4.0-rc1.ja.md)).
+
 ### Added
 
 - Native Mimi backend dispatch for ELU and additional learned compute seams,
@@ -1366,5 +1384,6 @@ release.
   parity, license (`cargo deny`), zero-dependency invariant, hot-path
   audit, iOS build, Python wheel build, license audit, GPU backends.
 
-[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.4.0-rc.1...HEAD
+[0.4.0-rc.1]: https://github.com/ayutaz/vokra/compare/v0.3.0...v0.4.0-rc.1
 [0.3.0]: https://github.com/ayutaz/vokra/releases/tag/v0.3.0

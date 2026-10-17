@@ -93,6 +93,10 @@ jobs:
         env:
           DISPATCH_VERSION: ${{ inputs.release_version }}
         run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v*-* ]]; then
+            echo "release: prerelease tags are handled only by the explicit GitHub-only RC workflow" >&2
+            exit 1
+          fi
           uv run --no-project --python 3.12 python \
             tools/release/version_contract.py \
             --github-ref "$GITHUB_REF" \

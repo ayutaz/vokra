@@ -19,6 +19,17 @@ API key を引数・出力・記録へ入れず、資格情報を含む生の診
 
 ## 0. TL;DR — 自動化 pipeline (Phase B, 2026-07-28)
 
+**2026-10-18 SSH/search compatibility supplement:** 現行 CLI の direct SSH helper
+は、所有 instance の `public_ipaddr` と `ports["22/tcp"][0]["HostPort"]` を使う。
+後段の旧 `direct_port_start` 例を現行 endpoint の証拠として単独使用しない。
+作成応答の ID と固有 label を読み戻し、接続情報の割り当てを期限付きで待ち、
+有効な公開 IPv4 と SSH port が揃うまで接続しない。検索には `rented=false` も
+明示し、同一 machine の再検索で offer ID が変わる場合も、承認した machine・
+料金・容量と現在の offer を厳密照合する。失敗時も今回の所有 ID だけを destroy
+して個別の消失を確認する。RC 作業の実際の失敗・cleanup と未完了ゲートは
+[2026-10-18 continuation](release-0.4.0-rc1-packaging-2026-10-17.md#2026-10-18-continuation--source-verification-not-yet-accepted)
+に記録する。この supplement は過去の実測結果を書き換えない。
+
 **判定**: `scripts/publish/check-model-size.sh <hf-repo>` を local で走らせて `LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` の verdict を確認する。この preflight は checkpoint を取得しないメタデータ照会だけに限る。convert / real-weight verify / upload は verdict にかかわらず上記 override に従い vast.ai で行う。
 
 **vast.ai 側で最初の 1 回だけ**:

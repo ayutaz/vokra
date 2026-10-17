@@ -6,6 +6,11 @@ name: Release desktop preflight
 
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        description: "Exact commit/ref to build (empty uses the caller ref)"
+        required: false
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -41,6 +46,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/tools/parity/cosyvoice2_llm_reference/**
+            !/tests/parity/silero_vad/**
+      - name: Verify protected trees are excluded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e tools/parity/cosyvoice2_llm_reference
+          test ! -e tests/parity/silero_vad
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: false
@@ -98,6 +115,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/tools/parity/cosyvoice2_llm_reference/**
+            !/tests/parity/silero_vad/**
+      - name: Verify protected trees are excluded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e tools/parity/cosyvoice2_llm_reference
+          test ! -e tests/parity/silero_vad
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: false

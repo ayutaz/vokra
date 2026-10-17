@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**2026-10-17 RC packaging:** [candidate validation and publication plan](handoff/release-0.4.0-rc1-packaging-2026-10-17.md)
+records the new request to complete version synchronization, packaged-binary
+verification and GitHub pre-release publication. Baseline main is `fab4638a`.
+The candidate is `v0.4.0-rc.1`, not yet a published release; Latest remains
+`v0.3.0`. Registry/model publication and X posting are outside this scope.
+This does not close the separate all-model Apple campaign.
+The candidate installation guide is staged in [English](release-0.4.0-rc1.md)
+and [Japanese](release-0.4.0-rc1.ja.md); download assets are not yet published.
+
 **2026-10-17 representative CPU result:** [actual model receipt and limits](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
 supersede the unrun preparation snapshot below. PR #261 is normally merged
 as `9ee5834d` after 70 successful checks / one intentional skip and all sixteen

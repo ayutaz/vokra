@@ -15,11 +15,20 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Current campaign snapshot (2026-10-17):** baseline main is `5f1dfc1e`.
-> PR #255's model-free CPU/API and normal acceptance are complete. PR #259
-> has 72 successful checks and one intentional skip, but remains Draft:
-> its additional observer patch still needs actual upstream library/API
-> compilation. Seven PRs remain open. The latest retained inventory is the
+> **Release-candidate preparation (2026-10-17):** `v0.4.0-rc.1` packaging is
+> in progress; the published Latest remains `v0.3.0`. At source `9ee5834d`,
+> Whisper base ASR and Silero VAD v5 speech/silence passed hosted Linux CPU
+> functional smoke. This is not numerical parity or Apple/Metal validation.
+> See the [actual CPU results](docs/handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
+> and [candidate acceptance plan](docs/handoff/release-0.4.0-rc1-packaging-2026-10-17.md).
+> The [candidate installation guide](docs/release-0.4.0-rc1.md) is staged for
+> publication, not a claim that its download assets already exist.
+>
+> **Current campaign snapshot (2026-10-17):** packaging baseline main is
+> `fab4638a`. PR #255's model-free CPU/API and normal acceptance are complete.
+> PR #259 is closed without merge; its additional observer patch has no
+> accepted upstream compilation/API result. Six other PRs remain open at
+> this snapshot. The latest retained inventory is the
 > 2026-10-16 snapshot: 194 repositories, 136 code/artifact-full and 58 non-full;
 > it is not a fresh inventory or an Apple hardware pass count. Per-model
 > non-Apple prerequisites, owner/legal decisions, independent real-weight CPU,
