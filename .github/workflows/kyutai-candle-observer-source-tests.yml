@@ -1,0 +1,125 @@
+name: Kyutai Candle observer source tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/kyutai-candle-observer-source-tests.yml
+      - .gitattributes
+      - tools/parity/kyutai_candle_reference/asr_observer_patch.py
+      - tools/parity/kyutai_candle_reference/cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
+      - tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/pinned-asr.rs
+      - tools/parity/kyutai_candle_reference/pinned-LICENSE
+      - tools/parity/kyutai_candle_reference/pinned-transformer.rs
+      - tools/parity/kyutai_candle_reference/pinned-lm.rs
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/kyutai-candle-observer-source-tests.yml
+      - .gitattributes
+      - tools/parity/kyutai_candle_reference/asr_observer_patch.py
+      - tools/parity/kyutai_candle_reference/cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
+      - tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+      - tools/parity/kyutai_candle_reference/pinned-asr.rs
+      - tools/parity/kyutai_candle_reference/pinned-LICENSE
+      - tools/parity/kyutai_candle_reference/pinned-transformer.rs
+      - tools/parity/kyutai_candle_reference/pinned-lm.rs
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    name: Source-only tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Checkout exact source-only surface
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            .gitattributes
+            .github/workflows/kyutai-candle-observer-source-tests.yml
+            tools/parity/kyutai_candle_reference/asr_observer_patch.py
+            tools/parity/kyutai_candle_reference/cache_observer_patch.py
+            tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
+            tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+            tools/parity/kyutai_candle_reference/pinned-asr.rs
+            tools/parity/kyutai_candle_reference/pinned-LICENSE
+            tools/parity/kyutai_candle_reference/pinned-transformer.rs
+            tools/parity/kyutai_candle_reference/pinned-lm.rs
+
+      - name: Verify sparse source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e tools/parity/kyutai_candle_reference/collect_metadata.py
+          test ! -e tools/parity/kyutai_candle_reference/prepare_paste_overlay.py
+          test ! -e tools/parity/cosyvoice2_llm_reference
+          test ! -e tests/parity/silero_vad
+          test -f .gitattributes
+          test -f tools/parity/kyutai_candle_reference/asr_observer_patch.py
+          test -f tools/parity/kyutai_candle_reference/cache_observer_patch.py
+          test -f tools/parity/kyutai_candle_reference/test_asr_observer_patch.py
+          test -f tools/parity/kyutai_candle_reference/test_cache_observer_patch.py
+          test -f tools/parity/kyutai_candle_reference/pinned-asr.rs
+          test -f tools/parity/kyutai_candle_reference/pinned-LICENSE
+          test -f tools/parity/kyutai_candle_reference/pinned-transformer.rs
+          test -f tools/parity/kyutai_candle_reference/pinned-lm.rs
+          git check-attr filter diff merge text -- \
+            tools/parity/kyutai_candle_reference/pinned-asr.rs \
+            tools/parity/kyutai_candle_reference/pinned-LICENSE \
+            tools/parity/kyutai_candle_reference/pinned-transformer.rs \
+            tools/parity/kyutai_candle_reference/pinned-lm.rs
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv 0.8.17
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.17"
+
+      - name: Run cache observer tests
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-kyutai-candle-observer-uv-cache
+        run: >-
+          uv run --no-project --offline --python 3.12 python -m unittest
+          discover -s tools/parity/kyutai_candle_reference
+          -p 'test_cache_observer_patch.py' -v
+
+      - name: Run ASR observer tests
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-kyutai-candle-observer-uv-cache
+        run: >-
+          uv run --no-project --offline --python 3.12 python -m unittest
+          discover -s tools/parity/kyutai_candle_reference
+          -p 'test_asr_observer_patch.py' -v
+
+      - name: Run cache observer self-test
+        shell: bash
+        env:
+          UV_OFFLINE: "1"
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-kyutai-candle-observer-uv-cache
+        run: >-
+          uv run --no-project --offline --python 3.12 python
+          tools/parity/kyutai_candle_reference/cache_observer_patch.py
+          --self-test

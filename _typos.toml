@@ -27,6 +27,11 @@ extend-exclude = [
     # Exact authenticated upstream WeSpeaker source fixture; preserve the
     # original spelling (validated by the 14 focused source-pin tests).
     "tools/parity/wespeaker/source_fixture/wespeaker/models/pooling_layers.py",
+    # Exact byte-authenticated Moshi upstream Rust fixtures; typos v1.50.3
+    # flags Tensor::arange and VarBuilder::from_mmaped_safetensors, which are
+    # upstream API identifiers and must remain verbatim.
+    "tools/parity/kyutai_candle_reference/pinned-transformer.rs",
+    "tools/parity/kyutai_candle_reference/pinned-lm.rs",
     # Lockfiles — dependency hashes and download paths are noise for a
     # spellchecker, and Cargo.lock is the NFR-DS-02 zero-dep sentinel we do
     # not want typos rewriting under any circumstance.
