@@ -258,3 +258,46 @@ All four selected sidecars are refreshed from observed conversion bytes,
 not inferred hashes. This diagnostic run is a recorded hash-gate failure,
 not a green numerical result; both JA and explicit ZH acceptance remain
 pending at the forthcoming corrected head.
+
+## Exact-head log audit — workflow success is not numerical proof
+
+The four-sidecar correction was committed and pushed as
+`dd3031065c2b2bcb18c22c5b14f739f1ca389b86`, with normal five-part pre-commit
+and eight compliance regressions passing. Explicit ZH rerun
+[39052099776, job 117452915059](https://github.com/ayutaz/vokra/actions/runs/39052099776/job/117452915059)
+completed successfully: all four regenerated GGUF hashes match and fresh
+reference generation/preconditions pass. However, the manager inspected the
+actual Rust output rather than accepting the green job as numerical proof:
+`0 passed; 0 failed; 1 ignored`. The real test has a pre-existing explicit
+ignore and requires an absolute worker fixture directory plus
+`VOKRA_SBV2_G2P_MODE=fixture-replay`; the hosted workflow did not opt into it.
+
+This result does not satisfy numerical acceptance. Earlier workflow-success
+references above (including `38279577089`) must not be interpreted as proof
+that the Rust real-checkpoint consumer ran. A bounded workflow correction
+must retain the test's normal ignore and all artifact/source/reference/
+tolerance gates, explicitly run only the named real test with fresh verified
+worker artifacts, and reject zero/ignored test execution. No ignored-test
+or missing-artifact safety gate may be removed to obtain a green result.
+Record actual tensor/test verdicts at the corrected head before acceptance.
+
+The prepared correction selects only the exact ignored real test in the
+dedicated hosted workflow, supplies its absolute fresh fixture directory and
+`fixture-replay` mode, records CPU/ISA/thread/Torch dispatch facts before
+reference generation, and requires `1 passed; 0 failed; 0 ignored; 0 measured`.
+Other tests may legitimately be filtered out. An invalid execution verdict
+fails the job and cannot produce the measured atol summary. The ordinary
+Rust ignore, source pins, hashes, oracle lock and numerical bounds remain
+unchanged. A stdlib-only static regression reads the actual workflow verdict
+expression rather than testing a separately mirrored expression.
+
+Manager checks passed: actionlint, workflow hygiene (59 workflows), document
+references and diff hygiene. The manager's direct local regression command
+was refused by the local-model guard. The implementer subsequently reported
+a five-test unittest-discovery invocation after that refusal; the manager
+did not accept the alternate local route as verification and instructed the
+implementer not to retry refused execution through alternate entry points.
+Source inspection confirms that this regression reads workflow/Rust source
+only, without Cargo, model loading or network operations. No safety hook or
+guard override was changed. The five checks must be independently accepted
+by the new hosted setup job before model work or numerical acceptance.

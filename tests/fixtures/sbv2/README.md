@@ -421,6 +421,19 @@ claim tensor identity or a passing numeric-parity result. A new exact-head
 real run must pass the existing source/hash/tensor/numerical gates before
 these sidecars are accepted as current evidence.
 
+Workflow success is not, by itself, numerical-consumer evidence. The prior
+green run [`38279577089`](https://github.com/ayutaz/vokra/actions/runs/38279577089)
+and the corrected-head JA and ZH runs
+[`39052084074`](https://github.com/ayutaz/vokra/actions/runs/39052084074) and
+[`39052099776`](https://github.com/ayutaz/vokra/actions/runs/39052099776)
+completed the surrounding conversion, hash, and reference gates, but the ZH
+log still reported `0 passed; 0 failed; 1 ignored`. The Rust consumer remains
+explicitly ignored and requires its authenticated absolute fixture path and
+`fixture-replay` G2P mode; the corrected workflow now selects that one test
+and rejects an ignored or zero-test exit. Numeric acceptance at the corrected
+head is therefore still pending a run whose log reports exactly one passed,
+zero failed, zero ignored, and zero measured tests.
+
 Historical (pre-`6580061`) format was a **comment-only** placeholder
 containing the word `placeholder`, mirroring the convention
 `tests/fixtures/audio/jfk-30s.wav.sha256` used before its real audio

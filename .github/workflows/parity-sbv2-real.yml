@@ -4,8 +4,9 @@
 #
 # Sibling of `.github/workflows/parity-whisper-real.yml` and
 # `.github/workflows/parity-kokoro-real.yml`: a real Rust parity test
-# (`crates/vokra-models/tests/parity_sbv2_real.rs`, Task 28; `#[ignore]`
-# removed by WP-06 on 2026-08-11) needs a
+# (`crates/vokra-models/tests/parity_sbv2_real.rs`, Task 28; the real-weight
+# test intentionally remains `#[ignore]` and is selected explicitly below)
+# needs a
 # real, non-Apache-2.0-licensed checkpoint family this repo can never commit
 # as binary fixtures. `tests/fixtures/sbv2/README.md` (Task 34) is the
 # owner recipe this workflow automates end to end: download the SBV2 v2
@@ -133,6 +134,7 @@ on:
       - 'tools/parity/sbv2/uv.lock'
       - 'tools/parity/vendor/vits/**'
       - 'tools/parity/vendor/vits2/**'
+      - 'tools/parity/test_sbv2_real_workflow.py'
 
 permissions:
   contents: read
@@ -164,6 +166,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Verify real parity execution contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 \
+            python tools/parity/test_sbv2_real_workflow.py
       - name: Select JA or explicit four-file ZH leg
         id: mode
         env:
@@ -296,6 +308,38 @@ jobs:
               f"protobuf={google.protobuf.__version__}"
           )
           PYEOF
+
+      - name: Record hosted CPU environment
+        # Numerical parity evidence is only interpretable when the host and
+        # reference dispatch are recorded before the reference/numeric legs.
+        # This is informational: inability to query one field must not hide
+        # the real dumper/parity verdict below.
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          record="$RUNNER_TEMP/sbv2-cpu-environment.txt"
+          {
+            echo "SBV2 hosted CPU environment"
+            echo "cpu_model=$(grep -m1 '^model name' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//' || true)"
+            echo "isa_flags=$(grep -m1 '^flags' /proc/cpuinfo | sed 's/^[^:]*:[[:space:]]*//' || true)"
+            echo "nproc=$(nproc 2>/dev/null || true)"
+            echo "torch_cpu_capability:"
+            uv run --project "${PARITY_PROJECT}" --frozen python -c \
+              'import torch; print(torch.backends.cpu.get_cpu_capability())'
+          } >"$record" 2>&1
+          record_exit=$?
+          if [ "$record_exit" -ne 0 ]; then
+            echo "torch capability query unavailable (exit ${record_exit})" >> "$record"
+          fi
+          cat "$record"
+          {
+            echo "### Hosted CPU environment (informational)"
+            echo ""
+            echo '```text'
+            cat "$record"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download SBV2 v2 checkpoint + build vokra.sbv2.* config side-car
         # tools/parity/sbv2_prepare_checkpoint.py (Task 29): snapshot_download
@@ -960,12 +1004,12 @@ jobs:
           fi
 
       - name: Run SBV2 real-checkpoint full-manifest parity test
-        # WP-06 removed `#[ignore]` on 2026-08-11 after the real fixture path
-        # landed. Run the named non-ignored test explicitly: `--ignored`
-        # would now filter OUT the numerical consumer and fabricate a green
-        # no-op. The independent-reference precondition above is the only
-        # route to this step; a missing/failed dump is an explicit visible
-        # skip, not a Rust panic pretending to be a numeric result.
+        # The Rust test intentionally remains `#[ignore]`: authenticated
+        # real-weight artifacts and an independent reference packet are
+        # legal/source-guarded inputs, not ordinary fixture tests. This
+        # authorized hosted workflow is the only path that selects it, with
+        # `--ignored --exact`; the strict verdict below prevents an ignored
+        # or filtered test from becoming a green no-op.
         #
         # WP-24: only the preparation step's effective output can opt the
         # tail-position UTMOS quality gate in. A requested-but-blocked run
@@ -979,12 +1023,44 @@ jobs:
         shell: bash
         run: |
           set +e
+          fixture_dir="$GITHUB_WORKSPACE/$FIXTURE_DIR"
+          fixture_guard=0
+          case "$fixture_dir" in
+            "$GITHUB_WORKSPACE"/*) ;;
+            *)
+              echo "::error::SBV2 fixture path escaped the workspace: $fixture_dir"
+              fixture_guard=1
+              ;;
+          esac
+          if [ ! -d "$fixture_dir" ] || [ ! -s "$fixture_dir/reference_dump.manifest.json" ]; then
+            echo "::error::fresh hash-verified SBV2 fixture directory is unavailable: $fixture_dir"
+            fixture_guard=1
+          fi
+          if [ "$fixture_guard" -ne 0 ]; then
+            echo "PARITY_EXIT=1" >> "$GITHUB_ENV"
+            echo "PARITY_VERDICT_EXIT=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          export VOKRA_SBV2_FIXTURE_DIR="$fixture_dir"
+          export VOKRA_SBV2_G2P_MODE=fixture-replay
           cargo test --locked --release -p vokra-models \
             --test parity_sbv2_real \
-            parity_sbv2_real_waveform_matches_reference_dump -- --nocapture \
+            parity_sbv2_real_waveform_matches_reference_dump -- --ignored --exact --nocapture --color never \
             2>&1 | tee "$RUNNER_TEMP/parity.log"
           exit_code=${PIPESTATUS[0]}
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          # Only this exact libtest result is a numeric execution verdict:
+          # 1 passed; 0 failed; 0 ignored; 0 measured. Other tests selected
+          # by the integration-test binary may be reported as filtered out.
+          verdict_line=$(grep -E '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out(; finished in [0-9]+(\.[0-9]+)?s)?$' \
+            "$RUNNER_TEMP/parity.log" | tail -n1 || true)
+          verdict_exit=1
+          if [ -n "$verdict_line" ]; then
+            verdict_exit=0
+          else
+            echo "::error::SBV2 numeric parity did not report exactly 1 passed, 0 failed, 0 ignored, 0 measured"
+          fi
+          echo "PARITY_VERDICT_EXIT=${verdict_exit}" >> "$GITHUB_ENV"
           # WP-04: surface the mel_loss aggregator's per-run measurement so
           # the first successful CI run's `[parity_sbv2_real] mel_loss parity OK`
           # line is easy to lift into `MEL_LOSS_ATOL`'s docstring when
@@ -1000,6 +1076,8 @@ jobs:
             echo '```'
             grep -E '^\[parity_sbv2_real\]' "$RUNNER_TEMP/parity.log" || echo "(no [parity_sbv2_real] diagnostic lines emitted)"
             echo '```'
+            echo ""
+            echo "**Execution verdict:** \`${verdict_line:-missing}\`"
             echo ""
             echo "**WP-04 mel_loss aggregator** (log-mel RMS, tighter architectural"
             echo "bound than raw waveform atol per ADR"
@@ -1038,12 +1116,11 @@ jobs:
         # side and `tests/fixtures/sbv2/atol-measurements.json` in ONE
         # commit (redundant-recording rule).
         #
-        # `if: always()`: even a failing parity run should produce a
-        # summary — that is precisely the case where the owner-review
-        # cycle needs to see per-tensor max|Δ| numbers to decide what to
-        # tighten/loosen.
+        # Only a fresh reference and a valid one-test numeric verdict may
+        # produce this apparently-measured summary. Partial logs from a
+        # failed/ignored/zero-test run remain available through parity.log.
         id: atol_summary
-        if: always()
+        if: always() && steps.reference_fixture.outputs.available == 'true' && env.PARITY_EXIT == '0' && env.PARITY_VERDICT_EXIT == '0'
         shell: bash
         run: |
           set +e
@@ -1088,6 +1165,7 @@ jobs:
           name: sbv2-parity-artifacts
           path: |
             ${{ runner.temp }}/sbv2-dump.log
+            ${{ runner.temp }}/sbv2-cpu-environment.txt
             ${{ runner.temp }}/parity.log
             ${{ runner.temp }}/fixture-drift.txt
             ${{ runner.temp }}/atol-summary.json
@@ -1104,8 +1182,8 @@ jobs:
         # (a step that never ran because an earlier hard-required step
         # failed) compare != '0' too, so an upstream failure still fails
         # the job here.
-        if: env.DUMP_EXIT != '0' || env.REFERENCE_FIXTURE_EXIT != '0' || env.PARITY_EXIT != '0'
+        if: env.DUMP_EXIT != '0' || env.REFERENCE_FIXTURE_EXIT != '0' || env.PARITY_EXIT != '0' || env.PARITY_VERDICT_EXIT != '0'
         shell: bash
         run: |
-          echo "::error::parity-sbv2-real failed — sbv2_dump_reference.py exit ${DUMP_EXIT:-?}, reference fixture precondition ${REFERENCE_FIXTURE_EXIT:-?}, parity_sbv2_real exit ${PARITY_EXIT:-?} — see step summary + artifacts"
+          echo "::error::parity-sbv2-real failed — sbv2_dump_reference.py exit ${DUMP_EXIT:-?}, reference fixture precondition ${REFERENCE_FIXTURE_EXIT:-?}, parity_sbv2_real exit ${PARITY_EXIT:-?}, execution verdict ${PARITY_VERDICT_EXIT:-?} — see step summary + artifacts"
           exit 1
