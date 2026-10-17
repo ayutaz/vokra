@@ -110,9 +110,9 @@ original job log: fifteen cache tests, seventeen ASR tests and the explicit
 cache self-test pass on each platform, without failures or skips. These are
 source-processing tests, not upstream Rust compilation or model execution.
 
-The earlier head's typos v1.50.3 failure reports the verbatim upstream API
-identifiers `Tensor::arange` and `from_mmaped_safetensors`. The two exact
-authenticated fixture paths are excluded under the existing vendored-source
+The earlier head's typos v1.50.3 failure reports two verbatim upstream API
+identifiers. The two exact authenticated fixture paths are excluded under
+the existing vendored-source
 policy; their bytes are unchanged and no global word override is added.
 Superseded still-running CI jobs are cancelled after the fresh-head jobs are
 confirmed; the original failure remains historical evidence, not a pass.
