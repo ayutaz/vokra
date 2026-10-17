@@ -26,7 +26,25 @@ def _job(text: str, job_id: str) -> str:
     return match.group(0)
 
 
+def _contains_in_order(text: str, first: str, second: str) -> bool:
+    """Require both workflow fragments and their execution order."""
+    return (
+        first in text
+        and second in text
+        and text.index(first) < text.index(second)
+    )
+
+
+def _self_test_contains_in_order() -> None:
+    """Keep missing/reversed fragment checks fail-closed."""
+    assert _contains_in_order("chmod help", "chmod", "help")
+    assert not _contains_in_order("help", "chmod", "help")
+    assert not _contains_in_order("help chmod", "chmod", "help")
+
+
 def main() -> None:
+    _self_test_contains_in_order()
+    print("  ok: chmod order helper rejects missing and reversed fragments")
     workflow = open(WORKFLOW, encoding="utf-8").read()
     preflight = open(PREFLIGHT, encoding="utf-8").read()
     stable_release = open(STABLE_RELEASE, encoding="utf-8").read()
@@ -58,7 +76,9 @@ def main() -> None:
             ('desktop_release.py' in assemble and 'manifest --version "$RC_VERSION"' in assemble, "RC verifies complete desktop manifest"),
             ('vokra-desktop-capi.spdx.json' in assemble and 'vokra-desktop-cli.spdx.json' in assemble, "RC includes C ABI and CLI SBOMs"),
             ('native-smoke' in linux and 'vokra-cli-${RC_VERSION}-x86_64-linux-musl' in linux, "Linux clean-install QA covers both CLI forms and C ABI"),
+            (_contains_in_order(linux, 'chmod +x "dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux"', '"dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux" --help'), "Linux clean-install restores CLI mode before help"),
             ('runs-on: macos-latest' in macos and 'uname -m' in macos and 'native-smoke' in macos and '--help' in macos, "macOS clean-install QA covers CLI and C ABI"),
+            (_contains_in_order(macos, 'chmod +x "$CLI"', '"$CLI" --help'), "macOS clean-install restores CLI mode before help"),
             ('runs-on: windows-latest' in windows and 'Expand-Archive' in windows and 'native-smoke' in windows, "Windows clean-install QA covers ZIP CLI and DLL"),
             (all(job_id in publish for job_id in ("clean-install-linux", "clean-install-macos", "clean-install-windows")), "publication waits for every clean-install QA"),
             ('--draft --prerelease --latest=false' in publish, "release is created as draft non-latest prerelease"),
