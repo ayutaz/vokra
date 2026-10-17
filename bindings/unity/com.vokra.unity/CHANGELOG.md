@@ -7,6 +7,14 @@ suffix conventions (`-preview.N` for pre-1.0 iterations).
 
 ## Unreleased
 
+## [0.4.0-rc.1]
+
+### Preview scope
+
+- Align the package metadata with the Vokra `0.4.0-rc.1` GitHub preview.
+- The preview is CPU-only and does not imply OpenUPM publication, model-weight
+  updates, or complete Apple CPU/Metal validation.
+
 ## [0.3.0] — 2026-09-17
 
 ### Changed
@@ -61,3 +69,4 @@ Initial package scaffold from the M2-11 workstream, included in `0.1.0`.
 - CUDA runtime — resolved via `dlopen` at runtime per NVIDIA EULA.
 
 [0.3.0]: https://github.com/ayutaz/vokra/releases/tag/v0.3.0
+[0.4.0-rc.1]: https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1
