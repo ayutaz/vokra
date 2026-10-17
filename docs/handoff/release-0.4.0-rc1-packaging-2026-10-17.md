@@ -219,3 +219,42 @@ No checker exception, error waiver or premature tag/release was introduced.
 The code-fence download recipes and all candidate acceptance gates are unchanged.
 Fresh corrected-head CI remains necessary; the earlier head's checks are not
 carried forward as acceptance of the new documentation commit.
+
+## RC producer-specific SBV2 sidecar refresh
+
+The corrected guide links passed CI Security run `39050477739`. The same
+head, `e74cf61d9a90390977a2cad3acd6b32bbf06335a`, exposed a separate real
+checkpoint failure in [run 39050477672, job 117448888195](https://github.com/ayutaz/vokra/actions/runs/39050477672/job/117448888195):
+all three default JA-path regenerated GGUF hashes differ from the recorded
+`0.3.0` artifacts. The failure precedes reference/numerical acceptance.
+
+`crates/vokra-core/src/gguf/writer.rs` stamps `vokra.schema.producer` with
+the crate version. The RC version change therefore changes the serialized
+metadata. No core/converter/SBV2 implementation, checkpoint pin, oracle lock,
+reference producer or numerical-bound change exists between the PR base
+`fab4638a` and this head. The last successful scheduled real run was
+[38279577089](https://github.com/ayutaz/vokra/actions/runs/38279577089), at
+`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`; subsequent changes to the model
+source tree before the PR base affect unrelated FireRed ASR/Kyutai files.
+This source/metadata diagnosis is not a tensor-byte comparison or numerical
+parity proof.
+
+The scoped correction retains the writer and strict hash/source/tensor/
+numerical gates, records actual hosted conversion hashes in the matching
+sidecars and preserves old hashes as historical comments. The fourth,
+explicit ZH-path artifact also requires a measured RC hash; existing workflow
+dispatch [39051604000](https://github.com/ayutaz/vokra/actions/runs/39051604000)
+was started at the same exact head with `include_zh=true` to obtain it.
+No local model acquisition, transformation or inference is authorized by
+this correction. Acceptance still requires fresh exact-head real conversion,
+independent reference generation and the unchanged numerical consumer gate.
+
+The ZH measurement dispatch completed at the expected old-sidecar gate
+([job 117451197711](https://github.com/ayutaz/vokra/actions/runs/39051604000/job/117451197711)).
+The first three hashes exactly reproduce run `39050477672`; the fourth
+`chinese-roberta-wwm-ext-large.gguf` hash is
+`3c51b48b3ed046cc240c22331daee4408a492725bafc3ac6b95206321f92c43c`.
+All four selected sidecars are refreshed from observed conversion bytes,
+not inferred hashes. This diagnostic run is a recorded hash-gate failure,
+not a green numerical result; both JA and explicit ZH acceptance remain
+pending at the forthcoming corrected head.

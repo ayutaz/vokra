@@ -1,1 +1,3 @@
-415f5e2c1342d8f8121c1e5a638c6f7ce51b13cd65e2fd8a62872f66a729323e  deberta-v3-large.gguf
+# Historical v0.3.0 producer SHA-256: 415f5e2c1342d8f8121c1e5a638c6f7ce51b13cd65e2fd8a62872f66a729323e
+# v0.4.0-rc.1 measured by parity-sbv2-real run 39050477672 (job 117448888195).
+64e2d9ac8e0261759b4b2496a96f91943e1d4946d808df954bcd655177f8b800  deberta-v3-large.gguf
