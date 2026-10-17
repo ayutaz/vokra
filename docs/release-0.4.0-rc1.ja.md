@@ -3,8 +3,8 @@
 [English](release-0.4.0-rc1.md) | **日本語**
 
 CPU-onlyの`v0.4.0-rc.1` previewを対象としたガイドです。**ソースの版番号だけでは
-公開済みとは判断できません。** 正確な[GitHub pre-release](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)と
-検証済みassetが存在する場合だけ以下の手順を使用してください。公開前には取得先に
+公開済みとは判断できません。** [GitHub releasesページ](https://github.com/ayutaz/vokra/releases)から正確な
+`v0.4.0-rc.1` pre-releaseと検証済みassetの存在を確認した場合だけ、以下の手順を使用してください。公開前には取得先に
 候補版は存在しません。他のtagのassetで代用しないでください。
 
 ## Scope

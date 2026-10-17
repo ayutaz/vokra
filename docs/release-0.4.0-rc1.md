@@ -3,9 +3,9 @@
 **English** | [日本語](release-0.4.0-rc1.ja.md)
 
 This guide targets the CPU-only `v0.4.0-rc.1` preview. **A source version is
-not proof of publication.** Use the commands only if the exact
-[GitHub pre-release](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
-and its verified assets exist. Before publication, these URLs intentionally
+not proof of publication.** Use the commands only after locating the exact
+`v0.4.0-rc.1` pre-release and its verified assets on the [GitHub releases page](https://github.com/ayutaz/vokra/releases).
+Before publication, these URLs intentionally
 do not provide a candidate; do not substitute another tag's assets.
 
 ## Scope

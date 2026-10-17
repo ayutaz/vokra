@@ -205,3 +205,17 @@ still build and validate the actual payload, rerun the two-model hosted Linux
 CPU smoke, pass native clean-install QA and verify the public release/assets
 at its exact merged source SHA. No model test or Apple/Metal result is proved
 by this VAST run.
+
+## First PR CI link correction
+
+PR [#263](https://github.com/ayutaz/vokra/pull/263) was opened at
+`c6c67e9b9cf794454d05504abcff946b0117b9bc`. Its first external link check
+([job 117446576653](https://github.com/ayutaz/vokra/actions/runs/39050036770/job/117446576653))
+correctly rejected the unpublished RC tag-page links in the English/Japanese
+candidate guides: two HTTP 404 results, not a transient GitHub blob failure.
+The guides now point to the existing Releases index and require users to find
+the exact `v0.4.0-rc.1` and verified assets before using the conditional recipes.
+No checker exception, error waiver or premature tag/release was introduced.
+The code-fence download recipes and all candidate acceptance gates are unchanged.
+Fresh corrected-head CI remains necessary; the earlier head's checks are not
+carried forward as acceptance of the new documentation commit.
