@@ -23,6 +23,7 @@ on:
           - all
           - miri
           - miri-rng-diagnostic
+          - miri-math-diagnostic
 
 permissions:
   contents: read
@@ -284,6 +285,98 @@ jobs:
             --no-fail-fast -- --nocapture --test-threads=1
           echo "NO_EXTRA_CONTROL: all oracle targets=pass"
           echo "::endgroup::"
+
+  miri-math-diagnostic:
+    name: miri-math-diagnostic
+    if: github.event_name == 'workflow_dispatch' && inputs.focus == 'miri-math-diagnostic'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action implementation
+        with:
+          toolchain: nightly
+          components: miri
+      - name: Prepare Miri sysroot
+        run: cargo +nightly miri setup
+      - name: Record toolchain and verify native math tests
+        # Native std/libm remains the exact production comparison baseline.
+        # This diagnostic never changes that native gate.
+        run: |
+          set -euo pipefail
+          rustc +nightly --version --verbose
+          cargo +nightly --version
+          cargo +nightly test --locked --no-fail-fast -p vokra-math --tests -- --nocapture --test-threads=1
+      - name: Collect default-rounding math baseline (diagnostic only)
+        # The default leg records every seed's real return code without
+        # turning an observed failure into a pass. It is outside full Miri
+        # acceptance and is paired with the scoped no-extra control below.
+        run: |
+          set -uo pipefail
+          failures=()
+          results=()
+          for miri_seed in 0 1 2 3; do
+            echo "::group::BASELINE_DIAGNOSTIC math seed ${miri_seed}"
+            if MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-seed=${miri_seed}" \
+              cargo +nightly miri test --locked -p vokra-math --lib --no-fail-fast -- --nocapture --test-threads=1; then
+              rc=0
+              echo "BASELINE_DIAGNOSTIC: observed math seed=${miri_seed} rc=${rc} (pass)"
+            else
+              rc=$?
+              echo "BASELINE_DIAGNOSTIC: observed math seed=${miri_seed} rc=${rc} (failure)"
+              failures+=("seed=${miri_seed}")
+            fi
+            results+=("seed=${miri_seed}:rc=${rc}")
+            echo "::endgroup::"
+          done
+          if ((${#failures[@]} == 0)); then
+            echo "BASELINE_DIAGNOSTIC: observed failures=none"
+          else
+            echo "BASELINE_DIAGNOSTIC: observed failures=${failures[*]}"
+          fi
+          {
+            echo "## Miri math A/B diagnostic (gate外)"
+            echo "Default-rounding observations: ${results[*]}"
+            echo "Observed nonzero return codes are recorded evidence, not an expected pass condition."
+            echo "This diagnostic-only job is outside full Miri acceptance and does not replace or weaken the full gate."
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Verify no-extra-rounding math control (diagnostic gate)
+        # This whole-math no-extra leg is limited to this A/B diagnostic. It
+        # must not be copied into the full Miri gate; structural and special
+        # value coverage remains under default rounding there.
+        run: |
+          set -uo pipefail
+          failures=()
+          results=()
+          for miri_seed in 0 1 2 3; do
+            echo "::group::NO_EXTRA_CONTROL math seed ${miri_seed}"
+            if MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-no-extra-rounding-error -Zmiri-seed=${miri_seed}" \
+              cargo +nightly miri test --locked -p vokra-math --lib --no-fail-fast -- --nocapture --test-threads=1; then
+              rc=0
+              echo "NO_EXTRA_CONTROL: observed math seed=${miri_seed} rc=${rc} (pass)"
+            else
+              rc=$?
+              echo "NO_EXTRA_CONTROL: observed math seed=${miri_seed} rc=${rc} (failure)"
+              failures+=("seed=${miri_seed}")
+            fi
+            results+=("seed=${miri_seed}:rc=${rc}")
+            echo "::endgroup::"
+          done
+          if ((${#failures[@]} == 0)); then
+            echo "NO_EXTRA_CONTROL: observed failures=none"
+          else
+            echo "NO_EXTRA_CONTROL: observed failures=${failures[*]}"
+          fi
+          {
+            echo "No-extra-rounding observations: ${results[*]}"
+            echo "This whole-math no-extra leg is diagnostic A/B evidence only; it is not the full Miri acceptance configuration."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if ((${#failures[@]} != 0)); then
+            echo "NO_EXTRA_CONTROL failed for one or more seeds; retain the diagnostic failure." >&2
+            exit 1
+          fi
 
   address-sanitizer:
     name: address-sanitizer
