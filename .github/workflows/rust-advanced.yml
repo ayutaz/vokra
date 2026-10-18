@@ -13,6 +13,15 @@ on:
   schedule:
     - cron: "37 1 * * 0"
   workflow_dispatch:
+    inputs:
+      focus:
+        description: "Run the complete advanced suite or only the Miri job"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - miri
 
 permissions:
   contents: read
@@ -24,6 +33,7 @@ concurrency:
 jobs:
   feature-combinations:
     name: cargo-hack-each-feature
+    if: github.event_name != 'workflow_dispatch' || inputs.focus == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -84,14 +94,34 @@ jobs:
           components: miri
       - name: Prepare Miri sysroot
         run: cargo +nightly miri setup
-      - name: Interpret parser and math tests under Miri
+      - name: Run all core and math tests with host I/O under Miri
+        # Miri's many-seeds mode launches interpreter instances in parallel,
+        # while host-I/O fixtures use PID+tag paths. Run each seed sequentially
+        # so separate interpreters cannot access those fixtures simultaneously;
+        # do not rely on real/virtual PID uniqueness or change the fixtures.
+        run: |
+          set -euo pipefail
+          for miri_seed in 0 1 2 3; do
+            echo "::group::Miri host-I/O seed ${miri_seed}"
+            MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-seed=${miri_seed}" \
+              cargo +nightly miri test -p vokra-core -p vokra-math -- --nocapture --test-threads=1
+            echo "::endgroup::"
+          done
+      - name: Interpret isolation-safe GGUF and quantization tests under Miri
+        # The complete suite above executes every host-I/O test. These module
+        # filters keep the additional isolated leg on the in-memory reader and
+        # quantization paths without skipping or ignoring any test.
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..4
-        run: cargo +nightly miri test -p vokra-core -p vokra-math
+        run: |
+          cargo +nightly miri test -p vokra-core 'gguf::reader::' -- --nocapture --test-threads=1
+          cargo +nightly miri test -p vokra-core 'gguf::quant::' -- --nocapture --test-threads=1
+          cargo +nightly miri test -p vokra-core 'quant::' -- --nocapture --test-threads=1
+          cargo +nightly miri test -p vokra-math -- --nocapture --test-threads=1
 
   address-sanitizer:
     name: address-sanitizer
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.event_name != 'workflow_dispatch' || inputs.focus == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -115,6 +145,7 @@ jobs:
 
   fuzz:
     name: fuzz-${{ matrix.target }}
+    if: github.event_name != 'workflow_dispatch' || inputs.focus == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
