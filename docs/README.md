@@ -1,5 +1,18 @@
 # Vokra documentation
 
+**2026-10-18 synthesized-session verification accepted:** [fixed-source VAST result](handoff/mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
+at `59a0afda` passes fmt, all 27 PCM / five streaming-LM tests and strict
+Clippy. Original success and earlier failure streams are retained; the owned
+worker/data are destroyed and independently absent. New source-PR acceptance,
+independent full PCM, real-weight CPU and final Apple gates remain open.
+
+**2026-10-18 PR #267 accepted:** the [complete exact-head CI and normal merge](handoff/mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
+close the prior source-PR pending boundary at main `5b688666`: 81 successful
+checks, five event/opt-in skips, all sixteen required pairs and thirteen
+successful workflows. Next is actual-session observation and independent
+reference closure, not final Apple execution. All 194 rows remain in scope;
+no owner, real-weight or CPU/Metal completion follows from this source PR.
+
 **2026-10-18 corrected Kyutai source verification:** the [exact-source PASS](handoff/mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
 at `c69395d5` supersedes the earlier pending compiler checkpoint below:
 fmt, three PCM-control tests, one KV-view test and strict Clippy pass on

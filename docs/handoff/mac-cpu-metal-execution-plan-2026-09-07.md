@@ -1,5 +1,35 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 fixed-source acceptance:** [actual-session four-stage PASS](mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
+> at `59a0afda` includes 27 PCM / five LM tests and strict Clippy. Original
+> streams are independently verified and owned `56503887`/data are destroyed.
+> Record this proof, push, then require fresh exact-head PR CI and normal
+> acceptance. Next close the independent full-PCM writer/consumer and other
+> non-Apple/owner duties, not another synthetic substitute. Real CPU, final
+> packet and Scaleway-last Apple gates remain unchanged for all 194 rows.
+
+> **2026-10-18 synthesized runtime checkpoint:** [32 actual tests](mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
+> pass at `155be525`, followed by one strict signature-helper lifetime lint.
+> Original evidence is retained and worker/data `56502593` are independently
+> absent. Bind the minimal further test correction to a fresh source packet
+> and verify the whole batch before push; no model/owner/Apple promotion.
+
+> **2026-10-18 next actual verification:** the [runtime-observer compiler result](mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
+> preserves exact `7f2c0bc9`'s two signature-test lifetime errors and original
+> native streams. Worker `56501022` and its data are destroyed and absence
+> independently confirmed. Review the minimal signature-only correction,
+> freeze a new packet, then require actual remote 27/5 tests and strict
+> Clippy before push/CI. No independent PCM, real CPU or Apple gate closes.
+
+> **2026-10-18 source PR accepted / next implementation:** [#267 acceptance](mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
+> fixes main `5b688666` after 81 successful checks and five justified skips.
+> Continue the actual Kyutai Mimi/LM observation seam and independent
+> reference without substituting synthetic self-consistency for parity.
+> The separate XCodec2 private test candidate remains unreviewed/unrun after
+> a local guard refusal; no bypass or main integration follows. Preserve
+> existing Draft duties and all non-Apple/owner/real-weight/final-packet
+> requirements, with Scaleway still the last hardware stage.
+
 > **2026-10-18 next acceptance step:** the [corrected Kyutai source batch](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
 > now passes all four stages at `c69395d5`, with original small evidence
 > recovered and the worker/data destroyed. Record the proof, push the reviewed

@@ -1,5 +1,27 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Latest fixed-source acceptance:** [all four stages pass](#actual-session-fixed-source-four-stage-pass)
+> at `59a0afda`, with the original receipt and six native streams verified.
+> Owned `56503887` and data are destroyed and independently absent. This
+> supersedes revised-source NOT_RUN/failed statements below only for this
+> exact batch. Fresh PR CI, independent full PCM, real CPU and Apple remain.
+
+> **Latest actual-session checkpoint:** [32 tests pass, strict lint remains](#actual-session-tests-pass-and-signature-lint-correction)
+> at `155be525`. Original streams are retained; owned `56502593` and data
+> are destroyed and independently absent. The further signature-only fix
+> still needs an actual exact-source run before push. No model row advances.
+
+> **Latest actual-session verification:** the [first runtime-observer run](#actual-session-compiler-failure-and-minimal-correction)
+> fails at exact `7f2c0bc9` on two signature-probe lifetime errors, not a
+> numerical assertion. Original native evidence is retained and owned worker
+> `56501022` is independently absent. A test-only correction is reviewed,
+> not yet remotely verified; no model or Apple row advances.
+
+> **Latest PR acceptance:** [#267 complete fresh CI and normal merge](#pr-267-accepted-after-complete-fresh-ci)
+> supersede source-PR-pending statements below at main `5b688666`. The next
+> actual-session observer wave is unverified implementation, not independent
+> full-PCM/real-weight/Apple evidence. All six stages and 194 rows remain.
+
 > **Latest source checkpoint:** [corrected-source four-stage PASS](#corrected-kyutai-source-four-stage-pass)
 > supersedes the pending compiler statements below, without rewriting their
 > original failures. Main is `39dd2b00`; source verification is exact
@@ -692,3 +714,258 @@ it is not allowed globally. The old
 failed job is not retried unchanged or relabeled successful. Complete fresh
 exact-head CI remains the normal-merge gate, and all real-weight/Apple
 requirements remain open.
+
+## PR 267 accepted after complete fresh CI
+
+The narrow source/safety/evidence PR is normally squash-merged at
+04:44:17 UTC as main `5b688666ee26bf66ae1e75dd011d49d45168dc70`.
+Independent [PR readback](https://github.com/ayutaz/vokra/pull/267) confirms
+closed/merged, exact reviewed head
+`62ebb76b6ec95b194a859f55b9108b4652434dd6` and the matching protected-main
+merge result. Maintainer main was normally fast-forwarded to that commit
+and confirmed clean before starting a separate implementation branch.
+No force/admin merge, waived check or safety-rule change is used.
+
+The complete single-page exact-head check readback contains 86 results:
+81 success, five conditionally skipped, zero failed or live. All sixteen
+required context/application pairs succeed, including external CodeQL app
+57789. All thirteen workflows complete successfully on attempt 1. This is
+not a partial first-page count or reuse of the earlier failed head's checks.
+The [bounded acceptance readback](pr267-ci-acceptance-2026-10-18.json)
+retains all check IDs/application IDs and workflow identities for this exact
+head, plus the independently confirmed normal merge identity and limits.
+
+| Skipped check | Actual condition / non-claim |
+| --- | --- |
+| Miri / address sanitizer | Schedule or explicit dispatch only |
+| Full-history gitleaks | Schedule or full-history dispatch only |
+| Whisper WASM e2e | Explicit model-fetch opt-in or monthly schedule only |
+| NeMo real-checkpoint matrix | Actual setup log reports checkpoint sourcing disabled; skipped, not real-weight parity |
+
+The corrected [hosted spelling job](https://github.com/ayutaz/vokra/actions/runs/39097034789/job/117585745146)
+actually downloads typos 1.50.3, checks the canonical `_typos.toml` and
+succeeds on the PR merge ref binding that exact head to main `39dd2b00`.
+The immutable Canary receipt remains byte-identical. The original failed
+job remains failed; superseded still-running workflows are automatically
+cancelled by their existing PR concurrency policy, not relabeled successful.
+Ordinary backend/model-conditional CI does not establish the separate
+all-row Apple CPU/reference, Metal/reference or no-fallback campaign.
+
+Next branch `codex/kyutai-runtime-observation-20261018` starts from the
+accepted main. The reviewed private native-session candidate adds a
+borrowed synchronous observation seam to the real Mimi/LM/greedy route;
+implementation and synthetic execution coverage still require actual remote
+Rust verification. No public loader, provenance gate, numerical tolerance,
+upstream reference identity or owner decision may be weakened to enable it.
+
+### Separate XCodec2 private candidate: not accepted
+
+A Luna private candidate adds metadata/attribution preservation tests for
+the PR #152 helper scope. Its test invocation is refused by the maintainer's
+local model/checkpoint guard. Follow-up source/hash/metadata inspection is
+also refused; root presents the identical read-only Git inspection command
+to normal escalation once, and it is refused again. No alternate read,
+hash, execution, transfer or guard modification is used.
+
+The worker reports additions to two private test files but cannot prove
+the pre-edit private worktree was clean. Those changes remain unreviewed,
+untested and unaccepted. Do not restore or discard that unknown pre-existing
+private state, transfer it, or integrate it into main. The current repository
+and frozen successful VAST helpers are unaffected. This hold does not close
+PR #152, approve its reference environment or advance any model row.
+
+## Actual-session observer implementation: remote verification pending
+
+On the separate branch from accepted main `5b688666`, Luna extends only
+`crates/vokra-models/src/kyutai_stt/pcm_session.rs`. Manager reviews the
+complete diff: ordinary push/finish and the test-only observer use the same
+Mimi encoding, streaming LM step and actual greedy selection. The production
+callers supply no-op hooks; observer entry points, borrowed event and
+collector tests remain `cfg(test)` and crate-private. No public ASR loader,
+authenticated constructor, provenance/hash gate, MLX/DSM schedule,
+dependency, license, numerical tolerance or unsupported-backend behavior
+changes.
+
+The callback borrows actual frame/codes, logits, sampled token, native step
+position, next position and an existing read-only per-layer KV view. The
+test collector synchronously copies observations before the next forward.
+This is not an upstream oracle, output writer/consumer packet, new cache
+owner or model-execution permission.
+
+Synthetic execution tests construct the existing tiny first-party decoder
+and synthesized Mimi with the private 24 kHz / 12.5 Hz / 1,920-sample
+boundary and matching codebooks. The fixture's direct fields are test-only;
+the empty tokenizer deliberately excludes transcript coverage. Tests compare
+the actual normal/observed session route, different input partitions,
+finish, chronological cache eviction and reset's complete captured values.
+Separate frame/LM callback failures during push and finish must poison the
+session; after reset, actual push/finish must succeed from position zero.
+
+Manager catches and returns an eager optional-value expression that would
+index the preceding token at index zero; Luna replaces it with lazy branch
+selection before any remote run. No assertion or lint gate is removed.
+The resulting PCM source SHA-256 is
+`bd665ef70491e44930235c7818a88802a1e77df6e4290093b8bd4a6ee632c830`;
+streaming-LM source stays
+`9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42`.
+Static source enumeration finds 27 PCM and five streaming-LM unit tests,
+with no ignored test in either module. These are expected execution counts,
+not successful test results.
+
+Formatting and diff hygiene pass. Local model, compiler/test/Clippy,
+provider and SSH execution remain unperformed for this wave. Freeze the
+reviewed source commit and fresh bundle, independently check the separately
+derived bounded lifecycle helpers and all offline mocks, then perform actual
+remote verification before code push. Intended strict remote commands are:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p vokra-models --lib kyutai_stt::pcm_session:: -- --test-threads=1
+cargo test -p vokra-models --lib kyutai_stt::streaming_lm:: -- --test-threads=1
+cargo clippy -p vokra-models --lib --tests -- -D warnings
+```
+
+Even a successful synthetic session run would close only this source seam.
+Independent full-PCM upstream capture/consumer, dependency/license/operator
+closure, approved real-weight CPU, final clean HEAD/fresh transfer packets,
+Apple CPU/Metal/no-fallback and final public reconciliation remain open.
+The complete six-stage objective and all 194 public rows are unchanged.
+
+## Actual-session compiler failure and minimal correction
+
+The fixed `7f2c0bc9a98d326e8c02e7cf6f8ae541cc669728` source packet is
+actually transferred to disposable VAST `56501022` on machine `17786`.
+The fresh 200-GB-inclusive quote is USD 0.08888888888888889/hour, within
+the unchanged USD 0.20/hour and thirty-minute lifecycle ceiling. Independent
+manager review and full offline leaf/controller harnesses pass first;
+SSH/SCP explicitly disable agent forwarding. Only source bundle and leaf
+are transferred, with no model, HF credential or upstream framework job.
+
+Formatting succeeds. The PCM library-test compilation exits 101 with two
+E0308 diagnostics at lines 731 and 735: a method item tied to one engine
+lifetime cannot be coerced to the signature test's independently
+`for<'a>`-quantified engine-lifetime function pointer. No PCM or LM test
+executes, and streaming-LM/Clippy stages are not reached. Do not count the
+planned 27/5 tests as passes or retry this unchanged source.
+
+The [lossless native evidence envelope](kyutai-runtime-observation-failure-2026-10-18.json)
+retains the original 2,061-byte receipt (SHA-256
+`5d85acda71a0690d05c217c7a2929e5218de48f6b123050d0e5ef5bc12199351`),
+empty successful fmt stream, complete 3,844-byte compiler stream, CPU record,
+Rust setup stream and recovery ledger. Manager independently verifies all
+reported byte counts and SHA-256 values. Source and canonical config hashes
+are unchanged and checkout dirty counts remain `[0,0]` before/after.
+
+The controller exits nonzero after recovering the original evidence and
+destroying its owned instance/data. Its individual readback is
+`{"instances": null}`; independent safe-wrapper individual/account reads
+also confirm target absence and zero account instances at this checkpoint.
+This does not audit separate network volumes or guarantee future inventory.
+
+Luna's correction changes only the signature test: a generic helper fixes
+the engine lifetime while checking both method pointers and keeps the
+observer/event type assertions. Production behavior, runtime tests, public
+loaders, source pins, bounds and dependencies are unchanged. Reviewed PCM
+source SHA-256 becomes
+`69947534c4c02b916dc99176b28624bdb0aadee98f51386674fd6ff757fe7cf7`.
+Formatting and diff hygiene pass; actual revised compilation/tests/Clippy
+remain NOT_RUN until a new clean source packet is verified remotely.
+Independent full-PCM reference, real-weight CPU, owner/legal, final packet,
+Apple CPU/Metal/no-fallback and public reconciliation remain open.
+
+## Actual-session tests pass and signature lint correction
+
+The first revised-source attempt stops at offer preflight because machine
+`17786` returns no current quote. It reaches no baseline/create/SSH stage
+and creates no instance. A new read-only market observation identifies
+machine `31844` at USD 0.09074074074074073/hour including 200 GB, with the
+same fee, capacity, bandwidth, ownership and thirty-minute lifecycle gates.
+
+Disposable `56502593` then actually verifies exact clean
+`155be525c356430c360b3fb4c16dff2685fc96a0`. Fmt succeeds, all 27 PCM tests
+pass in 6.17 seconds, and all five streaming-LM tests pass in 0.02 seconds;
+both have zero failures and zero ignored tests. The native PCM observations,
+chunking/reset equivalence and callback-error recovery therefore have actual
+synthesized execution evidence, not independent full-PCM or real-weight parity.
+
+Strict Clippy exits 101 on one `extra_unused_lifetimes` diagnostic: the
+generic signature helper names its lifetime only inside body-local types,
+not in its function signature. This is not another E0308 compiler failure
+or a failed numerical assertion. The canonical dependency MSRV diagnostic
+also remains visible; no config, warning policy or assertion is altered.
+
+The [lossless native envelope](kyutai-runtime-observation-lint-failure-2026-10-18.json)
+retains the original 2,541-byte failure receipt, SHA-256
+`89bbd6477706244c8220673eba195b879770a3d28de5c0a6b89b09c19d7a769a`,
+all four command streams, CPU and Rust setup records, and recovery ledger.
+Manager independently checks every original length/hash, actual 27/5
+summaries, unchanged source/config hashes and `[0,0]` checkout dirty counts.
+Controller cleanup destroys this exact worker/data and reads individual
+absence. Independent safe-wrapper individual/account reads confirm the ID
+absent and zero account instances. Separate network volumes are not audited.
+
+The next reviewed change adds a zero-sized `PhantomData` argument to the
+same helper, binding the engine lifetime in its signature while preserving
+both method-pointer checks and requiring no model construction. Only this
+test changes; no lint allow, assertion removal or production change occurs.
+New PCM SHA-256 is
+`be8544416fc4c8ee19f32bdbee33d3e7439e014ef40ca1d7ede731bc127f8a57`.
+Its remote Rust/test/Clippy verdict is still NOT_RUN. Preserve the original
+failed heads and require the entire new fixed-source batch, not merely the
+last lint command, before push. All six-stage and 194-row duties remain.
+
+## Actual-session fixed-source four-stage PASS
+
+The additional signature-only correction is committed and frozen at clean
+`59a0afda1b6b4bbe6d158c54bccb1add841691b2`, base
+`5b688666ee26bf66ae1e75dd011d49d45168dc70`. The fresh bundle is 27,328 bytes,
+SHA-256 `7f270b1cc8aba1785a1f20e86bc6d774e9a55fff211acdb516a8973a7ef443a7`.
+The prior `155be525` packet and original failures remain unchanged. Manager
+reviews the complete new helper diff (pins/paths only), rechecks syntax,
+ShellCheck and source/bundle hashes, and reviews Luna's terminal full leaf
+and lifecycle mock evidence. Their existing price, deadline, ownership,
+failure-recovery, no-forwarding and destroy/readback logic is unchanged.
+
+Machine `31844` has no matching current quote at admission, so that attempt
+stops before instance creation. A fresh market observation identifies offer
+`53652712`, machine `39233`, at USD 0.1325925925925926/hour including 200 GB.
+The controller independently revalidates the exact offer and creates only
+owned `56503887` under the existing USD 0.20/hour / thirty-minute ceiling.
+It transfers the reviewed source bundle and leaf only, not credentials or
+model artifacts, and actually executes all four fixed commands:
+
+| Stage | Actual verdict |
+| --- | --- |
+| `cargo fmt --all -- --check` | exit 0 |
+| PCM module tests, serial | 27 passed / 0 failed / 0 ignored; 7.91 s |
+| Streaming-LM module tests, serial | 5 passed / 0 failed / 0 ignored; 0.03 s |
+| `cargo clippy -p vokra-models --lib --tests -- -D warnings` | exit 0; actual dev build finished |
+
+The [lossless native evidence](kyutai-runtime-observation-pass-2026-10-18.json)
+preserves the original 2,628-byte PASS receipt, SHA-256
+`5d89bdf185317013bf2b6372cda71dd97b6d9fa9a198e6143fe8549cc3e25bef`,
+and all six original native streams. Manager independently checks every
+reported byte count and SHA-256, the actual 27/5 zero-ignored summaries,
+all four zero exit codes, no log truncation, exact before/after HEAD,
+`[0,0]` dirty counts and unchanged source/canonical-config hashes. PCM stays
+`be8544416fc4c8ee19f32bdbee33d3e7439e014ef40ca1d7ede731bc127f8a57`;
+streaming LM stays
+`9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42`.
+Rust setup and CPU/ISA metadata are retained. The existing dependency MSRV
+diagnostic remains visible; no warning allow or config change is introduced.
+
+The controller returns zero with `PASS audit-and-destroy` after evidence
+verification and destruction of its exact owned instance and saved data.
+Its individual readback is `{"instances": null}`. Independent safe-wrapper
+individual/account reads confirm `56503887` absent and the instance list
+empty. This is not a separate network-volume audit or a future inventory
+guarantee. No source job or retained instance remains running.
+
+This accepts the synthesized actual-session observation seam only. The
+source push and new exact-head PR CI come next. Do not replay this green
+Cargo batch merely to collect its already verified native bytes. Continue
+the independent full-PCM writer/consumer and existing Draft responsibilities,
+dependency/license/operator closure, approved real-weight CPU, final clean
+HEAD/fresh authenticated packets, final Scaleway CPU/Metal/no-fallback and
+result/public audit. Do not substitute additional synthetic seam tests for
+the still-missing independent reference. All 194 rows remain accounted.

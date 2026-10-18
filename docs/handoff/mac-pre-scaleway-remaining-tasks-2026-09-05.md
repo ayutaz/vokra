@@ -1,5 +1,32 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 fixed-source synthetic PASS:** [all four actual stages](mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
+> pass at `59a0afda`, including 27 PCM / five LM tests and strict Clippy.
+> Original native evidence is verified; owned `56503887`/data are destroyed
+> and independently absent. Fresh source-PR CI, independent full PCM,
+> dependency/owner/real CPU and final Apple/public gates remain open.
+> All 194 rows and the dated 136/58 code/artifact classification are retained.
+
+> **2026-10-18 actual synthetic runtime readback:** [27 PCM / five LM tests](mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
+> pass at `155be525`; one signature-helper Clippy lint keeps the whole batch
+> unaccepted. The reviewed further test-only fix requires new remote proof.
+> Original streams are retained; `56502593` and data are destroyed with
+> independent absence. All 194 rows and non-Apple/Apple obligations remain.
+
+> **2026-10-18 runtime source verification:** the [actual compiler failure](mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
+> is retained with complete original streams; owned `56501022` is destroyed
+> and independently absent. The reviewed signature-only fix remains unrun
+> until a new exact-source VAST packet passes. Keep all 194 rows, the dated
+> 136/58 classification, independent full PCM, real CPU and final Apple gates.
+
+> **2026-10-18 PR acceptance supersession:** [PR #267](mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
+> is normally merged as main `5b688666` after complete fresh CI. The source
+> observer/safety/evidence batch is accepted; actual-session observation,
+> independent full-PCM reference, row-specific owner/dependency/source,
+> real-weight CPU, final packet and Apple/no-fallback gates remain open.
+> Keep all 194 rows and the dated 136/58 metadata classification; no model
+> row or immutable decision is promoted by source CI.
+
 > **2026-10-18 corrected-source supersession:** [exact-source verification](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
 > at `c69395d5` passes all four model-free stages with canonical configs:
 > fmt, three PCM-control tests, one KV-view test and strict Clippy. Original
