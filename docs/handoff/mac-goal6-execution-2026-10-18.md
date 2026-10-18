@@ -262,3 +262,57 @@ unchanged. Manager diff review, shell syntax, the actual offline wrapper
 regression and diff hygiene pass. This shell-only change does not modify the
 frozen Rust packet, source/model approvals, reference bounds or any Apple
 completion state; it is not a remote compiler or provider-cleanup result.
+
+## First actual static-worker attempt: endpoint schema failure, destroyed
+
+The manager independently ran the frozen lifecycle mock suite successfully
+before provider execution. Fresh API reads still bind main `7d910a9c` and
+PR #258 `b2846466`. The selected 200-GB offer was `54523925`, machine `17786`,
+at USD 0.08888888888888889/hour; the controller retained the USD 0.20/hour
+ceiling and thirty-minute total limit, including its cleanup reservation.
+
+The actual attempt created instance `56487976`, then stopped at
+`endpoint-readiness` before SSH or the remote static audit. The live plain
+instance row contains both its authoritative top-level `id` / `label` and
+an `instance` dictionary containing billing fields. The parser incorrectly
+treated that billing dictionary as a wrapped instance response and reported
+`FATAL wrong-id`. Its real port fields were also not ready yet (`ports=null`,
+`direct_port_start=-1`); readiness should be retried on the same owned ID,
+not misclassified as an identity mismatch or solved by blind rerenting.
+
+The EXIT cleanup destroyed this exact instance and read back
+`{"instances": null}`. An independent safe-wrapper individual read and
+account listing, completed before 2026-10-18 03:01:43 UTC, confirm that ID
+absent and the instance list empty. This is not an independent network-volume
+audit. The instance's saved data was destroyed; it is not retained for reuse.
+No model, HF key transfer, helper execution, static-audit report or CPU/Apple
+result was produced. Correct the parser against this actual response shape
+and add offline regressions before a changed attempt; the failed attempt is
+not a successful audit or permission to restamp any approval.
+
+## Corrected endpoint attempt: static input cap failure, destroyed
+
+The corrected parser prioritizes the plain row's top-level identity over its
+billing dictionary. The manager reviewed that change and independently reran
+the full offline lifecycle suite successfully. A fresh quote remained the
+same offer, machine and hourly rate. Instance `56488133` then passed endpoint
+and SSH readiness, fetched the exact public revisions and entered the
+stdlib-only audit. It failed because an allowlisted input exceeds the draft
+256-KiB per-file cap. A bounded `FAIL` receipt was recovered, recording stage
+`static-stdlib-audit` and both exact commits; no successful report exists.
+
+Metadata-only `git ls-tree -rl` reads for both revisions identify the cause:
+`license_closure_manifest.json` is 417,264 bytes. The eleven allowlisted
+files total 677,792 bytes per revision; the lock is 118,835 bytes. Ten files
+have identical blob identities across the revisions; only the lock changes.
+No source body was recovered to the maintainer Mac through this metadata
+inspection, and no refused local source-read route was substituted.
+
+The controller destroyed `56488133` and read back absence. An independent
+individual API read, completed before 2026-10-18 03:04:11 UTC, also returns
+`{"instances": null}`. Its saved data is not retained. A further attempt must
+first correct the file-specific cap, preserve the bounded small-report
+recovery contract, and independently pass synthetic tests with representative
+manifest size/shape and explicit over-limit rejection. These two failures
+expose gaps in the original mocks, not model failures, license decisions,
+CPU parity or Apple evidence. Do not replay the unchanged failed helper.
