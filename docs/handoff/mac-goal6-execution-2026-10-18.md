@@ -1,5 +1,13 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Current PR acceptance and remaining plan:** [#268 is normally merged](#pr-268-accepted-after-complete-fresh-ci)
+> at main `8ae9566e`. Complete fresh CI closes only the synthesized-session
+> source batch. The [remaining order](#remaining-six-stage-order-after-pr-268)
+> preserves five Draft PR responsibilities, formal source-read holds,
+> independent reference, dependency/license/owner, real-weight CPU, final
+> packet and Scaleway-last Apple requirements for all 194 rows. Earlier
+> failed, pending and unrun statements below remain dated evidence.
+
 > **Latest fixed-source acceptance:** [all four stages pass](#actual-session-fixed-source-four-stage-pass)
 > at `59a0afda`, with the original receipt and six native streams verified.
 > Owned `56503887` and data are destroyed and independently absent. This
@@ -969,3 +977,85 @@ dependency/license/operator closure, approved real-weight CPU, final clean
 HEAD/fresh authenticated packets, final Scaleway CPU/Metal/no-fallback and
 result/public audit. Do not substitute additional synthetic seam tests for
 the still-missing independent reference. All 194 rows remain accounted.
+
+## PR 268 accepted after complete fresh CI
+
+[PR #268](https://github.com/ayutaz/vokra/pull/268) has exact reviewed head
+`32e3376a0d6143e18d43b6a14b93d018a840182a` and base
+`5b688666ee26bf66ae1e75dd011d49d45168dc70`. Its last commit records the
+already verified native result only: runtime/build/config/workflow inputs
+are unchanged from native-verified `59a0afda`. The complete fresh run ends
+with 86 terminal checks: 81 successful, five justified skips and zero
+failures. Every one of the sixteen required context/application pairs is
+uniquely successful, including external CodeQL app `57789`; all thirteen
+workflows finish successfully on attempt one. The last Unity package job
+`117600840007` finishes its actual package/platform work, not a cancellation.
+
+The [bounded acceptance evidence](pr268-ci-acceptance-2026-10-18.json)
+retains every check ID, required pair, workflow/head/attempt, merge identity
+and explicit limits. NeMo's real-checkpoint matrix is skipped because its
+actual admission gate logs disabled opt-in. The other skips are opt-in
+Whisper WASM model fetching and schedule/dispatch-only sanitizer, Miri and
+full-history secret scanning. None supplies real-model evidence. Hosted
+typos uses the pinned version and canonical dictionary without a new
+exclusion. No rerun, cancellation, waiver or required-check change is used.
+
+Normal expected-head-guarded squash merge completes at
+`2026-10-18T06:03:33Z` as main
+`8ae9566e25753b361be5703d46bcdad967f7cefb`. Independent raw PR and main API
+reads agree; local main is normally fetched and fast-forwarded cleanly.
+Source/runtime/build/config/workflow inputs are unchanged between accepted
+PR head and merge commit. These are PR-head CI results, not a claim that
+post-merge CI has separately completed. This documentation branch starts
+from that exact main and adds no implementation or execution authority.
+
+Original native success and both earlier failure records remain unchanged.
+The owned worker `56503887` and saved data were destroyed and independently
+absent at the recorded checkpoint; no new paid worker is rented for this
+acceptance record. This is not a fresh account/network-volume billing audit.
+No independent full-PCM, real-weight CPU, Apple, owner or public-model row
+is promoted by this source acceptance.
+
+## Remaining six-stage order after PR 268
+
+The fresh PR API read after #268's merge confirms five open Drafts:
+#198 at `5614a92c`, #191 at `63cadf3c`, #182 at `a3afc1ec`, #169 at
+`b3e9d5c1`, and #152 at `a9f54e1a`. Their responsibilities are retained;
+neither an old mergeability value nor successful synthetic CI makes them
+ready for automatic merge or closure.
+
+The next Kyutai review of the existing decoder runner/reference was stopped
+by the local protection guard. A combined read-only source command was
+refused normally and the identical command was refused once through normal
+escalation. It requested the first 245 runner lines and approval/source/
+dtype/streaming-related reference matches, not model execution. No alternate
+read, source transfer, agent/remote detour, hidden environment change or
+guard weakening follows. Formal read permission or a legitimate permission
+state change is required before that inspection resumes. The separate
+private XCodec2 candidate remains unreviewed/unrun after its recorded normal
+and escalated refusals; preserve it without integration or discard.
+
+The [OWSM primary-source readback](owsm-primary-license-readback-2026-10-18.md)
+adds exact-source evidence but does not resolve the active dependency's
+missing license grant. The fixed ESPnet frontend still requires that
+dependency; no guessed native-complex switch, local mirror or unused-import
+stub is an independent official replacement. #198 retains the official
+California endpoint's HTTP 403 hold, without treating that response as a
+passed citation or a legal sign-off.
+
+| Stage | Remaining acceptance condition |
+| --- | --- |
+| 1. Existing PR reconciliation | Review/reconcile the five Draft duties against current main; resolve actual source conflicts and overlap; use fresh exact-head CI before normal acceptance. |
+| 2. Inventory and exact prerequisites | Retain all 194 rows and dated 136 code/artifact-full / 58 non-full classification; bind missing source/artifact/reference/hardware facts per row. These labels are not model passes. |
+| 3. Non-Apple closure | Resolve formal source-read holds, independent upstream writer/consumer and exact dependency/license/native/operator/owner scopes. Do not invent or restamp frozen approvals. |
+| 4. Real-weight VAST CPU | Only after prerequisites: authorized no-upload conversion, independent upstream reference and CPU parity at a reviewed clean HEAD; recover small original evidence and destroy owned worker/data. |
+| 5. Final packet and Apple | Freeze final clean HEAD and authenticated fresh direct packets; only then provision Scaleway for Apple CPU/reference, Metal/reference and Metal/CPU with explicit no fallback. |
+| 6. Results and final audit | Result PRs, fresh CI, normal merges and all-row/evidence reconciliation; audit unnecessary cloud resources. Any model/Space/registry publication or withdrawal needs its own exact authority. |
+
+The frozen 63-row owner packet is unchanged and separate from the live
+194-row denominator. Published `v0.4.0-rc.1` remains a CPU-only preview;
+there is no retag/rebuild or new HF/model/Space/X publication here. The
+withdrawn `ayousanz` destination instruction is not used. No additional
+synthetic seam wave, documentation PR or CI success substitutes for the
+remaining real-model and Apple requirements. The complete objective stays
+open; these holds must be resolved, not silently removed from scope.
