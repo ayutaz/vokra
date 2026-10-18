@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 corrected-source supersession:** [exact-source verification](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
+> at `c69395d5` passes all four model-free stages with canonical configs:
+> fmt, three PCM-control tests, one KV-view test and strict Clippy. Original
+> logs/receipt are preserved and the worker/data destroyed. This closes the
+> corrected source batch, not PR acceptance, independent real-weight CPU,
+> owner/legal or Apple gates. All 194 rows and frozen decisions remain.
+
 > **2026-10-18 subsequent acceptance/diagnosis:** [current continuation](mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
 > records #258 normally merged as main `39dd2b00`, with five Draft PR
 > responsibilities retained. The bounded Kyutai diagnostic recovered native

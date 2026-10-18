@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 next acceptance step:** the [corrected Kyutai source batch](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
+> now passes all four stages at `c69395d5`, with original small evidence
+> recovered and the worker/data destroyed. Record the proof, push the reviewed
+> source, reconcile main `39dd2b00`, and require fresh exact-head PR CI before
+> normal merge. Then continue existing Draft responsibilities, all-row
+> source/owner/reference closure, approved real-weight CPU, final clean
+> HEAD/packet and only then Scaleway CPU/Metal/no-fallback. No full PCM,
+> real-weight, Apple or publication completion follows from synthetic tests.
+
 > **2026-10-18 subsequent execution checkpoint:** [PR acceptance and native diagnostic](mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
 > record main `39dd2b00` after #258's normal fresh-CI merge; five Draft PR
 > responsibilities remain. Correct the Kyutai private checkout's omitted

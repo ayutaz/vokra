@@ -1,5 +1,11 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Latest source checkpoint:** [corrected-source four-stage PASS](#corrected-kyutai-source-four-stage-pass)
+> supersedes the pending compiler statements below, without rewriting their
+> original failures. Main is `39dd2b00`; source verification is exact
+> `c69395d5`, not a real-weight CPU or Apple result. Source PR acceptance and
+> all unfinished parts of the six-stage objective remain open.
+
 ## Objective and baseline
 
 The resumed user objective is to execute all six stages: existing PR
@@ -593,3 +599,72 @@ required before final Apple packets. A separate private runtime-observer patch
 is under review, not applied or accepted; no public API or reference identity
 is silently substituted. All 194 public rows and the full six-stage objective
 remain in scope.
+
+## Corrected Kyutai source: four-stage PASS
+
+The corrected source was committed as
+`c69395d53618004439b69717f44e01c7385c9eca` and transferred by verified bundle
+from prerequisite `7d910a9c0e2db2ffd544033e4ccb5792fd217ed6`.
+The 42,061-byte bundle SHA-256 is
+`29c493921c2cda1e652f85815966035435f8b59542bd7e3086175202918d56b5`.
+Frozen remote leaf/controller SHA-256 values are respectively
+`c54f5a8da8b9559753cea0efe6b621a55e7d596d5deed8538fa72359c3960cb5`
+and `489f44f4f62ae7cf23aae28b26c1eff8c8cdd017e4ab3f1ac829a5c4db52efd9`.
+Their independently completed offline harnesses pass before activation;
+only the five mechanical source/bundle identity pins changed from the
+already reviewed config-bound helpers.
+
+Disposable worker `56494571` completed the four fixed commands with
+`CARGO_BUILD_JOBS=8`, Rust/Cargo 1.99.1 and the unchanged canonical
+`clippy.toml` / `rustfmt.toml`:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p vokra-models --lib kyutai_stt::pcm_session::tests::observed_control -- --test-threads=1
+cargo test -p vokra-models --lib kyutai_stt::streaming_lm::tests::layer_cache_view_tracks_geometry_and_reset_without_mutation -- --exact --test-threads=1
+cargo clippy -p vokra-models --lib --tests -- -D warnings
+```
+
+The original [receipt](kyutai-observation-source-pass-2026-10-18/receipt.json)
+is 2,628 bytes, SHA-256
+`a2f801a88d453385b9e6b551058e33c0ecddc62aa182a1b5277d2c287884a32c`.
+The lossless [native-artifact envelope](kyutai-observation-source-pass-2026-10-18/native-artifacts.json)
+retains six original UTF-8 streams. Manager independently verifies each
+decoded stream's exact bytes and SHA against the receipt, the unchanged
+before/after source and config hashes, and clean exact HEAD before/after.
+
+| Native artifact | Bytes | Actual result / scope |
+| --- | ---: | --- |
+| fmt | 0 | exit 0 |
+| PCM control observer | 1,935 | 3 passed, 0 failed, 0 ignored |
+| KV cache view | 377 | 1 passed, 0 failed, 0 ignored |
+| strict Clippy | 1,587 | exit 0, actual dev build finished |
+| CPU/toolchain | 1,204 | x86_64 / AVX2; Rust/Cargo 1.99.1 |
+| Rustup | 2,260 | actual bootstrap transcript |
+
+Canonical Clippy selects configured MSRV 1.85 and emits the existing
+package-MSRV diagnostic; no lint allowance, compiler downgrade, assertion
+removal or unrelated runtime correction is used. The three lexical-borrow
+scope corrections resolve the actual preceding `drop_non_drop` failures.
+Earlier failed receipts remain failures and are not replaced by this PASS.
+
+The controller completes `PASS audit-and-destroy`. Independent readback at
+04:08:26 UTC confirms the owned ID returns `instances: null` and the account
+instance inventory is `[]`. Worker and attached saved data are destroyed;
+this is not an independent audit of separate network volumes. The fresh
+offer including 200 GB storage was USD 0.08888888888888889/hour, within the
+USD 0.20/hour ceiling and thirty-minute lifecycle bound. No HF credential,
+model acquisition/execution, publication or Apple work was involved.
+
+The main `39dd2b00` post-merge CI readback separately completed 75 checks:
+70 success and five event-gated skips (full-history gitleaks, PR-only semver
+and dependency review, schedule/dispatch-only Miri and address sanitizer).
+Those checks do not substitute for fresh CI on this source PR's new head.
+
+Next retain this evidence in a management commit, push the reviewed source
+after the independently passing compliance regression, normally reconcile
+latest main and open the narrow source/safety/evidence PR. Require actual
+fresh required contexts before normal merge. Keep the separate private rich
+runtime-observer candidate out of that verified source change. Full native
+PCM/upstream observation, independent real-weight CPU and final Apple gates
+remain unfinished; all 194 rows and the complete six-stage goal remain.

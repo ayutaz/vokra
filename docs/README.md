@@ -1,5 +1,12 @@
 # Vokra documentation
 
+**2026-10-18 corrected Kyutai source verification:** the [exact-source PASS](handoff/mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
+at `c69395d5` supersedes the earlier pending compiler checkpoint below:
+fmt, three PCM-control tests, one KV-view test and strict Clippy pass on
+VAST. Original native logs and receipt are retained; the worker/data were
+destroyed. Source PR acceptance, independent real-weight CPU and final
+Apple CPU/Metal/no-fallback remain open; no catalog row is promoted.
+
 **2026-10-18 subsequent PR/diagnostic checkpoint:** [#258 acceptance and Kyutai native evidence](handoff/mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
 record normal merge to main `39dd2b00` after complete fresh CI. Five Draft
 PR responsibilities remain. The model-free Kyutai replay recovered four
