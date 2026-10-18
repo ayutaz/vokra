@@ -13,6 +13,12 @@
 # The `-diff` / `-merge` pins are additional guards: they prevent gitattributes
 # filters (e.g. binary-diff drivers) from mangling the raw byte payloads.
 
+# The desktop release manifest hashes the public C ABI header, and Windows
+# clean-install QA compares its bytes with the checked-in contract. Pin LF so
+# core.autocrlf cannot turn a checkout into a different header than the one
+# assembled on Linux.
+include/vokra.h text eol=lf
+
 # Authenticated upstream Moshi source and Apache-2.0 license fixtures; preserve
 # their exact bytes for Git-blob verification.
 tools/parity/kyutai_candle_reference/pinned-asr.rs -filter -diff -merge -text

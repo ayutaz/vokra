@@ -1,0 +1,480 @@
+name: GitHub release candidate (desktop and CPU smoke)
+
+# This is an explicit, GitHub-only preview path.  It intentionally does not
+# call release.yml: that workflow owns the stable release train and its
+# registry-specific jobs.  A manual dispatch creates a draft only after the
+# exact source SHA has produced a complete desktop payload and the hosted CPU
+# smoke has passed; the final edit makes the release a non-latest prerelease.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact merged main commit to package (40-hex SHA)"
+        required: true
+        type: string
+      tag:
+        description: "RC tag (must be v0.4.0-rc.1)"
+        required: true
+        default: v0.4.0-rc.1
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-rc1-gh-only-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RC_VERSION: 0.4.0-rc.1
+  RC_TAG: v0.4.0-rc.1
+  PINS_PATH: tools/parity/release_candidate_rc1_pins.json
+
+jobs:
+  validate-input:
+    name: validate exact RC input
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.validate.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            Cargo.toml
+            tools/release/version_contract.py
+            tools/release/publish_config.py
+            scripts/release/extract-changelog.py
+            CHANGELOG.md
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - name: Validate fixed RC tag and source SHA
+        id: validate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" == "$RC_TAG" ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "${SOURCE_SHA,,}" == "${GITHUB_SHA,,}" ]]
+          MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          [[ "${SOURCE_SHA,,}" == "${MAIN_SHA,,}" ]]
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RC_TAG}" >/dev/null 2>&1; then
+            echo "release-rc1: tag already exists" >&2
+            exit 1
+          fi
+          uv run --no-project --python 3.12 python tools/release/version_contract.py \
+            --github-ref "refs/tags/${RC_TAG}" --dispatch-version ""
+          uv run --no-project --python 3.12 python scripts/release/extract-changelog.py \
+            --version "$RC_VERSION" --output /tmp/rc1-release-notes.md
+          test -s /tmp/rc1-release-notes.md
+          printf 'source_sha=%s\n' "${SOURCE_SHA,,}" >> "$GITHUB_OUTPUT"
+
+  desktop-preflight:
+    name: build exact-source desktop payloads
+    needs: validate-input
+    uses: ./.github/workflows/release-desktop-preflight.yml
+    with:
+      source_ref: ${{ needs.validate-input.outputs.source_sha }}
+
+  assemble-desktop:
+    name: assemble and verify RC desktop payload
+    needs: [validate-input, desktop-preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-input.outputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/tools/parity/cosyvoice2_llm_reference/**
+            !/tests/parity/silero_vad/**
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-linux
+          path: reuse/linux-capi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-macos
+          path: reuse/macos-capi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-capi-windows
+          path: reuse/windows-capi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-linux-x86_64
+          path: reuse/linux-cli
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-linux-musl-x86_64
+          path: reuse/linux-musl-cli
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-macos-aarch64
+          path: reuse/macos-cli
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: vokra-cli-windows-x86_64
+          path: reuse/windows-cli
+      - name: Assemble exact RC version
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py assemble \
+            --version "$RC_VERSION" --out-dir dist/desktop --header include/vokra.h \
+            --capi-linux reuse/linux-capi/libvokra.so \
+            --capi-macos reuse/macos-capi/libvokra.dylib \
+            --capi-windows reuse/windows-capi/vokra.dll \
+            --cli-linux reuse/linux-cli/vokra-cli \
+            --cli-linux-musl reuse/linux-musl-cli/vokra-cli \
+            --cli-macos reuse/macos-cli/vokra-cli \
+            --cli-windows reuse/windows-cli/vokra-cli.exe
+      - name: Generate SBOMs and verify checksummed manifest
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
+            --package vokra-capi --no-default-features --features cpu \
+            --doc-name vokra-desktop-capi --output dist/desktop/vokra-desktop-capi.spdx.json
+          uv run --no-project --python 3.12 python scripts/sbom/generate_spdx.py \
+            --package vokra-cli --no-default-features \
+            --doc-name vokra-desktop-cli --output dist/desktop/vokra-desktop-cli.spdx.json
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            manifest --version "$RC_VERSION" --dist-dir dist/desktop
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version "$RC_VERSION" --dist-dir dist/desktop
+          test "$(git rev-parse HEAD)" = "${{ needs.validate-input.outputs.source_sha }}"
+      - name: Upload complete RC desktop payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
+          path: dist/desktop
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate-cpu-smoke:
+    name: hosted Linux CPU smoke for exact RC CLI
+    needs: [validate-input, assemble-desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_ACTIONS: "true"
+      VOKRA_RELEASE_CPU_SMOKE: "1"
+      CARGO_BUILD_JOBS: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-input.outputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/tools/parity/cosyvoice2_llm_reference/**
+            !/tests/parity/silero_vad/**
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
+          path: dist/desktop
+      - name: Validate fixed reviewed pins
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-rc1-cpu-smoke-uv
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python tools/parity/release_candidate_cpu_smoke.py \
+            --pins-json "$PINS_PATH" --validate-pins-only
+      - name: Run offline smoke-driver regressions
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-rc1-cpu-smoke-uv
+        run: uv run --no-project --python 3.12 python tools/parity/test_release_candidate_cpu_smoke.py
+      - name: Run exact RC CLI against fixed model pins
+        env:
+          EXPECTED_HEAD: ${{ needs.validate-input.outputs.source_sha }}
+          RECEIPT: ${{ runner.temp }}/vokra-rc1-cpu-smoke/receipt.json
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-rc1-cpu-smoke-uv
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version "$RC_VERSION" --dist-dir dist/desktop
+          chmod +x "dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux"
+          CLI="dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux"
+          test -x "$CLI"
+          mkdir -p "$(dirname "$RECEIPT")"
+          uv run --no-project --python 3.12 python tools/parity/release_candidate_cpu_smoke.py \
+            --pins-json "$PINS_PATH" --cli "$CLI" \
+            --audio tests/fixtures/audio/jfk-30s.wav --receipt "$RECEIPT" \
+            --expected-head "$EXPECTED_HEAD"
+      - name: Bind smoke receipt to verified RC distribution
+        env:
+          EXPECTED_HEAD: ${{ needs.validate-input.outputs.source_sha }}
+          RECEIPT: ${{ runner.temp }}/vokra-rc1-cpu-smoke/receipt.json
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-rc1-cpu-smoke-uv
+        run: |
+          set -euo pipefail
+          CLI="$GITHUB_WORKSPACE/dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux"
+          MANIFEST="$GITHUB_WORKSPACE/dist/desktop/vokra-desktop-manifest.json"
+          uv run --no-project --python 3.12 python tools/release/rc_distribution_identity.py \
+            --receipt "$RECEIPT" --manifest "$MANIFEST" --cli "$CLI" \
+            --version "$RC_VERSION" --source-head "$EXPECTED_HEAD" \
+            --github-run-id "$GITHUB_RUN_ID_VALUE" \
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT_VALUE"
+      - name: Upload bounded RC smoke receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-rc1-cpu-smoke-receipt-${{ needs.validate-input.outputs.source_sha }}
+          path: ${{ runner.temp }}/vokra-rc1-cpu-smoke/receipt.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  clean-install-linux:
+    name: clean-install QA (Linux)
+    needs: [validate-input, assemble-desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-input.outputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/release
+            include/vokra.h
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
+          path: dist/desktop
+      - name: Verify fresh Linux payload installation
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version "$RC_VERSION" --dist-dir dist/desktop
+          chmod +x "dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux" \
+            "dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux-musl"
+          "dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux" --help >/tmp/vokra-rc1-linux-help
+          "dist/desktop/vokra-cli-${RC_VERSION}-x86_64-linux-musl" --help >/tmp/vokra-rc1-musl-help
+          test -s /tmp/vokra-rc1-linux-help -a -s /tmp/vokra-rc1-musl-help
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            native-smoke "dist/desktop/libvokra-${RC_VERSION}-x86_64-linux.so" \
+            --expected-version "$RC_VERSION"
+
+  clean-install-macos:
+    name: clean-install QA (macOS arm64)
+    needs: [validate-input, assemble-desktop]
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-input.outputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/release
+            include/vokra.h
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
+          path: dist/desktop
+      - name: Verify fresh macOS arm64 payload installation
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version "$RC_VERSION" --dist-dir dist/desktop
+          CLI="dist/desktop/vokra-cli-${RC_VERSION}-aarch64-macos"
+          chmod +x "$CLI"
+          "$CLI" --help >/tmp/vokra-rc1-macos-help
+          test -s /tmp/vokra-rc1-macos-help
+          DYLD_LIBRARY_PATH="dist/desktop${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+            uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            native-smoke "dist/desktop/libvokra-${RC_VERSION}-macos.dylib" \
+            --expected-version "$RC_VERSION"
+
+  clean-install-windows:
+    name: clean-install QA (Windows x86_64)
+    needs: [validate-input, assemble-desktop]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-input.outputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/release
+            include/vokra.h
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - name: Verify uv runtime on Windows
+        shell: bash
+        run: uv run --help >/dev/null
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
+          path: dist/desktop
+      - name: Verify fresh Windows payload installation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py verify --version $env:RC_VERSION --dist-dir dist/desktop
+          if ($LASTEXITCODE -ne 0) { throw "desktop payload verification failed with exit code $LASTEXITCODE" }
+          $zip = "dist/desktop/vokra-cli-$env:RC_VERSION-x86_64-windows.zip"
+          Expand-Archive -LiteralPath $zip -DestinationPath extracted-cli -Force
+          & "extracted-cli/vokra-cli.exe" --help | Out-File windows-help.txt
+          if ($LASTEXITCODE -ne 0) { throw "Windows CLI help failed with exit code $LASTEXITCODE" }
+          if ((Get-Item windows-help.txt).Length -eq 0) { throw 'Windows CLI help is empty' }
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py native-smoke "dist/desktop/vokra-$env:RC_VERSION-windows.dll" --expected-version $env:RC_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Windows C ABI smoke failed with exit code $LASTEXITCODE" }
+
+  publish-github-prerelease:
+    name: publish GitHub-only RC prerelease
+    needs: [validate-input, assemble-desktop, candidate-cpu-smoke, clean-install-linux, clean-install-macos, clean-install-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-input.outputs.source_sha }}
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/tools/parity/cosyvoice2_llm_reference/**
+            !/tests/parity/silero_vad/**
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: "0.8.22"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
+          path: dist/desktop
+      - name: Create empty draft at exact source SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.validate-input.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RC_TAG" >/dev/null 2>&1; then
+            echo "release-rc1: refusing to reuse an existing GitHub Release/tag" >&2
+            exit 1
+          fi
+          uv run --no-project --python 3.12 python scripts/release/extract-changelog.py \
+            --version "$RC_VERSION" --output release-notes.md
+          gh release create "$RC_TAG" --target "$SOURCE_SHA" --title "$RC_TAG" \
+            --notes-file release-notes.md \
+            --draft --prerelease --latest=false
+      - name: Upload only verified desktop assets, checksums, and SBOMs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.validate-input.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RC_TAG" dist/desktop/* --clobber
+          rm -rf remote-assets
+          mkdir remote-assets
+          gh release download "$RC_TAG" --pattern '*' --dir remote-assets
+          diff -rq dist/desktop remote-assets
+          uv run --no-project --python 3.12 python tools/release/desktop_release.py \
+            verify --version "$RC_VERSION" --dist-dir remote-assets
+          gh release view "$RC_TAG" --json isDraft,isPrerelease,tagName,targetCommitish
+          gh release view "$RC_TAG" --json isDraft,isPrerelease,tagName,targetCommitish \
+            --jq 'select(.isDraft == true and .isPrerelease == true and .tagName == "'"${RC_TAG}"'") | .tagName' \
+            | grep -Fx "$RC_TAG"
+          gh release view "$RC_TAG" --json targetCommitish \
+            --jq .targetCommitish | grep -Fx "$SOURCE_SHA"
+          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          test "$LATEST_TAG" != "$RC_TAG"
+          TAG_REF="repos/${GITHUB_REPOSITORY}/git/ref/tags/${RC_TAG}"
+          TAG_RESPONSE="$(gh api "$TAG_REF" --include 2>/dev/null || true)"
+          TAG_STATUS="$(printf '%s\n' "$TAG_RESPONSE" | sed -n '1s/.* \([0-9][0-9][0-9]\) .*/\1/p')"
+          if [ "$TAG_STATUS" = 200 ]; then
+            TAG_OBJECT="$(gh api "$TAG_REF" --jq .object.sha)"
+            TAG_TYPE="$(gh api "$TAG_REF" --jq .object.type)"
+            if [ "$TAG_TYPE" = tag ]; then
+              TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT}" --jq .object.sha)"
+            fi
+            test "$TAG_OBJECT" = "$SOURCE_SHA"
+          elif [ "$TAG_STATUS" = 404 ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/tags/${RC_TAG}" -f "sha=${SOURCE_SHA}" >/dev/null
+          else
+            echo "release-rc1: unexpected tag lookup HTTP status: ${TAG_STATUS:-unknown}" >&2
+            exit 1
+          fi
+          TAG_OBJECT="$(gh api "$TAG_REF" --jq .object.sha)"
+          TAG_TYPE="$(gh api "$TAG_REF" --jq .object.type)"
+          if [ "$TAG_TYPE" = tag ]; then
+            TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT}" --jq .object.sha)"
+          fi
+          test "$TAG_OBJECT" = "$SOURCE_SHA"
+      - name: Publish as explicit non-latest prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RC_TAG" --draft=false --prerelease --latest=false
+      - name: Verify final public release state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.validate-input.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh release view "$RC_TAG" --json isDraft,isPrerelease,tagName,targetCommitish \
+            --jq 'select(.isDraft == false and .isPrerelease == true and .tagName == "'"${RC_TAG}"'") | .tagName' \
+            | grep -Fx "$RC_TAG"
+          gh release view "$RC_TAG" --json targetCommitish \
+            --jq .targetCommitish | grep -Fx "$SOURCE_SHA"
+          LATEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          test "$LATEST_TAG" != "$RC_TAG"
+          TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RC_TAG}" --jq .object.sha)"
+          TAG_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RC_TAG}" --jq .object.type)"
+          if [ "$TAG_TYPE" = tag ]; then
+            TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT}" --jq .object.sha)"
+          fi
+          test "$TAG_OBJECT" = "$SOURCE_SHA"

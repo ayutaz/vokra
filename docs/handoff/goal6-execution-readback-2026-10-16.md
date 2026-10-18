@@ -1,5 +1,20 @@
 # Six-stage execution readback — 2026-10-16
 
+> **2026-10-17 current readback:** see the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
+> for main baseline `5f1dfc1e` and all seven open PRs. Original stages 1–2
+> remain accepted. #259's additional observer has 72 successful ordinary
+> checks / one intentional skip, but patched upstream compile/API remains
+> NOT_RUN and the PR stays Draft. Stages 3–6, per-row owner/real-weight/Apple
+> evidence and final cleanup remain incomplete. This supersedes current-state
+> pointers, not the exact historical execution records below.
+
+> **10:55:41 UTC normal acceptance:** [PR #255 and final CI audit](candle-pr255-acceptance-2026-10-16.md)
+> establish accepted main `662b49c4`: 73 success / one intentional skip,
+> sixteen required context/app pairs and thirteen successful workflows.
+> Maintainer main is synchronized and clean. Stages 1–2 are accepted;
+> stages 3–6 and all model/owner/real-weight/Apple obligations remain open.
+> The earlier unmerged/live-CI observations below are historical snapshots.
+
 ## Scope and current evidence
 
 The active objective remains all six stages below, not merely the Candle

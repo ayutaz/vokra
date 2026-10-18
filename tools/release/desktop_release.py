@@ -262,7 +262,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_primary(out: Path, version: str) -> None:
+def _verify_primary(out: Path, version: str, *, require_executable: bool = False) -> None:
     names = _asset_names(version)
     expected_targets = {
         "capi-linux": "elf-x86_64",
@@ -275,7 +275,7 @@ def _verify_primary(out: Path, version: str) -> None:
     for kind, target in expected_targets.items():
         path = out / names[kind]
         verify_binary(path, target)
-        if kind.startswith("cli-") and not (path.stat().st_mode & stat.S_IXUSR):
+        if require_executable and kind.startswith("cli-") and not (path.stat().st_mode & stat.S_IXUSR):
             raise DesktopReleaseError(f"CLI payload is not executable: {path}")
     verify_windows_cli_zip(out / names["cli-windows-zip"])
     _verify_header(out / names["header"])
@@ -333,7 +333,10 @@ def write_manifest(args: argparse.Namespace) -> None:
     out = Path(args.dist_dir)
     if not out.is_dir() or any(path.is_dir() or path.is_symlink() or not path.is_file() for path in out.iterdir()):
         raise DesktopReleaseError("desktop release directory contains a non-regular entry")
-    _verify_primary(out, args.version)
+    # Manifest generation runs on the assembly host, where Unix CLI mode is a
+    # meaningful build invariant.  Keep that guard here, but do not carry it
+    # into portable content verification after artifact transport.
+    _verify_primary(out, args.version, require_executable=True)
     required = sorted(_primary_names(args.version))
     for name, package in (
         ("vokra-desktop-capi.spdx.json", "vokra-capi"),

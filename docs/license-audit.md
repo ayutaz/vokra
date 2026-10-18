@@ -1,5 +1,12 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-17 current routing only:** use the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
+> for baseline main `5f1dfc1e`, the seven open PRs and pending exact scopes.
+> Successful #259 ordinary CI is not a license/native/operator sign-off.
+> This documentation update performs no new primary-source license audit
+> and changes no dated finding, license class, signer, approval hash,
+> protected manifest or publication/withdrawal gate below.
+
 > **2026-10-13 current routing / supersession:** The [private 41-wheel static audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) found missing bundled license evidence for safetensors 0.5.3 and tokenizers 0.22.2 and ten native-payload distributions. Missing bundled evidence does not mean no license grant: exact-version primary-source/provenance and native redistribution review remains required. Collector verdict is `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; no §3.1 sign-off, license class, signer, model status or publication gate below changes. The [fresh snapshot](handoff/documentation-refresh-2026-10-13.md) replaces older current-status pointers, not dated legal findings.
 
 > **2026-10-08 source-validation boundary:** at `main`

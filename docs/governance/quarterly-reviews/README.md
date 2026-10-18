@@ -1,5 +1,10 @@
 # Quarterly review records
 
+> **2026-10-17 current routing:** use the [current status and remaining tasks](../../handoff/current-status-and-remaining-tasks-2026-10-17.md)
+> for campaign/PR status. This update adds no quarterly review, milestone
+> calendar decision or owner Go/No-go verdict. Dated release/count
+> observations below remain historical, not new release measurements.
+
 > **2026-10-13 current routing / supersession:** The [2026-10-13 readback](../../handoff/documentation-refresh-2026-10-13.md) confirms main `7d38061c` and one tag/release, v0.3.0. No new tracked quarterly record or owner Go/No-go verdict is added; existing milestone/calendar decisions remain open. Older readbacks below are historical.
 
 > **Current state (2026-10-08):** exact GitHub `main` is

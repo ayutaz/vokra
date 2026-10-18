@@ -1,1 +1,3 @@
-0f643bb929a861c102254be796ff3111e11df62c2852084dffbfebfe684c0c47  deberta-v2-large-japanese-char-wwm.gguf
+# Historical v0.3.0 producer SHA-256: 0f643bb929a861c102254be796ff3111e11df62c2852084dffbfebfe684c0c47
+# v0.4.0-rc.1 measured by parity-sbv2-real run 39050477672 (job 117448888195).
+86eb8a160614540bc181194158eabd9a7dea4ee4c234e146795e9ab6c4dec0f2  deberta-v2-large-japanese-char-wwm.gguf

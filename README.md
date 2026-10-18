@@ -15,7 +15,43 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Current audit snapshot (2026-10-13):** the workspace is `0.3.0` development;
+> **Published release candidate (2026-10-18 JST):** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+> is published as GitHub release `416018534` from exact source/tag
+> `d84d311e98d0abb2987b5c4e96157ae8f2068e1a` (`draft=false`, `prerelease=true`).
+> Latest remains `v0.3.0`; the release has 22 uploaded assets. Final hosted run
+> [`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813) passed
+> all 10 jobs: three-OS producers, fresh transferred native CLI `--help` and
+> C ABI exact-version checks, Linux assembled-CLI Whisper/Silero functional
+> smoke, and publication byte round-trip. The recovered receipt SHA-256 is
+> `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`, binding
+> the Linux CLI `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`
+> (13,344,272 bytes) and manifest `32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`.
+> This remains a CPU-only preview: it does not claim macOS/Windows model
+> inference, Apple Metal/no-fallback, full-catalog completion, performance or
+> numerical parity, and it does not update model/Space/HF/registry/X/Scaleway
+> artifacts.
+>
+> **Historical prepublication note (2026-10-17):** `v0.4.0-rc.1` packaging was
+> in progress; the published Latest remains `v0.3.0`. At source `9ee5834d`,
+> Whisper base ASR and Silero VAD v5 speech/silence passed hosted Linux CPU
+> functional smoke. This is not numerical parity or Apple/Metal validation.
+> See the [actual CPU results](docs/handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
+> and [candidate acceptance plan](docs/handoff/release-0.4.0-rc1-packaging-2026-10-17.md).
+> The [candidate installation guide](docs/release-0.4.0-rc1.md) is staged for
+> publication, not a claim that its download assets already exist.
+>
+> **Historical campaign snapshot (2026-10-17; superseded by the published RC):** packaging baseline main is
+> `fab4638a`. PR #255's model-free CPU/API and normal acceptance are complete.
+> PR #259 is closed without merge; its additional observer patch has no
+> accepted upstream compilation/API result. Six other PRs remain open at
+> this snapshot. The latest retained inventory is the
+> 2026-10-16 snapshot: 194 repositories, 136 code/artifact-full and 58 non-full;
+> it is not a fresh inventory or an Apple hardware pass count. Per-model
+> non-Apple prerequisites, owner/legal decisions, independent real-weight CPU,
+> final packets and Apple CPU/Metal/no-fallback remain incomplete. See the
+> [current status and remaining tasks](docs/handoff/current-status-and-remaining-tasks-2026-10-17.md).
+>
+> **Historical audit snapshot (2026-10-13):** the workspace is `0.3.0` development;
 > the latest VibeVoice Realtime-0.5B closure audit was a static-only VAST
 > audit on disposable worker `55648877`. It authenticated the selected source,
 > lock, collector, and provenance inputs, then verified recovery and destruction

@@ -8,7 +8,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -110,6 +112,62 @@ def make_valid_dist(root: Path) -> tuple[argparse.Namespace, Path]:
 
 
 class DesktopReleaseTests(unittest.TestCase):
+    def test_header_eol_pin_survives_windows_checkout(self) -> None:
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is required to exercise checkout EOL conversion")
+        attributes = (HERE.parents[1] / ".gitattributes").read_bytes()
+        normalized_attributes = attributes.replace(b"\r\n", b"\n")
+        pin = b"include/vokra.h text eol=lf"
+        self.assertIn(pin, normalized_attributes)
+
+        def checkout_bytes(attribute_bytes: bytes, *, index_only: bool = False) -> bytes:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                (repo / ".gitattributes").write_bytes(attribute_bytes)
+                (repo / "include").mkdir()
+                header = repo / "include" / "vokra.h"
+                header.write_bytes(b"alpha;\nbeta;\n")
+                (repo / "empty-gitconfig").write_bytes(b"")
+                env = {
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": str(repo / "empty-gitconfig"),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                }
+
+                def run(*args: str, checkout: bool = False) -> None:
+                    command = [git]
+                    if checkout:
+                        command.extend(("-c", "core.autocrlf=true", "-c", "core.eol=crlf"))
+                    command.extend(args)
+                    subprocess.run(
+                        command,
+                        cwd=repo,
+                        env=env,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+
+                run("init", "--quiet")
+                run("add", ".gitattributes", "include/vokra.h")
+                if index_only:
+                    (repo / ".gitattributes").unlink()
+                header.unlink()
+                run("checkout", "--", "include/vokra.h", checkout=True)
+                return header.read_bytes()
+
+        self.assertEqual(checkout_bytes(normalized_attributes), b"alpha;\nbeta;\n")
+        self.assertEqual(checkout_bytes(normalized_attributes, index_only=True), b"alpha;\nbeta;\n")
+
+        missing_pin = normalized_attributes.replace(pin + b"\n", b"", 1)
+        wrong_pin = normalized_attributes.replace(pin, b"include/vokra.h text eol=crlf", 1)
+        self.assertEqual(checkout_bytes(missing_pin), b"alpha;\r\nbeta;\r\n")
+        self.assertEqual(checkout_bytes(wrong_pin), b"alpha;\r\nbeta;\r\n")
+        self.assertEqual(checkout_bytes(missing_pin, index_only=True), b"alpha;\r\nbeta;\r\n")
+        self.assertEqual(checkout_bytes(wrong_pin, index_only=True), b"alpha;\r\nbeta;\r\n")
+
     def test_binary_identity_rejects_wrong_and_empty_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -201,7 +259,12 @@ class DesktopReleaseTests(unittest.TestCase):
             manifest_args = argparse.Namespace(version="1.2.3", dist_dir=str(out))
             desktop.write_manifest(manifest_args)
             desktop.verify_dist(manifest_args)
-            self.assertTrue((out / "vokra-cli-1.2.3-x86_64-linux").stat().st_mode & stat.S_IXUSR)
+            for cli_name in (
+                "vokra-cli-1.2.3-x86_64-linux",
+                "vokra-cli-1.2.3-x86_64-linux-musl",
+                "vokra-cli-1.2.3-aarch64-macos",
+            ):
+                self.assertTrue((out / cli_name).stat().st_mode & stat.S_IXUSR)
             first_zip = (out / "vokra-cli-1.2.3-x86_64-windows.zip").read_bytes()
             second_zip = root / "second.zip"
             desktop._write_windows_zip(root / "cli-windows", second_zip)
@@ -209,6 +272,50 @@ class DesktopReleaseTests(unittest.TestCase):
             document = json.loads((out / "vokra-desktop-manifest.json").read_text())
             self.assertEqual(document["assets"], sorted(document["assets"], key=lambda item: item["name"]))
             self.assertEqual(document["assets"][0].keys(), {"name", "role", "sha256", "size", "target"})
+
+    def test_transport_mode_loss_is_ignored_but_content_drift_is_not(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args, out = make_valid_dist(Path(tmp))
+            for name in (
+                "vokra-cli-1.2.3-x86_64-linux",
+                "vokra-cli-1.2.3-x86_64-linux-musl",
+                "vokra-cli-1.2.3-aarch64-macos",
+            ):
+                (out / name).chmod(0o644)
+            # upload-artifact/download-artifact can normalize Unix modes to
+            # 0644; portable verification must still validate bytes, hashes,
+            # architecture, and the manifest.
+            desktop.verify_dist(args)
+
+            linux = out / "vokra-cli-1.2.3-x86_64-linux"
+            data = bytearray(linux.read_bytes())
+            data[20] ^= 0x01
+            linux.write_bytes(data)
+            with self.assertRaisesRegex(desktop.DesktopReleaseError, "manifest hash/size mismatch"):
+                desktop.verify_dist(args)
+
+    def test_manifest_generation_retains_assembly_mode_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args, out = make_valid_dist(Path(tmp))
+            for name in (
+                "vokra-cli-1.2.3-x86_64-linux",
+                "vokra-cli-1.2.3-x86_64-linux-musl",
+                "vokra-cli-1.2.3-aarch64-macos",
+            ):
+                (out / name).chmod(0o644)
+            with self.assertRaisesRegex(desktop.DesktopReleaseError, "not executable"):
+                desktop.write_manifest(args)
+
+    def test_architecture_corruption_fails_after_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args, out = make_valid_dist(Path(tmp))
+            linux = out / "vokra-cli-1.2.3-x86_64-linux"
+            linux.chmod(0o644)
+            data = bytearray(linux.read_bytes())
+            data[18:20] = (0xB7).to_bytes(2, "little")
+            linux.write_bytes(data)
+            with self.assertRaisesRegex(desktop.DesktopReleaseError, "expected ELF x86_64 binary"):
+                desktop.verify_dist(args)
 
     def test_missing_sidecar_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

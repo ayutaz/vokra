@@ -1,5 +1,18 @@
 # Mac CPU / Metal owner disposition packet (2026-09-07)
 
+> **2026-10-17 current-status boundary:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
+> update PR/CI routing only. #259's successful ordinary CI is not an owner,
+> operator, model or license approval. Its new compiler/input-delivery scope
+> remains a separate pending confirmation. Preserve this packet's frozen
+> 63-row denominator, hashes, signers and decisions; the retained public
+> inventory's 58 non-full rows do not replace it. No protected input is read
+> or changed, and no publication/withdrawal authority is added.
+
+> **2026-10-16 source-PR acceptance boundary:** [#255 acceptance](candle-pr255-acceptance-2026-10-16.md)
+> changes source/CI status only. It supplies no new signer, model/operator
+> approval, license decision or replacement/withdrawal/publication decision.
+> All frozen row counts and exact signed or pending scopes below stay intact.
+
 > **2026-10-16 continuation boundary:** the [six-stage readback](goal6-execution-readback-2026-10-16.md)
 > records unchanged public metadata and an additional bounded model-free
 > technical job. Neither changes this frozen denominator, any signer, scope

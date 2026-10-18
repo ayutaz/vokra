@@ -1,5 +1,20 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-17 current execution order:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
+> supersede older pending-PR snapshots only. Main baseline is `5f1dfc1e`;
+> original stages 1–2 are accepted. Resolve existing PR scope/source gates
+> (#259 ordinary CI is green, actual patched compilation is NOT_RUN), then
+> all-row non-Apple/owner prerequisites, approved real-weight VAST CPU,
+> final clean HEAD/fresh packets, Scaleway CPU/Metal/no-fallback and result
+> audit. No execution/publication approval or six-stage completion follows
+> from this management update.
+
+> **2026-10-16 normal source acceptance:** [#255 is merged](candle-pr255-acceptance-2026-10-16.md)
+> as main `662b49c4` after complete exact-head CI. Model-free confirmation
+> and PR acceptance close stages 1–2 only. Continue per-row non-Apple and
+> owner/source/reference closure, approved real-weight CPU, final clean
+> HEAD/packet, then Scaleway CPU/Metal/no-fallback and final result audit.
+
 > **2026-10-16 actual technical checkpoint:** the [Candle confirmation](kyutai-candle-cpu-confirmation-result-2026-10-16.md)
 > passes seventeen Linux tests, the full CPU library and uncalled API probe.
 > This is stage 1 only. Fresh PR acceptance, every non-Apple prerequisite,

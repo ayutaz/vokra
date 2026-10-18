@@ -1,5 +1,11 @@
 # Vokra ABI Changelog (historical prerelease buckets; current line: v0.3.0)
 
+> **2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
+> supply the current campaign/PR pointer at baseline main `5f1dfc1e`.
+> The static ABI changelog gate passes, including all 124 converter-stamped
+> prefixes. No header is regenerated, baseline anchor advanced, ABI entry
+> rewritten, advisory gate promoted or owner-gated freeze approved.
+
 > **2026-10-13 current routing / supersession:** The [2026-10-13 refresh](handoff/documentation-refresh-2026-10-13.md) records current main/release/model/PR facts. It does not change ABI entries, historical anchors, the advisory gate, or the owner-gated freeze. Older source-validation counts below retain their original verification date.
 
 > **2026-10-08 source-validation boundary:** at `main`

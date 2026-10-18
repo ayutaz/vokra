@@ -65,6 +65,17 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 The current release line is workspace version `0.3.0`.
 
+**2026-10-17 current campaign snapshot:** baseline main `5f1dfc1e` includes
+accepted model-free Candle CPU/API work. PR #259's normal CI is complete
+(72 successful checks / one intentional skip), but its additional observer
+patch still needs actual upstream library/API verification and remains Draft.
+The latest retained inventory is dated 2026-10-16: 194 repositories,
+136 code/artifact-full / 58 non-full. This documentation refresh does not
+rerun that inventory, regenerate an API/header, or prove real-weight CPU or
+Apple parity. See the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
+for the seven open PRs and the non-Apple → VAST → final packet → Scaleway →
+result/cleanup sequence. Historical snapshots below retain their original scope.
+
 **2026-10-13 metadata snapshot:** the exact GitHub `main` checkout is
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`. The fresh metadata/card-only
 audit reports 194 repositories, 193 GGUF-bearing repositories and 198 GGUF

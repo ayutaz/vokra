@@ -1,0 +1,16 @@
+{
+  "whisper-base": {
+    "repo": "vokra/whisper-base",
+    "revision": "dddd93ff6301a82aa3750d398cb2e0a599cd9e83",
+    "filename": "whisper-base.gguf",
+    "sha256": "7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27",
+    "size_bytes": 290859360
+  },
+  "silero-vad-v5": {
+    "repo": "vokra/silero-vad-v5",
+    "revision": "3670dfed054980307eeb1711c6329c29b80bdf14",
+    "filename": "silero-vad-v5.gguf",
+    "sha256": "23b19eadba72fb9726fa73a0bfd095afcba2f8c5bcb4f03a1b5e57a67eb13df6",
+    "size_bytes": 2183744
+  }
+}

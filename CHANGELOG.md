@@ -12,6 +12,63 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+## [0.4.0-rc.1]
+
+### Preview scope
+
+- Release candidate for evaluation, not an API/ABI stability promise or full
+  model-catalog completion. The intended desktop CLI/C ABI payload is CPU-only;
+  optional GPU support and per-model Apple CPU/Metal/no-fallback acceptance
+  remain separate work. No external package registry or model-weight update
+  is part of this GitHub preview.
+- At source `9ee5834d`, hosted Linux CPU functional smoke passed Whisper base
+  ASR and Silero VAD v5 speech/silence with fixed model revisions and hashes
+  (#261, #262). This is not independent numerical parity, WER/CER, a performance
+  benchmark, or proof of other models or platforms. The candidate's actual
+  packaged binary must pass its own release validation before publication.
+- Installation and model/backend limitations are documented in the
+  [preview guide](https://github.com/ayutaz/vokra/blob/v0.4.0-rc.1/docs/release-0.4.0-rc1.md)
+  ([日本語](https://github.com/ayutaz/vokra/blob/v0.4.0-rc.1/docs/release-0.4.0-rc1.ja.md)).
+
+### Added
+
+- Native Mimi backend dispatch for ELU and additional learned compute seams,
+  plus a bounded Kyutai STT streaming-LM API and visible-context attention.
+  These are implementation/source milestones, not a newly validated complete
+  PCM transcription or full-catalog Apple Metal claim (#185–#187).
+- Same-run native desktop release producers and a complete CLI/C ABI payload
+  verifier for Linux, macOS arm64 and Windows, including checksums, SBOMs and
+  the Linux musl CLI. This is release tooling, not an assertion that the
+  existing v0.3.0 assets have been replaced (#199).
+
+### Fixed
+
+- Tighten Kyutai source/lock projection and Candle model-free CPU/API checks;
+  reject incomplete or unbound checkpoint, API and dependency evidence in
+  the affected reference/preflight tools. Successful source checks remain
+  separate from independent real-weight model validation (#230, #235,
+  #239, #241, #246, #249, #251, #255).
+- Correct selected non-Apple source contracts and compile-free commit tooling,
+  retaining explicit unsupported paths and the runtime's first-party-only
+  dependency boundary (#247).
+
+### Security
+
+- Update reviewed Torch/Transformers/Lightning reference environments and
+  scoped urllib3, multidict, Mako and server dependency closures. Reference
+  environments with unresolved source/native/license/operator gates remain
+  blocked; these updates do not certify every optional tool or model.
+- Patch the isolated server's rustls dependency and reject credential-printing
+  VAST diagnostics; model acquisition and large Cargo verification remain
+  remote-only (#196, #238, #244).
+
+### Documentation
+
+- Refresh current/public English and Japanese status entry points and dated
+  verification routing, preserving historical results, the frozen owner
+  decision scope and the distinction between code coverage and real-device
+  validation (#200, #233, #257, #260).
+
 ## [0.3.0] — 2026-09-17
 
 ### Changed
@@ -1327,5 +1384,6 @@ release.
   parity, license (`cargo deny`), zero-dependency invariant, hot-path
   audit, iOS build, Python wheel build, license audit, GPU backends.
 
-[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.4.0-rc.1...HEAD
+[0.4.0-rc.1]: https://github.com/ayutaz/vokra/compare/v0.3.0...v0.4.0-rc.1
 [0.3.0]: https://github.com/ayutaz/vokra/releases/tag/v0.3.0
