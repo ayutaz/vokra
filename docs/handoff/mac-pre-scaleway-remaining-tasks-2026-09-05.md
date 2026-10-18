@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 PR acceptance supersession:** [PR #267](mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
+> is normally merged as main `5b688666` after complete fresh CI. The source
+> observer/safety/evidence batch is accepted; actual-session observation,
+> independent full-PCM reference, row-specific owner/dependency/source,
+> real-weight CPU, final packet and Apple/no-fallback gates remain open.
+> Keep all 194 rows and the dated 136/58 metadata classification; no model
+> row or immutable decision is promoted by source CI.
+
 > **2026-10-18 corrected-source supersession:** [exact-source verification](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
 > at `c69395d5` passes all four model-free stages with canonical configs:
 > fmt, three PCM-control tests, one KV-view test and strict Clippy. Original

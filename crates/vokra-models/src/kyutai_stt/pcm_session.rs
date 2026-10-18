@@ -185,7 +185,7 @@ pub(crate) struct KyutaiSttPcmSession<'a> {
     control: PcmSessionControl,
 }
 
-impl KyutaiSttPcmSession<'_> {
+impl<'weights> KyutaiSttPcmSession<'weights> {
     /// Accepts PCM samples, encoding complete 1,920-sample frames while
     /// retaining at most one partial frame as carry.  Samples must be finite.
     pub(crate) fn push_pcm(&mut self, samples: &[f32]) -> Result<()> {
@@ -198,6 +198,51 @@ impl KyutaiSttPcmSession<'_> {
     /// early.
     pub(crate) fn finish(&mut self) -> Result<()> {
         self.finish_with_callbacks()
+    }
+    /// Test-only seam for the real PCM session.  The actual encode, step,
+    /// greedy selection, poison, and reset paths remain shared with production.
+    #[cfg(test)]
+    pub(crate) fn push_pcm_with_runtime_observer(
+        &mut self,
+        samples: &[f32],
+        observer: &mut dyn PcmRuntimeObserver,
+    ) -> Result<()> {
+        let observer = RefCell::new(observer);
+        self.push_pcm_with_hooks(
+            samples,
+            |frame, codes| observer.borrow_mut().on_mimi_frame(frame, codes),
+            |previous, codes, step, stream, token| {
+                observer.borrow_mut().on_lm_step(PcmRuntimeLmEvent {
+                    previous_text_token: previous,
+                    codes,
+                    step,
+                    stream,
+                    token,
+                })
+            },
+        )
+    }
+
+    /// Test-only EOS counterpart to push_pcm_with_runtime_observer.  It uses
+    /// the existing finish/padding and control poison/reset boundaries.
+    #[cfg(test)]
+    pub(crate) fn finish_with_runtime_observer(
+        &mut self,
+        observer: &mut dyn PcmRuntimeObserver,
+    ) -> Result<()> {
+        let observer = RefCell::new(observer);
+        self.finish_with_hooks(
+            |frame, codes| observer.borrow_mut().on_mimi_frame(frame, codes),
+            |previous, codes, step, stream, token| {
+                observer.borrow_mut().on_lm_step(PcmRuntimeLmEvent {
+                    previous_text_token: previous,
+                    codes,
+                    step,
+                    stream,
+                    token,
+                })
+            },
+        )
     }
 
     /// Clears PCM carry, Mimi causal state, LM KV state, schedule, and output
@@ -233,6 +278,36 @@ impl KyutaiSttPcmSession<'_> {
     }
 
     fn push_pcm_with_callbacks(&mut self, samples: &[f32]) -> Result<()> {
+        self.push_pcm_with_hooks(
+            samples,
+            |_frame, _codes| Ok(()),
+            |_previous, _codes, _step, _stream, _token| Ok(()),
+        )
+    }
+
+    fn finish_with_callbacks(&mut self) -> Result<()> {
+        self.finish_with_hooks(
+            |_frame, _codes| Ok(()),
+            |_previous, _codes, _step, _stream, _token| Ok(()),
+        )
+    }
+
+    fn push_pcm_with_hooks<FrameHook, StepHook>(
+        &mut self,
+        samples: &[f32],
+        mut on_frame: FrameHook,
+        mut on_lm_step: StepHook,
+    ) -> Result<()>
+    where
+        FrameHook: FnMut(&[f32], &[u32]) -> Result<()>,
+        StepHook: for<'event> FnMut(
+            Option<u32>,
+            &'event [u32],
+            &'event super::KyutaiSttStreamingLmStep,
+            &'event KyutaiSttStreamingLm<'weights>,
+            u32,
+        ) -> Result<()>,
+    {
         let contract = self.engine.contract;
         let mimi = &self.engine.mimi;
         let mimi_state = &mut self.mimi_state;
@@ -240,25 +315,49 @@ impl KyutaiSttPcmSession<'_> {
         self.control.push(
             contract,
             samples,
-            |frame, codes| mimi.encode_into(mimi_state, frame, codes),
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                on_frame(frame, codes)
+            },
             |previous, codes| {
                 let step = lm.step_frame(previous, codes)?;
-                greedy_token(step.logits(), contract.text_card())
+                let token = greedy_token(step.logits(), contract.text_card())?;
+                on_lm_step(previous, codes, &step, &*lm, token)?;
+                Ok(token)
             },
         )
     }
 
-    fn finish_with_callbacks(&mut self) -> Result<()> {
+    fn finish_with_hooks<FrameHook, StepHook>(
+        &mut self,
+        mut on_frame: FrameHook,
+        mut on_lm_step: StepHook,
+    ) -> Result<()>
+    where
+        FrameHook: FnMut(&[f32], &[u32]) -> Result<()>,
+        StepHook: for<'event> FnMut(
+            Option<u32>,
+            &'event [u32],
+            &'event super::KyutaiSttStreamingLmStep,
+            &'event KyutaiSttStreamingLm<'weights>,
+            u32,
+        ) -> Result<()>,
+    {
         let contract = self.engine.contract;
         let mimi = &self.engine.mimi;
         let mimi_state = &mut self.mimi_state;
         let lm = &mut self.lm;
         self.control.finish(
             contract,
-            |frame, codes| mimi.encode_into(mimi_state, frame, codes),
+            |frame, codes| {
+                mimi.encode_into(mimi_state, frame, codes)?;
+                on_frame(frame, codes)
+            },
             |previous, codes| {
                 let step = lm.step_frame(previous, codes)?;
-                greedy_token(step.logits(), contract.text_card())
+                let token = greedy_token(step.logits(), contract.text_card())?;
+                on_lm_step(previous, codes, &step, &*lm, token)?;
+                Ok(token)
             },
         )
     }
@@ -531,6 +630,550 @@ pub(crate) trait PcmObserver {
     ) -> Result<()>;
 }
 
+/// Borrowed event emitted only by the real test-only PCM session seam.
+///
+/// Every reference is valid only for the callback.  A collector must copy or
+/// hash the frame, logits, and cache rows before returning; no cache ownership
+/// or visibility is changed.  frame_position comes from the native LM step,
+/// while next_position is the native stream counter after that step.  They
+/// are intentionally separate from any backend-global counter.
+#[cfg(test)]
+pub(crate) struct PcmRuntimeLmEvent<'event, 'weights> {
+    previous_text_token: Option<u32>,
+    codes: &'event [u32],
+    step: &'event super::KyutaiSttStreamingLmStep,
+    stream: &'event KyutaiSttStreamingLm<'weights>,
+    token: u32,
+}
+
+#[cfg(test)]
+impl<'event, 'weights> PcmRuntimeLmEvent<'event, 'weights> {
+    pub(crate) const fn previous_text_token(&self) -> Option<u32> {
+        self.previous_text_token
+    }
+
+    pub(crate) fn codes(&self) -> &'event [u32] {
+        self.codes
+    }
+
+    pub(crate) const fn step(&self) -> &'event super::KyutaiSttStreamingLmStep {
+        self.step
+    }
+
+    pub(crate) fn logits(&self) -> &KyutaiSttTextLogits {
+        self.step.logits()
+    }
+
+    pub(crate) const fn token(&self) -> u32 {
+        self.token
+    }
+
+    pub(crate) const fn frame_position(&self) -> usize {
+        self.step.position()
+    }
+
+    pub(crate) const fn next_position(&self) -> usize {
+        self.stream.next_position()
+    }
+
+    /// Reads one existing layer cache view during the callback.  None
+    /// terminates enumeration; no cache ownership or mutation is exposed.
+    pub(crate) fn layer_cache_view(
+        &self,
+        layer: usize,
+    ) -> Option<(&'event [usize], &'event [f32], &'event [f32])> {
+        self.stream.layer_cache_view(layer)
+    }
+}
+
+/// Observer for the actual Mimi -> streaming-LM -> greedy path.  Observer
+/// failures are returned to PcmSessionControl, which applies the existing
+/// poison transition; reset remains the only recovery boundary.
+#[cfg(test)]
+pub(crate) trait PcmRuntimeObserver {
+    fn on_mimi_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()>;
+
+    fn on_lm_step(&mut self, event: PcmRuntimeLmEvent<'_, '_>) -> Result<()>;
+}
+
+#[cfg(test)]
+mod runtime_observer_signature_tests {
+    use super::*;
+
+    struct SignatureProbe;
+
+    impl PcmRuntimeObserver for SignatureProbe {
+        fn on_mimi_frame(&mut self, _frame: &[f32], _codes: &[u32]) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_lm_step(&mut self, event: PcmRuntimeLmEvent<'_, '_>) -> Result<()> {
+            let _ = (
+                event.previous_text_token(),
+                event.codes().len(),
+                event.step().position(),
+                event.logits().frames(),
+                event.token(),
+                event.frame_position(),
+                event.next_position(),
+                event.layer_cache_view(0).is_some(),
+            );
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn runtime_observer_seam_is_typechecked_without_model_construction() {
+        let _push: for<'a> fn(
+            &mut KyutaiSttPcmSession<'a>,
+            &[f32],
+            &mut dyn PcmRuntimeObserver,
+        ) -> Result<()> = KyutaiSttPcmSession::push_pcm_with_runtime_observer;
+        let _finish: for<'a> fn(
+            &mut KyutaiSttPcmSession<'a>,
+            &mut dyn PcmRuntimeObserver,
+        ) -> Result<()> = KyutaiSttPcmSession::finish_with_runtime_observer;
+        fn assert_observer<T: PcmRuntimeObserver>() {}
+        assert_observer::<SignatureProbe>();
+    }
+}
+
+#[cfg(test)]
+mod runtime_observer_event_tests {
+    use super::*;
+
+    // This is the existing deterministic synthetic-LM fixture pattern.  It
+    // proves the borrowed event/cache geometry only; it does not construct
+    // Mimi or claim full PCM, real-weight, or numerical-parity coverage.
+    fn fixture() -> (KyutaiSttAsr, KyutaiSttConfig) {
+        let mut config = KyutaiSttConfig::tiny_for_tests();
+        config.backbone.context = 3;
+        let weights = KyutaiSttWeights::synthesized(&config, 0x0517_EA11).expect("weights");
+        let asr = KyutaiSttAsr::new(config.clone(), weights).expect("asr");
+        (asr, config)
+    }
+
+    #[test]
+    fn runtime_event_borrows_step_cache_and_reset_boundary() {
+        let (asr, config) = fixture();
+        let mut stream = asr.streaming_lm(BackendKind::Cpu).expect("stream");
+        let codes = vec![0; config.n_q];
+
+        let step = stream.step_frame(None, &codes).expect("first");
+        {
+            let event = PcmRuntimeLmEvent {
+                previous_text_token: None,
+                codes: &codes,
+                step: &step,
+                stream: &stream,
+                token: 0,
+            };
+            assert_eq!(event.frame_position(), 0);
+            assert_eq!(event.next_position(), 1);
+            assert_eq!(event.codes().len(), config.n_q);
+            assert_eq!(event.logits().frames(), 1);
+            assert_eq!(event.logits().vocab(), config.text_card);
+            let (positions, keys, values) = event.layer_cache_view(0).expect("layer");
+            assert_eq!(positions, &[0]);
+            assert_eq!(keys.len(), config.backbone.d_model);
+            assert_eq!(values.len(), config.backbone.d_model);
+        }
+
+        let step = stream.step_frame(Some(0), &codes).expect("second");
+        {
+            let event = PcmRuntimeLmEvent {
+                previous_text_token: Some(0),
+                codes: &codes,
+                step: &step,
+                stream: &stream,
+                token: 0,
+            };
+            assert_eq!(event.frame_position(), 1);
+            assert_eq!(event.next_position(), 2);
+            assert_eq!(event.layer_cache_view(0).expect("layer").0, &[0, 1]);
+        }
+
+        let step = stream.step_frame(Some(0), &codes).expect("third");
+        {
+            let event = PcmRuntimeLmEvent {
+                previous_text_token: Some(0),
+                codes: &codes,
+                step: &step,
+                stream: &stream,
+                token: 0,
+            };
+            assert_eq!(event.frame_position(), 2);
+            assert_eq!(event.next_position(), 3);
+            assert_eq!(event.layer_cache_view(0).expect("layer").0, &[0, 1, 2]);
+        }
+
+        let step = stream.step_frame(Some(0), &codes).expect("eviction");
+        {
+            let event = PcmRuntimeLmEvent {
+                previous_text_token: Some(0),
+                codes: &codes,
+                step: &step,
+                stream: &stream,
+                token: 0,
+            };
+            assert_eq!(event.frame_position(), 3);
+            assert_eq!(event.next_position(), 4);
+            assert_eq!(event.layer_cache_view(0).expect("layer").0, &[1, 2, 3]);
+        }
+
+        stream.reset();
+        assert_eq!(stream.next_position(), 0);
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert!(positions.is_empty());
+        assert!(keys.is_empty());
+        assert!(values.is_empty());
+    }
+
+    #[derive(Debug, Default, PartialEq)]
+    struct RuntimeSessionObservation {
+        frames: Vec<(Vec<f32>, Vec<u32>)>,
+        steps: Vec<RuntimeSessionStep>,
+        fail_on_frame: bool,
+        fail_on_lm: bool,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct RuntimeSessionStep {
+        previous_text_token: Option<u32>,
+        codes: Vec<u32>,
+        logits: Vec<f32>,
+        frame_position: usize,
+        next_position: usize,
+        token: u32,
+        cache_positions: Vec<usize>,
+        cache_keys: Vec<f32>,
+        cache_values: Vec<f32>,
+    }
+
+    impl PcmRuntimeObserver for RuntimeSessionObservation {
+        fn on_mimi_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()> {
+            if self.fail_on_frame {
+                return Err(VokraError::ModelLoad(
+                    "synthetic runtime observer frame failure".to_owned(),
+                ));
+            }
+            self.frames.push((frame.to_vec(), codes.to_vec()));
+            Ok(())
+        }
+
+        fn on_lm_step(&mut self, event: PcmRuntimeLmEvent<'_, '_>) -> Result<()> {
+            if self.fail_on_lm {
+                return Err(VokraError::ModelLoad(
+                    "synthetic runtime observer LM failure".to_owned(),
+                ));
+            }
+            let (positions, keys, values) = event.layer_cache_view(0).ok_or_else(|| {
+                VokraError::ModelLoad("synthetic runtime observer missing layer 0".to_owned())
+            })?;
+            self.steps.push(RuntimeSessionStep {
+                previous_text_token: event.previous_text_token(),
+                codes: event.codes().to_vec(),
+                logits: event.logits().as_slice().to_vec(),
+                frame_position: event.frame_position(),
+                next_position: event.next_position(),
+                token: event.token(),
+                cache_positions: positions.to_vec(),
+                cache_keys: keys.to_vec(),
+                cache_values: values.to_vec(),
+            });
+            Ok(())
+        }
+    }
+
+    // This constructs only tiny synthesized Vokra components.  The direct
+    // fields below are a cfg(test)-only fixture and do not weaken the
+    // authenticated from_paths production constructor or its provenance,
+    // hash, MLX, and DSM gates.  The test uses the real session's Mimi encode
+    // -> LM step -> greedy path, but is still self-consistency evidence, not
+    // an independent upstream reference, real-weight CPU parity result, or
+    // Apple backend result.
+    fn pcm_session_fixture() -> (KyutaiSttPcmEngine, KyutaiSttStreamingContract) {
+        let mut decoder_config = KyutaiSttConfig::tiny_for_tests();
+        decoder_config.backbone.context = 3;
+        let decoder_weights =
+            KyutaiSttWeights::synthesized(&decoder_config, 0x0517_EA11).expect("weights");
+        let decoder = KyutaiSttAsr::new(decoder_config.clone(), decoder_weights).expect("asr");
+
+        let mut mimi_config = MimiNeuralConfig::tiny_for_tests();
+        mimi_config.sample_rate = 24_000;
+        mimi_config.frame_rate_mhz = 12_500;
+        mimi_config.quantizer.n_q = decoder_config.n_q;
+        mimi_config.quantizer.bins = decoder_config.audio_card;
+        let contract = KyutaiSttStreamingContract {
+            sample_rate: 24_000,
+            frame_hop_samples: 1_920,
+            n_q: decoder_config.n_q,
+            audio_card: decoder_config.audio_card,
+            text_card: decoder_config.text_card,
+            text_pad_id: decoder_config.text_pad_id,
+            silence_prefix_samples: 24_000,
+            right_padding_samples: 84_000,
+        };
+        contract
+            .validate_mimi_config(&mimi_config)
+            .expect("24 kHz Mimi fixture contract");
+        assert_eq!(mimi_config.frame_hop_samples().expect("Mimi hop"), 1_920);
+        assert_eq!(
+            mimi_config
+                .frame_downsample_stride()
+                .expect("Mimi downsample stride"),
+            480
+        );
+        let mimi = MimiEncoder::synthesized(&mimi_config, 0x4D49_4D49).expect("Mimi");
+        // The empty tokenizer is intentional: this fixture asserts the
+        // numeric session path only and never claims transcript coverage.
+        let tokenizer = KyutaiSttTokenizer {
+            pieces: Vec::new(),
+            piece_types: Vec::new(),
+        };
+        let engine = KyutaiSttPcmEngine {
+            decoder,
+            mimi,
+            tokenizer,
+            contract,
+            backend: BackendKind::Cpu,
+        };
+        (engine, contract)
+    }
+
+    #[test]
+    fn actual_session_observer_matches_normal_chunked_finish_and_reset() {
+        let (engine, contract) = pcm_session_fixture();
+        let audio: Vec<f32> = (0..(contract.frame_hop_samples() * 2 + 37))
+            .map(|index| ((index as f32) * 0.003).sin() * 0.1)
+            .collect();
+        let capacity = PytorchPcmPaddingPlan::from_contract(&contract)
+            .expect("padding")
+            .frame_count_for_audio(audio.len())
+            .expect("capacity");
+        let split = 911;
+
+        let mut normal = engine.session(capacity).expect("normal session");
+        normal
+            .push_pcm(&audio[..split])
+            .expect("normal first chunk");
+        normal
+            .push_pcm(&audio[split..])
+            .expect("normal second chunk");
+        normal.finish().expect("normal finish");
+        let normal_raw = normal.raw_text_tokens().to_vec();
+        let normal_emitted = normal.emitted_text_tokens().to_vec();
+
+        let mut observed = engine.session(capacity).expect("observed session");
+        let mut observation = RuntimeSessionObservation::default();
+        observed
+            .push_pcm_with_runtime_observer(&audio[..split], &mut observation)
+            .expect("observed first chunk");
+        observed
+            .push_pcm_with_runtime_observer(&audio[split..], &mut observation)
+            .expect("observed second chunk");
+        observed
+            .finish_with_runtime_observer(&mut observation)
+            .expect("observed finish");
+
+        assert_eq!(observed.raw_text_tokens(), normal_raw.as_slice());
+        assert_eq!(observed.emitted_text_tokens(), normal_emitted.as_slice());
+        assert_eq!(observation.frames.len(), observation.steps.len());
+        assert_eq!(observation.steps.len(), normal_raw.len());
+        assert!(observation.frames.len() > 3);
+        let decoder_width = engine.decoder.config().backbone.d_model;
+        let decoder_context = decoder_context(&engine);
+        for (index, ((frame, codes), step)) in observation
+            .frames
+            .iter()
+            .zip(&observation.steps)
+            .enumerate()
+        {
+            assert_eq!(frame.len(), contract.frame_hop_samples());
+            assert_eq!(codes.len(), contract.n_q());
+            assert!(
+                codes
+                    .iter()
+                    .all(|&code| code < contract.audio_card() as u32)
+            );
+            assert_eq!(step.codes.as_slice(), codes.as_slice());
+            assert_eq!(step.frame_position, index);
+            assert_eq!(step.next_position, index + 1);
+            assert_eq!(step.token, normal_raw[index]);
+            let expected_previous = if index == 0 {
+                None
+            } else {
+                Some(normal_raw[index - 1])
+            };
+            assert_eq!(step.previous_text_token, expected_previous);
+            assert_eq!(step.logits.len(), contract.text_card());
+            assert!(step.logits.iter().all(|value| value.is_finite()));
+            assert!(step.token < contract.text_card() as u32);
+            let cache_start = (index + 1).saturating_sub(decoder_context);
+            let expected_cache_positions: Vec<usize> = (cache_start..=index).collect();
+            assert_eq!(step.cache_positions, expected_cache_positions);
+            assert_eq!(
+                step.cache_keys.len(),
+                step.cache_positions.len() * decoder_width
+            );
+            assert_eq!(
+                step.cache_values.len(),
+                step.cache_positions.len() * decoder_width
+            );
+        }
+        assert!(
+            observation
+                .steps
+                .iter()
+                .any(|step| step.cache_positions == [1, 2, 3])
+        );
+        assert!(
+            observation
+                .steps
+                .iter()
+                .any(|step| step.previous_text_token.is_none())
+        );
+
+        observed.reset();
+        assert!(!observed.is_poisoned());
+        assert!(observed.raw_text_tokens().is_empty());
+        assert!(observed.emitted_text_tokens().is_empty());
+        let mut after_reset = RuntimeSessionObservation::default();
+        let reset_split = contract.frame_hop_samples() + 17;
+        observed
+            .push_pcm_with_runtime_observer(&audio[..reset_split], &mut after_reset)
+            .expect("reset first chunk");
+        observed
+            .push_pcm_with_runtime_observer(&audio[reset_split..], &mut after_reset)
+            .expect("reset second chunk");
+        observed
+            .finish_with_runtime_observer(&mut after_reset)
+            .expect("reset finish");
+        assert_eq!(observed.raw_text_tokens(), normal_raw.as_slice());
+        assert_eq!(observed.emitted_text_tokens(), normal_emitted.as_slice());
+        assert_eq!(observation, after_reset);
+    }
+
+    fn decoder_context(engine: &KyutaiSttPcmEngine) -> usize {
+        engine.decoder.config().backbone.context
+    }
+
+    #[test]
+    fn actual_session_observer_errors_poison_until_reset() {
+        let (engine, contract) = pcm_session_fixture();
+        let capacity = PytorchPcmPaddingPlan::from_contract(&contract)
+            .expect("padding")
+            .frame_count_for_audio(1)
+            .expect("capacity");
+
+        let mut frame_failed = engine.session(capacity).expect("frame session");
+        let mut frame_observer = RuntimeSessionObservation {
+            fail_on_frame: true,
+            ..RuntimeSessionObservation::default()
+        };
+        assert!(
+            frame_failed
+                .push_pcm_with_runtime_observer(&[0.0], &mut frame_observer)
+                .is_err()
+        );
+        assert!(frame_failed.is_poisoned());
+        assert!(
+            frame_failed
+                .push_pcm_with_runtime_observer(&[0.0], &mut frame_observer)
+                .is_err()
+        );
+        frame_failed.reset();
+        assert!(!frame_failed.is_poisoned());
+        let mut frame_recovered = RuntimeSessionObservation::default();
+        frame_failed
+            .push_pcm_with_runtime_observer(&[0.0], &mut frame_recovered)
+            .expect("frame recovery push");
+        frame_failed
+            .finish_with_runtime_observer(&mut frame_recovered)
+            .expect("frame recovery finish");
+        assert_eq!(frame_recovered.steps.first().unwrap().frame_position, 0);
+
+        let mut lm_failed = engine.session(capacity).expect("LM session");
+        let mut lm_observer = RuntimeSessionObservation {
+            fail_on_lm: true,
+            ..RuntimeSessionObservation::default()
+        };
+        assert!(
+            lm_failed
+                .push_pcm_with_runtime_observer(&[0.0], &mut lm_observer)
+                .is_err()
+        );
+        assert!(lm_failed.is_poisoned());
+        lm_failed.reset();
+        assert!(!lm_failed.is_poisoned());
+        let mut lm_recovered = RuntimeSessionObservation::default();
+        lm_failed
+            .push_pcm_with_runtime_observer(&[0.0], &mut lm_recovered)
+            .expect("LM recovery push");
+        lm_failed
+            .finish_with_runtime_observer(&mut lm_recovered)
+            .expect("LM recovery finish");
+        assert_eq!(lm_recovered.steps.first().unwrap().frame_position, 0);
+
+        let mut frame_finish_failed = engine.session(capacity).expect("frame finish session");
+        let mut frame_finish_observer = RuntimeSessionObservation {
+            fail_on_frame: true,
+            ..RuntimeSessionObservation::default()
+        };
+        assert!(
+            frame_finish_failed
+                .finish_with_runtime_observer(&mut frame_finish_observer)
+                .is_err()
+        );
+        assert!(frame_finish_failed.is_poisoned());
+        frame_finish_failed.reset();
+        assert!(!frame_finish_failed.is_poisoned());
+        let mut frame_finish_recovered = RuntimeSessionObservation::default();
+        frame_finish_failed
+            .push_pcm_with_runtime_observer(&[0.0], &mut frame_finish_recovered)
+            .expect("frame finish recovery push");
+        frame_finish_failed
+            .finish_with_runtime_observer(&mut frame_finish_recovered)
+            .expect("frame finish recovery finish");
+        assert_eq!(
+            frame_finish_recovered
+                .steps
+                .first()
+                .expect("frame finish recovery step")
+                .frame_position,
+            0
+        );
+
+        let mut lm_finish_failed = engine.session(capacity).expect("LM finish session");
+        let mut lm_finish_observer = RuntimeSessionObservation {
+            fail_on_lm: true,
+            ..RuntimeSessionObservation::default()
+        };
+        assert!(
+            lm_finish_failed
+                .finish_with_runtime_observer(&mut lm_finish_observer)
+                .is_err()
+        );
+        assert!(lm_finish_failed.is_poisoned());
+        lm_finish_failed.reset();
+        assert!(!lm_finish_failed.is_poisoned());
+        let mut lm_finish_recovered = RuntimeSessionObservation::default();
+        lm_finish_failed
+            .push_pcm_with_runtime_observer(&[0.0], &mut lm_finish_recovered)
+            .expect("LM finish recovery push");
+        lm_finish_failed
+            .finish_with_runtime_observer(&mut lm_finish_recovered)
+            .expect("LM finish recovery finish");
+        assert_eq!(
+            lm_finish_recovered
+                .steps
+                .first()
+                .expect("LM finish recovery step")
+                .frame_position,
+            0
+        );
+    }
+}
 impl PcmSessionControl {
     fn new(contract: &KyutaiSttStreamingContract, max_frames: usize) -> Result<Self> {
         Ok(Self {

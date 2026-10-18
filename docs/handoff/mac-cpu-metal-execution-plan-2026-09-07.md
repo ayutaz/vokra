@@ -1,5 +1,14 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 source PR accepted / next implementation:** [#267 acceptance](mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
+> fixes main `5b688666` after 81 successful checks and five justified skips.
+> Continue the actual Kyutai Mimi/LM observation seam and independent
+> reference without substituting synthetic self-consistency for parity.
+> The separate XCodec2 private test candidate remains unreviewed/unrun after
+> a local guard refusal; no bypass or main integration follows. Preserve
+> existing Draft duties and all non-Apple/owner/real-weight/final-packet
+> requirements, with Scaleway still the last hardware stage.
+
 > **2026-10-18 next acceptance step:** the [corrected Kyutai source batch](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
 > now passes all four stages at `c69395d5`, with original small evidence
 > recovered and the worker/data destroyed. Record the proof, push the reviewed

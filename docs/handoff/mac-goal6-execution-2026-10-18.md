@@ -1,5 +1,10 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Latest PR acceptance:** [#267 complete fresh CI and normal merge](#pr-267-accepted-after-complete-fresh-ci)
+> supersede source-PR-pending statements below at main `5b688666`. The next
+> actual-session observer wave is unverified implementation, not independent
+> full-PCM/real-weight/Apple evidence. All six stages and 194 rows remain.
+
 > **Latest source checkpoint:** [corrected-source four-stage PASS](#corrected-kyutai-source-four-stage-pass)
 > supersedes the pending compiler statements below, without rewriting their
 > original failures. Main is `39dd2b00`; source verification is exact
@@ -692,3 +697,119 @@ it is not allowed globally. The old
 failed job is not retried unchanged or relabeled successful. Complete fresh
 exact-head CI remains the normal-merge gate, and all real-weight/Apple
 requirements remain open.
+
+## PR 267 accepted after complete fresh CI
+
+The narrow source/safety/evidence PR is normally squash-merged at
+04:44:17 UTC as main `5b688666ee26bf66ae1e75dd011d49d45168dc70`.
+Independent [PR readback](https://github.com/ayutaz/vokra/pull/267) confirms
+closed/merged, exact reviewed head
+`62ebb76b6ec95b194a859f55b9108b4652434dd6` and the matching protected-main
+merge result. Maintainer main was normally fast-forwarded to that commit
+and confirmed clean before starting a separate implementation branch.
+No force/admin merge, waived check or safety-rule change is used.
+
+The complete single-page exact-head check readback contains 86 results:
+81 success, five conditionally skipped, zero failed or live. All sixteen
+required context/application pairs succeed, including external CodeQL app
+57789. All thirteen workflows complete successfully on attempt 1. This is
+not a partial first-page count or reuse of the earlier failed head's checks.
+The [bounded acceptance readback](pr267-ci-acceptance-2026-10-18.json)
+retains all check IDs/application IDs and workflow identities for this exact
+head, plus the independently confirmed normal merge identity and limits.
+
+| Skipped check | Actual condition / non-claim |
+| --- | --- |
+| Miri / address sanitizer | Schedule or explicit dispatch only |
+| Full-history gitleaks | Schedule or full-history dispatch only |
+| Whisper WASM e2e | Explicit model-fetch opt-in or monthly schedule only |
+| NeMo real-checkpoint matrix | Actual setup log reports checkpoint sourcing disabled; skipped, not real-weight parity |
+
+The corrected [hosted spelling job](https://github.com/ayutaz/vokra/actions/runs/39097034789/job/117585745146)
+actually downloads typos 1.50.3, checks the canonical `_typos.toml` and
+succeeds on the PR merge ref binding that exact head to main `39dd2b00`.
+The immutable Canary receipt remains byte-identical. The original failed
+job remains failed; superseded still-running workflows are automatically
+cancelled by their existing PR concurrency policy, not relabeled successful.
+Ordinary backend/model-conditional CI does not establish the separate
+all-row Apple CPU/reference, Metal/reference or no-fallback campaign.
+
+Next branch `codex/kyutai-runtime-observation-20261018` starts from the
+accepted main. The reviewed private native-session candidate adds a
+borrowed synchronous observation seam to the real Mimi/LM/greedy route;
+implementation and synthetic execution coverage still require actual remote
+Rust verification. No public loader, provenance gate, numerical tolerance,
+upstream reference identity or owner decision may be weakened to enable it.
+
+### Separate XCodec2 private candidate: not accepted
+
+A Luna private candidate adds metadata/attribution preservation tests for
+the PR #152 helper scope. Its test invocation is refused by the maintainer's
+local model/checkpoint guard. Follow-up source/hash/metadata inspection is
+also refused; root presents the identical read-only Git inspection command
+to normal escalation once, and it is refused again. No alternate read,
+hash, execution, transfer or guard modification is used.
+
+The worker reports additions to two private test files but cannot prove
+the pre-edit private worktree was clean. Those changes remain unreviewed,
+untested and unaccepted. Do not restore or discard that unknown pre-existing
+private state, transfer it, or integrate it into main. The current repository
+and frozen successful VAST helpers are unaffected. This hold does not close
+PR #152, approve its reference environment or advance any model row.
+
+## Actual-session observer implementation: remote verification pending
+
+On the separate branch from accepted main `5b688666`, Luna extends only
+`crates/vokra-models/src/kyutai_stt/pcm_session.rs`. Manager reviews the
+complete diff: ordinary push/finish and the test-only observer use the same
+Mimi encoding, streaming LM step and actual greedy selection. The production
+callers supply no-op hooks; observer entry points, borrowed event and
+collector tests remain `cfg(test)` and crate-private. No public ASR loader,
+authenticated constructor, provenance/hash gate, MLX/DSM schedule,
+dependency, license, numerical tolerance or unsupported-backend behavior
+changes.
+
+The callback borrows actual frame/codes, logits, sampled token, native step
+position, next position and an existing read-only per-layer KV view. The
+test collector synchronously copies observations before the next forward.
+This is not an upstream oracle, output writer/consumer packet, new cache
+owner or model-execution permission.
+
+Synthetic execution tests construct the existing tiny first-party decoder
+and synthesized Mimi with the private 24 kHz / 12.5 Hz / 1,920-sample
+boundary and matching codebooks. The fixture's direct fields are test-only;
+the empty tokenizer deliberately excludes transcript coverage. Tests compare
+the actual normal/observed session route, different input partitions,
+finish, chronological cache eviction and reset's complete captured values.
+Separate frame/LM callback failures during push and finish must poison the
+session; after reset, actual push/finish must succeed from position zero.
+
+Manager catches and returns an eager optional-value expression that would
+index the preceding token at index zero; Luna replaces it with lazy branch
+selection before any remote run. No assertion or lint gate is removed.
+The resulting PCM source SHA-256 is
+`bd665ef70491e44930235c7818a88802a1e77df6e4290093b8bd4a6ee632c830`;
+streaming-LM source stays
+`9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42`.
+Static source enumeration finds 27 PCM and five streaming-LM unit tests,
+with no ignored test in either module. These are expected execution counts,
+not successful test results.
+
+Formatting and diff hygiene pass. Local model, compiler/test/Clippy,
+provider and SSH execution remain unperformed for this wave. Freeze the
+reviewed source commit and fresh bundle, independently check the separately
+derived bounded lifecycle helpers and all offline mocks, then perform actual
+remote verification before code push. Intended strict remote commands are:
+
+```sh
+cargo fmt --all -- --check
+cargo test -p vokra-models --lib kyutai_stt::pcm_session:: -- --test-threads=1
+cargo test -p vokra-models --lib kyutai_stt::streaming_lm:: -- --test-threads=1
+cargo clippy -p vokra-models --lib --tests -- -D warnings
+```
+
+Even a successful synthetic session run would close only this source seam.
+Independent full-PCM upstream capture/consumer, dependency/license/operator
+closure, approved real-weight CPU, final clean HEAD/fresh transfer packets,
+Apple CPU/Metal/no-fallback and final public reconciliation remain open.
+The complete six-stage objective and all 194 public rows are unchanged.
