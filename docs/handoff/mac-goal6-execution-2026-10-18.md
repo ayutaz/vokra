@@ -188,3 +188,37 @@ The next actions remain corrected controller review and offline tests, then
 the separately bounded static audit; corrected Kyutai source review, then
 exact-source remote compilation/tests. No model, owner, CPU parity or Apple
 state is promoted by these continuation observations.
+
+## Kyutai observation groundwork: reviewed, remote compilation pending
+
+The corrected two-file patch adds only test-configuration observation and
+synthetic regression coverage. `layer_cache_view()` is `cfg(test)` and
+crate-visible, not a new public runtime API. The PCM observer wraps the
+existing `PcmSessionControl::push` / `finish` methods; it does not maintain a
+second test-only padding, sampling or poison implementation. Public MLX
+24,000/84,000-sample/floor behavior and private DSM 13-prefix/32-suffix/ceil
+behavior remain separate and unchanged. No numerical tolerance, source pin,
+dependency, owner decision, artifact identity or runtime backend is changed.
+
+| Reviewed source | SHA-256 |
+| --- | --- |
+| `crates/vokra-models/src/kyutai_stt/pcm_session.rs` | `da47dd9f30398f1cd5d69a4058f8ac64117a2247a19f50cabf8bbbdc9597238b` |
+| `crates/vokra-models/src/kyutai_stt/streaming_lm.rs` | `9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42` |
+
+Review caught and corrected an unsigned-integer type mismatch and a synthetic
+expectation accidentally calculated with the tiny configuration's vocabulary
+instead of this control fixture's actual 4,000-entry vocabulary. The test now
+asserts its actual 1,920-sample hop and 13/32-frame padding. An independent
+integer-only review traces its two non-hop-aligned chunks to 48 sampled rows,
+48 raw tokens and 47 emitted tokens; this is test arithmetic, not an upstream
+reference or a measured model output. Normal and observed paths are compared
+through finish/reset, with frame/LM/finish observer failures and read-only KV
+geometry covered by the added test source.
+
+Manager formatting, forbidden-symbol, zero-dependency and diff checks pass.
+Compilation, the four added Rust tests and all-target Clippy are **NOT_RUN**
+because `vokra-models` work must execute remotely, not on the maintainer Mac.
+The reviewed source is a private checkpoint until exact-source remote evidence
+is accepted. It does not restore PR #191's entire independent consumer, supply
+full real-PCM/KV/logit reference comparison, approve a bound, or close PR #191.
+Those remain required before real-weight CPU and the final Apple stage.

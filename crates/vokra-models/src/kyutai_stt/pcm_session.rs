@@ -8,6 +8,9 @@
 
 use std::path::Path;
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use vokra_core::gguf::{AsBytes, GgufFile, GgufMetadataValue};
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -516,6 +519,18 @@ struct PcmSessionControl {
     poisoned: bool,
 }
 
+#[cfg(test)]
+pub(crate) trait PcmObserver {
+    fn on_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()>;
+
+    fn on_lm_call(
+        &mut self,
+        previous_text_token: Option<u32>,
+        codes: &[u32],
+        token: u32,
+    ) -> Result<()>;
+}
+
 impl PcmSessionControl {
     fn new(contract: &KyutaiSttStreamingContract, max_frames: usize) -> Result<Self> {
         Ok(Self {
@@ -591,6 +606,34 @@ impl PcmSessionControl {
         }
     }
 
+    #[cfg(test)]
+    fn push_observed<Encode, Step>(
+        &mut self,
+        contract: KyutaiSttStreamingContract,
+        samples: &[f32],
+        observer: &RefCell<&mut dyn PcmObserver>,
+        mut encode: Encode,
+        mut step: Step,
+    ) -> Result<()>
+    where
+        Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
+        Step: FnMut(Option<u32>, &[u32]) -> Result<u32>,
+    {
+        self.push(
+            contract,
+            samples,
+            |frame, codes| {
+                encode(frame, codes)?;
+                observer.borrow_mut().on_frame(frame, codes)
+            },
+            |previous, codes| {
+                let token = step(previous, codes)?;
+                observer.borrow_mut().on_lm_call(previous, codes, token)?;
+                Ok(token)
+            },
+        )
+    }
+
     fn push_inner<Encode, Step>(
         &mut self,
         contract: KyutaiSttStreamingContract,
@@ -627,6 +670,32 @@ impl PcmSessionControl {
             Ok(()) => Ok(()),
             Err(error) => self.poison(error),
         }
+    }
+
+    #[cfg(test)]
+    fn finish_observed<Encode, Step>(
+        &mut self,
+        contract: KyutaiSttStreamingContract,
+        observer: &RefCell<&mut dyn PcmObserver>,
+        mut encode: Encode,
+        mut step: Step,
+    ) -> Result<()>
+    where
+        Encode: FnMut(&[f32], &mut [u32]) -> Result<()>,
+        Step: FnMut(Option<u32>, &[u32]) -> Result<u32>,
+    {
+        self.finish(
+            contract,
+            |frame, codes| {
+                encode(frame, codes)?;
+                observer.borrow_mut().on_frame(frame, codes)
+            },
+            |previous, codes| {
+                let token = step(previous, codes)?;
+                observer.borrow_mut().on_lm_call(previous, codes, token)?;
+                Ok(token)
+            },
+        )
     }
 
     fn finish_inner<Encode, Step>(
@@ -876,6 +945,87 @@ mod tests {
             .unwrap()
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum ObservedEvent {
+        Frame {
+            first_sample: u32,
+            first_code: u32,
+        },
+        Lm {
+            previous: Option<u32>,
+            first_code: u32,
+            token: u32,
+        },
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        events: Vec<ObservedEvent>,
+        fail_on_frame: bool,
+        fail_on_lm: bool,
+    }
+
+    impl PcmObserver for RecordingObserver {
+        fn on_frame(&mut self, frame: &[f32], codes: &[u32]) -> Result<()> {
+            if self.fail_on_frame {
+                return Err(VokraError::ModelLoad(
+                    "injected observer frame failure".to_owned(),
+                ));
+            }
+            self.events.push(ObservedEvent::Frame {
+                first_sample: frame[0] as u32,
+                first_code: codes[0],
+            });
+            Ok(())
+        }
+
+        fn on_lm_call(
+            &mut self,
+            previous_text_token: Option<u32>,
+            codes: &[u32],
+            token: u32,
+        ) -> Result<()> {
+            if self.fail_on_lm {
+                return Err(VokraError::ModelLoad(
+                    "injected observer LM failure".to_owned(),
+                ));
+            }
+            self.events.push(ObservedEvent::Lm {
+                previous: previous_text_token,
+                first_code: codes[0],
+                token,
+            });
+            Ok(())
+        }
+    }
+
+    fn synthetic_token(
+        contract: KyutaiSttStreamingContract,
+        previous: Option<u32>,
+        codes: &[u32],
+    ) -> Result<u32> {
+        let card = u32::try_from(contract.text_card()).expect("fixture text card fits u32");
+        Ok((previous.unwrap_or(codes[0]) + codes[0] + 1) % card)
+    }
+
+    fn observed_tokens(events: &[ObservedEvent]) -> Vec<u32> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                ObservedEvent::Lm { token, .. } => Some(*token),
+                ObservedEvent::Frame { .. } => None,
+            })
+            .collect()
+    }
+
+    fn assert_fixture_contract(contract: KyutaiSttStreamingContract) {
+        assert_eq!(contract.text_card(), 4000);
+        assert_eq!(contract.frame_hop_samples(), 1920);
+        let padding = PytorchPcmPaddingPlan::from_contract(&contract).unwrap();
+        assert_eq!(padding.prefix_samples, 13 * 1920);
+        assert_eq!(padding.suffix_samples, 32 * 1920);
+    }
+
     #[test]
     fn artifact_digest_requires_lowercase_sha256() {
         assert!(KyutaiSttPcmArtifactDigest::new(&"a".repeat(64), 1).is_ok());
@@ -892,6 +1042,335 @@ mod tests {
     #[test]
     fn greedy_sampling_rejects_nonfinite_logits() {
         assert!(KyutaiSttTextLogits::new(1, 2, vec![f32::NAN, 0.0]).is_err());
+    }
+
+    #[test]
+    fn observed_control_preserves_frame_lm_order_and_reset_boundary() {
+        let contract = contract();
+        assert_fixture_contract(contract);
+        let hop = contract.frame_hop_samples();
+        let cap = PytorchPcmPaddingPlan::from_contract(&contract)
+            .unwrap()
+            .frame_count_for_audio(hop * 2 + 37)
+            .unwrap();
+        let mut control = PcmSessionControl::new(&contract, cap).unwrap();
+        let mut observer = RecordingObserver::default();
+        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+        control
+            .push_observed(
+                contract,
+                &vec![7.0; hop + 37],
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .unwrap();
+        assert_eq!(control.schedule.frames, 14);
+        control
+            .push_observed(
+                contract,
+                &vec![11.0; hop],
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .unwrap();
+        drop(observer_cell);
+
+        assert!(matches!(
+            observer.events.first(),
+            Some(ObservedEvent::Frame {
+                first_sample: 0,
+                first_code: 0
+            })
+        ));
+        assert!(matches!(
+            observer.events.get(1),
+            Some(ObservedEvent::Lm {
+                previous: None,
+                first_code: 0,
+                token: 1
+            })
+        ));
+        assert_eq!(observer.events.len(), control.schedule.frames * 2);
+        assert_eq!(control.schedule.frames, 15);
+        assert_eq!(
+            observed_tokens(&observer.events),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 21, 29]
+        );
+        assert!(
+            observer
+                .events
+                .iter()
+                .any(|event| matches!(event, ObservedEvent::Frame { first_code: 7, .. }))
+        );
+        assert!(!observer.events.iter().any(|event| matches!(
+            event,
+            ObservedEvent::Frame { first_code, .. }
+                if u64::from(*first_code) >= contract.audio_card() as u64
+        )));
+        for pair in observer.events.chunks_exact(2) {
+            assert!(matches!(pair[0], ObservedEvent::Frame { .. }));
+            assert!(matches!(pair[1], ObservedEvent::Lm { .. }));
+        }
+
+        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+        control
+            .finish_observed(
+                contract,
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .unwrap();
+        drop(observer_cell);
+        assert!(control.finished);
+        assert_eq!(observer.events.len(), control.schedule.frames * 2);
+        assert!(observer.events.len() > 2);
+        assert_eq!(control.raw_text_tokens.len(), 48);
+        assert_eq!(control.emitted_text_tokens.len(), 47);
+        assert_eq!(
+            observed_tokens(&observer.events),
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 21, 29, 41, 42, 43, 44, 45, 46, 47, 48,
+                49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69,
+                70, 71, 72, 73,
+            ]
+        );
+        assert!(
+            observer
+                .events
+                .iter()
+                .any(|event| matches!(event, ObservedEvent::Frame { first_code: 11, .. }))
+        );
+        assert!(
+            observer
+                .events
+                .iter()
+                .any(|event| matches!(event, ObservedEvent::Lm { token: 2, .. }))
+        );
+        assert!(observer.events.iter().all(|event| match event {
+            ObservedEvent::Frame { first_code, .. } => {
+                u64::from(*first_code) < contract.audio_card() as u64
+            }
+            ObservedEvent::Lm { token, .. } => u64::from(*token) < contract.text_card() as u64,
+        }));
+        for pair in observer.events.chunks_exact(2) {
+            assert!(matches!(pair[0], ObservedEvent::Frame { .. }));
+            assert!(matches!(pair[1], ObservedEvent::Lm { .. }));
+        }
+        control.reset(&contract, || {}, || {});
+        assert!(!control.finished);
+        assert_eq!(control.schedule, TextSchedule::default());
+        assert!(control.raw_text_tokens.is_empty());
+        assert!(control.emitted_text_tokens.is_empty());
+        observer.events.clear();
+        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+        control
+            .push_observed(
+                contract,
+                &vec![9.0; hop + 37],
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .unwrap();
+        assert!(
+            observer
+                .events
+                .iter()
+                .any(|event| matches!(event, ObservedEvent::Lm { previous: None, .. }))
+        );
+    }
+
+    #[test]
+    fn observed_control_matches_normal_control_output_and_reset() {
+        let contract = contract();
+        assert_fixture_contract(contract);
+        let hop = contract.frame_hop_samples();
+        let cap = PytorchPcmPaddingPlan::from_contract(&contract)
+            .unwrap()
+            .frame_count_for_audio(hop * 2 + 37)
+            .unwrap();
+        let mut normal = PcmSessionControl::new(&contract, cap).unwrap();
+        let mut observed = PcmSessionControl::new(&contract, cap).unwrap();
+        let mut observer = RecordingObserver::default();
+        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+        let encode = |frame: &[f32], codes: &mut [u32]| {
+            codes.fill(frame[0] as u32);
+            Ok(())
+        };
+        let step =
+            |previous: Option<u32>, codes: &[u32]| synthetic_token(contract, previous, codes);
+
+        normal
+            .push(contract, &vec![7.0; hop + 37], encode, step)
+            .expect("normal push");
+        observed
+            .push_observed(
+                contract,
+                &vec![7.0; hop + 37],
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .expect("observed push");
+        normal
+            .push(
+                contract,
+                &vec![11.0; hop],
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .expect("normal split push");
+        observed
+            .push_observed(
+                contract,
+                &vec![11.0; hop],
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .expect("observed split push");
+        normal
+            .finish(
+                contract,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .expect("normal finish");
+        observed
+            .finish_observed(
+                contract,
+                &observer_cell,
+                |frame, codes| {
+                    codes.fill(frame[0] as u32);
+                    Ok(())
+                },
+                |previous, codes| synthetic_token(contract, previous, codes),
+            )
+            .expect("observed finish");
+        drop(observer_cell);
+
+        assert_eq!(normal.schedule, observed.schedule);
+        assert_eq!(normal.raw_text_tokens, observed.raw_text_tokens);
+        assert_eq!(normal.emitted_text_tokens, observed.emitted_text_tokens);
+        assert_eq!(normal.buffer.pcm, observed.buffer.pcm);
+        assert_eq!(normal.buffer.frame, observed.buffer.frame);
+        assert_eq!(normal.buffer.codes, observed.buffer.codes);
+        assert_eq!(normal.buffer.encoded_frames, observed.buffer.encoded_frames);
+        assert_eq!(normal.buffer.finished, observed.buffer.finished);
+        assert_eq!(observer.events.len(), normal.schedule.frames * 2);
+
+        normal.reset(&contract, || {}, || {});
+        observed.reset(&contract, || {}, || {});
+        assert_eq!(normal.schedule, observed.schedule);
+        assert_eq!(normal.raw_text_tokens, observed.raw_text_tokens);
+        assert_eq!(normal.emitted_text_tokens, observed.emitted_text_tokens);
+        assert_eq!(normal.buffer.pcm, observed.buffer.pcm);
+        assert_eq!(normal.buffer.encoded_frames, observed.buffer.encoded_frames);
+        assert_eq!(normal.buffer.finished, observed.buffer.finished);
+    }
+
+    #[test]
+    fn observed_control_error_poison_is_transactional() {
+        let contract = contract();
+        assert_fixture_contract(contract);
+        let cap = PytorchPcmPaddingPlan::from_contract(&contract)
+            .unwrap()
+            .frame_count_for_audio(1)
+            .unwrap();
+        let mut control = PcmSessionControl::new(&contract, cap).unwrap();
+        let mut observer = RecordingObserver {
+            fail_on_lm: true,
+            ..RecordingObserver::default()
+        };
+        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+        let error = control.push_observed(
+            contract,
+            &[0.0],
+            &observer_cell,
+            |_frame, codes| {
+                codes.fill(0);
+                Ok(())
+            },
+            |_previous, _codes| Ok(11),
+        );
+        assert!(error.is_err());
+        assert!(control.poisoned);
+        assert!(control.raw_text_tokens.is_empty());
+        assert!(control.emitted_text_tokens.is_empty());
+        assert!(control.ensure_live("push_pcm").is_err());
+
+        let mut frame_control = PcmSessionControl::new(&contract, cap).unwrap();
+        let mut frame_observer = RecordingObserver {
+            fail_on_frame: true,
+            ..RecordingObserver::default()
+        };
+        let frame_observer_cell = RefCell::new(&mut frame_observer as &mut dyn PcmObserver);
+        assert!(
+            frame_control
+                .push_observed(
+                    contract,
+                    &[0.0],
+                    &frame_observer_cell,
+                    |_frame, codes| {
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_previous, _codes| Ok(11),
+                )
+                .is_err()
+        );
+        assert!(frame_control.poisoned);
+        assert!(frame_control.raw_text_tokens.is_empty());
+
+        let mut finish_control = PcmSessionControl::new(&contract, cap).unwrap();
+        let mut finish_observer = RecordingObserver {
+            fail_on_frame: true,
+            ..RecordingObserver::default()
+        };
+        let finish_observer_cell = RefCell::new(&mut finish_observer as &mut dyn PcmObserver);
+        assert!(
+            finish_control
+                .finish_observed(
+                    contract,
+                    &finish_observer_cell,
+                    |_frame, codes| {
+                        codes.fill(0);
+                        Ok(())
+                    },
+                    |_previous, _codes| Ok(11),
+                )
+                .is_err()
+        );
+        assert!(finish_control.poisoned);
+        assert!(finish_control.finished);
+        assert!(finish_control.raw_text_tokens.is_empty());
     }
 
     #[test]
