@@ -135,3 +135,56 @@ documentation-example checker passes 144 blocks across 26 documents and
 retains thirty explicit deferred blocks as unverified. No workspace or
 `vokra-models` Cargo command is run locally. These checks support this
 management snapshot only, not any unfinished execution stage above.
+
+## Continuation review: exact VibeVoice responsibility comparison
+
+A fresh source comparison uses the actual open heads, not their older PR-body
+snapshots: #169 `b3e9d5c1cd2c75bcc0b2cbe81ce8b115f00e3690` and #182
+`a3afc1ecc38db67434c564bbea424e0366e0cdd9`. Both remain Draft and conflict
+with current main. The following three files have identical Git blob IDs
+between those heads:
+
+| Reference file | Shared blob |
+| --- | --- |
+| `pyproject.toml` | `05f5a1137d80ee2fc89c74b82d83fc0defba2714` |
+| `uv.lock` | `a28686c5b48d74e6d0613efcd313a2211e54f411` |
+| `test_lock_contract.py` | `ccc6483b6e58917a626eafaf11fafa394ace9094` |
+
+All three are under `tools/parity/vibevoice_realtime_0_5b_reference/`.
+The complete collector/test delta was inspected as text. Relative to #169,
+#182 adds the explicit target-interpreter `-S` / `-B` check and recorded
+runtime flags, plus duplicate-JSON-key rejection for both file and byte
+inputs. The matching new regressions check rejection before artifact
+verification/report creation, including preservation of pre-existing report
+bytes. This comparison does not execute those regressions or establish
+installed/native/license or real-weight acceptance.
+
+The collector is absent from this branch's `HEAD` (management baseline
+`b2fe14c6`). Therefore the stronger audit responsibilities have not entered
+accepted main: retain #169 until #182, or a fully reviewed equivalent, is
+actually accepted and the exact accepted source is rechecked. Do not merge
+or close the older PR solely because the replacement contains a superset.
+The added runtime/preset/streaming-reference code in #182 still needs its
+own review and execution evidence; identical lock bytes are not proof that
+the entire PR is ready.
+
+### Reviews that remain unaccepted
+
+The first bounded Kyutai observation patch was reviewed and returned to the
+implementer for narrower visibility and stronger callback/finish/error
+coverage. Neither this review nor formatting is a compiled/tested source
+result. The existing MLX public and DSM private schedule separation must be
+preserved; PR #191 is not accepted wholesale.
+
+The first private Canary lifecycle draft was also rejected before provider
+execution: query argument framing, SSH/SCP identity/settings, global deadline
+and cleanup reservation, receipt/report hash binding, recovery bounds and
+offline negative cases need correction. No paid instance is created by this
+review. The unchanged repository safe-wrapper regression passed locally:
+`test-vastai-safe.sh: OK (redaction + exit-status + destroy confirmation)`.
+It uses mocks and proves neither provider cleanup nor the new controller.
+
+The next actions remain corrected controller review and offline tests, then
+the separately bounded static audit; corrected Kyutai source review, then
+exact-source remote compilation/tests. No model, owner, CPU parity or Apple
+state is promoted by these continuation observations.
