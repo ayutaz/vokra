@@ -724,15 +724,18 @@ mod runtime_observer_signature_tests {
 
     #[test]
     fn runtime_observer_seam_is_typechecked_without_model_construction() {
-        let _push: for<'a> fn(
-            &mut KyutaiSttPcmSession<'a>,
-            &[f32],
-            &mut dyn PcmRuntimeObserver,
-        ) -> Result<()> = KyutaiSttPcmSession::push_pcm_with_runtime_observer;
-        let _finish: for<'a> fn(
-            &mut KyutaiSttPcmSession<'a>,
-            &mut dyn PcmRuntimeObserver,
-        ) -> Result<()> = KyutaiSttPcmSession::finish_with_runtime_observer;
+        fn assert_session_methods<'engine>() {
+            let _push: fn(
+                &mut KyutaiSttPcmSession<'engine>,
+                &[f32],
+                &mut dyn PcmRuntimeObserver,
+            ) -> Result<()> = KyutaiSttPcmSession::<'engine>::push_pcm_with_runtime_observer;
+            let _finish: fn(
+                &mut KyutaiSttPcmSession<'engine>,
+                &mut dyn PcmRuntimeObserver,
+            ) -> Result<()> = KyutaiSttPcmSession::<'engine>::finish_with_runtime_observer;
+        }
+        assert_session_methods();
         fn assert_observer<T: PcmRuntimeObserver>() {}
         assert_observer::<SignatureProbe>();
     }

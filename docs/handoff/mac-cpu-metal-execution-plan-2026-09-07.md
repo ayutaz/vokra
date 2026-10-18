@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 next actual verification:** the [runtime-observer compiler result](mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
+> preserves exact `7f2c0bc9`'s two signature-test lifetime errors and original
+> native streams. Worker `56501022` and its data are destroyed and absence
+> independently confirmed. Review the minimal signature-only correction,
+> freeze a new packet, then require actual remote 27/5 tests and strict
+> Clippy before push/CI. No independent PCM, real CPU or Apple gate closes.
+
 > **2026-10-18 source PR accepted / next implementation:** [#267 acceptance](mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
 > fixes main `5b688666` after 81 successful checks and five justified skips.
 > Continue the actual Kyutai Mimi/LM observation seam and independent

@@ -1,5 +1,10 @@
 # Vokra documentation
 
+**2026-10-18 actual-session compiler checkpoint:** the [Kyutai runtime-observer run](handoff/mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
+finds two test-signature lifetime errors at `7f2c0bc9`. Original logs are
+retained, the owned worker/data are destroyed, and a minimal test-only
+correction awaits new remote verification. This is not a model-parity result.
+
 **2026-10-18 PR #267 accepted:** the [complete exact-head CI and normal merge](handoff/mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
 close the prior source-PR pending boundary at main `5b688666`: 81 successful
 checks, five event/opt-in skips, all sixteen required pairs and thirteen

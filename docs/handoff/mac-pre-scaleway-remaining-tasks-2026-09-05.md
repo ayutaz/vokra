@@ -1,5 +1,11 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 runtime source verification:** the [actual compiler failure](mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
+> is retained with complete original streams; owned `56501022` is destroyed
+> and independently absent. The reviewed signature-only fix remains unrun
+> until a new exact-source VAST packet passes. Keep all 194 rows, the dated
+> 136/58 classification, independent full PCM, real CPU and final Apple gates.
+
 > **2026-10-18 PR acceptance supersession:** [PR #267](mac-goal6-execution-2026-10-18.md#pr-267-accepted-after-complete-fresh-ci)
 > is normally merged as main `5b688666` after complete fresh CI. The source
 > observer/safety/evidence batch is accepted; actual-session observation,

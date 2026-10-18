@@ -1,5 +1,11 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Latest actual-session verification:** the [first runtime-observer run](#actual-session-compiler-failure-and-minimal-correction)
+> fails at exact `7f2c0bc9` on two signature-probe lifetime errors, not a
+> numerical assertion. Original native evidence is retained and owned worker
+> `56501022` is independently absent. A test-only correction is reviewed,
+> not yet remotely verified; no model or Apple row advances.
+
 > **Latest PR acceptance:** [#267 complete fresh CI and normal merge](#pr-267-accepted-after-complete-fresh-ci)
 > supersede source-PR-pending statements below at main `5b688666`. The next
 > actual-session observer wave is unverified implementation, not independent
@@ -813,3 +819,45 @@ Independent full-PCM upstream capture/consumer, dependency/license/operator
 closure, approved real-weight CPU, final clean HEAD/fresh transfer packets,
 Apple CPU/Metal/no-fallback and final public reconciliation remain open.
 The complete six-stage objective and all 194 public rows are unchanged.
+
+## Actual-session compiler failure and minimal correction
+
+The fixed `7f2c0bc9a98d326e8c02e7cf6f8ae541cc669728` source packet is
+actually transferred to disposable VAST `56501022` on machine `17786`.
+The fresh 200-GB-inclusive quote is USD 0.08888888888888889/hour, within
+the unchanged USD 0.20/hour and thirty-minute lifecycle ceiling. Independent
+manager review and full offline leaf/controller harnesses pass first;
+SSH/SCP explicitly disable agent forwarding. Only source bundle and leaf
+are transferred, with no model, HF credential or upstream framework job.
+
+Formatting succeeds. The PCM library-test compilation exits 101 with two
+E0308 diagnostics at lines 731 and 735: a method item tied to one engine
+lifetime cannot be coerced to the signature test's independently
+`for<'a>`-quantified engine-lifetime function pointer. No PCM or LM test
+executes, and streaming-LM/Clippy stages are not reached. Do not count the
+planned 27/5 tests as passes or retry this unchanged source.
+
+The [lossless native evidence envelope](kyutai-runtime-observation-failure-2026-10-18.json)
+retains the original 2,061-byte receipt (SHA-256
+`5d85acda71a0690d05c217c7a2929e5218de48f6b123050d0e5ef5bc12199351`),
+empty successful fmt stream, complete 3,844-byte compiler stream, CPU record,
+Rust setup stream and recovery ledger. Manager independently verifies all
+reported byte counts and SHA-256 values. Source and canonical config hashes
+are unchanged and checkout dirty counts remain `[0,0]` before/after.
+
+The controller exits nonzero after recovering the original evidence and
+destroying its owned instance/data. Its individual readback is
+`{"instances": null}`; independent safe-wrapper individual/account reads
+also confirm target absence and zero account instances at this checkpoint.
+This does not audit separate network volumes or guarantee future inventory.
+
+Luna's correction changes only the signature test: a generic helper fixes
+the engine lifetime while checking both method pointers and keeps the
+observer/event type assertions. Production behavior, runtime tests, public
+loaders, source pins, bounds and dependencies are unchanged. Reviewed PCM
+source SHA-256 becomes
+`69947534c4c02b916dc99176b28624bdb0aadee98f51386674fd6ff757fe7cf7`.
+Formatting and diff hygiene pass; actual revised compilation/tests/Clippy
+remain NOT_RUN until a new clean source packet is verified remotely.
+Independent full-PCM reference, real-weight CPU, owner/legal, final packet,
+Apple CPU/Metal/no-fallback and public reconciliation remain open.
