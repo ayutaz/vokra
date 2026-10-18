@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 subsequent execution checkpoint:** [PR acceptance and native diagnostic](mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
+> record main `39dd2b00` after #258's normal fresh-CI merge; five Draft PR
+> responsibilities remain. Correct the Kyutai private checkout's omitted
+> canonical MSRV config, then obtain whole-batch verification without changing
+> runtime code or lint policy to mask the harness difference. The diagnostic
+> worker/data were destroyed. Keep the full six stages, all 194 rows, exact
+> owner/source/reference duties and Scaleway-last conditions intact.
+
 > **2026-10-18 active six-stage objective:** [execution and acceptance matrix](mac-goal6-execution-2026-10-18.md)
 > preserve the complete PR → inventory → non-Apple → approved real-weight
 > CPU → final packet/Scaleway → result/public-audit sequence. Baseline is

@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "status": "FAIL",
+  "stage": "clippy",
+  "exit_code": 101,
+  "head": "ee2fb0d74be7846ee21366047fc25871490cd127",
+  "dirty_entries": 0,
+  "head_before": "ee2fb0d74be7846ee21366047fc25871490cd127",
+  "head_after": "ee2fb0d74be7846ee21366047fc25871490cd127",
+  "dirty_entries_before_after": [0, 0],
+  "source_hashes_before": {"pcm_session.rs": "da47dd9f30398f1cd5d69a4058f8ac64117a2247a19f50cabf8bbbdc9597238b", "streaming_lm.rs": "9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42"},
+  "source_hashes_after": {"pcm_session.rs": "da47dd9f30398f1cd5d69a4058f8ac64117a2247a19f50cabf8bbbdc9597238b", "streaming_lm.rs": "9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42"},
+  "logs": [{"path":"/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/stages/cache_view.log","bytes":377,"raw_bytes":377,"sha256":"74838f42c0976725fd7f90531418481fc74d46c3d97cae89d50d1cd56cfac86e","exit_code":0,"truncated":false,"status":"PASS"},{"path":"/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/stages/clippy.log","bytes":6668,"raw_bytes":6668,"sha256":"6600e90b6297a285ed4c8687d434bf1abb2a7b38d8f2269b3a6138db81386736","exit_code":101,"truncated":false,"status":"FAIL"},{"path":"/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/stages/fmt.log","bytes":0,"raw_bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","exit_code":0,"truncated":false,"status":"PASS"},{"path":"/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/stages/pcm_observed.log","bytes":1935,"raw_bytes":1935,"sha256":"43fe43b78b43f5e3c7d4681d184812d74db6688b6bc20f1dde6e16d89e7483b9","exit_code":0,"truncated":false,"status":"PASS"}],
+  "cpu_record": {"path":"/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/cpu.txt","bytes":1204,"sha256":"b7299b18d503891e3fd85a93fc6b6dd12e9bad18c545506e2123d96e64a102da"},
+  "rustup_log": {"path":"/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/rustup.log","bytes":2260,"sha256":"58f75d4e1b5f23ab5a98143c54aab451e312bbccd8719710a9eeac4d9eb2b7f2"},
+  "log_dir": "/tmp/vokra-goal6-kyutai-remote-run.ee2fb0d74be7-86229-7452/stages"
+}

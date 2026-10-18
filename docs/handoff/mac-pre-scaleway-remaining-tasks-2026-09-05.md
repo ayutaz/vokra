@@ -1,5 +1,13 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 subsequent acceptance/diagnosis:** [current continuation](mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
+> records #258 normally merged as main `39dd2b00`, with five Draft PR
+> responsibilities retained. The bounded Kyutai diagnostic recovered native
+> 3+1 synthetic passes and a Clippy FAIL; the private sparse checkout omitted
+> canonical `clippy.toml`. That worker/data were destroyed. Corrected source
+> verification and all non-Apple/owner/real-weight/final Apple duties remain;
+> no row or frozen decision scope is promoted. Earlier snapshots stay dated.
+
 > **2026-10-18 six-stage execution:** the [new exact-baseline readback](mac-goal6-execution-2026-10-18.md)
 > starts at clean main `7d910a9c`. A fresh public-JSON/README-only retrieval
 > is byte-identical to the retained 194-row TSV: 136 code/artifact-full,

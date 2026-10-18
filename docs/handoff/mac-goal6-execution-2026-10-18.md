@@ -449,3 +449,94 @@ connector supplies fresh reads of those same run/check IDs; at 03:28:30 UTC
 the updated #258 head has 43 successful checks, one intentional skip and
 24 queued/in-progress checks with no failures. VAST's safe-wrapper API reads
 still work. No machine DNS/network configuration or credential was changed.
+
+## PR #258 accepted after complete fresh CI
+
+The updated head `41753aa0772f11dc67d8b4a1e2571a2f29745f2b` completed
+70 check runs: 69 successes and the scheduled-only `gitleaks full history`
+skip. The normal PR gitleaks check succeeded. All sixteen required
+context/application pairs matched that exact head and succeeded, and all
+nine pull-request workflow runs completed successfully. The API reported
+`mergeable_state=clean`, non-Draft and main `7d910a9c` before merge.
+
+The expected-head-guarded, ordinary squash merge of
+[#258](https://github.com/ayutaz/vokra/pull/258) succeeded at
+2026-10-18 03:40:38 UTC as `39dd2b00ed6469db76b1cdcd3d1db39ed30673b4`.
+Independent PR and main reads confirm merged/closed and that main SHA;
+`origin/main` was fetched to the same commit. No admin override, forced
+merge, check waiver, owner approval or historical snapshot restamp was used.
+This closes the narrow urllib3 maintenance PR only. The other five PRs
+remain separate Draft source/legal/reference responsibilities, and Canary's
+owner/native/reference/real-weight/Apple gates remain open.
+
+## Kyutai diagnostic replay: native cause recovered, source acceptance open
+
+After independent full offline lifecycle success, the changed failure-log
+recovery controller `e1b76462...` ran the unchanged reviewed Rust packet
+`ee2fb0d7` with leaf `5f177423...` on disposable instance `56491836`.
+The fresh quote remained offer `54523925`, machine `17786`, USD
+0.08888888888888889/hour including 200 GB, within the USD 0.20/hour and
+thirty-minute lifecycle limits. This was a model-free diagnostic replay,
+not a model/reference run or an unchanged attempt to obtain a green result.
+
+The original [FAIL receipt](kyutai-observation-diagnostic-2026-10-18/receipt.json)
+is 2,152 bytes, SHA-256
+`5c4d7381faa3cda64220e49bf071ca802f8e48dfbd00031b52a54bd1a0abcef1`.
+It records exact clean HEAD before/after, unchanged reviewed Rust hashes,
+stage `clippy` and exit 101. This time all six bounded native artifacts were
+recovered and independently checked against the receipt's byte counts and
+SHA-256 values. The [native artifact envelope](kyutai-observation-diagnostic-2026-10-18/native-artifacts.json)
+retains the original bytes as lossless JSON-escaped UTF-8 text, including
+original trailing whitespace and blank lines. Decode each `text` string and
+encode it as UTF-8 to reproduce its recorded bytes and SHA, without relaxing
+the repository's whitespace gate.
+
+| Native artifact | Bytes | Result / scope |
+| --- | ---: | --- |
+| fmt | 0 | exit 0 |
+| PCM observer | 1,935 | 3 passed, 0 failed, 0 ignored; synthetic control tests |
+| KV cache view | 377 | 1 passed, 0 failed, 0 ignored; synthetic geometry test |
+| Clippy | 6,668 | exit 101; existing BERT/CPU code lint failures |
+| CPU/toolchain | 1,204 | x86_64 / AVX2; Rust and Cargo 1.99.1 |
+| Rustup | 2,260 | actual bootstrap transcript |
+
+The [recovery index](kyutai-observation-diagnostic-2026-10-18/recovery.tsv)
+retains each original role, bytes and SHA. The previous failed receipt and
+its unrecoverable-log gap remain historical evidence, not overwritten by
+this new run. Controller destroy/readback and an independent individual API
+read confirm `56491836` absent (`instances: null`), with its saved data
+destroyed. This does not audit separate account network volumes.
+
+The native error body identifies `manual_is_multiple_of` and `collapsible_if`
+suggestions in existing `vokra-bert` and `vokra-backend-cpu` code, not failing
+Kyutai observer assertions. The successful
+[fresh CI Clippy job](https://github.com/ayutaz/vokra/actions/runs/39092780284/job/117572845660)
+also records Rust 1.99.1, so a compiler-version difference is not the cause
+of that comparison. The private sparse allowlist omitted the repository's
+existing `clippy.toml`, although root `Cargo.toml` explicitly relies on it
+to pin suggestions to the declared MSRV. The unchanged canonical config is
+`msrv = "1.85"`, SHA-256
+`a7f71233bb5b4dd63e3aa2c08c18a23100663b7c2f9cbf80992e7e35af984c9e`.
+
+Correct the private checkout/config binding and its mocks, then rerun the
+same strict commands with the actual canonical config present. Do not edit
+unrelated runtime code, downgrade the compiler, add lint allowances or skip
+Clippy to conceal this harness difference. A corrected whole-batch success
+is still NOT_RUN at this checkpoint. Four recovered synthetic test successes
+do not establish independent PCM reference, real-weight CPU or Apple parity;
+the six-stage objective and all 194 public rows remain open.
+
+### XCodec2 deeper read-only review
+
+The fixed PR #152 helper review found no deletion of `Requires-Dist` or
+license bytes to manufacture a green dependency result. Its builder emits
+explicitly derived, unapproved, no-upload wheels rather than official build
+provenance; it deliberately excludes build metadata/README payloads and
+may append a missing metadata newline. The source inspector does not verify
+PKG-INFO/dependency/license bytes, and the dependency auditor remains coupled
+to the PR's exact blocked project/lock/manifest/rows. Synthetic tests lack
+direct nonempty Requires-Dist and diverse attribution-preservation coverage.
+Consequently no entire helper subset, replacement environment, official
+reference, license/native closure or PR #152 acceptance follows from the
+read-only review. Do not sever its blocked contracts merely to simplify
+integration; all retained responsibilities still need actual closure.

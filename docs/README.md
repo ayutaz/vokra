@@ -1,5 +1,13 @@
 # Vokra documentation
 
+**2026-10-18 subsequent PR/diagnostic checkpoint:** [#258 acceptance and Kyutai native evidence](handoff/mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
+record normal merge to main `39dd2b00` after complete fresh CI. Five Draft
+PR responsibilities remain. The model-free Kyutai replay recovered four
+synthetic test successes and an overall Clippy failure; its sparse checkout
+omitted the existing MSRV config. The worker/data were destroyed. Corrected
+whole-batch validation, real-weight CPU and final Apple gates remain open.
+The initial snapshots below retain their dated scope.
+
 **2026-10-18 all-model continuation:** the [six-stage execution readback](handoff/mac-goal6-execution-2026-10-18.md)
 records the new full objective at clean main `7d910a9c`: six open PRs,
 fresh metadata-only confirmation of 194 rows / 136 code-artifact-full /
