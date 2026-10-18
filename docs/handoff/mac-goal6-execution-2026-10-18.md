@@ -668,3 +668,27 @@ fresh required contexts before normal merge. Keep the separate private rich
 runtime-observer candidate out of that verified source change. Full native
 PCM/upstream observation, independent real-weight CPU and final Apple gates
 remain unfinished; all 194 rows and the complete six-stage goal remain.
+
+## PR 267: immutable audit quote triggers spelling check
+
+The verified source/evidence batch is pushed and normally reconciled with
+main `39dd2b00` at work-branch head
+`4396f97902e6334189897213e0bd584996359f78`; [PR #267](https://github.com/ayutaz/vokra/pull/267)
+is non-Draft. The initial exact-head CI has a real
+[typos failure](https://github.com/ayutaz/vokra/actions/runs/39096349344/job/117583506159),
+not a Rust/compiler failure: typos v1.50.3 flags two identical clipped
+source-quote fragments in the retained Canary static-audit JSON. Its raw
+36,437-byte SHA-256 remains
+`3b5c075791e4bee3b81191f66155cb77a9a92bbd28bae5a16ce3bfb804af581a`;
+correcting the quoted bytes would invalidate original evidence.
+
+Luna adds only that exact file to the existing immutable-source/receipt
+exclusions in `_typos.toml`. No global word allowance, directory-wide
+exclusion, original-evidence edit, runtime-policy change or hook
+change is made. Focused spelling checks use the installed local typos 1.48.0;
+the actual hosted 1.50.3 result on the new head is still required. A separate
+stdin negative control still rejects the clipped token (exit 2), confirming
+it is not allowed globally. The old
+failed job is not retried unchanged or relabeled successful. Complete fresh
+exact-head CI remains the normal-merge gate, and all real-weight/Apple
+requirements remain open.

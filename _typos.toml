@@ -60,6 +60,9 @@ extend-exclude = [
     "docs/handoff/kyutai-candle-pin-success-2026-10-15.json",
     "docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json",
     "docs/handoff/kyutai-candle-updated-source-facts-2026-10-15.json",
+    # typos v1.50.3 flags a clipped verbatim source quote in this immutable
+    # PR-258 audit receipt; preserve the authenticated JSON bytes.
+    "docs/handoff/canary-pr258-static-audit-2026-10-18.json",
     # ABI symbol dumps and manifest lists — one-token-per-line files that
     # only ever contain mangled or C-ABI identifiers.
     "docs/abi/",
