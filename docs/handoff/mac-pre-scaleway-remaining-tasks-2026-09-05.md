@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 fixed-source synthetic PASS:** [all four actual stages](mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
+> pass at `59a0afda`, including 27 PCM / five LM tests and strict Clippy.
+> Original native evidence is verified; owned `56503887`/data are destroyed
+> and independently absent. Fresh source-PR CI, independent full PCM,
+> dependency/owner/real CPU and final Apple/public gates remain open.
+> All 194 rows and the dated 136/58 code/artifact classification are retained.
+
 > **2026-10-18 actual synthetic runtime readback:** [27 PCM / five LM tests](mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
 > pass at `155be525`; one signature-helper Clippy lint keeps the whole batch
 > unaccepted. The reviewed further test-only fix requires new remote proof.

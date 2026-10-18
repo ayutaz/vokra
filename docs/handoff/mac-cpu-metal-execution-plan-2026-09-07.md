@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 fixed-source acceptance:** [actual-session four-stage PASS](mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
+> at `59a0afda` includes 27 PCM / five LM tests and strict Clippy. Original
+> streams are independently verified and owned `56503887`/data are destroyed.
+> Record this proof, push, then require fresh exact-head PR CI and normal
+> acceptance. Next close the independent full-PCM writer/consumer and other
+> non-Apple/owner duties, not another synthetic substitute. Real CPU, final
+> packet and Scaleway-last Apple gates remain unchanged for all 194 rows.
+
 > **2026-10-18 synthesized runtime checkpoint:** [32 actual tests](mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
 > pass at `155be525`, followed by one strict signature-helper lifetime lint.
 > Original evidence is retained and worker/data `56502593` are independently

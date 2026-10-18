@@ -1,5 +1,11 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Latest fixed-source acceptance:** [all four stages pass](#actual-session-fixed-source-four-stage-pass)
+> at `59a0afda`, with the original receipt and six native streams verified.
+> Owned `56503887` and data are destroyed and independently absent. This
+> supersedes revised-source NOT_RUN/failed statements below only for this
+> exact batch. Fresh PR CI, independent full PCM, real CPU and Apple remain.
+
 > **Latest actual-session checkpoint:** [32 tests pass, strict lint remains](#actual-session-tests-pass-and-signature-lint-correction)
 > at `155be525`. Original streams are retained; owned `56502593` and data
 > are destroyed and independently absent. The further signature-only fix
@@ -907,3 +913,59 @@ New PCM SHA-256 is
 Its remote Rust/test/Clippy verdict is still NOT_RUN. Preserve the original
 failed heads and require the entire new fixed-source batch, not merely the
 last lint command, before push. All six-stage and 194-row duties remain.
+
+## Actual-session fixed-source four-stage PASS
+
+The additional signature-only correction is committed and frozen at clean
+`59a0afda1b6b4bbe6d158c54bccb1add841691b2`, base
+`5b688666ee26bf66ae1e75dd011d49d45168dc70`. The fresh bundle is 27,328 bytes,
+SHA-256 `7f270b1cc8aba1785a1f20e86bc6d774e9a55fff211acdb516a8973a7ef443a7`.
+The prior `155be525` packet and original failures remain unchanged. Manager
+reviews the complete new helper diff (pins/paths only), rechecks syntax,
+ShellCheck and source/bundle hashes, and reviews Luna's terminal full leaf
+and lifecycle mock evidence. Their existing price, deadline, ownership,
+failure-recovery, no-forwarding and destroy/readback logic is unchanged.
+
+Machine `31844` has no matching current quote at admission, so that attempt
+stops before instance creation. A fresh market observation identifies offer
+`53652712`, machine `39233`, at USD 0.1325925925925926/hour including 200 GB.
+The controller independently revalidates the exact offer and creates only
+owned `56503887` under the existing USD 0.20/hour / thirty-minute ceiling.
+It transfers the reviewed source bundle and leaf only, not credentials or
+model artifacts, and actually executes all four fixed commands:
+
+| Stage | Actual verdict |
+| --- | --- |
+| `cargo fmt --all -- --check` | exit 0 |
+| PCM module tests, serial | 27 passed / 0 failed / 0 ignored; 7.91 s |
+| Streaming-LM module tests, serial | 5 passed / 0 failed / 0 ignored; 0.03 s |
+| `cargo clippy -p vokra-models --lib --tests -- -D warnings` | exit 0; actual dev build finished |
+
+The [lossless native evidence](kyutai-runtime-observation-pass-2026-10-18.json)
+preserves the original 2,628-byte PASS receipt, SHA-256
+`5d89bdf185317013bf2b6372cda71dd97b6d9fa9a198e6143fe8549cc3e25bef`,
+and all six original native streams. Manager independently checks every
+reported byte count and SHA-256, the actual 27/5 zero-ignored summaries,
+all four zero exit codes, no log truncation, exact before/after HEAD,
+`[0,0]` dirty counts and unchanged source/canonical-config hashes. PCM stays
+`be8544416fc4c8ee19f32bdbee33d3e7439e014ef40ca1d7ede731bc127f8a57`;
+streaming LM stays
+`9b863f73e228a879c7ee7b26b04bb9e84ed50e173eba8c734196755d998d3b42`.
+Rust setup and CPU/ISA metadata are retained. The existing dependency MSRV
+diagnostic remains visible; no warning allow or config change is introduced.
+
+The controller returns zero with `PASS audit-and-destroy` after evidence
+verification and destruction of its exact owned instance and saved data.
+Its individual readback is `{"instances": null}`. Independent safe-wrapper
+individual/account reads confirm `56503887` absent and the instance list
+empty. This is not a separate network-volume audit or a future inventory
+guarantee. No source job or retained instance remains running.
+
+This accepts the synthesized actual-session observation seam only. The
+source push and new exact-head PR CI come next. Do not replay this green
+Cargo batch merely to collect its already verified native bytes. Continue
+the independent full-PCM writer/consumer and existing Draft responsibilities,
+dependency/license/operator closure, approved real-weight CPU, final clean
+HEAD/fresh authenticated packets, final Scaleway CPU/Metal/no-fallback and
+result/public audit. Do not substitute additional synthetic seam tests for
+the still-missing independent reference. All 194 rows remain accounted.
