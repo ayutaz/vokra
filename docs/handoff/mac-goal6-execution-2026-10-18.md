@@ -401,3 +401,51 @@ primary archive/license bindings, owner decisions, fresh reference and
 CPU/Apple gates remain open. Its environment update is a new reference
 scope; no fixture or bound is silently inherited. No PR #152 branch update,
 merge or model execution is performed by this investigation.
+
+## Actual Kyutai model-free compiler attempt: Clippy failure
+
+The frozen source packet remains `ee2fb0d7`, not a new model or reference
+scope. After manager review and independent offline entry/lifecycle tests,
+instance `56490823` ran the fixed fmt, three PCM observer tests, one cache
+view test and models-library/integration-test Clippy commands. The selected
+200-GB offer remained `54523925` / machine `17786` at USD
+0.08888888888888889/hour. The controller retained its USD 0.20/hour ceiling,
+27-minute work deadline and cleanup reservation within thirty minutes.
+No model, HF key, project reference environment or publication was involved.
+
+The original [failure receipt](kyutai-observation-compiler-failure-2026-10-18.json),
+SHA-256 `fedb299066410f114655d715866030d759c6cb26aaa3cfeaab8be1d8efd51891`,
+records **FAIL**, stage `clippy`, exit 101, exact clean HEAD before/after,
+and unchanged hashes of both reviewed Rust files. The known strict driver
+reached Clippy only after fmt and the exact 3+1 nonzero/unignored test
+summaries passed. Receipt metadata marks those earlier stages PASS, but their
+native output streams were not recovered. This is preliminary stage evidence,
+not a fully independently recovered four-test result or a successful overall
+source-validation batch. No push/merge is justified by this failed batch.
+
+An evidence-recovery defect is explicit: the failure path copied the receipt
+and its matching hash, but not the 6,676-byte Clippy log body (or the other
+stage/CPU/toolchain files listed in the receipt). Those files were lost when
+the instance's data was destroyed. The failure's actual compiler/lint cause
+therefore remains unknown; do not infer it from the exit code or source
+inspection, call it flaky, weaken Clippy, or edit Rust based on a guess.
+Correct and offline-test bounded failure-log recovery before any changed
+diagnostic replay. A later replay must preserve this failed receipt and obtain
+the original causal output before destruction, rather than rerent unchanged
+and hope for green.
+
+Controller destroy/readback and an independent individual read completed
+before 2026-10-18 03:28:30 UTC confirm `56490823` absent with
+`{"instances": null}`. Its saved data was destroyed and cannot serve as a
+retained retry worker. No real-weight CPU, independent reference, Apple,
+owner/legal or publication state advances.
+
+### Monitoring transport boundary
+
+The maintainer's `api.github.com` DNS lookup failed during CI monitoring;
+unauthenticated `curl` confirmed a resolver failure. Existing runs were not
+cancelled, restarted or treated as terminal. The already-connected GitHub
+connector supplies fresh reads of those same run/check IDs; at 03:28:30 UTC
+the updated #258 head has 43 successful checks, one intentional skip and
+24 queued/in-progress checks with no failures. VAST's safe-wrapper API reads
+still work. No machine DNS/network configuration or credential was changed.
