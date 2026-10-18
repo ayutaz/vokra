@@ -66,7 +66,8 @@ run_json_key_cases() {
   for key in api_key API_KEY apikey APIKEY api-key API-KEY container_api_key CONTAINER_API_KEY \
     access_token ACCESS_TOKEN auth_token AUTH_TOKEN client_secret CLIENT_SECRET \
     hf_token HF_TOKEN jupyter_token JUPYTER_TOKEN token TOKEN secret SECRET \
-    password PASSWORD docker_login_pass DOCKER_LOGIN_PASS image_login_pass IMAGE_LOGIN_PASS; do
+    password PASSWORD docker_login_pass DOCKER_LOGIN_PASS image_login_pass IMAGE_LOGIN_PASS \
+    private_key PRIVATE_KEY ssh_private_key SSH_PRIVATE_KEY; do
     set +e
     # shellcheck disable=SC2016
     FAKE_STDOUT="{\"$key\":\"secret-$key\"}" FAKE_STDERR="json warning {\"$key\": \"secret-$key\"}" \
@@ -86,13 +87,54 @@ run_json_key_cases() {
 
 run_json_key_cases
 
+run_private_key_format_cases() {
+  local actual_status
+
+  set +e
+  # The PEM-like value is JSON-escaped (the literal \n sequences must remain
+  # inside the diagnostic payload so the JSON redactor consumes the full value).
+  FAKE_STDOUT='json {"private_key":"-----BEGIN OPENSSH PRIVATE KEY-----\nline-one\nline-two\n-----END OPENSSH PRIVATE KEY-----","public_key":"ssh-ed25519 AAAA","tokenizer":"kept-tokenizer"} url=https://example.test/?private_key=query-secret&public_key=ssh-public' \
+    FAKE_STDERR='kv private_key=kv-secret ssh_private_key=ssh-kv-secret public_key=ssh-public tokenizer=kept-tokenizer' \
+    VASTAI_BIN=sh "$wrapper" -c \
+    'printf "%s\\n" "$FAKE_STDOUT"; printf "%s\\n" "$FAKE_STDERR" >&2; exit 23' \
+    >"$stdout_file" 2>"$stderr_file"
+  actual_status=$?
+  set -e
+
+  [[ "$actual_status" == 23 ]] || {
+    echo "vastai-safe self-test: private-key fixture changed exit status" >&2
+    return 1
+  }
+  grep -Fqx -- \
+    'json {"private_key":"[REDACTED]","public_key":"ssh-ed25519 AAAA","tokenizer":"kept-tokenizer"} url=https://example.test/?private_key=[REDACTED]&public_key=ssh-public' \
+    "$stdout_file" || {
+    echo 'vastai-safe self-test: private-key JSON/query mismatch' >&2
+    return 1
+  }
+  grep -Fqx -- \
+    'kv private_key=[REDACTED] ssh_private_key=[REDACTED] public_key=ssh-public tokenizer=kept-tokenizer' \
+    "$stderr_file" || {
+    echo 'vastai-safe self-test: private-key key=value mismatch' >&2
+    return 1
+  }
+  if grep -Fq -- 'query-secret' "$stdout_file" || \
+     grep -Fq -- 'kv-secret' "$stderr_file" || \
+     grep -Fq -- 'ssh-kv-secret' "$stderr_file" || \
+     grep -Fq -- 'BEGIN OPENSSH PRIVATE KEY' "$stdout_file"; then
+    echo 'vastai-safe self-test: private-key sentinel survived redaction' >&2
+    return 1
+  fi
+}
+
+run_private_key_format_cases
+
 run_python_dict_key_cases() {
   local key actual_status
   for key in api_key API_KEY apikey APIKEY api-key API-KEY container_api_key CONTAINER_API_KEY \
     access_token ACCESS_TOKEN auth_token AUTH_TOKEN client_secret CLIENT_SECRET \
     hf_token HF_TOKEN jupyter_token JUPYTER_TOKEN instance_api_key INSTANCE_API_KEY \
     token TOKEN secret SECRET password PASSWORD docker_login_pass DOCKER_LOGIN_PASS \
-    image_login_pass IMAGE_LOGIN_PASS; do
+    image_login_pass IMAGE_LOGIN_PASS private_key PRIVATE_KEY ssh_private_key SSH_PRIVATE_KEY; do
     set +e
     # shellcheck disable=SC2016
     FAKE_STDOUT="{'$key': 'secret-$key'}" FAKE_STDERR="python warning {'$key': 'secret-$key'}" \

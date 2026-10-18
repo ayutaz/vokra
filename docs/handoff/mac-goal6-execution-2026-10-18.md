@@ -222,3 +222,43 @@ The reviewed source is a private checkpoint until exact-source remote evidence
 is accepted. It does not restore PR #191's entire independent consumer, supply
 full real-PCM/KV/logit reference comparison, approve a bound, or close PR #191.
 Those remain required before real-weight CPU and the final Apple stage.
+
+## Provider admission and credential-field redaction supplement
+
+The source packet remains fixed at `ee2fb0d74be7846ee21366047fc25871490cd127`:
+its incremental bundle is 12,994 bytes, SHA-256
+`b6b41c63ee36ef9ddbf09235e314d2785015b7dde8e0cb5eb9e2a51aef17c9d9`,
+and requires base `7d910a9c0e2db2ffd544033e4ccb5792fd217ed6`.
+Bundle verification and its declared changed-object inventory contain only
+the two reviewed Rust files, management documents, commits and their trees;
+no model payload or protected-manifest change is introduced. Remote Rust
+compilation remains **NOT_RUN**.
+
+At 2026-10-18 02:47:37 UTC, a fresh safe-wrapper account instance read returns
+the flat JSON list `[]`: zero instances at that observation. This does not
+audit independent network volumes or guarantee future account state. The
+existing local SSH public key matches an active provider registration; no key
+is generated, replaced or uploaded. Existing credentials remain local.
+
+Installed CLI source inspection confirms that the legacy raw instance-list
+command returns a flat list, a live individual read returns a plain row, and
+an absent individual read returns `{"instances": null}`. The private controller
+must test these actual shapes, `cpu_arch` rather than `gpu_arch`, actual
+direct-port mappings, decimal quote precision and readiness before rent is
+accepted. An older mock-shaped success is not provider acceptance. Current
+private lifecycle/bootstrap revisions are still under review, not live-run
+evidence. Main remains `7d910a9c` and the six existing PR heads are unchanged
+at this continuation check.
+
+The provider SSH-key response schema includes a `private_key` field. No
+private-key value is displayed; this observation is not a newly established
+credential leak or rotation event. A bounded wrapper hardening change adds
+exact redaction for `private_key`, `PRIVATE_KEY`, `ssh_private_key` and
+`SSH_PRIVATE_KEY` using the existing JSON, Python-dict, query and key/value
+redactors. Synthetic fixtures cover escaped multiline PEM-like JSON values,
+near-match `public_key` / `tokenizer` preservation and wrapped exit status 23.
+The diagnostic-option prohibition and mandatory destroy `--yes` gate are
+unchanged. Manager diff review, shell syntax, the actual offline wrapper
+regression and diff hygiene pass. This shell-only change does not modify the
+frozen Rust packet, source/model approvals, reference bounds or any Apple
+completion state; it is not a remote compiler or provider-cleanup result.
