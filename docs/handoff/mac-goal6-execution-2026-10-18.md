@@ -316,3 +316,88 @@ recovery contract, and independently pass synthetic tests with representative
 manifest size/shape and explicit over-limit rejection. These two failures
 expose gaps in the original mocks, not model failures, license decisions,
 CPU parity or Apple evidence. Do not replay the unchanged failed helper.
+
+## Actual bounded Canary static facts recovered
+
+The revised collector uses a 512-KiB cap for the two manifest files, 256 KiB
+for the other allowlisted inputs, and a 4-MiB per-revision aggregate bound.
+Its report remains capped at 64 KiB. Independent offline tests cover the
+actual plain-row/billing response, readiness transitions, distinct nested
+package/status/hash records in a manifest larger than 417 KiB, exact 512-KiB
+acceptance, over-limit rejection, receipt tampering and failed cleanup. The
+manager reviewed the revised collector and reran that frozen suite before
+the changed live attempt.
+
+Instance `56488878` completed the stdlib-only audit and bounded evidence
+recovery. The controller then destroyed that instance and its saved data.
+Independent individual and account reads completed before 2026-10-18
+03:11:24 UTC return `{"instances": null}` and `[]`, respectively; independent
+network volumes are not audited by these reads. No model, HF secret,
+reference package, project-helper execution or upload is involved.
+
+The original recovered bytes are retained as management evidence:
+
+| Evidence | Bytes | SHA-256 |
+| --- | ---: | --- |
+| [Static report](canary-pr258-static-audit-2026-10-18.json) | 36,437 | `3b5c075791e4bee3b81191f66155cb77a9a92bbd28bae5a16ce3bfb804af581a` |
+| [Remote receipt](canary-pr258-static-receipt-2026-10-18.json) | 218 | `747171b938c02004588de60ced9361bd5d0303951a115a5b0d1b0c4f2948ac97` |
+
+Inputs are exact main `7d910a9c` and PR #258 `b2846466`, eleven files per
+revision and 677,792 bytes per revision. Ten file hashes are unchanged. The
+134-package full-record lock comparison finds exactly one changed package:
+urllib3 2.7.0 to 2.8.0. Its new wheel and sdist identities match the fixed
+[primary PyPI metadata](https://pypi.org/pypi/urllib3/2.8.0/json); the fixed
+[upstream license body](https://raw.githubusercontent.com/urllib3/urllib3/2.8.0/LICENSE.txt)
+is MIT. This verifies the bounded maintenance delta, not all 134 packages or
+the reference environment's installed/native behavior.
+
+Approval status remains `OWNER_SIGNOFF_REQUIRED`, signer/digest remain null,
+and the recorded audit status remains `BLOCKED_UNREVIEWED_TRANSITIVE` in both
+revisions. The closure snapshot records lock hash `004f0b4d...`; that differs
+from both current-main `a931dfb0...` and candidate `67a7eab6...`. Its project
+and audit-script snapshots also differ from current source. Preserve those
+historical snapshots rather than restamping them as new approval. The
+collector's sibling-path matching is heuristic: for example, its comparison
+of `virtual_project_evidence.license_sha256` against the sibling project path
+is not a valid license-byte verdict. Hashes without an allowlisted unique
+target remain `UNKNOWN`. Grouped excerpts are explicitly incomplete; state
+aggregates cover enumerated, shortened values, not a complete license proof.
+No project gate was executed, so these observations are not an actual
+semantic gate PASS/FAIL or a current owner/legal determination.
+
+The maintenance PR may proceed to latest-main reconciliation and fresh CI
+without inheriting the frozen reference approval. Real reference acquisition,
+dependency/native closure and any execution decision require a new exact
+scope and the applicable evidence/authorization. Static success does not
+promote either Canary model to CPU/Apple PASS or authorize publication.
+
+### PR #258 latest-main update and fresh CI
+
+The normal GitHub update-branch request, guarded by expected head
+`b284646627cc1e35effe3ef7eebe3bd3e6b359c1`, was accepted. The new head is
+`41753aa0772f11dc67d8b4a1e2571a2f29745f2b` against main `7d910a9c`.
+Directory-metadata API reads for both Canary directories confirm all eleven
+blob IDs and byte counts unchanged from the audited candidate. This binds
+the narrow static input facts to the updated branch, not a whole-new-HEAD
+compiler/reference result. Fresh runs are actually created for this head,
+including [CI](https://github.com/ayutaz/vokra/actions/runs/39092780284),
+[Security](https://github.com/ayutaz/vokra/actions/runs/39092780265) and
+[Quality](https://github.com/ayutaz/vokra/actions/runs/39092780357).
+They are pending at this checkpoint; the earlier 69 successes / one skip
+belong to the old head and cannot authorize the new merge. PR #258 is not
+yet merged by this record.
+
+### XCodec2 source integration map, not acceptance
+
+A separate read-only investigation uses actual merge-base
+`8bd30d9ab3857f77f3d0fa1edce34c450ea8c102`, current main `7d910a9c` and
+PR #152 `a9f54e1a`. Its true three-way text conflicts are `docs/README.md`
+and `docs/handoff/next-steps-2026-10-14.md`; both involve dated-record
+insertions. The PR's Rust/reference/workflow source has no text conflict in
+that comparison, which is not proof of compilation or semantic acceptance.
+Keep its prior source-only nine-test evidence separate from real-weight
+parity: the GGUF-unset tenth test returns early. LGPL/GPL/native provenance,
+primary archive/license bindings, owner decisions, fresh reference and
+CPU/Apple gates remain open. Its environment update is a new reference
+scope; no fixture or bound is silently inherited. No PR #152 branch update,
+merge or model execution is performed by this investigation.
