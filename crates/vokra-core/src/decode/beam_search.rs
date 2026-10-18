@@ -372,7 +372,13 @@ pub fn beam_search<'a>(
         .drain(..)
         .map(|h| {
             let gen_len = (h.tokens.len().saturating_sub(prefix_len)).max(1) as f32;
-            let denom = gen_len.powf(alpha);
+            let denom = if alpha == 0.0 {
+                1.0
+            } else if alpha == 1.0 {
+                gen_len
+            } else {
+                gen_len.powf(alpha)
+            };
             BeamHypothesis {
                 normalized_score: h.score / denom,
                 score: h.score,
@@ -521,6 +527,7 @@ mod tests {
     /// transition table: `logprob[tokens_last][next]`. Unknown contexts fall
     /// back to a uniform distribution, and `eot` is an absorbing high-prob
     /// choice from a designated "sink" token so sequences terminate.
+    #[derive(Clone)]
     struct MockScorer {
         vocab: usize,
         // table[last_token] = log-probs over next token.
@@ -562,6 +569,13 @@ mod tests {
         }
     }
 
+    /// Build one log-probability fixture and clone it for paired comparisons.
+    /// Re-running `ln` independently can perturb equal values under Miri.
+    fn scorer_pair() -> (MockScorer, MockScorer) {
+        let fixture = scorer();
+        (fixture.clone(), fixture)
+    }
+
     const EOT: u32 = 3;
 
     #[test]
@@ -576,8 +590,7 @@ mod tests {
 
     #[test]
     fn wider_beam_does_not_reduce_best_score() {
-        let mut s1 = scorer();
-        let mut s2 = scorer();
+        let (mut s1, mut s2) = scorer_pair();
         let g = beam_search(&mut s1, &[0], EOT, &BeamSearchConfig::greedy(8)).unwrap();
         let b = beam_search(&mut s2, &[0], EOT, &BeamSearchConfig::new(3, 8)).unwrap();
         // The wider search's best (unnormalized) score is at least the greedy
@@ -611,8 +624,7 @@ mod tests {
 
     #[test]
     fn early_stopping_keeps_the_same_best() {
-        let mut s1 = scorer();
-        let mut s2 = scorer();
+        let (mut s1, mut s2) = scorer_pair();
         let mut on = BeamSearchConfig::new(3, 8);
         on.early_stopping = true;
         let mut off = on.clone();
@@ -633,6 +645,35 @@ mod tests {
         let hyps = beam_search(&mut s, &[0], EOT, &cfg).unwrap();
         for h in &hyps {
             assert!((h.normalized_score - h.score).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn length_normalization_zero_and_one_use_exact_identities() {
+        let (mut alpha_zero_scorer, mut alpha_one_scorer) = scorer_pair();
+        let mut alpha_zero = BeamSearchConfig::new(3, 8);
+        alpha_zero.n_best = 3;
+        alpha_zero.length_normalization = 0.0;
+        let mut alpha_one = alpha_zero.clone();
+        alpha_one.length_normalization = 1.0;
+
+        let zero = beam_search(&mut alpha_zero_scorer, &[0], EOT, &alpha_zero).unwrap();
+        for h in &zero {
+            assert_eq!(
+                h.normalized_score.to_bits(),
+                h.score.to_bits(),
+                "alpha=0 must preserve the raw score bits"
+            );
+        }
+
+        let one = beam_search(&mut alpha_one_scorer, &[0], EOT, &alpha_one).unwrap();
+        for h in &one {
+            let gen_len = (h.tokens.len().saturating_sub(1)).max(1) as f32;
+            assert_eq!(
+                h.normalized_score.to_bits(),
+                (h.score / gen_len).to_bits(),
+                "alpha=1 must divide by generated length exactly"
+            );
         }
     }
 
@@ -905,20 +946,33 @@ mod tests {
         // from b → prefer a; eot fires only when the previous token was eot
         // (absorbing), so the search never terminates naturally over the
         // 6-token budget.
-        struct BigramRepeatScorer;
+        #[derive(Clone, Copy)]
+        struct BigramRepeatScorer {
+            low: f32,
+            high: f32,
+        }
+
+        impl BigramRepeatScorer {
+            fn new() -> Self {
+                Self {
+                    low: 0.001f32.ln(),
+                    high: 0.997f32.ln(),
+                }
+            }
+        }
+
         impl BeamScorer for BigramRepeatScorer {
             fn logprobs(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
-                let ln = |p: f32| p.ln();
                 let last = *tokens.last().unwrap();
                 Ok(match last {
                     // From <sos>: prefer a heavily.
-                    0 => vec![ln(0.001), ln(0.997), ln(0.001), ln(0.001)],
+                    0 => vec![self.low, self.high, self.low, self.low],
                     // From a: prefer b (completes the (1, 2) bigram).
-                    1 => vec![ln(0.001), ln(0.001), ln(0.997), ln(0.001)],
+                    1 => vec![self.low, self.low, self.high, self.low],
                     // From b: prefer a (drives back into another (1, 2)).
-                    2 => vec![ln(0.001), ln(0.997), ln(0.001), ln(0.001)],
+                    2 => vec![self.low, self.high, self.low, self.low],
                     // From eot: absorbing.
-                    _ => vec![ln(0.001), ln(0.001), ln(0.001), ln(0.997)],
+                    _ => vec![self.low, self.low, self.low, self.high],
                 })
             }
             fn vocab_size(&self) -> usize {
@@ -938,7 +992,9 @@ mod tests {
         let mut cfg = BeamSearchConfig::new(2, 6);
         cfg.length_normalization = 0.0;
         cfg.n_best = 1;
-        let baseline = beam_search(&mut BigramRepeatScorer, &[0], 3, &cfg).unwrap();
+        let fixture = BigramRepeatScorer::new();
+        let mut baseline_scorer = fixture;
+        let baseline = beam_search(&mut baseline_scorer, &[0], 3, &cfg).unwrap();
         let baseline_tokens = &baseline[0].tokens;
         let baseline_bigram_count = baseline_tokens
             .windows(2)
@@ -957,7 +1013,8 @@ mod tests {
         cfg.length_normalization = 0.0;
         cfg.n_best = 1;
         cfg.no_repeat_ngram_size = 2;
-        let blocked = beam_search(&mut BigramRepeatScorer, &[0], 3, &cfg).unwrap();
+        let mut blocked_scorer = fixture;
+        let blocked = beam_search(&mut blocked_scorer, &[0], 3, &cfg).unwrap();
         let blocked_tokens = &blocked[0].tokens;
         let blocked_bigram_count = blocked_tokens
             .windows(2)
@@ -1019,11 +1076,11 @@ mod tests {
         let mut cfg = BeamSearchConfig::new(3, 8);
         cfg.n_best = 3;
 
-        let mut plain = scorer();
+        let (mut plain, spy_inner) = scorer_pair();
         let want = beam_search(&mut plain, &[0], EOT, &cfg).unwrap();
 
         let mut spy = BatchSpyScorer {
-            inner: scorer(),
+            inner: spy_inner,
             max_batch: std::cell::Cell::new(0),
         };
         let got = beam_search(&mut spy, &[0], EOT, &cfg).unwrap();
@@ -1079,8 +1136,7 @@ mod tests {
         // must produce byte-for-byte the same n-best list on the same scorer.
         // Guards against a stray "if config.no_repeat_ngram_size >= 0" that
         // would flip the mask branch on for the zero case.
-        let mut s1 = scorer();
-        let mut s2 = scorer();
+        let (mut s1, mut s2) = scorer_pair();
         let mut cfg_omitted = BeamSearchConfig::new(3, 8);
         cfg_omitted.n_best = 3;
         let mut cfg_explicit_zero = cfg_omitted.clone();
@@ -1131,8 +1187,7 @@ mod tests {
         // — must produce byte-for-byte the same n-best list. Guards against
         // a stray `if config.lm_fusion.is_some()` mis-branch that would
         // take the LM path for a `None` too.
-        let mut s1 = scorer();
-        let mut s2 = scorer();
+        let (mut s1, mut s2) = scorer_pair();
         let mut cfg_omitted = BeamSearchConfig::new(3, 8);
         cfg_omitted.n_best = 3;
         let mut cfg_explicit_none = cfg_omitted.clone();
@@ -1164,8 +1219,7 @@ mod tests {
             weight: 0.0,
         });
 
-        let mut s1 = scorer();
-        let mut s2 = scorer();
+        let (mut s1, mut s2) = scorer_pair();
         let a = beam_search(&mut s1, &[0], EOT, &cfg_none).unwrap();
         let b = beam_search(&mut s2, &[0], EOT, &cfg_weight_zero).unwrap();
         assert_eq!(a.len(), b.len(), "n-best length mismatch");
@@ -1201,7 +1255,14 @@ mod tests {
         // `top_k(1)` picks only the acoustic winner, so LM never sees the
         // second-place token as a candidate. width >= 2 is required to
         // demonstrate reranking, matching how a real caller wires the LM.
-        let baseline = beam_search(&mut scorer(), &[0], EOT, &BeamSearchConfig::new(2, 8)).unwrap();
+        let (mut baseline_scorer, mut biased_scorer) = scorer_pair();
+        let baseline = beam_search(
+            &mut baseline_scorer,
+            &[0],
+            EOT,
+            &BeamSearchConfig::new(2, 8),
+        )
+        .unwrap();
         assert_eq!(
             baseline[0].tokens,
             vec![0u32, 1, 3],
@@ -1217,7 +1278,7 @@ mod tests {
             lm: &boost,
             weight: 1.0,
         });
-        let biased = beam_search(&mut scorer(), &[0], EOT, &cfg).unwrap();
+        let biased = beam_search(&mut biased_scorer, &[0], EOT, &cfg).unwrap();
         assert!(
             biased[0].tokens.contains(&2u32),
             "LM boost on token 2 must rerank the top-1 hypothesis to contain it, got {:?}",
@@ -1270,7 +1331,8 @@ mod tests {
         // the default 1.0 needlessly muddies the trace).
         cfg.length_normalization = 0.0;
 
-        let baseline = beam_search(&mut scorer(), &[0], EOT, &cfg).unwrap();
+        let (mut baseline_scorer, mut lm_scorer) = scorer_pair();
+        let baseline = beam_search(&mut baseline_scorer, &[0], EOT, &cfg).unwrap();
         let baseline_tokens: Vec<Vec<u32>> = baseline.iter().map(|h| h.tokens.clone()).collect();
         assert!(
             baseline_tokens.contains(&vec![0u32, 2, 3]),
@@ -1287,7 +1349,7 @@ mod tests {
             lm: &boost,
             weight: 1.0,
         });
-        let with_lm = beam_search(&mut scorer(), &[0], EOT, &cfg_lm).unwrap();
+        let with_lm = beam_search(&mut lm_scorer, &[0], EOT, &cfg_lm).unwrap();
         let with_lm_tokens: Vec<Vec<u32>> = with_lm.iter().map(|h| h.tokens.clone()).collect();
         assert!(
             !with_lm_tokens.contains(&vec![0u32, 2, 3]),
