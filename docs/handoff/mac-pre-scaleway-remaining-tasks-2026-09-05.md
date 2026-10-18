@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 six-stage execution:** the [new exact-baseline readback](mac-goal6-execution-2026-10-18.md)
+> starts at clean main `7d910a9c`. A fresh public-JSON/README-only retrieval
+> is byte-identical to the retained 194-row TSV: 136 code/artifact-full,
+> 43 partial, 14 no-binder and one non-artifact. These are not Apple passes.
+> Six PRs remain open; #259 is closed without merge. Canary local source
+> review was refused and a bounded remote static path is only being prepared;
+> #198's official California endpoints still return 403. No approval, model
+> execution, row promotion, paid worker or Scaleway result is added here.
+
 > **2026-10-17 current routing:** use the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
 > at baseline main `5f1dfc1e`. Seven PRs remain open; #259 has green ordinary
 > CI but is Draft pending actual patched upstream compilation/API verification.

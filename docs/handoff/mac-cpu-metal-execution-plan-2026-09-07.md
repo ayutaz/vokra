@@ -1,5 +1,15 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 active six-stage objective:** [execution and acceptance matrix](mac-goal6-execution-2026-10-18.md)
+> preserve the complete PR → inventory → non-Apple → approved real-weight
+> CPU → final packet/Scaleway → result/public-audit sequence. Baseline is
+> clean `7d910a9c`; six PRs remain open and the fresh metadata-only retrieval
+> reproduces 194 rows / 136 code-artifact-full / 58 non-full. Local Canary
+> inspection refusal and California 403s are retained, not bypassed. The
+> published CPU-only RC does not close model/owner/Apple requirements. No
+> paid worker, new real-weight result, owner decision or Scaleway run is
+> inferred from the initial readback. The frozen owner packet stays intact.
+
 > **2026-10-17 current execution order:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
 > supersede older pending-PR snapshots only. Main baseline is `5f1dfc1e`;
 > original stages 1–2 are accepted. Resolve existing PR scope/source gates

@@ -1,5 +1,12 @@
 # Vokra documentation
 
+**2026-10-18 all-model continuation:** the [six-stage execution readback](handoff/mac-goal6-execution-2026-10-18.md)
+records the new full objective at clean main `7d910a9c`: six open PRs,
+fresh metadata-only confirmation of 194 rows / 136 code-artifact-full /
+58 non-full, explicit source/legal holds, and Scaleway-last acceptance
+conditions. This is separate from the published CPU-only RC below; no
+model/owner/Apple completion is inferred from an inventory or source audit.
+
 **2026-10-18 published RC:** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
 is GitHub release `416018534`, published from exact source/tag
 `d84d311e98d0abb2987b5c4e96157ae8f2068e1a` with `draft=false` and
