@@ -540,3 +540,56 @@ Consequently no entire helper subset, replacement environment, official
 reference, license/native closure or PR #152 acceptance follows from the
 read-only review. Do not sever its blocked contracts merely to simplify
 integration; all retained responsibilities still need actual closure.
+
+## Config-bound Kyutai replay: source-test lint identified and corrected
+
+The manager reviewed the private config-binding correction and independently
+completed both full offline harnesses: leaf and controller. The leaf now
+materializes the existing exact-HEAD `clippy.toml` / `rustfmt.toml`, checks
+their hashes before Cargo and after the stages, and records both snapshots.
+Negative tests reject missing/tampered inputs, actual mock-stage config drift,
+missing receipt config fields and altered after-hashes. Syntax and shellcheck
+pass. No compiler downgrade, lint allowance or repository config change is
+used. Frozen controller/leaf SHA-256 values for this attempt are respectively
+`cad913199ab3ad0eb8755dc346f8f804f3338f6828aecd3ed4ba1be3617e469a`
+and `cd38f757ef7aff1c762bb46d5db848118a5b0e34316e677e2ab96aa35d2cb187`.
+
+Disposable `56493358` then ran unchanged source `ee2fb0d7` at the same fresh
+offer/price and USD 0.20/hour / thirty-minute limits. The original
+[receipt](kyutai-observation-config-fixed-2026-10-18/receipt.json) is
+2,548 bytes, SHA-256
+`358f09d8b262af3d0402db74ef4dd89fadf191c71a552ca0edb9d4d3faa8aa01`.
+All six recovered native byte streams in the lossless
+[artifact envelope](kyutai-observation-config-fixed-2026-10-18/native-artifacts.json)
+and [recovery index](kyutai-observation-config-fixed-2026-10-18/recovery.tsv)
+match their recorded byte counts and hashes after independent verification.
+Both config snapshots match the canonical hashes. The old BERT/CPU
+newer-API lint errors are gone, confirming the prior harness diagnosis.
+
+The overall batch still fails Clippy, exit 101: its actual 3,666-byte log
+identifies three `drop_non_drop` errors in the new observer tests at original
+PCM source lines 1084, 1135 and 1277. The fmt / three observer / one cache
+test stages succeed; they do not override this overall FAIL. The controller
+destroyed `56493358` and its saved data, and an independent individual read
+confirms `instances: null`. No real model/reference/Apple result is produced.
+
+The Luna correction changes only those three test borrow lifetimes to lexical
+scopes, removing explicit `drop(observer_cell)`. Manager's whitespace-insensitive
+diff review verifies unchanged callback order, control push/finish, every
+assertion and reset boundary. Formatting and diff hygiene pass. Corrected PCM
+source SHA-256 is
+`804e5fd681503c9392498735070bfdaed6367348c403b1d7715a476f554e266f`;
+streaming-LM source and all runtime/config/dependency/numerical policies are
+unchanged. This reviewed source correction needs a new committed source packet
+and fresh exact-source remote verification before code push/acceptance.
+
+The deeper #191 comparison also confirms that its old 72,000-sample/ceil
+public contract and removal of the private DSM padding plan must not replace
+current main. The latest Candle library/API success is not the separate,
+unmerged rich-cache observer candidate's compilation or a full PCM writer.
+Native session logits/KV observation, a synchronized upstream full-PCM writer,
+hash-bound independent consumer and approved real-weight CPU evidence remain
+required before final Apple packets. A separate private runtime-observer patch
+is under review, not applied or accepted; no public API or reference identity
+is silently substituted. All 194 public rows and the full six-stage objective
+remain in scope.

@@ -1055,33 +1055,34 @@ mod tests {
             .unwrap();
         let mut control = PcmSessionControl::new(&contract, cap).unwrap();
         let mut observer = RecordingObserver::default();
-        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
-        control
-            .push_observed(
-                contract,
-                &vec![7.0; hop + 37],
-                &observer_cell,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .unwrap();
-        assert_eq!(control.schedule.frames, 14);
-        control
-            .push_observed(
-                contract,
-                &vec![11.0; hop],
-                &observer_cell,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .unwrap();
-        drop(observer_cell);
+        {
+            let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+            control
+                .push_observed(
+                    contract,
+                    &vec![7.0; hop + 37],
+                    &observer_cell,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .unwrap();
+            assert_eq!(control.schedule.frames, 14);
+            control
+                .push_observed(
+                    contract,
+                    &vec![11.0; hop],
+                    &observer_cell,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .unwrap();
+        }
 
         assert!(matches!(
             observer.events.first(),
@@ -1120,19 +1121,20 @@ mod tests {
             assert!(matches!(pair[1], ObservedEvent::Lm { .. }));
         }
 
-        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
-        control
-            .finish_observed(
-                contract,
-                &observer_cell,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .unwrap();
-        drop(observer_cell);
+        {
+            let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+            control
+                .finish_observed(
+                    contract,
+                    &observer_cell,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .unwrap();
+        }
         assert!(control.finished);
         assert_eq!(observer.events.len(), control.schedule.frames * 2);
         assert!(observer.events.len() > 2);
@@ -1207,7 +1209,6 @@ mod tests {
         let mut normal = PcmSessionControl::new(&contract, cap).unwrap();
         let mut observed = PcmSessionControl::new(&contract, cap).unwrap();
         let mut observer = RecordingObserver::default();
-        let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
         let encode = |frame: &[f32], codes: &mut [u32]| {
             codes.fill(frame[0] as u32);
             Ok(())
@@ -1215,66 +1216,68 @@ mod tests {
         let step =
             |previous: Option<u32>, codes: &[u32]| synthetic_token(contract, previous, codes);
 
-        normal
-            .push(contract, &vec![7.0; hop + 37], encode, step)
-            .expect("normal push");
-        observed
-            .push_observed(
-                contract,
-                &vec![7.0; hop + 37],
-                &observer_cell,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .expect("observed push");
-        normal
-            .push(
-                contract,
-                &vec![11.0; hop],
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .expect("normal split push");
-        observed
-            .push_observed(
-                contract,
-                &vec![11.0; hop],
-                &observer_cell,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .expect("observed split push");
-        normal
-            .finish(
-                contract,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .expect("normal finish");
-        observed
-            .finish_observed(
-                contract,
-                &observer_cell,
-                |frame, codes| {
-                    codes.fill(frame[0] as u32);
-                    Ok(())
-                },
-                |previous, codes| synthetic_token(contract, previous, codes),
-            )
-            .expect("observed finish");
-        drop(observer_cell);
+        {
+            let observer_cell = RefCell::new(&mut observer as &mut dyn PcmObserver);
+            normal
+                .push(contract, &vec![7.0; hop + 37], encode, step)
+                .expect("normal push");
+            observed
+                .push_observed(
+                    contract,
+                    &vec![7.0; hop + 37],
+                    &observer_cell,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .expect("observed push");
+            normal
+                .push(
+                    contract,
+                    &vec![11.0; hop],
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .expect("normal split push");
+            observed
+                .push_observed(
+                    contract,
+                    &vec![11.0; hop],
+                    &observer_cell,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .expect("observed split push");
+            normal
+                .finish(
+                    contract,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .expect("normal finish");
+            observed
+                .finish_observed(
+                    contract,
+                    &observer_cell,
+                    |frame, codes| {
+                        codes.fill(frame[0] as u32);
+                        Ok(())
+                    },
+                    |previous, codes| synthetic_token(contract, previous, codes),
+                )
+                .expect("observed finish");
+        }
 
         assert_eq!(normal.schedule, observed.schedule);
         assert_eq!(normal.raw_text_tokens, observed.raw_text_tokens);
