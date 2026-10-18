@@ -1,5 +1,11 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 actual synthetic runtime readback:** [27 PCM / five LM tests](mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
+> pass at `155be525`; one signature-helper Clippy lint keeps the whole batch
+> unaccepted. The reviewed further test-only fix requires new remote proof.
+> Original streams are retained; `56502593` and data are destroyed with
+> independent absence. All 194 rows and non-Apple/Apple obligations remain.
+
 > **2026-10-18 runtime source verification:** the [actual compiler failure](mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
 > is retained with complete original streams; owned `56501022` is destroyed
 > and independently absent. The reviewed signature-only fix remains unrun

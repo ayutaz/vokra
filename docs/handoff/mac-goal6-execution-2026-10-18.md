@@ -1,5 +1,10 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **Latest actual-session checkpoint:** [32 tests pass, strict lint remains](#actual-session-tests-pass-and-signature-lint-correction)
+> at `155be525`. Original streams are retained; owned `56502593` and data
+> are destroyed and independently absent. The further signature-only fix
+> still needs an actual exact-source run before push. No model row advances.
+
 > **Latest actual-session verification:** the [first runtime-observer run](#actual-session-compiler-failure-and-minimal-correction)
 > fails at exact `7f2c0bc9` on two signature-probe lifetime errors, not a
 > numerical assertion. Original native evidence is retained and owned worker
@@ -861,3 +866,44 @@ Formatting and diff hygiene pass; actual revised compilation/tests/Clippy
 remain NOT_RUN until a new clean source packet is verified remotely.
 Independent full-PCM reference, real-weight CPU, owner/legal, final packet,
 Apple CPU/Metal/no-fallback and public reconciliation remain open.
+
+## Actual-session tests pass and signature lint correction
+
+The first revised-source attempt stops at offer preflight because machine
+`17786` returns no current quote. It reaches no baseline/create/SSH stage
+and creates no instance. A new read-only market observation identifies
+machine `31844` at USD 0.09074074074074073/hour including 200 GB, with the
+same fee, capacity, bandwidth, ownership and thirty-minute lifecycle gates.
+
+Disposable `56502593` then actually verifies exact clean
+`155be525c356430c360b3fb4c16dff2685fc96a0`. Fmt succeeds, all 27 PCM tests
+pass in 6.17 seconds, and all five streaming-LM tests pass in 0.02 seconds;
+both have zero failures and zero ignored tests. The native PCM observations,
+chunking/reset equivalence and callback-error recovery therefore have actual
+synthesized execution evidence, not independent full-PCM or real-weight parity.
+
+Strict Clippy exits 101 on one `extra_unused_lifetimes` diagnostic: the
+generic signature helper names its lifetime only inside body-local types,
+not in its function signature. This is not another E0308 compiler failure
+or a failed numerical assertion. The canonical dependency MSRV diagnostic
+also remains visible; no config, warning policy or assertion is altered.
+
+The [lossless native envelope](kyutai-runtime-observation-lint-failure-2026-10-18.json)
+retains the original 2,541-byte failure receipt, SHA-256
+`89bbd6477706244c8220673eba195b879770a3d28de5c0a6b89b09c19d7a769a`,
+all four command streams, CPU and Rust setup records, and recovery ledger.
+Manager independently checks every original length/hash, actual 27/5
+summaries, unchanged source/config hashes and `[0,0]` checkout dirty counts.
+Controller cleanup destroys this exact worker/data and reads individual
+absence. Independent safe-wrapper individual/account reads confirm the ID
+absent and zero account instances. Separate network volumes are not audited.
+
+The next reviewed change adds a zero-sized `PhantomData` argument to the
+same helper, binding the engine lifetime in its signature while preserving
+both method-pointer checks and requiring no model construction. Only this
+test changes; no lint allow, assertion removal or production change occurs.
+New PCM SHA-256 is
+`be8544416fc4c8ee19f32bdbee33d3e7439e014ef40ca1d7ede731bc127f8a57`.
+Its remote Rust/test/Clippy verdict is still NOT_RUN. Preserve the original
+failed heads and require the entire new fixed-source batch, not merely the
+last lint command, before push. All six-stage and 194-row duties remain.

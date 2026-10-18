@@ -1,5 +1,11 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 synthesized runtime checkpoint:** [32 actual tests](mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
+> pass at `155be525`, followed by one strict signature-helper lifetime lint.
+> Original evidence is retained and worker/data `56502593` are independently
+> absent. Bind the minimal further test correction to a fresh source packet
+> and verify the whole batch before push; no model/owner/Apple promotion.
+
 > **2026-10-18 next actual verification:** the [runtime-observer compiler result](mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
 > preserves exact `7f2c0bc9`'s two signature-test lifetime errors and original
 > native streams. Worker `56501022` and its data are destroyed and absence

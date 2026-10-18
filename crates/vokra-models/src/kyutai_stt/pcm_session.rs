@@ -724,7 +724,9 @@ mod runtime_observer_signature_tests {
 
     #[test]
     fn runtime_observer_seam_is_typechecked_without_model_construction() {
-        fn assert_session_methods<'engine>() {
+        fn assert_session_methods<'engine>(
+            _: std::marker::PhantomData<&'engine KyutaiSttPcmEngine>,
+        ) {
             let _push: fn(
                 &mut KyutaiSttPcmSession<'engine>,
                 &[f32],
@@ -735,7 +737,7 @@ mod runtime_observer_signature_tests {
                 &mut dyn PcmRuntimeObserver,
             ) -> Result<()> = KyutaiSttPcmSession::<'engine>::finish_with_runtime_observer;
         }
-        assert_session_methods();
+        assert_session_methods(std::marker::PhantomData);
         fn assert_observer<T: PcmRuntimeObserver>() {}
         assert_observer::<SignatureProbe>();
     }

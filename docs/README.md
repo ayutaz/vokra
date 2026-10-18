@@ -1,5 +1,10 @@
 # Vokra documentation
 
+**2026-10-18 synthesized-session result:** [27 PCM and five streaming-LM tests](handoff/mac-goal6-execution-2026-10-18.md#actual-session-tests-pass-and-signature-lint-correction)
+pass at `155be525`; strict Clippy identifies one signature-helper lifetime
+lint. Original streams and cleanup are recorded. The minimal further
+test-only correction is unrun, and independent/real-weight/Apple gates remain.
+
 **2026-10-18 actual-session compiler checkpoint:** the [Kyutai runtime-observer run](handoff/mac-goal6-execution-2026-10-18.md#actual-session-compiler-failure-and-minimal-correction)
 finds two test-signature lifetime errors at `7f2c0bc9`. Original logs are
 retained, the owned worker/data are destroyed, and a minimal test-only
