@@ -1,5 +1,16 @@
 # Vokra documentation
 
+**2026-10-18 PR #268 accepted / current remaining plan:** [complete fresh CI and normal merge](handoff/mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
+close the synthesized-session source-PR boundary at main `8ae9566e`:
+81 successful checks, five justified skips, sixteen required pairs and
+thirteen successful workflows. Five Draft PR responsibilities remain.
+The [current hold and execution order](handoff/mac-goal6-execution-2026-10-18.md#remaining-six-stage-order-after-pr-268)
+keep independent reference, dependency/owner, real-weight CPU, final packet
+and Scaleway-last Apple validation open for all 194 rows. The
+[OWSM primary-source supplement](handoff/owsm-primary-license-readback-2026-10-18.md)
+does not supply the missing license grant or permit execution. Older
+pending-source notes below retain their dated scope.
+
 **2026-10-18 synthesized-session verification accepted:** [fixed-source VAST result](handoff/mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
 at `59a0afda` passes fmt, all 27 PCM / five streaming-LM tests and strict
 Clippy. Original success and earlier failure streams are retained; the owned

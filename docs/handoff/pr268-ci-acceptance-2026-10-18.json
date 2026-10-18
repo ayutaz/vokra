@@ -1,0 +1,953 @@
+{
+  "schema": "vokra.source-pr-acceptance.v1",
+  "observed_at_utc": "2026-10-18 06:08:19 UTC",
+  "scope": "PR 268 source and synthesized-session observation only",
+  "repository": "ayutaz/vokra",
+  "pr": 268,
+  "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+  "base": "5b688666ee26bf66ae1e75dd011d49d45168dc70",
+  "merged_at_utc": "2026-10-18T06:03:33Z",
+  "merge_commit": "8ae9566e25753b361be5703d46bcdad967f7cefb",
+  "merge_method": "normal squash with expected-head guard; no force, admin override, CI waiver or protection change",
+  "checks": {
+    "total": 86,
+    "success": 81,
+    "skipped_count": 5,
+    "skipped": [
+      {
+        "id": 117597861284,
+        "name": "parity (${{ matrix.arch }})",
+        "reason": "NeMo real-checkpoint opt-in disabled; admission gate 117597841827 explicitly logs clean skip, not a model pass"
+      },
+      {
+        "id": 117597843375,
+        "name": "Whisper base WASM e2e (opt-in — HF download)",
+        "reason": "HF/model-fetch opt-in or monthly-only"
+      },
+      {
+        "id": 117597843199,
+        "name": "address-sanitizer",
+        "reason": "schedule/workflow-dispatch-only"
+      },
+      {
+        "id": 117597842890,
+        "name": "miri",
+        "reason": "schedule/workflow-dispatch-only"
+      },
+      {
+        "id": 117597842801,
+        "name": "gitleaks full history",
+        "reason": "schedule/workflow-dispatch-only"
+      }
+    ],
+    "failure": 0,
+    "nonterminal": 0,
+    "required_context_application_pairs": [
+      {
+        "context": "build (ubuntu-latest)",
+        "app_id": 15368,
+        "check_id": 117597842612,
+        "conclusion": "success"
+      },
+      {
+        "context": "build (macos-latest)",
+        "app_id": 15368,
+        "check_id": 117597842585,
+        "conclusion": "success"
+      },
+      {
+        "context": "build (windows-latest)",
+        "app_id": 15368,
+        "check_id": 117597842515,
+        "conclusion": "success"
+      },
+      {
+        "context": "test (ubuntu-latest)",
+        "app_id": 15368,
+        "check_id": 117597842595,
+        "conclusion": "success"
+      },
+      {
+        "context": "test (macos-latest)",
+        "app_id": 15368,
+        "check_id": 117597842568,
+        "conclusion": "success"
+      },
+      {
+        "context": "test (windows-latest)",
+        "app_id": 15368,
+        "check_id": 117597842723,
+        "conclusion": "success"
+      },
+      {
+        "context": "fmt",
+        "app_id": 15368,
+        "check_id": 117597842542,
+        "conclusion": "success"
+      },
+      {
+        "context": "clippy",
+        "app_id": 15368,
+        "check_id": 117597842583,
+        "conclusion": "success"
+      },
+      {
+        "context": "parity",
+        "app_id": 15368,
+        "check_id": 117598970870,
+        "conclusion": "success"
+      },
+      {
+        "context": "license",
+        "app_id": 15368,
+        "check_id": 117597842648,
+        "conclusion": "success"
+      },
+      {
+        "context": "CodeQL",
+        "app_id": 57789,
+        "check_id": 117600467999,
+        "conclusion": "success"
+      },
+      {
+        "context": "dependency-review",
+        "app_id": 15368,
+        "check_id": 117597842071,
+        "conclusion": "success"
+      },
+      {
+        "context": "documentation-links",
+        "app_id": 15368,
+        "check_id": 117597842082,
+        "conclusion": "success"
+      },
+      {
+        "context": "workflow-security",
+        "app_id": 15368,
+        "check_id": 117597841928,
+        "conclusion": "success"
+      },
+      {
+        "context": "pins.yaml ↔ workflow sync",
+        "app_id": 15368,
+        "check_id": 117597841994,
+        "conclusion": "success"
+      },
+      {
+        "context": "gitleaks",
+        "app_id": 15368,
+        "check_id": 117597842032,
+        "conclusion": "success"
+      }
+    ],
+    "all": [
+      {
+        "id": 117600840007,
+        "name": "unity-package",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117600467999,
+        "name": "CodeQL",
+        "app_id": 57789,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117599533592,
+        "name": "assemble-and-verify",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117598970870,
+        "name": "parity",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117598950745,
+        "name": "python-wheel-build",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117598882132,
+        "name": "python-native-wheels / Verify four-wheel release set",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597906189,
+        "name": "python-native-wheels / macOS / arm64",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597906181,
+        "name": "python-native-wheels / Windows x86_64",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597906150,
+        "name": "python-native-wheels / macOS / x86_64",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597906138,
+        "name": "python-native-wheels / Linux x86_64 / manylinux 2.28",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597876937,
+        "name": "full-parity silero-vad-v5",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597861284,
+        "name": "parity (${{ matrix.arch }})",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "skipped",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597843375,
+        "name": "Whisper base WASM e2e (opt-in — HF download)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "skipped",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597843199,
+        "name": "address-sanitizer",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "skipped",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842890,
+        "name": "miri",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "skipped",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842801,
+        "name": "gitleaks full history",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "skipped",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842772,
+        "name": "python-native-wheels / Normalize version",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842723,
+        "name": "test (windows-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842648,
+        "name": "license",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842634,
+        "name": "WebGPU smoke (delegated — honest record)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842612,
+        "name": "build (ubuntu-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842595,
+        "name": "test (ubuntu-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842588,
+        "name": "excluded-workspace (vokra-cli-bench-server)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842585,
+        "name": "build (macos-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842583,
+        "name": "clippy",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842571,
+        "name": "ios-build",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842568,
+        "name": "test (macos-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842560,
+        "name": "parity-matrix (0)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842552,
+        "name": "excluded-workspace (vokra-android)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842542,
+        "name": "fmt",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842515,
+        "name": "build (windows-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842508,
+        "name": "parity-matrix (1)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842466,
+        "name": "excluded-workspace (vokra-server-bench)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842458,
+        "name": "cargo-semver-checks",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842445,
+        "name": "excluded-workspace (vokra-piper-g2p)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842443,
+        "name": "excluded-workspace (vokra-misaki-g2p)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842435,
+        "name": "codeql-rust",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842424,
+        "name": "wasm 2-artifact build + Node kernel parity + npm dry-run",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842422,
+        "name": "server-compat (windows-latest, x86_64-pc-windows-msvc, false)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842411,
+        "name": "python-parity-oracles",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842408,
+        "name": "shell-self-tests",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842396,
+        "name": "server-compat (ubuntu-latest, x86_64-unknown-linux-musl, true)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842392,
+        "name": "fuzz-gguf_parse",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842381,
+        "name": "capi-smoke",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842374,
+        "name": "rustdoc (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842372,
+        "name": "python-license-audit",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842369,
+        "name": "cargo-hack-each-feature",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842365,
+        "name": "apple-silicon-worker-contracts",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842364,
+        "name": "fuzz-json_parse",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842359,
+        "name": "cargo-audit (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842348,
+        "name": "abi-surface (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842347,
+        "name": "agent-quality",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842344,
+        "name": "server-compat (macos-latest, aarch64-apple-darwin, false)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842339,
+        "name": "fa-v3-confinement (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842332,
+        "name": "riscv-cross-build",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842316,
+        "name": "build-target-vulkan-only",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842315,
+        "name": "server-deployment",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842312,
+        "name": "desktop-producers / build-desktop-native (windows-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842307,
+        "name": "coverage (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842289,
+        "name": "cpu-isa-server-tier (ubuntu-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842286,
+        "name": "doc-examples",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842282,
+        "name": "unity-capi-lints",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842278,
+        "name": "gpu-backends (macos-latest, metal)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842273,
+        "name": "gpu-backends (ubuntu-latest, cuda)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842267,
+        "name": "typos (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842265,
+        "name": "msrv",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842262,
+        "name": "hf-mac-coverage-unit",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842261,
+        "name": "build-windows-arm64",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842260,
+        "name": "gpu-backends (macos-latest, coreml)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842254,
+        "name": "cpu-isa-server-tier (macos-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842251,
+        "name": "fuzz-safetensors_parse",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842249,
+        "name": "catalog-audit",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842239,
+        "name": "doctests (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842229,
+        "name": "desktop-producers / build-desktop-native (macos-latest)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842218,
+        "name": "desktop-producers / build-desktop-linux",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842207,
+        "name": "gpu-backends (ubuntu-latest, qnn)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842206,
+        "name": "repo-hygiene",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842082,
+        "name": "documentation-links",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842071,
+        "name": "dependency-review",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842051,
+        "name": "hf-mac-coverage (advisory)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842047,
+        "name": "bench-regression",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842039,
+        "name": "full-parity-plan",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597842032,
+        "name": "gitleaks",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597841994,
+        "name": "pins.yaml ↔ workflow sync",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597841928,
+        "name": "workflow-security",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      },
+      {
+        "id": 117597841827,
+        "name": "gate (checkpoint sourcing opt-in)",
+        "app_id": 15368,
+        "status": "completed",
+        "conclusion": "success",
+        "head": "32e3376a0d6143e18d43b6a14b93d018a840182a"
+      }
+    ]
+  },
+  "workflows": [
+    {
+      "id": 39101262823,
+      "name": "parity-nemo-asr-real",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262812,
+      "name": "secret-scan",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262830,
+      "name": "CI Security",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262821,
+      "name": "pins-sync-check",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262860,
+      "name": "Rust Advanced Quality",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262863,
+      "name": "nightly-full-parity",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262853,
+      "name": "CI Quality",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262911,
+      "name": "web-wasm",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262898,
+      "name": "Desktop release completeness",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262843,
+      "name": "Coverage",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262890,
+      "name": "CI",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262817,
+      "name": "CI Platform",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    },
+    {
+      "id": 39101262820,
+      "name": "CodeQL",
+      "head": "32e3376a0d6143e18d43b6a14b93d018a840182a",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1
+    }
+  ],
+  "native_evidence": "kyutai-runtime-observation-pass-2026-10-18.json",
+  "native_verified_head": "59a0afda1b6b4bbe6d158c54bccb1add841691b2",
+  "source_unchanged_between_native_and_pr_head": true,
+  "native_owned_worker": 56503887,
+  "cleanup": "Owned instance and saved data destroyed; individual and account instance APIs independently confirmed absence at the recorded checkpoint. Not a network-volume audit or perpetual account-wide guarantee.",
+  "limits": [
+    "Not independent full-PCM parity",
+    "Not real-weight CPU parity",
+    "Not Apple CPU/Metal/no-fallback completion",
+    "Not owner/legal approval or model-row promotion",
+    "Not model, Space, registry or X publication authority",
+    "These are exact PR-head checks, not merge-commit CI"
+  ]
+}

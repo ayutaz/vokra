@@ -1,5 +1,16 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 current acceptance and next order:** [PR #268 is normally merged](mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
+> at main `8ae9566e` after complete fresh exact-head CI. This supersedes
+> source-push/PR-pending notes below only for that synthesized-session batch.
+> Follow the [remaining six-stage order](mac-goal6-execution-2026-10-18.md#remaining-six-stage-order-after-pr-268):
+> reconcile five Draft duties and formal source-read holds; close independent
+> full-PCM/reference and row-specific dependency/license/owner prerequisites;
+> then approved no-upload real-weight VAST CPU, final clean HEAD/fresh
+> packets, Scaleway Apple CPU/Metal/no-fallback, result PRs and cleanup.
+> Do not replace missing independent evidence with more synthetic tests or
+> repeat paid compute to resolve missing rights. All 194 rows remain in scope.
+
 > **2026-10-18 fixed-source acceptance:** [actual-session four-stage PASS](mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
 > at `59a0afda` includes 27 PCM / five LM tests and strict Clippy. Original
 > streams are independently verified and owned `56503887`/data are destroyed.

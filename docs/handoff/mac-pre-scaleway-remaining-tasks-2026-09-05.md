@@ -1,5 +1,15 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-18 PR #268 accepted:** [complete fresh CI and normal merge](mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
+> place the synthesized-session source batch on main `8ae9566e` after 81
+> successful checks / five justified skips, sixteen required pairs and
+> thirteen successful workflows. Five Draft PR responsibilities remain.
+> [Remaining order and read holds](mac-goal6-execution-2026-10-18.md#remaining-six-stage-order-after-pr-268)
+> retain independent full PCM, dependency/owner, actual real-weight CPU,
+> final clean HEAD/packet and Scaleway-last Apple gates. The OWSM source
+> supplement supplies no license grant. All 194 rows and the dated 136/58
+> code/artifact classification remain, without owner or model promotion.
+
 > **2026-10-18 fixed-source synthetic PASS:** [all four actual stages](mac-goal6-execution-2026-10-18.md#actual-session-fixed-source-four-stage-pass)
 > pass at `59a0afda`, including 27 PCM / five LM tests and strict Clippy.
 > Original native evidence is verified; owned `56503887`/data are destroyed
