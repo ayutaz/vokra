@@ -92,7 +92,7 @@ redact_stream() {
   # Keep the key and JSON punctuation intact. The JSON value expression also
   # accepts escaped characters (including an escaped quote), while the exact
   # key list avoids redacting near-matches such as `tokenizer`.
-  local credential_keys='(api_key|API_KEY|apikey|APIKEY|api-key|API-KEY|container_api_key|CONTAINER_API_KEY|access_token|ACCESS_TOKEN|auth_token|AUTH_TOKEN|client_secret|CLIENT_SECRET|hf_token|HF_TOKEN|jupyter_token|JUPYTER_TOKEN|instance_api_key|INSTANCE_API_KEY|token|TOKEN|secret|SECRET|password|PASSWORD|docker_login_pass|DOCKER_LOGIN_PASS|image_login_pass|IMAGE_LOGIN_PASS)'
+  local credential_keys='(api_key|API_KEY|apikey|APIKEY|api-key|API-KEY|container_api_key|CONTAINER_API_KEY|access_token|ACCESS_TOKEN|auth_token|AUTH_TOKEN|client_secret|CLIENT_SECRET|hf_token|HF_TOKEN|jupyter_token|JUPYTER_TOKEN|instance_api_key|INSTANCE_API_KEY|private_key|PRIVATE_KEY|ssh_private_key|SSH_PRIVATE_KEY|token|TOKEN|secret|SECRET|password|PASSWORD|docker_login_pass|DOCKER_LOGIN_PASS|image_login_pass|IMAGE_LOGIN_PASS)'
   local json_pattern="s/(\"${credential_keys}\"[[:space:]]*:[[:space:]]*\")([^\"\\\\]|\\\\.)*(\")/\\1[REDACTED]\\4/g"
   local python_dict_pattern="s/('${credential_keys}'[[:space:]]*:[[:space:]]*')([^'\\\\]|\\\\.)*(')/\\1[REDACTED]\\4/g"
   local python_field_pattern="s/((^|[[:space:],{])${credential_keys}[[:space:]]*:[[:space:]]*')([^'\\\\]|\\\\.)*(')/\\1[REDACTED]\\5/g"

@@ -1,5 +1,32 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-18 next acceptance step:** the [corrected Kyutai source batch](mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
+> now passes all four stages at `c69395d5`, with original small evidence
+> recovered and the worker/data destroyed. Record the proof, push the reviewed
+> source, reconcile main `39dd2b00`, and require fresh exact-head PR CI before
+> normal merge. Then continue existing Draft responsibilities, all-row
+> source/owner/reference closure, approved real-weight CPU, final clean
+> HEAD/packet and only then Scaleway CPU/Metal/no-fallback. No full PCM,
+> real-weight, Apple or publication completion follows from synthetic tests.
+
+> **2026-10-18 subsequent execution checkpoint:** [PR acceptance and native diagnostic](mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
+> record main `39dd2b00` after #258's normal fresh-CI merge; five Draft PR
+> responsibilities remain. Correct the Kyutai private checkout's omitted
+> canonical MSRV config, then obtain whole-batch verification without changing
+> runtime code or lint policy to mask the harness difference. The diagnostic
+> worker/data were destroyed. Keep the full six stages, all 194 rows, exact
+> owner/source/reference duties and Scaleway-last conditions intact.
+
+> **2026-10-18 active six-stage objective:** [execution and acceptance matrix](mac-goal6-execution-2026-10-18.md)
+> preserve the complete PR → inventory → non-Apple → approved real-weight
+> CPU → final packet/Scaleway → result/public-audit sequence. Baseline is
+> clean `7d910a9c`; six PRs remain open and the fresh metadata-only retrieval
+> reproduces 194 rows / 136 code-artifact-full / 58 non-full. Local Canary
+> inspection refusal and California 403s are retained, not bypassed. The
+> published CPU-only RC does not close model/owner/Apple requirements. No
+> paid worker, new real-weight result, owner decision or Scaleway run is
+> inferred from the initial readback. The frozen owner packet stays intact.
+
 > **2026-10-17 current execution order:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
 > supersede older pending-PR snapshots only. Main baseline is `5f1dfc1e`;
 > original stages 1–2 are accepted. Resolve existing PR scope/source gates

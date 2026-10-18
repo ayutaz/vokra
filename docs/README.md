@@ -1,5 +1,27 @@
 # Vokra documentation
 
+**2026-10-18 corrected Kyutai source verification:** the [exact-source PASS](handoff/mac-goal6-execution-2026-10-18.md#corrected-kyutai-source-four-stage-pass)
+at `c69395d5` supersedes the earlier pending compiler checkpoint below:
+fmt, three PCM-control tests, one KV-view test and strict Clippy pass on
+VAST. Original native logs and receipt are retained; the worker/data were
+destroyed. Source PR acceptance, independent real-weight CPU and final
+Apple CPU/Metal/no-fallback remain open; no catalog row is promoted.
+
+**2026-10-18 subsequent PR/diagnostic checkpoint:** [#258 acceptance and Kyutai native evidence](handoff/mac-goal6-execution-2026-10-18.md#pr-258-accepted-after-complete-fresh-ci)
+record normal merge to main `39dd2b00` after complete fresh CI. Five Draft
+PR responsibilities remain. The model-free Kyutai replay recovered four
+synthetic test successes and an overall Clippy failure; its sparse checkout
+omitted the existing MSRV config. The worker/data were destroyed. Corrected
+whole-batch validation, real-weight CPU and final Apple gates remain open.
+The initial snapshots below retain their dated scope.
+
+**2026-10-18 all-model continuation:** the [six-stage execution readback](handoff/mac-goal6-execution-2026-10-18.md)
+records the new full objective at clean main `7d910a9c`: six open PRs,
+fresh metadata-only confirmation of 194 rows / 136 code-artifact-full /
+58 non-full, explicit source/legal holds, and Scaleway-last acceptance
+conditions. This is separate from the published CPU-only RC below; no
+model/owner/Apple completion is inferred from an inventory or source audit.
+
 **2026-10-18 published RC:** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
 is GitHub release `416018534`, published from exact source/tag
 `d84d311e98d0abb2987b5c4e96157ae8f2068e1a` with `draft=false` and

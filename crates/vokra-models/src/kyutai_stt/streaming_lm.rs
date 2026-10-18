@@ -154,6 +154,24 @@ impl<'a> KyutaiSttStreamingLm<'a> {
             .map(|cache| cache.positions.as_slice())
     }
 
+    /// Returns read-only KV storage for one layer in physical cache order.
+    ///
+    /// This exposes no ownership or mutation capability.  A reference
+    /// consumer must interpret `positions` before comparing the flattened
+    /// key/value rows; the existing ring eviction and reset semantics remain
+    /// unchanged.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn layer_cache_view(&self, layer: usize) -> Option<(&[usize], &[f32], &[f32])> {
+        self.layers.get(layer).map(|cache| {
+            (
+                cache.positions.as_slice(),
+                cache.keys.as_slice(),
+                cache.values.as_slice(),
+            )
+        })
+    }
+
     /// Executes one audio/text frame.
     ///
     /// `previous_text_token` is the token sampled from the preceding output;
@@ -1110,6 +1128,37 @@ mod tests {
             next_b.logits(),
             "current audio must not be shifted"
         );
+    }
+
+    #[test]
+    fn layer_cache_view_tracks_geometry_and_reset_without_mutation() {
+        let (asr, config) = fixture();
+        let mut stream = asr.streaming_lm(BackendKind::Cpu).expect("stream");
+        assert!(stream.layer_cache_view(config.backbone.n_layer).is_none());
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert!(positions.is_empty());
+        assert!(keys.is_empty());
+        assert!(values.is_empty());
+
+        stream
+            .step_frame(None, &vec![0; config.n_q])
+            .expect("first frame");
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert_eq!(
+            positions,
+            stream.layer_cache_positions(0).expect("positions")
+        );
+        assert_eq!(positions, &[0]);
+        assert_eq!(keys.len(), config.backbone.d_model);
+        assert_eq!(values.len(), config.backbone.d_model);
+        assert!(keys.iter().all(|value| value.is_finite()));
+        assert!(values.iter().all(|value| value.is_finite()));
+
+        stream.reset();
+        let (positions, keys, values) = stream.layer_cache_view(0).expect("layer");
+        assert!(positions.is_empty());
+        assert!(keys.is_empty());
+        assert!(values.is_empty());
     }
 
     #[test]
