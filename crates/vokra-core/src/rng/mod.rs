@@ -261,24 +261,67 @@ mod tests {
 
     #[test]
     fn gaussian_reuses_the_spare_on_alternate_calls() {
-        // Two Gaussian draws consume exactly one uniform pair (cos then the
-        // cached sin), so a fresh generator's 3rd draw begins a new pair. Verify
-        // the wrapper's stream equals the hand-rolled Box–Muller over the same
-        // splitmix64 uniforms (the exact piper-plus construction).
-        let mut g = GaussianSplitMix64::new(0x5EED_1234_ABCD_0007);
-        let got: Vec<f32> = (0..4).map(|_| g.next_gaussian()).collect();
+        let seed = 0x5EED_1234_ABCD_0007;
+        let mut g = GaussianSplitMix64::new(seed);
+        let first = g.next_gaussian();
+        assert!(first.is_finite());
+        let cached = g.spare.expect("first draw must cache the paired deviate");
+        assert!(cached.is_finite());
 
-        let mut u = SplitMix64::new(0x5EED_1234_ABCD_0007);
-        let mut expect = Vec::new();
-        for _ in 0..2 {
-            let u1 = u.next_unit_f32();
-            let u2 = u.next_unit_f32();
-            let r = (-2.0 * u1.ln()).sqrt();
-            let theta = 2.0 * std::f32::consts::PI * u2;
-            expect.push(r * theta.cos());
-            expect.push(r * theta.sin());
+        // The first Box–Muller pair consumes exactly two uniforms. This checks
+        // the state transition without duplicating any transcendental calls.
+        let mut after_pair = SplitMix64::new(seed);
+        let _ = after_pair.next_unit_f32();
+        let _ = after_pair.next_unit_f32();
+        assert_eq!(g.rng.state, after_pair.state);
+
+        // The second draw must return the cached bits and leave the uniform
+        // source untouched; the spare is consumed rather than recomputed.
+        let second = g.next_gaussian();
+        assert_eq!(second.to_bits(), cached.to_bits());
+        assert_eq!(g.rng.state, after_pair.state);
+        assert!(g.spare.is_none());
+
+        // A third draw starts the next pair and installs a fresh spare.
+        let third = g.next_gaussian();
+        assert!(third.is_finite());
+        let mut after_two_pairs = after_pair;
+        let _ = after_two_pairs.next_unit_f32();
+        let _ = after_two_pairs.next_unit_f32();
+        assert_eq!(g.rng.state, after_two_pairs.state);
+        assert!(g.spare.is_some());
+    }
+
+    #[test]
+    fn gaussian_box_muller_quadrants_preserve_cosine_and_sine_signs() {
+        // These seeds place u2 well away from quadrant boundaries. The sign
+        // classification is derived from the independent uniform stream, so
+        // it checks the cosine-first / sine-second mapping without recomputing
+        // ln, sqrt, sin, or cos and without claiming amplitude parity.
+        let cases = [
+            // seed, u2 range, first (cos) sign, second (cached sin) sign
+            (7u64, 0.0f32, 0.2, true, true),
+            (0x5EED_1234_ABCD_0007, 0.3, 0.45, false, true),
+            (0x3333_3333_3333_3333, 0.55, 0.7, false, false),
+            (0x0123_4567_89AB_CDEF, 0.8, 0.95, true, false),
+        ];
+
+        for (seed, u2_min, u2_max, cos_positive, sin_positive) in cases {
+            let mut uniforms = SplitMix64::new(seed);
+            let _u1 = uniforms.next_unit_f32();
+            let u2 = uniforms.next_unit_f32();
+            assert!(
+                (u2_min..u2_max).contains(&u2),
+                "seed {seed:#x} produced u2={u2}, outside [{u2_min}, {u2_max})"
+            );
+
+            let mut gaussian = GaussianSplitMix64::new(seed);
+            let first = gaussian.next_gaussian();
+            let second = gaussian.next_gaussian();
+            assert!(first.is_finite() && second.is_finite());
+            assert_eq!(first.is_sign_positive(), cos_positive, "seed {seed:#x}");
+            assert_eq!(second.is_sign_positive(), sin_positive, "seed {seed:#x}");
         }
-        assert_eq!(got, expect);
     }
 
     #[test]
