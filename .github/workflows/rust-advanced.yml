@@ -105,6 +105,209 @@ jobs:
           cargo +nightly --version
           cargo +nightly test --locked --no-fail-fast -p vokra-core --tests -- --nocapture --test-threads=1
           cargo +nightly test --locked --no-fail-fast -p vokra-math --tests -- --nocapture --test-threads=1
+      - name: Run math unit tests with exact default/no-extra partition
+        # Miri's f32 transcendental precision is not guaranteed under its
+        # default extra-rounding mode. Keep the five std-reference oracles in
+        # a narrowly scoped no-extra leg, while every other math unit test
+        # remains a normal default-rounding gate. Test names come from the
+        # live --list inventory and are always passed with --exact; no
+        # substring filters or partial-match skips are permitted.
+        run: |
+          set -euo pipefail
+
+          run_math_partition() (
+            local route_name="$1"
+            local isolation_flag="$2"
+            local inventory_dir
+            local list_stdout
+            local list_stderr
+            local inventory
+            inventory_dir="$(mktemp -d)"
+            list_stdout="${inventory_dir}/list.stdout"
+            list_stderr="${inventory_dir}/list.stderr"
+            inventory="${inventory_dir}/inventory"
+            trap 'rm -rf "${inventory_dir}"' EXIT
+
+            local -a no_extra_names=(
+              "tests::exp_matches_std_densely_over_the_whole_domain"
+              "tests::tanh_matches_std_densely_and_is_odd_saturating"
+              "tests::sin_matches_std_densely_across_ten_periods_and_is_odd"
+              "tests::cos_matches_std_densely_across_ten_periods_and_is_even"
+              "tests::log_matches_std_across_forty_decades"
+            )
+            if [[ "${#no_extra_names[@]}" -ne 5 ]]; then
+              echo "no-extra math target list must contain exactly five names" >&2
+              return 1
+            fi
+            local -A no_extra_seen=()
+            local required_name
+            for required_name in "${no_extra_names[@]}"; do
+              if [[ "${no_extra_seen["${required_name}"]+present}" == present ]]; then
+                echo "duplicate no-extra math target: ${required_name}" >&2
+                return 1
+              fi
+              no_extra_seen["${required_name}"]=1
+            done
+
+            is_no_extra_name() {
+              local candidate="$1"
+              local required
+              for required in "${no_extra_names[@]}"; do
+                if [[ "${candidate}" == "${required}" ]]; then
+                  return 0
+                fi
+              done
+              return 1
+            }
+
+            echo "::group::Inventory math tests (${route_name})"
+            if ! MIRIFLAGS="${isolation_flag} -Zmiri-seed=0" \
+              cargo +nightly miri test --locked -p vokra-math --lib -- --list \
+              >"${list_stdout}" 2>"${list_stderr}"; then
+              cat "${list_stderr}" >&2
+              echo "math --list failed for ${route_name}" >&2
+              return 1
+            fi
+            if ! awk '
+              BEGIN { test_count = 0; summary_count = 0; summary_tests = -1; bad = 0 }
+              /^[^[:space:]].*: test$/ {
+                name = $0
+                sub(/: test$/, "", name)
+                if (name == "" || seen[name]++) {
+                  bad = 1
+                }
+                print name
+                test_count++
+                next
+              }
+              /^[0-9]+ tests?, [0-9]+ benchmarks?$/ {
+                summary_count++
+                split($0, fields, " ")
+                summary_tests = fields[1] + 0
+                next
+              }
+              /^[[:space:]]*$/ { next }
+              { bad = 1 }
+              END {
+                if (bad || summary_count != 1 || test_count == 0 || summary_tests != test_count) {
+                  exit 1
+                }
+              }
+            ' "${list_stdout}" >"${inventory}"; then
+              cat "${list_stdout}" >&2
+              echo "invalid, empty, duplicate, or incomplete math test inventory for ${route_name}" >&2
+              return 1
+            fi
+            echo "Inventory: $(wc -l <"${inventory}") exact math tests"
+            echo "::endgroup::"
+
+            local -a default_names=()
+            local -A inventory_seen=()
+            local test_name
+            while IFS= read -r test_name; do
+              inventory_seen["${test_name}"]=1
+              if ! is_no_extra_name "${test_name}"; then
+                default_names+=("${test_name}")
+              fi
+            done <"${inventory}"
+            for required_name in "${no_extra_names[@]}"; do
+              if [[ "${inventory_seen["${required_name}"]+present}" != present ]]; then
+                echo "required exact math test missing: ${required_name}" >&2
+                return 1
+              fi
+            done
+            if [[ "$(( ${#default_names[@]} + ${#no_extra_names[@]} ))" -ne "$(wc -l <"${inventory}")" ]]; then
+              echo "math inventory partition is incomplete or overlapping" >&2
+              return 1
+            fi
+
+            local -a pass_default_names=()
+            local -a pass_no_extra_names=()
+            local -A pass_default_seen=()
+            local -A pass_no_extra_seen=()
+            run_exact_math_test() {
+              local rounding_label="$1"
+              local rounding_flag="$2"
+              local seed="$3"
+              local test_name="$4"
+              local log_file
+              local rc
+              log_file="${inventory_dir}/${rounding_label}-${seed}-${RANDOM}.log"
+              echo "::group::Miri ${route_name} ${rounding_label} seed ${seed} ${test_name}"
+              if MIRIFLAGS="${isolation_flag} ${rounding_flag} -Zmiri-seed=${seed}" \
+                cargo +nightly miri test --locked -p vokra-math --lib \
+                --no-fail-fast -- --exact "${test_name}" --nocapture --test-threads=1 \
+                >"${log_file}" 2>&1; then
+                rc=0
+              else
+                rc=$?
+              fi
+              cat "${log_file}"
+              if [[ "${rc}" -ne 0 ]] || ! awk '
+                BEGIN { summaries = 0; good = 0 }
+                /^test result: / {
+                  summaries++
+                  if ($0 ~ /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;/) {
+                    good++
+                  }
+                }
+                END { if (summaries != 1 || good != 1) exit 1 }
+              ' "${log_file}"; then
+                echo "math exact test did not produce one passing, non-ignored result: ${test_name}" >&2
+                echo "::endgroup::"
+                return 1
+              fi
+              if [[ "${rounding_label}" == "default-rounding" ]]; then
+                if [[ "${pass_default_seen["${test_name}"]+present}" == present ]]; then
+                  echo "duplicate default PASS record: ${test_name}" >&2
+                  return 1
+                fi
+                pass_default_seen["${test_name}"]=1
+                pass_default_names+=("${test_name}")
+              else
+                if [[ "${pass_no_extra_seen["${test_name}"]+present}" == present ]]; then
+                  echo "duplicate no-extra PASS record: ${test_name}" >&2
+                  return 1
+                fi
+                pass_no_extra_seen["${test_name}"]=1
+                pass_no_extra_names+=("${test_name}")
+              fi
+              echo "::endgroup::"
+            }
+
+            for miri_seed in 0 1 2 3; do
+              pass_default_names=()
+              pass_no_extra_names=()
+              pass_default_seen=()
+              pass_no_extra_seen=()
+              for test_name in "${default_names[@]}"; do
+                run_exact_math_test "default-rounding" "" "${miri_seed}" "${test_name}"
+              done
+              for test_name in "${no_extra_names[@]}"; do
+                run_exact_math_test "no-extra-rounding" "-Zmiri-no-extra-rounding-error" "${miri_seed}" "${test_name}"
+              done
+              if [[ "$(( ${#pass_default_names[@]} + ${#pass_no_extra_names[@]} ))" -ne "$(wc -l <"${inventory}")" ]]; then
+                echo "math PASS record union does not cover inventory exactly for seed ${miri_seed}" >&2
+                return 1
+              fi
+              while IFS= read -r test_name; do
+                if is_no_extra_name "${test_name}"; then
+                  if [[ "${pass_no_extra_seen["${test_name}"]+present}" != present ]] || \
+                    [[ "${pass_default_seen["${test_name}"]+present}" == present ]]; then
+                    echo "math PASS record partition mismatch for no-extra target: ${test_name}" >&2
+                    return 1
+                  fi
+                elif [[ "${pass_default_seen["${test_name}"]+present}" != present ]] || \
+                  [[ "${pass_no_extra_seen["${test_name}"]+present}" == present ]]; then
+                  echo "math PASS record partition mismatch for default target: ${test_name}" >&2
+                  return 1
+                fi
+              done <"${inventory}"
+            done
+          )
+
+          run_math_partition "host-io" "-Zmiri-disable-isolation"
+          run_math_partition "isolated" ""
       - name: Run non-oracle core and math tests with default Miri rounding
         # Miri's many-seeds mode launches interpreter instances in parallel,
         # while host-I/O fixtures use PID+tag paths. Run each seed sequentially
@@ -170,7 +373,7 @@ jobs:
           for miri_seed in 0 1 2 3; do
             echo "Miri default-rounding seed ${miri_seed}"
             MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-seed=${miri_seed}" \
-              cargo +nightly miri test --locked -p vokra-core -p vokra-math --lib -- --nocapture --test-threads=1
+              cargo +nightly miri test --locked -p vokra-core --lib -- --nocapture --test-threads=1
             while IFS=$'\t' read -r target_package test_target; do
               if [[ "${target_package}" == "vokra-core" && "${oracle_targets}" == *" ${test_target} "* ]]; then
                 continue
@@ -210,7 +413,6 @@ jobs:
           cargo +nightly miri test --locked -p vokra-core 'gguf::reader::' -- --nocapture --test-threads=1
           cargo +nightly miri test --locked -p vokra-core 'gguf::quant::' -- --nocapture --test-threads=1
           cargo +nightly miri test --locked -p vokra-core 'quant::' -- --nocapture --test-threads=1
-          cargo +nightly miri test --locked -p vokra-math -- --nocapture --test-threads=1
 
   miri-rng-diagnostic:
     name: miri-rng-diagnostic
