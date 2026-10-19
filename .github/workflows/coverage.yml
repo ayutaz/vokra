@@ -84,7 +84,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-llvm-cov
       - name: Verify root Cargo.lock unchanged after tool install

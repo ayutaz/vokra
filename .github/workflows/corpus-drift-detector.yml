@@ -73,7 +73,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Install probe deps (isolated venv; does NOT touch root Cargo.lock)
         # Must run BEFORE the self-test step: pins_probe.py imports PyYAML
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload verdicts artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: pins-verdicts
           path: /tmp/pins-verdicts.jsonl

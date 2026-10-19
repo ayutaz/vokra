@@ -357,7 +357,7 @@ jobs:
       # 全体を貼れない)。
       - name: Upload parity log (failure triage)
         if: always() && steps.gate.outputs.should_run == 'true' && steps.gguf.outputs.should_test == 'true' && steps.parity.outputs.log_path != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: nightly-full-parity-${{ matrix.leg }}-log
           path: ${{ steps.parity.outputs.log_path }}
