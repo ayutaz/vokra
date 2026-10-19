@@ -12,6 +12,13 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+### Fixed
+
+- Construct KV-cache binary16 scales from exact IEEE-754 exponent bits rather
+  than an approximate power function, preserving exact half-to-single decoding.
+- Apply the exact beam-search length-normalization identities for exponents
+  zero and one without an unnecessary approximate power call.
+
 ## [0.4.0-rc.1]
 
 ### Preview scope
