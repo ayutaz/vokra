@@ -135,13 +135,10 @@ fn decode_f16(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// `2.0_f32.powi(n)` computed without `std` — `f32::powi` lives in `std`, not
-/// `core`, so the no_std subset (M5-03-T05) cannot call it. Every `n` this is
-/// reached with in [`f16_to_f32`] — `-24` (the subnormal scale) and
-/// `exp - 15 ∈ [-14, 15]` (the normal `f16` exponents) — is an exactly-
-/// representable normal power of two, so assembling it directly in the IEEE-754
-/// exponent field is **bit-identical** to `2.0_f32.powi(n)` (which, for base 2,
-/// is likewise exact). Not a general `powi`: valid only for the normal range.
+/// Exact f32 power-of-two construction for the exponents used by
+/// [`f16_to_f32`]. Every reached exponent — `-24` for the subnormal scale and
+/// `exp - 15 ∈ [-14, 15]` for normal binary16 values — is a normal, exactly
+/// representable f32 power. This is not a general power function.
 #[inline]
 fn exp2i(n: i32) -> f32 {
     debug_assert!(
@@ -208,9 +205,44 @@ mod tests {
         assert_eq!(f16_to_f32(0xC000), -2.0);
         assert_eq!(f16_to_f32(0x0000), 0.0);
         assert_eq!(f16_to_f32(0x3800), 0.5);
-        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24)); // smallest subnormal
+        assert_eq!(
+            f16_to_f32(0x0001).to_bits(),
+            0x3380_0000,
+            "smallest positive binary16 subnormal"
+        );
         assert!(f16_to_f32(0x7C00).is_infinite());
         assert!(f16_to_f32(0x7E00).is_nan());
+    }
+
+    #[test]
+    fn f16_to_f32_ieee_boundaries_are_exact() {
+        // Independent raw IEEE-754 f32 oracles for representative binary16
+        // boundaries. NaN payloads remain intentionally classification-only.
+        let cases = [
+            (0x0000, 0x0000_0000),
+            (0x8000, 0x8000_0000),
+            (0x0001, 0x3380_0000),
+            (0x8001, 0xB380_0000),
+            (0x03FF, 0x387F_C000),
+            (0x83FF, 0xB87F_C000),
+            (0x0400, 0x3880_0000),
+            (0x8400, 0xB880_0000),
+            (0x3800, 0x3F00_0000),
+            (0x3C00, 0x3F80_0000),
+            (0x4000, 0x4000_0000),
+            (0xC000, 0xC000_0000),
+            (0x7BFF, 0x477F_E000),
+            (0xFBFF, 0xC77F_E000),
+            (0x7C00, 0x7F80_0000),
+            (0xFC00, 0xFF80_0000),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                f16_to_f32(input).to_bits(),
+                expected,
+                "binary16 0x{input:04x}"
+            );
+        }
     }
 
     #[test]
