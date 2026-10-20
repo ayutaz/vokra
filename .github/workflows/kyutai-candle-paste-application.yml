@@ -9,16 +9,54 @@ on:
       - 'tools/parity/kyutai_candle_reference/collect_metadata.py'
       - 'tools/parity/kyutai_candle_reference/pin_remediation_diagnostic.py'
       - 'tools/parity/kyutai_candle_reference/prepare_paste_overlay.py'
+      - 'tools/parity/kyutai_candle_reference/current_artifact.py'
+      - 'tools/parity/kyutai_candle_reference/test_current_artifact.py'
       - 'docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json'
       - 'docs/handoff/kyutai-candle-pastey-source-2026-10-15.json'
       - 'docs/handoff/kyutai-candle-candidate-2026-10-15.lock'
   workflow_dispatch:
+    inputs:
+      caller:
+        description: 'Bounded producer caller identity'
+        required: false
+        default: standalone
+        type: choice
+        options:
+          - standalone
+  workflow_call:
+    inputs:
+      caller:
+        description: 'Bounded producer caller identity'
+        required: true
+        type: string
+    outputs:
+      primary_artifact_id:
+        value: ${{ jobs.source-only-application.outputs.primary_artifact_id }}
+      primary_artifact_name:
+        value: ${{ jobs.source-only-application.outputs.primary_artifact_name }}
+      primary_artifact_digest:
+        value: ${{ jobs.source-only-application.outputs.primary_artifact_digest }}
+      envelope_artifact_id:
+        value: ${{ jobs.source-only-application.outputs.envelope_artifact_id }}
+      envelope_artifact_name:
+        value: ${{ jobs.source-only-application.outputs.envelope_artifact_name }}
+      envelope_artifact_digest:
+        value: ${{ jobs.source-only-application.outputs.envelope_artifact_digest }}
+      source_head:
+        value: ${{ jobs.source-only-application.outputs.source_head }}
+      workflow_sha:
+        value: ${{ jobs.source-only-application.outputs.workflow_sha }}
+      run_ref:
+        value: ${{ jobs.source-only-application.outputs.run_ref }}
+      caller:
+        value: ${{ jobs.source-only-application.outputs.caller }}
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: kyutai-candle-paste-application-${{ github.event.pull_request.number || github.ref }}
+  group: kyutai-candle-paste-application-${{ inputs.caller || 'standalone' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -26,10 +64,22 @@ jobs:
     name: source-only paste overlay metadata application (not build/parity)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      primary_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      primary_artifact_name: ${{ steps.context.outputs.primary_artifact_name }}
+      primary_artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      envelope_artifact_id: ${{ steps.envelope.outputs.artifact-id }}
+      envelope_artifact_name: ${{ steps.context.outputs.envelope_artifact_name }}
+      envelope_artifact_digest: ${{ steps.envelope.outputs.artifact-digest }}
+      source_head: ${{ steps.context.outputs.source_head }}
+      workflow_sha: ${{ steps.context.outputs.workflow_sha }}
+      run_ref: ${{ steps.context.outputs.run_ref }}
+      caller: ${{ steps.context.outputs.caller }}
     steps:
       - name: Checkout exact source-only inputs
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
@@ -39,9 +89,36 @@ jobs:
             tools/parity/kyutai_candle_reference/collect_metadata.py
             tools/parity/kyutai_candle_reference/pin_remediation_diagnostic.py
             tools/parity/kyutai_candle_reference/prepare_paste_overlay.py
+            tools/parity/kyutai_candle_reference/current_artifact.py
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
             docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json
             docs/handoff/kyutai-candle-pastey-source-2026-10-15.json
             docs/handoff/kyutai-candle-candidate-2026-10-15.lock
+
+      - name: Bind source head and workflow definition
+        id: context
+        shell: bash
+        env:
+          EXPECTED_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          EXPECTED_RUN_REF: ${{ github.ref }}
+          CALLER: ${{ inputs.caller || 'standalone' }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_SOURCE_HEAD" = "$(git rev-parse HEAD)"
+          printf '%s\n' "$EXPECTED_SOURCE_HEAD" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s\n' "$EXPECTED_WORKFLOW_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test -n "$EXPECTED_RUN_REF"
+          case "$CALLER" in
+            applied-advisory|cpu-compatibility|standalone) ;;
+            *) exit 1 ;;
+          esac
+          echo "source_head=$EXPECTED_SOURCE_HEAD" >> "$GITHUB_OUTPUT"
+          echo "workflow_sha=$EXPECTED_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+          echo "run_ref=$EXPECTED_RUN_REF" >> "$GITHUB_OUTPUT"
+          echo "caller=$CALLER" >> "$GITHUB_OUTPUT"
+          echo "primary_artifact_name=kyutai-candle-paste-application-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "envelope_artifact_name=kyutai-candle-paste-current-envelope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${CALLER}" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
@@ -64,6 +141,8 @@ jobs:
           uv run --no-project --offline --python 3.12 python -m unittest discover \
             -s tools/parity/kyutai_candle_reference \
             -p 'test_apply_paste_overlay.py' -v
+          uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
 
       - name: Install pinned Rust toolchain for metadata only
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
@@ -112,10 +191,11 @@ jobs:
           test "$total" -le 16777216
 
       - name: Upload bounded diagnostic evidence
-        if: always()
+        id: upload
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: kyutai-candle-paste-application-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.context.outputs.primary_artifact_name }}
           if-no-files-found: error
           retention-days: 1
           path: |
@@ -127,3 +207,48 @@ jobs:
             ${{ runner.temp }}/candle-application-${{ github.run_id }}-${{ github.run_attempt }}/output/overlay_cpu_metadata.json
             ${{ runner.temp }}/candle-application-${{ github.run_id }}-${{ github.run_attempt }}/output/overlay_whole_metadata.json
             ${{ runner.temp }}/candle-application-${{ github.run_id }}-${{ github.run_attempt }}/output/application_receipt.json
+
+      - name: Capture authenticated current-run envelope
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_HEAD: ${{ steps.context.outputs.source_head }}
+          WORKFLOW_SHA: ${{ steps.context.outputs.workflow_sha }}
+          RUN_REF: ${{ steps.context.outputs.run_ref }}
+          CALLER: ${{ steps.context.outputs.caller }}
+          PRIMARY_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          PRIMARY_ARTIFACT_NAME: ${{ steps.context.outputs.primary_artifact_name }}
+          PRIMARY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          UV_OFFLINE: '1'
+          UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root="$RUNNER_TEMP/candle-application-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          uv run --no-project --offline --python 3.12 python \
+            tools/parity/kyutai_candle_reference/current_artifact.py \
+            --artifact-root "$run_root/output" \
+            --output "$run_root/envelope.json" \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --source-head "$SOURCE_HEAD" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --run-ref "$RUN_REF" \
+            --caller "$CALLER" \
+            --artifact-id "$PRIMARY_ARTIFACT_ID" \
+            --artifact-name "$PRIMARY_ARTIFACT_NAME" \
+            --upload-digest "$PRIMARY_ARTIFACT_DIGEST"
+
+      - name: Upload current-run evidence envelope
+        id: envelope
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.context.outputs.envelope_artifact_name }}
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ runner.temp }}/candle-application-${{ github.run_id }}-${{ github.run_attempt }}/envelope.json

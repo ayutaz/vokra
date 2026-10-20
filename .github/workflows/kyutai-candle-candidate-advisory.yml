@@ -32,7 +32,9 @@ jobs:
             .github/workflows/kyutai-candle-source-advisory.yml
             .github/workflows/kyutai-candle-applied-advisory.yml
             tools/parity/kyutai_candle_reference/audit_lock.py
+            tools/parity/kyutai_candle_reference/current_artifact.py
             tools/parity/kyutai_candle_reference/test_audit_lock.py
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
             tools/parity/kyutai_candle_reference/test_candidate_audit_lock.py
           sparse-checkout-cone-mode: false
 

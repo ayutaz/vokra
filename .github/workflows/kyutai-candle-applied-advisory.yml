@@ -7,7 +7,10 @@ on:
       - ".github/workflows/kyutai-candle-applied-advisory.yml"
       - ".github/workflows/kyutai-candle-source-advisory.yml"
       - ".github/workflows/kyutai-candle-candidate-advisory.yml"
+      - ".github/workflows/kyutai-candle-paste-application.yml"
       - "tools/parity/kyutai_candle_reference/audit_lock.py"
+      - "tools/parity/kyutai_candle_reference/current_artifact.py"
+      - "tools/parity/kyutai_candle_reference/test_current_artifact.py"
       - "tools/parity/kyutai_candle_reference/test_audit_lock.py"
       - "tools/parity/kyutai_candle_reference/test_applied_audit_lock.py"
   workflow_dispatch:
@@ -21,8 +24,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-application:
+    name: current source-only Candle producer
+    uses: ./.github/workflows/kyutai-candle-paste-application.yml
+    with:
+      caller: applied-advisory
+    permissions:
+      contents: read
+      actions: read
+
   applied-advisory:
     name: source-only Candle applied advisory evidence
+    needs: source-application
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -32,12 +45,15 @@ jobs:
       - name: Checkout bounded first-party wrapper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           sparse-checkout: |
             .github/workflows/kyutai-candle-applied-advisory.yml
             .github/workflows/kyutai-candle-source-advisory.yml
             .github/workflows/kyutai-candle-candidate-advisory.yml
             tools/parity/kyutai_candle_reference/audit_lock.py
+            tools/parity/kyutai_candle_reference/current_artifact.py
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
             tools/parity/kyutai_candle_reference/test_audit_lock.py
             tools/parity/kyutai_candle_reference/test_applied_audit_lock.py
           sparse-checkout-cone-mode: false
@@ -59,16 +75,26 @@ jobs:
           uv run --no-project --offline --python 3.12 \
             tools/parity/kyutai_candle_reference/test_audit_lock.py --self-test
           uv run --no-project --offline --python 3.12 \
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
+          uv run --no-project --offline --python 3.12 \
             tools/parity/kyutai_candle_reference/test_applied_audit_lock.py
 
-      - name: Download exact application producer artifact
+      - name: Download current-run application producer artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          artifact-ids: "11985400172"
+          artifact-ids: ${{ needs.source-application.outputs.primary_artifact_id }}
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: 38758745134
           path: ${{ runner.temp }}/vokra-candle-applied-advisory-artifact
+          digest-mismatch: error
+
+      - name: Download current-run evidence envelope
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.source-application.outputs.envelope_artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: ${{ runner.temp }}/vokra-candle-current-envelope
           digest-mismatch: error
 
       - name: Re-run applied artifact tests against downloaded evidence
@@ -76,6 +102,7 @@ jobs:
           UV_OFFLINE: "1"
           UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
           VOKRA_CANDLE_APPLIED_ARTIFACT_ROOT: ${{ runner.temp }}/vokra-candle-applied-advisory-artifact
+          VOKRA_CANDLE_CURRENT_ENVELOPE_ROOT: ${{ runner.temp }}/vokra-candle-current-envelope
         run: |
           set -euo pipefail
           uv run --no-project --offline --python 3.12 \
@@ -101,6 +128,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UV_OFFLINE: "1"
           UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+          VOKRA_CANDLE_CURRENT_RUN_ID: ${{ github.run_id }}
+          VOKRA_CANDLE_CURRENT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          VOKRA_CANDLE_CURRENT_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          VOKRA_CANDLE_CURRENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          VOKRA_CANDLE_CURRENT_RUN_REF: ${{ github.ref }}
+          VOKRA_CANDLE_CURRENT_CALLER: applied-advisory
+          VOKRA_CANDLE_PRODUCER_SOURCE_HEAD: ${{ needs.source-application.outputs.source_head }}
+          VOKRA_CANDLE_PRODUCER_WORKFLOW_SHA: ${{ needs.source-application.outputs.workflow_sha }}
+          VOKRA_CANDLE_PRODUCER_RUN_REF: ${{ needs.source-application.outputs.run_ref }}
+          VOKRA_CANDLE_PRODUCER_CALLER: ${{ needs.source-application.outputs.caller }}
+          VOKRA_CANDLE_CURRENT_ARTIFACT_ID: ${{ needs.source-application.outputs.primary_artifact_id }}
+          VOKRA_CANDLE_CURRENT_ARTIFACT_NAME: ${{ needs.source-application.outputs.primary_artifact_name }}
+          VOKRA_CANDLE_CURRENT_ARTIFACT_DIGEST: ${{ needs.source-application.outputs.primary_artifact_digest }}
+          VOKRA_CANDLE_CURRENT_ENVELOPE_ID: ${{ needs.source-application.outputs.envelope_artifact_id }}
+          VOKRA_CANDLE_CURRENT_ENVELOPE_NAME: ${{ needs.source-application.outputs.envelope_artifact_name }}
+          VOKRA_CANDLE_CURRENT_ENVELOPE_DIGEST: ${{ needs.source-application.outputs.envelope_artifact_digest }}
         run: |
           set -euo pipefail
           audit_root="$RUNNER_TEMP/vokra-candle-applied-advisory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -114,8 +157,9 @@ jobs:
           set +e
           uv run --no-project --offline --python 3.12 \
             tools/parity/kyutai_candle_reference/audit_lock.py \
-            --profile applied \
+            --profile current \
             --artifact-root "$RUNNER_TEMP/vokra-candle-applied-advisory-artifact" \
+            --current-envelope "$RUNNER_TEMP/vokra-candle-current-envelope/envelope.json" \
             --db "$GITHUB_WORKSPACE/.audit/rustsec-advisory-db" \
             --cwd "$audit_cwd" \
             --cargo-home "$cargo_home" \

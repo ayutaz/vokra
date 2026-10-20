@@ -11,12 +11,14 @@ import unittest
 from unittest import mock
 
 import audit_lock
+import current_artifact
 
 
 ACTUAL_APPLIED = Path(os.environ.get(
     "VOKRA_CANDLE_APPLIED_ARTIFACT_ROOT",
     "/private/tmp/vokra-candle-application-result-89-20261016.rzuwzN",
 ))
+CURRENT_ENVELOPE = Path(os.environ["VOKRA_CANDLE_CURRENT_ENVELOPE_ROOT"]) / "envelope.json" if os.environ.get("VOKRA_CANDLE_CURRENT_ENVELOPE_ROOT") else None
 
 
 def _report() -> dict:
@@ -129,9 +131,14 @@ class AppliedAuditProfileTests(unittest.TestCase):
     def test_authenticated_application_artifact_has_eight_members(self) -> None:
         if not ACTUAL_APPLIED.is_dir() or (ACTUAL_APPLIED / ".git").exists():
             self.skipTest("hosted application-89 artifact is not present")
-        receipt = audit_lock.validate_artifact(ACTUAL_APPLIED, profile="applied")
+        if CURRENT_ENVELOPE is not None:
+            envelope = current_artifact.validate_envelope(json.loads(CURRENT_ENVELOPE.read_text()))
+            receipt = audit_lock.validate_artifact(ACTUAL_APPLIED, profile="current", envelope=envelope)
+        else:
+            receipt = audit_lock.validate_artifact(ACTUAL_APPLIED, profile="applied")
         self.assertEqual(len(receipt["members"]), 8)
-        self.assertEqual(receipt["total_bytes"], audit_lock.APPLIED_PROFILE.extracted_bytes)
+        if CURRENT_ENVELOPE is None:
+            self.assertEqual(receipt["total_bytes"], audit_lock.APPLIED_PROFILE.extracted_bytes)
 
     def test_authenticated_application_metadata_binds_cpu_whole_and_lock(self) -> None:
         if not ACTUAL_APPLIED.is_dir():

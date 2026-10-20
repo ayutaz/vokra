@@ -25,6 +25,8 @@ from dataclasses import dataclass
 import tomllib
 from typing import Any, Callable
 
+import current_artifact
+
 PRODUCER_RUN_ID = 38690241603
 PRODUCER_ATTEMPT = 1
 PRODUCER_HEAD_SHA = "b111f377bfbfc2f8d079f10791d61befb2d3ff5d"
@@ -141,7 +143,11 @@ APPLIED_PROFILE = AuditProfile(
     "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6", 154,
     "candle_applied_final_lock", 105,
 )
-_PROFILES = {profile.name: profile for profile in (BASELINE_PROFILE, CANDIDATE_PROFILE, APPLIED_PROFILE)}
+CURRENT_PROFILE = AuditProfile(
+    "current", 0, 0, "", 0, "", 0, (), (), MAX_ARTIFACT_BYTES,
+    "final.lock", APPLIED_PROFILE.lock_sha256, 154, "candle_current_final_lock", 105,
+)
+_PROFILES = {profile.name: profile for profile in (BASELINE_PROFILE, CANDIDATE_PROFILE, APPLIED_PROFILE, CURRENT_PROFILE)}
 
 
 class AuditError(RuntimeError):
@@ -156,7 +162,7 @@ def resolve_profile(profile: str | AuditProfile | None = None) -> AuditProfile:
             return _PROFILES[profile]
         except KeyError as exc:
             raise AuditError("profile is not registered") from exc
-    if profile is BASELINE_PROFILE or profile is CANDIDATE_PROFILE or profile is APPLIED_PROFILE:
+    if profile is BASELINE_PROFILE or profile is CANDIDATE_PROFILE or profile is APPLIED_PROFILE or profile is CURRENT_PROFILE:
         return profile
     raise AuditError("custom audit profiles are not allowed")
 
@@ -389,6 +395,15 @@ class _RejectRedirect(urllib.request.HTTPRedirectHandler):
         raise AuditError("GitHub API redirects are rejected")
 
 
+def _reject_duplicate_json(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise AuditError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
 def _api_json(url: str, token: str, deadline: float) -> dict[str, Any]:
     if not url.startswith("https://api.github.com/repos/") or not token:
         raise AuditError("unexpected GitHub API request")
@@ -415,7 +430,7 @@ def _api_json(url: str, token: str, deadline: float) -> dict[str, Any]:
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
         raise AuditError(f"GitHub API request failed: {type(exc).__name__}") from exc
     try:
-        value = json.loads(bytes(raw))
+        value = json.loads(bytes(raw), object_pairs_hook=_reject_duplicate_json)
     except json.JSONDecodeError as exc:
         raise AuditError("GitHub API response is not JSON") from exc
     if not isinstance(value, dict):
@@ -423,8 +438,132 @@ def _api_json(url: str, token: str, deadline: float) -> dict[str, Any]:
     return value
 
 
-def validate_producer(*, repository: str, token: str, run_id: int | None = None, artifact_id: int | None = None, expected_head: str | None = None, api: Callable[[str, str, float], dict[str, Any]] = _api_json, deadline: float, profile: str | AuditProfile | None = None) -> dict[str, Any]:
+def _current_env_int(name: str) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise AuditError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise AuditError(f"{name} must be positive")
+    return value
+
+
+def _current_env_hex(name: str, length: int) -> str:
+    value = os.environ.get(name, "")
+    if len(value) != length or value != value.lower() or any(char not in "0123456789abcdef" for char in value):
+        raise AuditError(f"{name} must be lowercase hexadecimal")
+    return value
+
+
+def _current_artifacts(listing: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = listing.get("artifacts")
+    total = listing.get("total_count")
+    if not isinstance(artifacts, list) or type(total) is not int or total != len(artifacts) or total > 100:
+        raise AuditError("artifact API response is incomplete or malformed")
+    if any(not isinstance(item, dict) for item in artifacts):
+        raise AuditError("artifact API contains a malformed row")
+    ids = [item.get("id") for item in artifacts]
+    names = [item.get("name") for item in artifacts]
+    if any(type(value) is not int or value <= 0 for value in ids) or any(not isinstance(value, str) or not value for value in names):
+        raise AuditError("artifact API identity fields are malformed")
+    if len(set(ids)) != len(ids) or len(set(names)) != len(names):
+        raise AuditError("artifact API contains duplicate IDs or names")
+    return artifacts
+
+
+def _current_jobs(listing: dict[str, Any]) -> list[dict[str, Any]]:
+    jobs = listing.get("jobs")
+    total = listing.get("total_count")
+    if not isinstance(jobs, list) or type(total) is not int or total != len(jobs) or total > 100:
+        raise AuditError("producer job API response is incomplete or malformed")
+    if any(not isinstance(item, dict) for item in jobs):
+        raise AuditError("producer job API contains a malformed row")
+    ids = [item.get("id") for item in jobs]
+    names = [item.get("name") for item in jobs]
+    if any(type(value) is not int or value <= 0 for value in ids) or any(not isinstance(value, str) or not value for value in names):
+        raise AuditError("producer job identity fields are malformed")
+    if len(set(ids)) != len(ids) or len(set(names)) != len(names):
+        raise AuditError("producer job API contains duplicate IDs or names")
+    return jobs
+
+
+def validate_current_producer(*, repository: str, token: str, envelope: dict[str, Any], api: Callable[[str, str, float], dict[str, Any]], deadline: float) -> dict[str, Any]:
+    current_artifact.validate_envelope(envelope)
+    if repository != current_artifact.PRODUCTION_REPOSITORY or not token:
+        raise AuditError("current producer binding requires the exact production repository and token")
+    expected_run = _current_env_int("VOKRA_CANDLE_CURRENT_RUN_ID")
+    expected_attempt = _current_env_int("VOKRA_CANDLE_CURRENT_RUN_ATTEMPT")
+    expected_head = _current_env_hex("VOKRA_CANDLE_CURRENT_SOURCE_HEAD", 40)
+    expected_workflow_sha = _current_env_hex("VOKRA_CANDLE_CURRENT_WORKFLOW_SHA", 40)
+    expected_ref = os.environ.get("VOKRA_CANDLE_CURRENT_RUN_REF", "")
+    if not isinstance(expected_ref, str) or not current_artifact.REF.fullmatch(expected_ref):
+        raise AuditError("VOKRA_CANDLE_CURRENT_RUN_REF is not a supported GitHub ref")
+    producer_head = _current_env_hex("VOKRA_CANDLE_PRODUCER_SOURCE_HEAD", 40)
+    producer_workflow_sha = _current_env_hex("VOKRA_CANDLE_PRODUCER_WORKFLOW_SHA", 40)
+    producer_ref = os.environ.get("VOKRA_CANDLE_PRODUCER_RUN_REF", "")
+    producer_caller = os.environ.get("VOKRA_CANDLE_PRODUCER_CALLER", "")
+    caller = os.environ.get("VOKRA_CANDLE_CURRENT_CALLER", "")
+    if caller not in current_artifact.CALLERS or caller == "standalone":
+        raise AuditError("current producer caller is not an active registered consumer")
+    if producer_head != expected_head or producer_workflow_sha != expected_workflow_sha or producer_ref != expected_ref or producer_caller != caller:
+        raise AuditError("producer outputs do not match independent caller context")
+    expected_workflow_name = current_artifact.CALLERS[caller]
+    primary_id = _current_env_int("VOKRA_CANDLE_CURRENT_ARTIFACT_ID")
+    primary_name = os.environ.get("VOKRA_CANDLE_CURRENT_ARTIFACT_NAME", "")
+    primary_upload_digest = current_artifact.normalize_digest(os.environ.get("VOKRA_CANDLE_CURRENT_ARTIFACT_DIGEST", ""))
+    envelope_id = _current_env_int("VOKRA_CANDLE_CURRENT_ENVELOPE_ID")
+    envelope_name = os.environ.get("VOKRA_CANDLE_CURRENT_ENVELOPE_NAME", "")
+    envelope_upload_digest = current_artifact.normalize_digest(os.environ.get("VOKRA_CANDLE_CURRENT_ENVELOPE_DIGEST", ""))
+    expected_envelope_name = f"{current_artifact.ENVELOPE_ARTIFACT_PREFIX}{expected_run}-{expected_attempt}-{caller}"
+    if envelope_name != expected_envelope_name:
+        raise AuditError("current envelope output name is not bound to the caller run")
+    expected_caller_path = current_artifact.CALLER_PATHS[caller]
+    if envelope.get("run_id") != expected_run or envelope.get("run_attempt") != expected_attempt or envelope.get("source_head") != expected_head or envelope.get("workflow_sha") != expected_workflow_sha or envelope.get("run_ref") != expected_ref or envelope.get("caller") != caller or envelope.get("caller_workflow_path") != expected_caller_path:
+        raise AuditError("current evidence envelope does not bind to the caller run")
+    if envelope.get("artifact_id") != primary_id or envelope.get("artifact_name") != primary_name or envelope.get("artifact_digest") != primary_upload_digest:
+        raise AuditError("current evidence envelope does not bind to upload outputs")
+    base = f"https://api.github.com/repos/{repository}"
+    run = api(f"{base}/actions/runs/{expected_run}", token, deadline)
+    repository_binding = run.get("repository")
+    if run.get("id") != expected_run or run.get("run_attempt") != expected_attempt or run.get("head_sha") != expected_head or run.get("status") != "in_progress" or run.get("conclusion") is not None or run.get("name") != expected_workflow_name or run.get("path") != expected_caller_path or not isinstance(repository_binding, dict) or repository_binding.get("full_name") != repository:
+        raise AuditError("current run identity/status/workflow mismatch")
+    references = run.get("referenced_workflows")
+    if not isinstance(references, list):
+        raise AuditError("current run lacks reusable workflow binding")
+    matching_references = [item for item in references if isinstance(item, dict) and item.get("path") in current_artifact.referenced_workflow_paths(expected_workflow_sha)]
+    if len(matching_references) != 1 or matching_references[0].get("sha") != expected_workflow_sha or matching_references[0].get("ref") != expected_ref:
+        raise AuditError("current reusable workflow path/SHA binding mismatch")
+    jobs = _current_jobs(api(f"{base}/actions/runs/{expected_run}/attempts/{expected_attempt}/jobs?per_page=100", token, deadline))
+    matching_jobs = [item for item in jobs if item.get("name") in current_artifact.PRODUCER_JOB_API_NAMES[caller]]
+    if len(matching_jobs) != 1:
+        raise AuditError("current producer job is missing or duplicated")
+    job = matching_jobs[0]
+    if type(job.get("id")) is not int or job.get("id") <= 0 or job.get("run_id") != expected_run or job.get("run_attempt") != expected_attempt or job.get("head_sha") != expected_head or job.get("workflow_name") != expected_workflow_name or job.get("status") != "completed" or job.get("conclusion") != "success":
+        raise AuditError("current producer job identity/status mismatch")
+    artifacts = _current_artifacts(api(f"{base}/actions/runs/{expected_run}/artifacts?per_page=100", token, deadline))
+    primary_matches = [item for item in artifacts if item.get("id") == primary_id]
+    envelope_matches = [item for item in artifacts if item.get("id") == envelope_id]
+    if len(primary_matches) != 1 or len(envelope_matches) != 1:
+        raise AuditError("current producer artifact ID is missing or duplicated")
+    primary, envelope_artifact = primary_matches[0], envelope_matches[0]
+    if primary.get("name") != primary_name or primary.get("expired") is not False or primary.get("digest") is None or current_artifact.normalize_digest(primary.get("digest")) != primary_upload_digest or primary.get("size_in_bytes") != envelope.get("artifact_size") or type(primary.get("size_in_bytes")) is not int or not 0 < primary["size_in_bytes"] <= MAX_ARTIFACT_BYTES:
+        raise AuditError("current primary artifact identity/digest/size mismatch")
+    if envelope_artifact.get("name") != envelope_name or envelope_artifact.get("expired") is not False or envelope_artifact.get("digest") is None or current_artifact.normalize_digest(envelope_artifact.get("digest")) != envelope_upload_digest or type(envelope_artifact.get("size_in_bytes")) is not int or not 0 < envelope_artifact["size_in_bytes"] <= current_artifact.MAX_ENVELOPE_BYTES:
+        raise AuditError("current envelope artifact identity/digest/size mismatch")
+    for artifact in (primary, envelope_artifact):
+        workflow_run = artifact.get("workflow_run")
+        if not isinstance(workflow_run, dict) or workflow_run.get("id") != expected_run or workflow_run.get("head_sha") != expected_head or "run_attempt" in workflow_run and workflow_run.get("run_attempt") != expected_attempt:
+            raise AuditError("current artifact workflow binding mismatch")
+    return {"run_id": expected_run, "run_attempt": expected_attempt, "source_head": expected_head, "workflow_sha": expected_workflow_sha, "run_ref": expected_ref, "caller": caller, "workflow_name": expected_workflow_name, "producer_job_id": job["id"], "producer_job_name": job["name"], "primary_artifact": {"id": primary_id, "name": primary_name, "size_in_bytes": primary["size_in_bytes"], "digest": primary_upload_digest}, "envelope_artifact": {"id": envelope_id, "name": envelope_name, "size_in_bytes": envelope_artifact["size_in_bytes"], "digest": envelope_upload_digest}, "referenced_workflow": {"path": matching_references[0]["path"], "ref": expected_ref, "sha": expected_workflow_sha}}
+
+
+def validate_producer(*, repository: str, token: str, run_id: int | None = None, artifact_id: int | None = None, expected_head: str | None = None, api: Callable[[str, str, float], dict[str, Any]] = _api_json, deadline: float, profile: str | AuditProfile | None = None, current_envelope: dict[str, Any] | None = None) -> dict[str, Any]:
     selected = resolve_profile(profile)
+    if selected is CURRENT_PROFILE:
+        if current_envelope is None:
+            raise AuditError("current producer envelope is required")
+        return validate_current_producer(repository=repository, token=token, envelope=current_envelope, api=api, deadline=deadline)
     expected_run = selected.producer_run_id
     expected_artifact = selected.artifact_id
     expected_sha = selected.producer_head_sha
@@ -750,11 +889,17 @@ def _validate_applied_source_absence(db: Path, lockfile: Path, *, deadline: floa
     return {"database_commit": ADVISORY_DB_COMMIT, "database_tree": ADVISORY_DB_TREE, "registry_package_count": 137, "source_absent_package_count": 17, "source_absent_packages": checked, "coverage_scope": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER"}
 
 
-def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None) -> dict[str, Any]:
+def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None, envelope: dict[str, Any] | None = None) -> dict[str, Any]:
     selected = resolve_profile(profile)
     if selected is BASELINE_PROFILE:
         expected = EXPECTED_MEMBERS
         files = _walk_regular_files(root)
+    elif selected is CURRENT_PROFILE:
+        if envelope is None:
+            raise AuditError("current artifact envelope is required")
+        current_artifact.validate_envelope(envelope)
+        expected = {row["path"]: (row["bytes"], row["sha256"]) for row in envelope["members"]}
+        files = _walk_regular_files(root, max_bytes=MAX_ARTIFACT_BYTES, exact_bytes=sum(size for size, _digest in expected.values()))
     else:
         expected = {relative: (size, digest) for relative, size, digest in selected.expected_members}
         files = _walk_regular_files(root, max_bytes=selected.extracted_bytes, exact_bytes=selected.extracted_bytes)
@@ -771,7 +916,7 @@ def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None) 
         receipts[relative] = {"bytes": len(data), "sha256": digest}
     if selected is CANDIDATE_PROFILE:
         _validate_candidate_metadata(files)
-    elif selected is APPLIED_PROFILE:
+    elif selected is APPLIED_PROFILE or selected is CURRENT_PROFILE:
         _validate_applied_metadata(files)
     return {"members": receipts, "total_bytes": sum(item["bytes"] for item in receipts.values())}
 
@@ -862,19 +1007,32 @@ def _command_evidence(result: CommandResult) -> dict[str, Any]:
     return {"argv": list(result.argv), "returncode": result.returncode, "stdout": result.stdout.decode("utf-8", "replace"), "stdout_bytes": len(result.stdout), "stdout_sha256": _sha256(result.stdout), "stdout_truncated": result.stdout_truncated, "stderr": result.stderr.decode("utf-8", "replace"), "stderr_bytes": len(result.stderr), "stderr_sha256": _sha256(result.stderr), "stderr_truncated": result.stderr_truncated, "timed_out": result.timed_out}
 
 
-def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, auditor: str, repository: str, output: Path, deadline_seconds: float = DEFAULT_DEADLINE_SECONDS, api: Callable[[str, str, float], dict[str, Any]] = _api_json, command_runner: Callable[..., CommandResult] = run_command, verifier: Callable[..., dict[str, Any]] = verify_auditor, producer_validator: Callable[..., dict[str, Any]] = validate_producer, artifact_validator: Callable[..., dict[str, Any]] = validate_artifact, provenance: Callable[..., dict[str, Any]] = git_provenance, host_guard: Callable[[dict[str, str]], None] = _host_guard, profile: str | AuditProfile | None = None) -> int:
+def _load_current_envelope(path: Path | None) -> dict[str, Any]:
+    if path is None or path.is_symlink() or not path.is_file():
+        raise AuditError("current producer envelope file is missing or unsafe")
+    try:
+        value = json.loads(_read_bounded(path, current_artifact.MAX_ENVELOPE_BYTES), object_pairs_hook=_reject_duplicate_json)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AuditError("current producer envelope is not valid JSON") from exc
+    try:
+        return current_artifact.validate_envelope(value)
+    except current_artifact.CurrentArtifactError as exc:
+        raise AuditError(str(exc)) from exc
+
+
+def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, auditor: str, repository: str, output: Path, deadline_seconds: float = DEFAULT_DEADLINE_SECONDS, api: Callable[[str, str, float], dict[str, Any]] = _api_json, command_runner: Callable[..., CommandResult] = run_command, verifier: Callable[..., dict[str, Any]] = verify_auditor, producer_validator: Callable[..., dict[str, Any]] = validate_producer, artifact_validator: Callable[..., dict[str, Any]] = validate_artifact, provenance: Callable[..., dict[str, Any]] = git_provenance, host_guard: Callable[[dict[str, str]], None] = _host_guard, profile: str | AuditProfile | None = None, current_envelope_path: Path | None = None) -> int:
     if type(deadline_seconds) not in (int, float) or not math.isfinite(float(deadline_seconds)) or deadline_seconds <= 0 or deadline_seconds > DEFAULT_DEADLINE_SECONDS:
         raise AuditError("deadline must be finite, positive, and no greater than 480 seconds")
     selected = resolve_profile(profile)
     deadline = _now() + deadline_seconds
     if selected is BASELINE_PROFILE:
         lock_hash_field = "patched_lock_sha256"
-    elif selected is APPLIED_PROFILE:
+    elif selected is APPLIED_PROFILE or selected is CURRENT_PROFILE:
         lock_hash_field = "final_lock_sha256"
     else:
         lock_hash_field = "candidate_lock_sha256"
     evidence: dict[str, Any] = {"scope": selected.evidence_scope, "status": "ERROR", "advisory_audit": "ERROR", "approval": None, "license_review": "NOT_PERFORMED", "root_runtime_audit": "NOT_RUN", "model_execution": "NOT_AUTHORIZED", "upload": "NO_UPLOAD", "lock_records": selected.lock_dependency_count, "cpu_active_packages": selected.cpu_active_packages, lock_hash_field: selected.lock_sha256, "tool": {"expected_cargo_audit_version": CARGO_AUDIT_VERSION, "install_action_commit": INSTALL_ACTION_COMMIT, "release_commit": CARGO_AUDIT_RELEASE_COMMIT}, "advisory_database": {"commit": ADVISORY_DB_COMMIT, "tree": ADVISORY_DB_TREE, "no_fetch": True, "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT"}, "yanked_check": "NOT_CHECKED", "producer": None, "artifact": None, "audit": None}
-    if selected is APPLIED_PROFILE:
+    if selected is APPLIED_PROFILE or selected is CURRENT_PROFILE:
         evidence.update({"native_registry_package_count": 137, "parsed_lock_record_count": 154, "supplemental_path_parent_package_count": 16, "supplemental_workspace_package_count": 1, "supplemental_coverage": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER"})
     try:
         source_env = dict(os.environ)
@@ -886,16 +1044,20 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
         verified_auditor = evidence["tool"].get("binary_path")
         if not isinstance(verified_auditor, str) or not verified_auditor:
             raise AuditError("auditor verifier did not return a resolved binary path")
+        current_envelope = _load_current_envelope(current_envelope_path) if selected is CURRENT_PROFILE else None
         if selected is BASELINE_PROFILE:
             evidence["producer"] = producer_validator(repository=repository, token=token, api=api, deadline=deadline)
             evidence["artifact"] = artifact_validator(artifact_root)
+        elif selected is CURRENT_PROFILE:
+            evidence["producer"] = producer_validator(repository=repository, token=token, api=api, deadline=deadline, profile=selected, current_envelope=current_envelope)
+            evidence["artifact"] = artifact_validator(artifact_root, profile=selected, envelope=current_envelope)
         else:
             evidence["producer"] = producer_validator(repository=repository, token=token, api=api, deadline=deadline, profile=selected)
             evidence["artifact"] = artifact_validator(artifact_root, profile=selected)
         before = provenance(db, cwd=cwd, env=env, deadline=deadline, runner=command_runner)
         lockfile = artifact_root / selected.lock_relative_path
         lock_before_hash = None
-        if selected is APPLIED_PROFILE:
+        if selected is APPLIED_PROFILE or selected is CURRENT_PROFILE:
             lock_before_hash = _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES))
             if lock_before_hash != selected.lock_sha256:
                 raise AuditError("registered audit lock hash changed before cargo-audit")
@@ -903,7 +1065,7 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
         result = command_runner(build_audit_argv(verified_auditor, lockfile, db), cwd=cwd, env=env, deadline=deadline, stdout_cap=MAX_STDOUT_BYTES, stderr_cap=MAX_STDERR_BYTES)
         audit: dict[str, Any] = {"command": _command_evidence(result), "git_before": before}
         evidence["audit"] = audit
-        if selected is APPLIED_PROFILE:
+        if selected is APPLIED_PROFILE or selected is CURRENT_PROFILE:
             lock_after_command_hash = _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES))
             if lock_after_command_hash != lock_before_hash:
                 audit["classification"] = "ERROR_LOCK_MUTATED"
@@ -950,7 +1112,7 @@ def run_audit(*, artifact_root: Path, db: Path, cwd: Path, cargo_home: Path, aud
             audit.update({"classification": "ERROR_DATABASE_CHANGED", "error": {"type": "AuditError", "message": "advisory DB changed during audit"}})
             _write_json(output, evidence)
             return 2
-        if selected is APPLIED_PROFILE and _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES)) != selected.lock_sha256:
+        if (selected is APPLIED_PROFILE or selected is CURRENT_PROFILE) and _sha256(_read_bounded(lockfile, MAX_MEMBER_BYTES)) != selected.lock_sha256:
             audit.update({"classification": "ERROR_LOCK_MUTATED", "error": {"type": "AuditError", "message": "registered audit lock changed during final provenance check"}})
             _write_json(output, evidence)
             return 2
@@ -994,11 +1156,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--auditor", default="cargo-audit")
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--profile", choices=tuple(_PROFILES), default=BASELINE_PROFILE.name)
+    parser.add_argument("--current-envelope", type=Path)
     parser.add_argument("--deadline-seconds", type=float, default=DEFAULT_DEADLINE_SECONDS)
     args = parser.parse_args(argv)
     if args.deadline_seconds <= 0 or args.deadline_seconds > DEFAULT_DEADLINE_SECONDS:
         parser.error("deadline must be positive and no greater than 480 seconds")
-    return run_audit(artifact_root=args.artifact_root, db=args.db, cwd=args.cwd, cargo_home=args.cargo_home, auditor=args.auditor, repository=args.repository, output=args.output, deadline_seconds=args.deadline_seconds, profile=args.profile)
+    return run_audit(artifact_root=args.artifact_root, db=args.db, cwd=args.cwd, cargo_home=args.cargo_home, auditor=args.auditor, repository=args.repository, output=args.output, deadline_seconds=args.deadline_seconds, profile=args.profile, current_envelope_path=args.current_envelope)
 
 
 if __name__ == "__main__":
