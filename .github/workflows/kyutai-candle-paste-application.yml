@@ -113,12 +113,14 @@ jobs:
             applied-advisory|cpu-compatibility|standalone) ;;
             *) exit 1 ;;
           esac
-          echo "source_head=$EXPECTED_SOURCE_HEAD" >> "$GITHUB_OUTPUT"
-          echo "workflow_sha=$EXPECTED_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
-          echo "run_ref=$EXPECTED_RUN_REF" >> "$GITHUB_OUTPUT"
-          echo "caller=$CALLER" >> "$GITHUB_OUTPUT"
-          echo "primary_artifact_name=kyutai-candle-paste-application-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-          echo "envelope_artifact_name=kyutai-candle-paste-current-envelope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${CALLER}" >> "$GITHUB_OUTPUT"
+          {
+            echo "source_head=$EXPECTED_SOURCE_HEAD"
+            echo "workflow_sha=$EXPECTED_WORKFLOW_SHA"
+            echo "run_ref=$EXPECTED_RUN_REF"
+            echo "caller=$CALLER"
+            echo "primary_artifact_name=kyutai-candle-paste-application-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "envelope_artifact_name=kyutai-candle-paste-current-envelope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${CALLER}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
