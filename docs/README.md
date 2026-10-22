@@ -1,5 +1,16 @@
 # Vokra documentation
 
+**2026-10-22 16:13 UTC accepted source checkpoint:** [PR #283 acceptance and remaining scope](handoff/mac-cpu-metal-status-2026-10-22.md#1613-utc-continuation-pr-283-accepted-on-complete-fresh-ci)
+records main `ce36c27d`: 70 terminal checks (69 successful, one intentional
+skip), all sixteen current strict required pairs and all nine exact-head
+workflows successful. The single link-job rerun follows verified recovery
+of its original HTTP-502 page; no checker waiver is added. Local main is
+fast-forwarded. The documentation branch integrates this actual new main
+and requires its own fresh-head CI. PR #284's Pillow consumer is Torchtune,
+not the Matplotlib consumer reviewed for #282. Earlier snapshots remain dated.
+All 194 non-Apple/owner, actual-weight CPU, final-packet and Scaleway-last
+requirements remain unfinished; this is source-PR acceptance only.
+
 **2026-10-22 15:52 UTC continuation:** the [latest source/CI readback](handoff/mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
 keeps accepted main at `1366bd8d`. Fresh #283 CI rejects one historical
 GitHub job-page HTTP 502; the identical original URL subsequently returns

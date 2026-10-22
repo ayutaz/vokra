@@ -1,5 +1,12 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-22 16:13 UTC next order:** [#283 is normally accepted](mac-cpu-metal-status-2026-10-22.md#1613-utc-continuation-pr-283-accepted-on-complete-fresh-ci)
+> on main `ce36c27d` after complete exact-head CI. Refresh #286 against this
+> actual main, then reconcile #284's distinct Torchtune consumer, #278's real
+> artifact contract, #271 and every Draft/source-read responsibility. Keep
+> all 194 non-Apple/owner, authorized VAST real-weight CPU, final clean HEAD/
+> fresh packet and Scaleway-last Apple CPU/Metal/no-fallback/result gates.
+
 > **2026-10-22 15:52 UTC next action:** [new-head CI recovery](mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
 > keeps main at `1366bd8d` after normal #285 acceptance. Finish #283's
 > actual rerun and complete exact-head CI, then reconcile the other PR/source

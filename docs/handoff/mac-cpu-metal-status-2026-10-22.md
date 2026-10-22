@@ -7,6 +7,59 @@ This dated record supersedes earlier pending-main/PR routing, not historical
 measurements, owner decisions, model permissions or numerical bounds.
 All five execution requirements and all 194 public model rows remain in scope.
 
+## 16:13 UTC continuation: PR #283 accepted on complete fresh CI
+
+PR #283 is normally squash-merged at 16:11:16 UTC as accepted main
+`ce36c27d67b64b32635cf9c0edc99ec448ac197c`, from reviewed source `75b4fffb`
+and base `1366bd8d`. Before the exact-head-match merge, the complete inventory
+has **70 terminal checks: 69 success and one intentional full-history gitleaks
+skip**, all sixteen current strict required context/application pairs and all
+nine exact-head pull-request workflows completed successfully. No pending,
+failed, cancelled or timed-out result is accepted, and no admin/force/status
+mutation or protection change is used. Local main is fast-forwarded to the
+actual merge commit. Original watch 30860 terminates naturally with exit 0.
+
+The final hosted Metal job `119923007113` actually finishes successfully.
+Its native output identifies an Apple Paravirtual device (Apple5), backend
+probes/integration tests and C ABI checks. Ignored tests and unset-artifact
+early-return legs remain unmeasured; this is not final all-model Apple
+CPU/reference, Metal/reference, Metal/CPU or no-fallback evidence. The same
+source gate/test bytes match reviewed Luna commit `ff0f26fe`, and the
+original certifi delta remains identical to reviewed `ace09f0c`.
+
+The original link failure remains preserved. After the identical historical
+job-page URL independently recovers from observed HTTP 502 to HTTP 200,
+only the failed documentation job is rerun once. Its actual native report
+has 1669 total / 769 unique / 1656 successful / zero errors / 70 cached and
+the mandatory final gate passes. The zero-error scan does not exercise the
+authenticated API-recovery branch live. No URL, exclusion, security cap or
+numerical bound changes. Old pending-source observations below retain
+their own dates; they do not describe the accepted source state now.
+
+PR #286's documentation branch integrates this new main with an ordinary
+merge. Its earlier `44931f53` CI is not acceptance of the updated branch;
+review and complete new-head CI remain necessary before normal merge.
+
+A separate standard read-only review of PR #284's public lockfile proves
+that only Pillow changes among 79 package rows and top-level metadata is
+unchanged. Its sole direct Pillow consumer is **Torchtune 0.3.1**, with
+NumPy 2.0.2, Torch/TorchAudio 2.5.0 and Transformers 4.45.2 still pinned.
+The #282 NumPy/Matplotlib consumer result therefore cannot establish this
+different consumer's compatibility or clear this environment's other gates.
+No package is installed/imported and no XCodec2 model is acquired/executed.
+The separate private XCodec2 test candidate remains held and unreviewed.
+
+The read-only VAST account observation at 16:02:47 UTC verifies zero instances
+and zero storage volumes. A stale default CLI credential's HTTP 401 is not
+treated as absence; only the successful authorized existing-key inventory is
+used. No key/config change or provider mutation occurs. This is not a fresh
+Scaleway inventory or a guarantee of future account state.
+
+All 194 public rows, source-read holds, actual BF16/HiFTNet/four BigVGAN
+prerequisites, approved real-weight VAST CPU, final reviewed clean HEAD/fresh
+packets and Scaleway-last Apple/result acceptance remain unfinished. No
+owner/legal decision or publication scope is promoted by source CI.
+
 ## 15:52 UTC continuation: one recovered external job link
 
 Accepted main remains `1366bd8d`; #283 is **not merged**. Its fresh exact-head
