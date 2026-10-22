@@ -1,10 +1,12 @@
 #!/usr/bin/env -S uv run --no-project --python 3.12 python
 """Fail-closed RMVPE identity, lock, and dependency-license gate.
 
-This inspector is intentionally stdlib-only.  It runs before any VAST worker
-action which could resolve a package, clone source, or acquire a checkpoint.
-The lock digest binds every package row, dependency qualifier, and resolution
-marker; a resolved lock is evidence of reproducibility, not license approval.
+This inspector is intentionally stdlib-only. It runs before any VAST worker
+action which could install/sync/import a package, execute a model/reference,
+clone source, or acquire a checkpoint. Metadata-only lock maintenance is
+separate and does not satisfy this execution gate. The lock digest binds every
+package row, dependency qualifier, and resolution marker; a resolved lock is
+evidence of reproducibility, not license approval.
 """
 from __future__ import annotations
 
@@ -21,18 +23,29 @@ LOCK = PROJECT / "uv.lock"
 PYPI_REGISTRY = "https://pypi.org/simple"
 PYPI_EVIDENCE_PREFIX = "https://pypi.org/pypi/"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-LOCK_SHA256 = "37583dee0556529c3047741f8887141794b6a5ffb84f4fb7e668beafcd8ee1e6"
-PACKAGE_ROWS_SHA256 = "4122e4869c4eb5fd18bf1c20bc3afa4433cf48c0bc99b0af02b7e6b1d91b8a37"
+PYTORCH_CPU_WHEEL_PREFIXES = (
+    PYTORCH_CPU_INDEX + "/",
+    "https://download-r2.pytorch.org/whl/cpu/",
+)
+LOCK_SHA256 = "4b32df99126f739ef96a919f4c5404ea583c9c2911b4395661a21c357c79d635"
+PACKAGE_ROWS_SHA256 = "784e7468c3443858d9f16d46b11846d331df6de3e6846bb6b63437fc262883ff"
 RESOLUTION_MARKERS_SHA256 = "70a0c0d228b605430c8219bfc8e4ed66652a5f06d64cab841fee543266f3bffa"
-LICENSE_ROWS_SHA256 = "94c9d96039172bc799b955dd40eab3b9cb5b9f00c42a5dd464202bf71e981b70"
+LICENSE_ROWS_SHA256 = "e062eebf867187477b67d5b3c9001db9b02a14cbc1fb8df23fd6bb41656dcad6"
 PACKAGE_COUNT = 40
 
-# These are the previous RMVPE bindings.  Keeping them in the self-test makes
-# the dependency-only refresh causal: the old review receipt must reject the
-# new urllib3 lock rather than silently accepting a different graph.
+# These are the previous RMVPE bindings. Keeping them in the self-test makes
+# the refresh causal: the old review receipt must reject the current security
+# candidate rather than silently accepting a different graph.
 LEGACY_LOCK_SHA256 = "747057f4e8596d801d5d0450e6e10a33fc467ab9e9a6cf2063460d1ea019919d"
 LEGACY_PACKAGE_ROWS_SHA256 = "ecc622c63e8a487c4440cdc838f22af7b31fae783cca41f693b0f870dd9a1819"
 LEGACY_LICENSE_ROWS_SHA256 = "2afebac3c079863d28415885412c11fd2acf7e3f3b9a686e2c855455da8eedec"
+
+# Immediate pre-Torch-security candidate receipt. Keep this separate from the
+# older urllib3 refresh receipt so a new Torch lock cannot silently rebind to
+# the previous security state.
+PRE_SECURITY_LOCK_SHA256 = "37583dee0556529c3047741f8887141794b6a5ffb84f4fb7e668beafcd8ee1e6"
+PRE_SECURITY_PACKAGE_ROWS_SHA256 = "4122e4869c4eb5fd18bf1c20bc3afa4433cf48c0bc99b0af02b7e6b1d91b8a37"
+PRE_SECURITY_LICENSE_ROWS_SHA256 = "94c9d96039172bc799b955dd40eab3b9cb5b9f00c42a5dd464202bf71e981b70"
 
 UPSTREAM_REPOSITORY = "https://github.com/yxlllc/RMVPE"
 UPSTREAM_REVISION = "0aabafba18289ca938a73af0b0297686abf4922d"
@@ -113,10 +126,10 @@ LICENSE_ROWS = [
     {"name": "soxr", "version": "1.1.0", "license": "LGPL-2.1_NATIVE", "source": "https://pypi.org/pypi/soxr/1.1.0/json", "status": "BLOCKED_POLICY"},
     {"name": "sympy", "version": "1.14.0", "license": "BSD-3-Clause", "source": "https://pypi.org/pypi/sympy/1.14.0/json", "status": "UNREVIEWED"},
     {"name": "threadpoolctl", "version": "3.6.0", "license": "BSD-3-Clause", "source": "https://pypi.org/pypi/threadpoolctl/3.6.0/json", "status": "UNREVIEWED"},
-    {"name": "torch", "version": "2.7.1", "license": "BSD-3-Clause_PLUS_BUNDLED_NOTICES", "source": "https://download.pytorch.org/whl/cpu/torch-2.7.1-cp312-none-macosx_11_0_arm64.whl", "status": "BLOCKED_BUNDLED_NOTICES"},
-    {"name": "torch", "version": "2.7.1+cpu", "license": "BSD-3-Clause_PLUS_BUNDLED_NOTICES", "source": "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_BUNDLED_NOTICES"},
-    {"name": "torchaudio", "version": "2.7.1", "license": "BSD-2-Clause_PLUS_BUNDLED_NOTICES", "source": "https://download.pytorch.org/whl/cpu/torchaudio-2.7.1-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_BUNDLED_NOTICES"},
-    {"name": "torchaudio", "version": "2.7.1+cpu", "license": "BSD-2-Clause_PLUS_BUNDLED_NOTICES", "source": "https://download.pytorch.org/whl/cpu/torchaudio-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_BUNDLED_NOTICES"},
+    {"name": "torch", "version": "2.13.0", "license": "UNKNOWN_PRIMARY_LICENSE_PENDING", "source": "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl", "status": "BLOCKED_PRIMARY_LICENSE_REVIEW"},
+    {"name": "torch", "version": "2.13.0+cpu", "license": "UNKNOWN_PRIMARY_LICENSE_PENDING", "source": "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_PRIMARY_LICENSE_REVIEW"},
+    {"name": "torchaudio", "version": "2.11.0", "license": "UNKNOWN_PRIMARY_LICENSE_PENDING", "source": "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0-cp312-cp312-macosx_11_0_arm64.whl", "status": "BLOCKED_PRIMARY_LICENSE_REVIEW"},
+    {"name": "torchaudio", "version": "2.11.0+cpu", "license": "UNKNOWN_PRIMARY_LICENSE_PENDING", "source": "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", "status": "BLOCKED_PRIMARY_LICENSE_REVIEW"},
     {"name": "typing-extensions", "version": "4.16.0", "license": "PSF-2.0", "source": "https://pypi.org/pypi/typing-extensions/4.16.0/json", "status": "BLOCKED_POLICY"},
     {"name": "urllib3", "version": "2.8.0", "license": "MIT", "source": "https://pypi.org/pypi/urllib3/2.8.0/json", "status": "UNREVIEWED"},
 ]
@@ -127,7 +140,7 @@ BLOCKERS = [
     "numba@0.67.0 and llvmlite@0.49.0 are native wheels requiring separate notice review",
     "safetensors@0.8.0 is a native extension wheel requiring separate notice review",
     "numpy@2.3.5 and scipy@1.18.1 carry bundled third-party notices",
-    "official CPU torch/torchaudio wheels carry bundled notices not yet audited",
+    "official CPU torch@2.13.0/torchaudio@2.11.0 wheels have changed identities; primary license and bundled notices remain pending review",
     "MPL/Unlicense/PSF rows require owner policy clearance; no sign-off is present",
     "checkpoint and release archive byte SHA-256 remain unset until VAST-only acquisition",
 ]
@@ -219,7 +232,7 @@ def _audit_lock(
         if row["name"] == "rmvpe-parity":
             valid_source = source == "repository"
         elif row["name"] in {"torch", "torchaudio"}:
-            valid_source = source.startswith(PYTORCH_CPU_INDEX + "/")
+            valid_source = source.startswith(PYTORCH_CPU_WHEEL_PREFIXES)
         else:
             valid_source = source.startswith(PYPI_EVIDENCE_PREFIX)
         if not valid_source:
@@ -253,6 +266,17 @@ def main() -> int:
         audit_lock()
         try:
             _audit_lock(
+                lock_sha256=PRE_SECURITY_LOCK_SHA256,
+                package_rows_sha256=PRE_SECURITY_PACKAGE_ROWS_SHA256,
+                license_rows_sha256=PRE_SECURITY_LICENSE_ROWS_SHA256,
+            )
+        except ValueError as error:
+            assert str(error) == "dedicated RMVPE uv.lock is absent or identity drifted"
+        else:
+            raise AssertionError("pre-security Torch bindings unexpectedly accepted the new lock")
+
+        try:
+            _audit_lock(
                 lock_sha256=LEGACY_LOCK_SHA256,
                 package_rows_sha256=LEGACY_PACKAGE_ROWS_SHA256,
                 license_rows_sha256=LEGACY_LICENSE_ROWS_SHA256,
@@ -260,7 +284,7 @@ def main() -> int:
         except ValueError as error:
             assert str(error) == "dedicated RMVPE uv.lock is absent or identity drifted"
         else:
-            raise AssertionError("legacy RMVPE bindings unexpectedly accepted the urllib3 refresh")
+            raise AssertionError("legacy RMVPE bindings unexpectedly accepted the security candidate")
 
         wrong_rows = [dict(row) for row in LICENSE_ROWS]
         for row in wrong_rows:
@@ -277,14 +301,26 @@ def main() -> int:
         import tempfile
 
         with tempfile.TemporaryDirectory() as directory:
-            drifted = Path(directory) / "uv.lock"
-            drifted.write_bytes(LOCK.read_bytes().replace(b'version = "2.8.0"', b'version = "2.8.1"', 1))
-            try:
-                _audit_lock(lock_path=drifted)
-            except ValueError as error:
-                assert str(error) == "dedicated RMVPE uv.lock is absent or identity drifted"
-            else:
-                raise AssertionError("drifted RMVPE lock unexpectedly passed")
+            mutations = {
+                "old-torch": (b'version = "2.13.0"', b'version = "2.7.1"'),
+                "wrong-source": (b'https://download.pytorch.org/whl/cpu', b'https://pypi.org/simple'),
+                "wrong-closure": (
+                    b'{ name = "typing-extensions", marker = "sys_platform == \'darwin\'" }',
+                    b'{ name = "filelock", marker = "sys_platform == \'darwin\'" }',
+                ),
+                "urllib3-drift": (b'version = "2.8.0"', b'version = "2.8.1"'),
+            }
+            for label, (old, new) in mutations.items():
+                drifted = Path(directory) / f"{label}.uv.lock"
+                mutated = LOCK.read_bytes().replace(old, new, 1)
+                assert mutated != LOCK.read_bytes(), label
+                drifted.write_bytes(mutated)
+                try:
+                    _audit_lock(lock_path=drifted)
+                except ValueError as error:
+                    assert str(error) == "dedicated RMVPE uv.lock is absent or identity drifted", label
+                else:
+                    raise AssertionError(f"{label} RMVPE lock unexpectedly passed")
 
         assert all(len(value) == 40 for value in (UPSTREAM_REVISION,))
         assert RELEASE_ARCHIVE["bytes_sha256"] is None
