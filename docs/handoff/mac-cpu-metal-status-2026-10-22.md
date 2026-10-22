@@ -7,6 +7,137 @@ This dated record supersedes earlier pending-main/PR routing, not historical
 measurements, owner decisions, model permissions or numerical bounds.
 All five execution requirements and all 194 public model rows remain in scope.
 
+## 15:21 UTC continuation: RMVPE candidate PR and exact CI boundaries
+
+This continuation supersedes earlier pending-PR routing only. Accepted main
+remains `e6661039`; the 14:04 and 14:34 observations below are preserved,
+not rewritten as newer test results. There are now ten open PRs.
+
+### PR #283: workflow success is not protected-check acceptance
+
+All nine exact-`ace09f0c` pull-request workflows have completed successfully.
+The original Core watcher ends naturally after
+[run 39795710007](https://github.com/ayutaz/vokra/actions/runs/39795710007)
+completes at 15:01:20 UTC. However, a complete 70-check inventory still has
+66 success, one intentional opt-in/event skip and three in progress: Ubuntu
+build, Windows build and native-wheel version normalization. Direct per-check
+API reads reproduce those states; only 14 of the 16 required context/app pairs
+are complete and successful. Protection reports BLOCKED. **PR #283 is not
+merged.** Do not infer the two required build results from workflow success.
+
+The [official Actions-results incident](https://stspg.io/44w94j036yc8), started
+14:18 UTC, reports ongoing workflow/step-result processing delays in its
+14:35 update. That is consistent with the independently observed mismatch,
+not proof of its exact cause or permission to waive checks. The workflows
+were not cancelled/restarted and no branch-protection setting was changed.
+
+Root reviewed original new-head job logs: the ordinary documentation scan has
+1669 total links, 769 unique, 1656 successful, 73 cached and zero errors; the
+workflow-security job actually runs 25 gate regressions successfully. The
+authenticated API recovery branch is **not** exercised live by a zero-error
+scan. The cargo-audit output covers the root and seven isolated integration
+graphs at 1349 advisories, with only the existing Piper/server maintenance
+warnings. None of these proves model/Apple parity or Python native admission.
+
+### PR #285: independent RMVPE security candidate, execution still blocked
+
+[PR #285](https://github.com/ayutaz/vokra/pull/285) is based directly on
+`e6661039`, source head `fffa64f244ec6afef8fa402acc8de1592d0e6ce6`, with only
+the dedicated RMVPE project, lock, README and stdlib inspector changed.
+It does not include the YuE certifi or separate link-gate candidates.
+
+The actual `uv add --no-sync --no-build` metadata resolution replaces Torch
+2.7.1 with 2.13.0 and TorchAudio 2.7.1 with 2.11.0 at the existing explicit
+official CPU index. Requiring TorchAudio 2.13.0 failed because the index has
+no such version. The [official TorchAudio 2.11 release](https://github.com/pytorch/audio/releases/tag/v2.11.0)
+states compatibility with Torch 2.11 and future Torch versions; actual API/ABI
+and numerical compatibility still need independent measurement.
+
+The old Torch version is within reviewed advisory ranges, including
+[GHSA-rrmf-rvhw-rf47](https://github.com/advisories/GHSA-rrmf-rvhw-rf47) and
+[GHSA-63cw-57p8-fm3p](https://github.com/pytorch/pytorch/security/advisories/GHSA-63cw-57p8-fm3p).
+The latter is indexed globally under `pytorch`, not `torch`; a torch-only
+advisory query misses it. Updating this pin is not whole-closure clearance.
+
+The lock retains 40 rows: four platform-qualified Torch/TorchAudio rows,
+one virtual project and 35 other third-party package records. Root's parsed
+comparison proves those 35 records and top-level metadata unchanged; the
+virtual project's direct requirements/qualified edges change with the pins.
+New-version primary licenses/bundled notices remain UNKNOWN/BLOCKED. Existing
+source/checkpoint/data, native, policy, owner and `NO_UPLOAD` gates stay closed.
+
+Root independently passes the exact candidate's offline Python-3.12 self-test
+and lock consistency check. Original logical commit `8977db96` passes all five
+ordinary pre-commit gates; the separated content-identical cherry-pick is not
+represented as rerunning those hooks. The final independent production-gate
+command was refused before execution by the local-model guard: **NOT_RUN**.
+Luna's earlier expected blocked exit 2 is separately reported evidence, not a
+root rerun after the refusal. No hook edit, indirect invocation or alternate
+agent/provider execution was used to work around it.
+
+At 15:21 UTC the new-head rollup is 69 checks: 57 successful, one skipped,
+ten in progress and one queued; zero failures. Counts may grow as dependent
+jobs appear. Ten pull-request workflows exist and the original all-check
+watch remains live. Full check/workflow inventory and all required context/app
+pairs must still pass before normal protected acceptance.
+
+The original
+[RMVPE job 119906283955](https://github.com/ayutaz/vokra/actions/runs/39802374198/job/119906283955)
+records empty enable/GGUF variables, `GATE_OPEN=0` and an explicit clean skip.
+Its Rust toolchain/cache, real parity and lock-check steps are skipped.
+Therefore its green badge is **not a real-weight CPU pass**. The synthetic
+PR merge tested is `e7106423a1ce4716b787d787b092dc1af183820e`; no owner opt-in
+variable was changed. The separately reviewed native Rust audit and link/security
+checks are source evidence only; they do not clear the Python/model gates.
+
+For the source-only push, root rechecks the dated VAST report/log identity
+and actual unchanged Rust/build inputs and integration trees:
+`integrations/vokra-server`, `integrations/vokra-piper-g2p` and
+`integrations/vokra-server-bench`, against recorded head `03840e00`.
+The explicit-path comparison returns exit 0. Abbreviated integration-directory
+names must not be used as comparison evidence. This
+dated isolated-audit/input-equivalence result is not a fresh full-workspace,
+Python-environment, model or Apple result. No local deep Cargo was run.
+
+### Other PRs, source holds and cross-cutting duties
+
+PR #271's permitted workflow/configuration slice has a
+[durable partial review](https://github.com/ayutaz/vokra/pull/271#issuecomment-6343605385):
+198 paired action-SHA replacements in 55 changed workflow files, primary tag
+identity checks and isolated static validation pass. The two held Candle
+source changes are unreviewed, not silently approved. Latest-main integration
+and fresh whole-PR CI remain necessary.
+
+PR #284's actual failed documentation job has one HTTP 403 for a fixed
+RustSec tree, not the Qwen target and not evidence of a Pillow regression.
+Root authenticates that tree's exact SHA, 2315 entries and truncated=false;
+its 542274-byte response fits the unchanged 1 MiB limit. Separate source
+commit `ff0f26fe` adds only that fifth literal API target and passes 27 offline
+regressions after root review. It is saved but not pushed/integrated. Its
+partial fixture preserves actual errors/counters, not all excluded bodies;
+no live HTTP recovery or Pillow consumer/license acceptance is claimed.
+
+Fresh Qwen2-Audio repository metadata still identifies source main
+`595360e82b5839c1507492ec83cae5bda6d5c7d4` with null license metadata. This
+does not replace the existing complete-source-history admission contract.
+A bounded search of its source-license auditor was refused by the local
+guard; no alternate reader or provider was used. Other existing held source
+reviews and every Draft responsibility remain open.
+
+The [signed owner decision record](mac-cpu-metal-owner-decision-record-2026-09-09.md)
+explicitly withholds the fixed Ultravox/Meta and four-variant BigVGAN execution
+scopes. Existing MIT model rows are not a wider native/payload/operator grant.
+HiFT's protected dirty manifest remains outside this campaign's inspection.
+BF16 real-checkpoint/reference, HiFT real generator/CPU and all four BigVGAN
+variants therefore remain in the denominator; compute cannot substitute for
+their missing exact current prerequisites or decisions. No sign-off is added.
+
+No local dependency installation/import, model acquisition/execution, heavy
+Cargo, new paid worker or publication operation is performed for this
+continuation. All 194 non-Apple prerequisites, authorized VAST real-weight
+CPU, final clean-HEAD/fresh packet and Scaleway-last Apple CPU/Metal/no-fallback
+requirements remain unfinished; the original five-step goal is not complete.
+
 ## 14:34 UTC continuation: PR #283 repair pushed, acceptance pending
 
 This continuation supersedes only the earlier #283 routing below. Main is

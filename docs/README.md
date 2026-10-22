@@ -2,9 +2,12 @@
 
 **2026-10-22 source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
 record main `e6661039` after #282 and complete main CI: 72 successful checks,
-seven event-gated skips and 12 successful listed workflows. Nine PRs remain
-open in that dated snapshot. The 14:34 continuation records #283's limited
-fixed-API-link repair pushed as `ace09f0c`, with fresh CI still pending.
+seven event-gated skips and 12 successful listed workflows. The 15:21 UTC
+continuation records ten open PRs: #283's workflows have succeeded but three
+check states remain nonterminal during an official Actions-results incident;
+#285 is the separate, still-blocked RMVPE reference dependency candidate with
+fresh CI in progress. Its green RMVPE job is an opt-in skip, not model parity.
+The earlier 14:04/14:34 snapshots retain their original scope and observations.
 AudioLDM2 has a candidate newer official reference route, not an adopted or
 API-verified source change; dependency/reference work still precedes a runnable
 lock. All 194 rows, owner/source holds, actual real-weight CPU, final packet
