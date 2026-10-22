@@ -40,10 +40,15 @@ QWEN_TREE_URL = (
     "https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/"
     "0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1"
 )
+RUSTSEC_TREE_URL = (
+    "https://api.github.com/repos/RustSec/advisory-db/git/trees/"
+    "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63?recursive=1"
+)
 TREE_FIXTURES = {
     VIBEVOICE_TREE_URL: ("94da20d98b2fa7688e9cbfaf7692ddb4954f7600", 121),
     PYTORCH_COMPLEX_TREE_URL: ("8a2ad1e47f3df25a30eb426f6ad781b89103fab3", 17),
     QWEN_TREE_URL: ("0d66378d9e4b1a4d6bdba3969aa87ef777f487cd", 23),
+    RUSTSEC_TREE_URL: ("9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63", 2315),
 }
 
 
@@ -326,8 +331,66 @@ class GateTests(unittest.TestCase):
         self.assertNotIn("fake-token", output.getvalue())
         self.assertIn("entries=23", output.getvalue())
 
+    def test_actual_rustsec_error_report_rechecks_one_literal_target(self):
+        """Preserve PR284's error/counters; excluded response bodies are omitted."""
+        body = _api_body(RUSTSEC_TREE_URL)
+        body["status"]["text"] = "Rejected status code: 403 Forbidden"
+        body["span"] = {"line": 66, "column": 54}
+        body["duration"] = {"secs": 0, "nanos": 90854450}
+        report = _report(
+            [body],
+            total=1669,
+            unique=769,
+            cached=60,
+            successful=1655,
+            unsupported=2,
+            redirects=4,
+            excludes=11,
+        )
+        report["error_map"] = {
+            "docs/handoff/kyutai-candle-applied-advisory-preparation-2026-10-16.md": [body],
+        }
+        # The source report did not provide the eleven excluded response bodies
+        # in the bounded handoff; retain the canonical OutputStats shape
+        # without inventing omitted response bodies.  Its top-level duration
+        # and detailed_stats flag are preserved from the original report.
+        report["duration"] = {"secs": 206, "nanos": 847556911}
+        report["detailed_stats"] = False
+        opener = ApiMappingOpener({RUSTSEC_TREE_URL: _tree_payload(RUSTSEC_TREE_URL)})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertTrue(gate.check_report(report, 2, token="fake-token", opener=opener))
+        self.assertEqual(len(opener.requests), 1)
+        self.assertEqual(opener.requests[0][0].full_url, RUSTSEC_TREE_URL)
+        self.assertEqual(opener.requests[0][0].headers["Authorization"], "Bearer fake-token")
+        self.assertNotIn("fake-token", output.getvalue())
+        self.assertIn("tree 9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63 entries=2315", output.getvalue())
+
+    def test_rustsec_tree_identity_failures_are_fail_closed(self):
+        malformed = _tree_payload(RUSTSEC_TREE_URL)
+        malformed["tree"][0] = {"path": "", "mode": "100644", "type": "blob", "sha": "0" * 40}
+        cases = (
+            (_tree_payload(RUSTSEC_TREE_URL, sha="0" * 40), "API tree SHA mismatch"),
+            (_tree_payload(RUSTSEC_TREE_URL, count=2314), "API tree entry count mismatch"),
+            (_tree_payload(RUSTSEC_TREE_URL, truncated=True), "API tree response is truncated"),
+            (malformed, "invalid API tree entry"),
+        )
+        for payload, message in cases:
+            opener = ApiMappingOpener({RUSTSEC_TREE_URL: payload})
+            with self.assertRaisesRegex(gate.GateError, message):
+                gate.check_report(_report([_api_body(RUSTSEC_TREE_URL)]), 2, token="fake-token", opener=opener)
+            self.assertEqual(len(opener.requests), 1)
+
     def test_api_recheck_accepts_only_literal_https_targets(self):
-        for url in (VIBEVOICE_TREE_URL, UV_RELEASE_URL, PYTORCH_COMPLEX_TREE_URL, QWEN_TREE_URL):
+        class Never:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, *_args, **_kwargs):
+                self.requests.append(True)
+                raise AssertionError("unexpected API request")
+
+        for url in (VIBEVOICE_TREE_URL, UV_RELEASE_URL, PYTORCH_COMPLEX_TREE_URL, QWEN_TREE_URL, RUSTSEC_TREE_URL):
             variants = (
                 url.replace("https://", "http://", 1),
                 url.replace("api.github.com", "www.github.com", 1),
@@ -339,8 +402,24 @@ class GateTests(unittest.TestCase):
             for variant in variants:
                 with self.assertRaises(gate.GateError):
                     gate.parse_api_recheck_target(variant)
+                opener = Never()
+                with self.assertRaises(gate.GateError):
+                    gate.check_report(_report([_api_body(variant)]), 2, token="fake-token", opener=opener)
+                self.assertEqual(opener.requests, [])
         with self.assertRaises(gate.GateError):
             gate.parse_api_recheck_target(QWEN_TREE_URL.replace("0d66378d9e4b1a4d6bdba3969aa87ef777f487cd", "0" * 40))
+        qwen_zero_sha = QWEN_TREE_URL.replace("0d66378d9e4b1a4d6bdba3969aa87ef777f487cd", "0" * 40)
+        opener = Never()
+        with self.assertRaises(gate.GateError):
+            gate.check_report(_report([_api_body(qwen_zero_sha)]), 2, token="fake-token", opener=opener)
+        self.assertEqual(opener.requests, [])
+        with self.assertRaises(gate.GateError):
+            gate.parse_api_recheck_target(RUSTSEC_TREE_URL.replace("9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63", "0" * 40))
+        rustsec_zero_sha = RUSTSEC_TREE_URL.replace("9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63", "0" * 40)
+        opener = Never()
+        with self.assertRaises(gate.GateError):
+            gate.check_report(_report([_api_body(rustsec_zero_sha)]), 2, token="fake-token", opener=opener)
+        self.assertEqual(opener.requests, [])
 
     def test_qwen_tree_identity_failures_are_fail_closed(self):
         malformed = _tree_payload(QWEN_TREE_URL)
@@ -357,13 +436,14 @@ class GateTests(unittest.TestCase):
                 gate.check_report(_report([_api_body(QWEN_TREE_URL)]), 2, token="fake-token", opener=opener)
             self.assertEqual(len(opener.requests), 1)
 
-    def test_original_non_403_qwen_status_is_rejected_without_request(self):
-        for code in (200, 404, 429, 503):
-            opener = ApiMappingOpener({QWEN_TREE_URL: _tree_payload(QWEN_TREE_URL)})
-            expected = "unsupported GitHub blob URL" if code == 503 else "unhandled non-recoverable link failure"
-            with self.assertRaisesRegex(gate.GateError, expected):
-                gate.check_report(_report([_api_body(QWEN_TREE_URL, code)], total=1), 2, token="fake-token", opener=opener)
-            self.assertEqual(opener.requests, [])
+    def test_original_non_403_literal_api_statuses_are_rejected_without_request(self):
+        for url in (QWEN_TREE_URL, RUSTSEC_TREE_URL):
+            for code in (200, 404, 429, 503):
+                opener = ApiMappingOpener({url: _tree_payload(url)})
+                expected = "unsupported GitHub blob URL" if code == 503 else "unhandled non-recoverable link failure"
+                with self.assertRaisesRegex(gate.GateError, expected):
+                    gate.check_report(_report([_api_body(url, code)], total=1), 2, token="fake-token", opener=opener)
+                self.assertEqual(opener.requests, [])
 
     def test_api_recheck_verifies_tree_and_release_identity(self):
         malformed_entry = _tree_payload(VIBEVOICE_TREE_URL)
@@ -423,39 +503,40 @@ class GateTests(unittest.TestCase):
             (404, None, "API response was not successful"),
             (200, "redirect", "API redirect rejected"),
         )
-        for status, response_url, message in failures:
-            opener = ApiMappingOpener(
-                {VIBEVOICE_TREE_URL: _tree_payload(VIBEVOICE_TREE_URL)},
-                status=status,
-                response_url=response_url,
+        for api_url in (VIBEVOICE_TREE_URL, RUSTSEC_TREE_URL):
+            for status, response_url, message in failures:
+                opener = ApiMappingOpener(
+                    {api_url: _tree_payload(api_url)},
+                    status=status,
+                    response_url=response_url,
+                )
+                with self.assertRaisesRegex(gate.GateError, message):
+                    gate.check_report(_report([_api_body(api_url)]), 2, token="fake-token", opener=opener)
+                self.assertEqual(len(opener.requests), 1)
+            paginated = ApiMappingOpener(
+                {api_url: _tree_payload(api_url)},
+                link='<https://api.github.com/...>; rel="next"',
             )
-            with self.assertRaisesRegex(gate.GateError, message):
-                gate.check_report(_report([_api_body(VIBEVOICE_TREE_URL)]), 2, token="fake-token", opener=opener)
-            self.assertEqual(len(opener.requests), 1)
-        paginated = ApiMappingOpener(
-            {VIBEVOICE_TREE_URL: _tree_payload(VIBEVOICE_TREE_URL)},
-            link='<https://api.github.com/...>; rel="next"',
-        )
-        with self.assertRaisesRegex(gate.GateError, "GitHub ref evidence is paginated"):
-            gate.check_report(_report([_api_body(VIBEVOICE_TREE_URL)]), 2, token="fake-token", opener=paginated)
-        self.assertEqual(len(paginated.requests), 1)
+            with self.assertRaisesRegex(gate.GateError, "GitHub ref evidence is paginated"):
+                gate.check_report(_report([_api_body(api_url)]), 2, token="fake-token", opener=paginated)
+            self.assertEqual(len(paginated.requests), 1)
 
-        for exc, message in ((TimeoutError("fake-token"), "API request failed"), (RuntimeError("Bearer fake-token"), "API request failed")):
-            opener = RaisingOpener(exc)
-            with self.assertRaisesRegex(gate.GateError, message):
-                gate.check_report(_report([_api_body(VIBEVOICE_TREE_URL)]), 2, token="fake-token", opener=opener)
-            self.assertEqual(len(opener.requests), 1)
+            for exc, message in ((TimeoutError("fake-token"), "API request failed"), (RuntimeError("Bearer fake-token"), "API request failed")):
+                opener = RaisingOpener(exc)
+                with self.assertRaisesRegex(gate.GateError, message):
+                    gate.check_report(_report([_api_body(api_url)]), 2, token="fake-token", opener=opener)
+                self.assertEqual(len(opener.requests), 1)
 
-        for raw, message in ((b"{bad", "malformed JSON report"), (b'{"sha":1,"sha":2}', "duplicate JSON object key")):
-            opener = ApiMappingOpener({}, raw=raw)
-            with self.assertRaisesRegex(gate.GateError, message):
-                gate.check_report(_report([_api_body(VIBEVOICE_TREE_URL)]), 2, token="fake-token", opener=opener)
+            for raw, message in ((b"{bad", "malformed JSON report"), (b'{"sha":1,"sha":2}', "duplicate JSON object key")):
+                opener = ApiMappingOpener({}, raw=raw)
+                with self.assertRaisesRegex(gate.GateError, message):
+                    gate.check_report(_report([_api_body(api_url)]), 2, token="fake-token", opener=opener)
 
-        for token in (None, "fake\ntoken"):
-            opener = ApiMappingOpener({VIBEVOICE_TREE_URL: _tree_payload(VIBEVOICE_TREE_URL)})
-            with self.assertRaises(gate.GateError):
-                gate.check_report(_report([_api_body(VIBEVOICE_TREE_URL)]), 2, token=token, opener=opener)
-            self.assertEqual(len(opener.requests), 0)
+            for token in (None, "fake\ntoken"):
+                opener = ApiMappingOpener({api_url: _tree_payload(api_url)})
+                with self.assertRaises(gate.GateError):
+                    gate.check_report(_report([_api_body(api_url)]), 2, token=token, opener=opener)
+                self.assertEqual(len(opener.requests), 0)
 
     def test_ineligible_403_and_mixed_errors_never_trigger_recheck(self):
         class Never:
