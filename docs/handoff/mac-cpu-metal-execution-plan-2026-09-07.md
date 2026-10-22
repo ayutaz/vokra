@@ -1,5 +1,28 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-22 16:13 UTC next order:** [#283 is normally accepted](mac-cpu-metal-status-2026-10-22.md#1613-utc-continuation-pr-283-accepted-on-complete-fresh-ci)
+> on main `ce36c27d` after complete exact-head CI. Refresh #286 against this
+> actual main, then reconcile #284's distinct Torchtune consumer, #278's real
+> artifact contract, #271 and every Draft/source-read responsibility. Keep
+> all 194 non-Apple/owner, authorized VAST real-weight CPU, final clean HEAD/
+> fresh packet and Scaleway-last Apple CPU/Metal/no-fallback/result gates.
+
+> **2026-10-22 15:52 UTC next action:** [new-head CI recovery](mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
+> keeps main at `1366bd8d` after normal #285 acceptance. Finish #283's
+> actual rerun and complete exact-head CI, then reconcile the other PR/source
+> duties. The original failed HTTP 502 and subsequent original-page HTTP 200
+> are distinct evidence, not a checker waiver. All 194-row non-Apple/owner,
+> authorized real-weight VAST CPU, final clean HEAD/fresh packets and
+> Scaleway-last Apple CPU/Metal/no-fallback/result duties remain incomplete.
+
+> **2026-10-22 current execution checkpoint:** the [source/CI readback](mac-cpu-metal-status-2026-10-22.md)
+> closes the latest main-CI wait at `e6661039`, not the model campaign. Resolve
+> the remaining PR and source-read duties, exact dependency/reference/owner
+> prerequisites (including AudioLDM2's Hub API mismatch), authorized actual
+> real-weight CPU, final clean HEAD/fresh packets, then Scaleway Apple CPU,
+> Metal and no-fallback evidence and normal result-PR acceptance. All 194 rows
+> and historical measurements/decision hashes remain unchanged.
+
 > **2026-10-18 current acceptance and next order:** [PR #268 is normally merged](mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
 > at main `8ae9566e` after complete fresh exact-head CI. This supersedes
 > source-push/PR-pending notes below only for that synthesized-session batch.
