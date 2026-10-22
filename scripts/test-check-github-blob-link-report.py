@@ -36,9 +36,14 @@ PYTORCH_COMPLEX_TREE_URL = (
     "https://api.github.com/repos/kamo-naoyuki/pytorch_complex/git/trees/"
     "8a2ad1e47f3df25a30eb426f6ad781b89103fab3?recursive=1"
 )
+QWEN_TREE_URL = (
+    "https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/"
+    "0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1"
+)
 TREE_FIXTURES = {
     VIBEVOICE_TREE_URL: ("94da20d98b2fa7688e9cbfaf7692ddb4954f7600", 121),
     PYTORCH_COMPLEX_TREE_URL: ("8a2ad1e47f3df25a30eb426f6ad781b89103fab3", 17),
+    QWEN_TREE_URL: ("0d66378d9e4b1a4d6bdba3969aa87ef777f487cd", 23),
 }
 
 
@@ -264,8 +269,65 @@ class GateTests(unittest.TestCase):
         self.assertIn("entries=17", output.getvalue())
         self.assertIn("release id=370794065 tag=0.12.5", output.getvalue())
 
+    def test_actual_five_error_report_rechecks_four_literal_targets(self):
+        """Mirror PR283's five 403 bodies, including one cached duplicate."""
+        bodies = [
+            _api_body(VIBEVOICE_TREE_URL),
+            _api_body(UV_RELEASE_URL),
+            _api_body(PYTORCH_COMPLEX_TREE_URL),
+            _api_body(PYTORCH_COMPLEX_TREE_URL),
+            _api_body(QWEN_TREE_URL),
+        ]
+        bodies[0]["status"]["text"] = "Rejected status code: 403 Forbidden"
+        bodies[0]["span"] = {"line": 452, "column": 13}
+        bodies[0]["duration"] = {"secs": 0, "nanos": 253194767}
+        bodies[1]["status"]["text"] = "Rejected status code: 403 Forbidden"
+        bodies[1]["span"] = {"line": 5513, "column": 18}
+        bodies[1]["duration"] = {"secs": 0, "nanos": 251212163}
+        bodies[2]["status"]["text"] = "Rejected status code: 403 Forbidden"
+        bodies[2]["span"] = {"line": 6210, "column": 2}
+        bodies[2]["duration"] = {"secs": 0, "nanos": 328401735}
+        bodies[3]["status"]["text"] = "Error (cached)"
+        bodies[3]["span"] = {"line": 19, "column": 5}
+        bodies[3].pop("duration")
+        bodies[4]["status"]["text"] = "Rejected status code: 403 Forbidden"
+        bodies[4]["span"] = {"line": 25, "column": 3}
+        bodies[4]["duration"] = {"secs": 0, "nanos": 156249638}
+        report = _report(
+            bodies,
+            total=1669,
+            unique=769,
+            cached=59,
+            successful=1651,
+            unsupported=2,
+            redirects=4,
+            excludes=11,
+        )
+        report["detailed_stats"] = False
+        report["duration"] = {"secs": 207, "nanos": 494571936}
+        report["error_map"] = {
+            "docs/handoff/owsm-primary-license-readback-2026-10-18.md": [bodies[3]],
+            "docs/handoff/public-catalog-security-completion-2026-09-29.md": [bodies[1], bodies[2], bodies[0]],
+            "docs/handoff/qwen2-audio-fixed-source-license-readback-2026-10-15.md": [bodies[4]],
+        }
+        opener = ApiMappingOpener(
+            {
+                VIBEVOICE_TREE_URL: _tree_payload(VIBEVOICE_TREE_URL),
+                UV_RELEASE_URL: _release_payload(),
+                PYTORCH_COMPLEX_TREE_URL: _tree_payload(PYTORCH_COMPLEX_TREE_URL),
+                QWEN_TREE_URL: _tree_payload(QWEN_TREE_URL),
+            }
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertTrue(gate.check_report(report, 2, token="fake-token", opener=opener))
+        self.assertEqual(len(opener.requests), 4)
+        self.assertTrue(all(request.headers["Authorization"] == "Bearer fake-token" for request, _ in opener.requests))
+        self.assertNotIn("fake-token", output.getvalue())
+        self.assertIn("entries=23", output.getvalue())
+
     def test_api_recheck_accepts_only_literal_https_targets(self):
-        for url in (VIBEVOICE_TREE_URL, UV_RELEASE_URL, PYTORCH_COMPLEX_TREE_URL):
+        for url in (VIBEVOICE_TREE_URL, UV_RELEASE_URL, PYTORCH_COMPLEX_TREE_URL, QWEN_TREE_URL):
             variants = (
                 url.replace("https://", "http://", 1),
                 url.replace("api.github.com", "www.github.com", 1),
@@ -277,6 +339,31 @@ class GateTests(unittest.TestCase):
             for variant in variants:
                 with self.assertRaises(gate.GateError):
                     gate.parse_api_recheck_target(variant)
+        with self.assertRaises(gate.GateError):
+            gate.parse_api_recheck_target(QWEN_TREE_URL.replace("0d66378d9e4b1a4d6bdba3969aa87ef777f487cd", "0" * 40))
+
+    def test_qwen_tree_identity_failures_are_fail_closed(self):
+        malformed = _tree_payload(QWEN_TREE_URL)
+        malformed["tree"][0] = {"path": "", "mode": "100644", "type": "blob", "sha": "0" * 40}
+        cases = (
+            (_tree_payload(QWEN_TREE_URL, sha="0" * 40), "API tree SHA mismatch"),
+            (_tree_payload(QWEN_TREE_URL, count=22), "API tree entry count mismatch"),
+            (_tree_payload(QWEN_TREE_URL, truncated=True), "API tree response is truncated"),
+            (malformed, "invalid API tree entry"),
+        )
+        for payload, message in cases:
+            opener = ApiMappingOpener({QWEN_TREE_URL: payload})
+            with self.assertRaisesRegex(gate.GateError, message):
+                gate.check_report(_report([_api_body(QWEN_TREE_URL)]), 2, token="fake-token", opener=opener)
+            self.assertEqual(len(opener.requests), 1)
+
+    def test_original_non_403_qwen_status_is_rejected_without_request(self):
+        for code in (200, 404, 429, 503):
+            opener = ApiMappingOpener({QWEN_TREE_URL: _tree_payload(QWEN_TREE_URL)})
+            expected = "unsupported GitHub blob URL" if code == 503 else "unhandled non-recoverable link failure"
+            with self.assertRaisesRegex(gate.GateError, expected):
+                gate.check_report(_report([_api_body(QWEN_TREE_URL, code)], total=1), 2, token="fake-token", opener=opener)
+            self.assertEqual(opener.requests, [])
 
     def test_api_recheck_verifies_tree_and_release_identity(self):
         malformed_entry = _tree_payload(VIBEVOICE_TREE_URL)

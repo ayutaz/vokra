@@ -4,7 +4,7 @@
 The ordinary lychee scan remains authoritative for every link.  This gate has
 two deliberately narrow recovery paths: a GitHub ``/blob/<single-segment-ref>/
 <path>`` response whose original status is exactly HTTP 503 may be rechecked
-through the authenticated Contents API, and the three exact public GitHub API
+through the authenticated Contents API, and the four exact public GitHub API
 URLs observed in the pinned report may be rechecked after an original HTTP
 403.  The API responses must identify the expected resource exactly.  No URL
 is ignored and no other status or host is recovered.
@@ -74,6 +74,12 @@ _API_RECHECK_TARGETS: dict[str, ApiRecheckTarget] = {
         release_id=370794065,
         tag_name="0.12.5",
         html_url="https://github.com/astral-sh/uv/releases/tag/0.12.5",
+    ),
+    "https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1": ApiRecheckTarget(
+        url="https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1",
+        kind="tree",
+        sha="0d66378d9e4b1a4d6bdba3969aa87ef777f487cd",
+        entry_count=23,
     ),
 }
 
@@ -291,7 +297,7 @@ class BlobTarget:
 
 
 def parse_api_recheck_target(url: str) -> ApiRecheckTarget:
-    """Return a target only for the three literal HTTPS API URLs."""
+    """Return a target only for the four literal HTTPS API URLs."""
     if not isinstance(url, str) or any(ord(character) < 0x20 or ord(character) == 0x7F for character in url):
         raise GateError("unsupported GitHub API URL")
     try:
