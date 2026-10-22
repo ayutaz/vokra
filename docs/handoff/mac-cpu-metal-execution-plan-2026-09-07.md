@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-22 current execution checkpoint:** the [source/CI readback](mac-cpu-metal-status-2026-10-22.md)
+> closes the latest main-CI wait at `e6661039`, not the model campaign. Resolve
+> the remaining PR and source-read duties, exact dependency/reference/owner
+> prerequisites (including AudioLDM2's Hub API mismatch), authorized actual
+> real-weight CPU, final clean HEAD/fresh packets, then Scaleway Apple CPU,
+> Metal and no-fallback evidence and normal result-PR acceptance. All 194 rows
+> and historical measurements/decision hashes remain unchanged.
+
 > **2026-10-18 current acceptance and next order:** [PR #268 is normally merged](mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
 > at main `8ae9566e` after complete fresh exact-head CI. This supersedes
 > source-push/PR-pending notes below only for that synthesized-session batch.

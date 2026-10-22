@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**2026-10-22 source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
+record main `e6661039` after #282 and complete main CI: 72 successful checks,
+seven event-gated skips and 12 successful listed workflows. Nine PRs remain
+open in that dated snapshot; #283's new CI is still running. AudioLDM2's
+fixed-source Hub API mismatch needs dependency/reference work before a runnable
+lock. All 194 rows, owner/source holds, actual real-weight CPU, final packet
+and Scaleway-last Apple/no-fallback requirements remain open. This is not a
+model, license, release or publication completion claim.
+
 **2026-10-18 PR #268 accepted / current remaining plan:** [complete fresh CI and normal merge](handoff/mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
 close the synthesized-session source-PR boundary at main `8ae9566e`:
 81 successful checks, five justified skips, sixteen required pairs and

@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-22 current-routing supersession:** the [source/CI readback](mac-cpu-metal-status-2026-10-22.md)
+> records complete main CI at `e6661039`, nine open PR responsibilities and
+> the fixed AudioLDM2/modern Hub API mismatch. It supplies no new model,
+> owner/license or Apple pass. Preserve all 194 rows, the retained metadata-only
+> 136/58 classification, frozen 63-row decision packet and historical evidence
+> below; actual real-weight CPU, final packets and Scaleway-last gates remain.
+
 > **2026-10-18 PR #268 accepted:** [complete fresh CI and normal merge](mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
 > place the synthesized-session source batch on main `8ae9566e` after 81
 > successful checks / five justified skips, sixteen required pairs and
