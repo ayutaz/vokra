@@ -354,6 +354,8 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 
 **2026-10-22 lockfile maintenance supplement（履歴行を上書きしない）**: `integrations/vokra-server/Cargo.lock` は `webpki-roots` 1.x を 1.0.8 から **1.0.10**（CDLA-Permissive-2.0、checksum `1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9`）へ更新した。[RustSec RUSTSEC-2026-0381 の公式 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0381.html) は `>=1.0.10` を patched とし、0.26.11 compatibility package も別解決される 1.x 側を 1.0.10 以上にする必要があると明記している。これは依存ロックの安全更新であり、2026-07-19 の crate-scoped CDLA 許可、`deny.toml` の policy、モデルの §3.1 owner/legal sign-off を変更・追加するものではない。0.26.11 は `ureq` 側の build-dependency であり、その互換パッケージが参照する共有 1.x 解決先として 1.0.10 が同じ build chain に到達する一方、`reqwest` 側からも 1.0.10 が dev-dependency として解決される。両経路とも製品バイナリに入らないという到達性の判断は維持する。`integrations/vokra-piper-g2p/Cargo.lock` と `integrations/vokra-server-bench/Cargo.lock` には、他のpackageを変更せず同じ 1.0.8 → 1.0.10 の安全更新だけを適用した。これは `vokra-server` の既存 crate-scoped CDLA 許可を他のworkspaceへ拡張するものではない。`vokra-server-bench` では `ureq` 3 の通常依存（既定のTLS feature）として `webpki-roots` に到達するが、rootのzero-dependency runtime graphには入らない。
 
+同日、VASTのモデル非使用・隔離依存監査ゲートが検出した `rustls-webpki` RUSTSEC-2026-0382（0.103.15）について、3つの隔離 lockfile のみを 0.103.16（ISC、checksum `4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281`）へ更新した。[RustSec RUSTSEC-2026-0382 の公式 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0382.html) が示す patched 範囲 `>=0.103.16, <0.104.0-alpha.1` に入る。0.103.16のlockfile上の依存名（`ring`、`rustls-pki-types`、`untrusted`）は0.103.15と同一で、root Cargo.lock、deny policy、owner/legal sign-offは変更していない。VAST gateの最終結果や全体auditのPASSはこのlockfile更新だけでは主張しない。
+
 **RUSTSEC ignore 2 件**（`integrations/vokra-server/deny.toml` と各 lockfile
 横の `osv-scanner.toml` に根拠を記載）:
 
