@@ -1,5 +1,41 @@
 # Vokra documentation
 
+**2026-10-22 16:13 UTC accepted source checkpoint:** [PR #283 acceptance and remaining scope](handoff/mac-cpu-metal-status-2026-10-22.md#1613-utc-continuation-pr-283-accepted-on-complete-fresh-ci)
+records main `ce36c27d`: 70 terminal checks (69 successful, one intentional
+skip), all sixteen current strict required pairs and all nine exact-head
+workflows successful. The single link-job rerun follows verified recovery
+of its original HTTP-502 page; no checker waiver is added. Local main is
+fast-forwarded. The documentation branch integrates this actual new main
+and requires its own fresh-head CI. PR #284's Pillow consumer is Torchtune,
+not the Matplotlib consumer reviewed for #282. Earlier snapshots remain dated.
+All 194 non-Apple/owner, actual-weight CPU, final-packet and Scaleway-last
+requirements remain unfinished; this is source-PR acceptance only.
+
+**2026-10-22 15:52 UTC continuation:** the [latest source/CI readback](handoff/mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
+keeps accepted main at `1366bd8d`. Fresh #283 CI rejects one historical
+GitHub job-page HTTP 502; the identical original URL subsequently returns
+HTTP 200 and its native job identity is verified. One failed-job rerun is
+actually registered at the unchanged source head; acceptance is still pending.
+No URL exclusion, status waiver or broader API recovery is added. The older
+15:43 snapshot below remains dated evidence. All 194 rows and the complete
+non-Apple, real-weight CPU, final-packet and Scaleway-last scope remain open.
+
+**2026-10-22 15:43 UTC source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
+records main `1366bd8d` after normal #285 acceptance: all sixteen required
+pairs and ten workflows succeed; direct native Complete-job evidence resolves
+two nonrequired stale aggregate displays without relabeling them green.
+Nine PRs remain open. #283 now integrates actual new main and the reviewed
+shared RustSec link correction at `75b4fffb`; fresh exact-head CI is pending.
+The old Actions-results incident resolved; a separate newer incident is
+recorded from the direct official API. Earlier snapshots retain their dated
+scope. RMVPE execution/license gates remain blocked and its parity job was
+an opt-in skip, not actual model parity.
+AudioLDM2 has a candidate newer official reference route, not an adopted or
+API-verified source change; dependency/reference work still precedes a runnable
+lock. All 194 rows, owner/source holds, actual real-weight CPU, final packet
+and Scaleway-last Apple/no-fallback requirements remain open. This is not a
+model, license, release or publication completion claim.
+
 **2026-10-18 PR #268 accepted / current remaining plan:** [complete fresh CI and normal merge](handoff/mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
 close the synthesized-session source-PR boundary at main `8ae9566e`:
 81 successful checks, five justified skips, sixteen required pairs and

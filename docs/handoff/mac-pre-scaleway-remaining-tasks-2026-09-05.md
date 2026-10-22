@@ -1,5 +1,26 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-22 16:13 UTC source acceptance:** [#283's complete fresh CI](mac-cpu-metal-status-2026-10-22.md#1613-utc-continuation-pr-283-accepted-on-complete-fresh-ci)
+> produces main `ce36c27d` after 69 successful checks/one intentional skip,
+> sixteen required pairs and nine successful workflows. Earlier pending
+> snapshots remain dated. All 194 rows and the metadata-only 136/58 split,
+> frozen owner scope, real-weight CPU, final packet and Apple duties remain;
+> no model/owner pass is inferred from this accepted dependency/source PR.
+
+> **2026-10-22 15:52 UTC routing:** the [latest continuation](mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
+> records accepted main `1366bd8d` after #285 and #283's recovered external
+> job-link failure with one actual failed-job rerun, not acceptance. The
+> initial `e6661039` snapshot below retains its date/scope. All 194 rows,
+> the metadata-only 136/58 split, frozen owner packet and final Apple gates
+> remain unchanged; source/dependency CI is not real-weight CPU evidence.
+
+> **2026-10-22 current-routing supersession:** the [source/CI readback](mac-cpu-metal-status-2026-10-22.md)
+> records complete main CI at `e6661039`, nine open PR responsibilities and
+> the fixed AudioLDM2/modern Hub API mismatch. It supplies no new model,
+> owner/license or Apple pass. Preserve all 194 rows, the retained metadata-only
+> 136/58 classification, frozen 63-row decision packet and historical evidence
+> below; actual real-weight CPU, final packets and Scaleway-last gates remain.
+
 > **2026-10-18 PR #268 accepted:** [complete fresh CI and normal merge](mac-goal6-execution-2026-10-18.md#pr-268-accepted-after-complete-fresh-ci)
 > place the synthesized-session source batch on main `8ae9566e` after 81
 > successful checks / five justified skips, sixteen required pairs and
