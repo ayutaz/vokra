@@ -356,6 +356,8 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 
 同日、VASTのモデル非使用・隔離依存監査ゲートが検出した `rustls-webpki` RUSTSEC-2026-0382（0.103.15）について、3つの隔離 lockfile のみを 0.103.16（ISC、checksum `4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281`）へ更新した。[RustSec RUSTSEC-2026-0382 の公式 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0382.html) が示す patched 範囲 `>=0.103.16, <0.104.0-alpha.1` に入る。0.103.16のlockfile上の依存名（`ring`、`rustls-pki-types`、`untrusted`）は0.103.15と同一で、root Cargo.lock、deny policy、owner/legal sign-offは変更していない。VAST gateの最終結果や全体auditのPASSはこのlockfile更新だけでは主張しない。
 
+同日、同じVASTのモデル非使用・隔離依存監査ゲートで `rustls` 0.23.45 に報告された RUSTSEC-2026-0346/0347/0348/0349 について、`integrations/vokra-piper-g2p/Cargo.lock` と `integrations/vokra-server-bench/Cargo.lock` の2つだけを、server lockfileですでに使用している 0.23.46（Apache-2.0 OR ISC OR MIT、checksum `48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf`）へ更新した。[RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346.html)、[RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347.html)、[RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348.html)、[RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349.html) の各公式 advisory が示す patched 条件 `>=0.23.46` に入る。今回の2 lockfileで解決された依存名（`log`、`once_cell`、`ring`、`rustls-pki-types`、`rustls-webpki`、`subtle`、`zeroize`）は更新前後で不変であり、調査対象とした共通TLS関連package（`rustls-webpki`、`rustls-pki-types`、`ring`、`untrusted`）の比較でも、他のversion skewは確認されなかった（`tokio-rustls 0.26.4` はserver lockfileだけに存在）。root Cargo.lock、deny policy、owner/legal sign-offは変更していない。これはlockfile修正の記録であり、VAST gateの最終結果や全体auditのPASSを主張するものではない。
+
 **RUSTSEC ignore 2 件**（`integrations/vokra-server/deny.toml` と各 lockfile
 横の `osv-scanner.toml` に根拠を記載）:
 
