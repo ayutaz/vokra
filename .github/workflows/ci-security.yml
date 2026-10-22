@@ -323,7 +323,7 @@ jobs:
           # Do not turn a diagnostic observation into a second gate. The
           # mandatory JSON final gate below remains authoritative.
           exit 0
-      - name: Enforce lychee report and narrow GitHub 503 recovery
+      - name: Enforce lychee report and narrow GitHub 503/API rechecks
         if: ${{ always() }}
         shell: bash
         env:
