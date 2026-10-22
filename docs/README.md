@@ -1,5 +1,14 @@
 # Vokra documentation
 
+**2026-10-22 15:52 UTC continuation:** the [latest source/CI readback](handoff/mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
+keeps accepted main at `1366bd8d`. Fresh #283 CI rejects one historical
+GitHub job-page HTTP 502; the identical original URL subsequently returns
+HTTP 200 and its native job identity is verified. One failed-job rerun is
+actually registered at the unchanged source head; acceptance is still pending.
+No URL exclusion, status waiver or broader API recovery is added. The older
+15:43 snapshot below remains dated evidence. All 194 rows and the complete
+non-Apple, real-weight CPU, final-packet and Scaleway-last scope remain open.
+
 **2026-10-22 15:43 UTC source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
 records main `1366bd8d` after normal #285 acceptance: all sixteen required
 pairs and ten workflows succeed; direct native Complete-job evidence resolves

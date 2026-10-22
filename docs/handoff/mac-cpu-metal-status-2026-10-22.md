@@ -7,6 +7,36 @@ This dated record supersedes earlier pending-main/PR routing, not historical
 measurements, owner decisions, model permissions or numerical bounds.
 All five execution requirements and all 194 public model rows remain in scope.
 
+## 15:52 UTC continuation: one recovered external job link
+
+Accepted main remains `1366bd8d`; #283 is **not merged**. Its fresh exact-head
+Security run rejects one external link in
+[documentation job 119923005203](https://github.com/ayutaz/vokra/actions/runs/39807066881/job/119923005203),
+not one of the five fixed API targets. The complete native report records
+1669 total / 769 unique / 1655 successful / one error / 64 cached, plus
+two unsupported, eleven exclusions and four redirects. Its sole error is
+HTTP 502 at the historical
+[SBV2 job page](https://github.com/ayutaz/vokra/actions/runs/39050477672/job/117448888195),
+cited by `release-0.4.0-rc1-packaging-2026-10-17.md` line 227. The final gate
+correctly fails; neither the report nor an exclusion is changed.
+
+An independent authenticated native job read confirms that exact job/run,
+head `e74cf61d`, name `parity-sbv2-real` and historical completed/failure
+result. The existing document correctly describes that old checkpoint
+failure; it is not a broken citation merely because the cited test failed.
+A separate no-redirect GET of the identical original page now returns
+HTTP 200, text/html, 226727 bytes, exit 0. This proves observed endpoint
+recovery, not the upstream cause of the earlier 502.
+
+Because the actual failed endpoint has recovered, one rerun of only the
+failed documentation job is requested. The same run's attempt 2 is actually
+in progress and the new documentation job is `119928866248`; source remains
+`75b4fffb`. Preserve the original failure and inspect the rerun's own native
+report before acceptance. No code, URL, security cap, exclusion, required
+status or branch protection changes; the other original workflows are not
+restarted. This supersedes the earlier fresh-CI-pending observation only,
+not any non-Apple/owner, real-weight, final packet or Apple completion gate.
+
 ## 15:43 UTC continuation: PR #285 accepted, PR #283 actually refreshed
 
 Accepted main is now `1366bd8d713b9670d59e0a4b3cf52304e35d1efb` after the

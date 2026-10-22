@@ -1,5 +1,12 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-22 15:52 UTC routing:** the [latest continuation](mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
+> records accepted main `1366bd8d` after #285 and #283's recovered external
+> job-link failure with one actual failed-job rerun, not acceptance. The
+> initial `e6661039` snapshot below retains its date/scope. All 194 rows,
+> the metadata-only 136/58 split, frozen owner packet and final Apple gates
+> remain unchanged; source/dependency CI is not real-weight CPU evidence.
+
 > **2026-10-22 current-routing supersession:** the [source/CI readback](mac-cpu-metal-status-2026-10-22.md)
 > records complete main CI at `e6661039`, nine open PR responsibilities and
 > the fixed AudioLDM2/modern Hub API mismatch. It supplies no new model,

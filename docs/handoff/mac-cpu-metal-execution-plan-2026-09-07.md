@@ -1,5 +1,13 @@
 # Mac CPU / Metal completion execution plan (2026-09-07)
 
+> **2026-10-22 15:52 UTC next action:** [new-head CI recovery](mac-cpu-metal-status-2026-10-22.md#1552-utc-continuation-one-recovered-external-job-link)
+> keeps main at `1366bd8d` after normal #285 acceptance. Finish #283's
+> actual rerun and complete exact-head CI, then reconcile the other PR/source
+> duties. The original failed HTTP 502 and subsequent original-page HTTP 200
+> are distinct evidence, not a checker waiver. All 194-row non-Apple/owner,
+> authorized real-weight VAST CPU, final clean HEAD/fresh packets and
+> Scaleway-last Apple CPU/Metal/no-fallback/result duties remain incomplete.
+
 > **2026-10-22 current execution checkpoint:** the [source/CI readback](mac-cpu-metal-status-2026-10-22.md)
 > closes the latest main-CI wait at `e6661039`, not the model campaign. Resolve
 > the remaining PR and source-read duties, exact dependency/reference/owner
