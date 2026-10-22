@@ -7,6 +7,78 @@ This dated record supersedes earlier pending-main/PR routing, not historical
 measurements, owner decisions, model permissions or numerical bounds.
 All five execution requirements and all 194 public model rows remain in scope.
 
+## 15:43 UTC continuation: PR #285 accepted, PR #283 actually refreshed
+
+Accepted main is now `1366bd8d713b9670d59e0a4b3cf52304e35d1efb` after the
+normal squash merge of [PR #285](https://github.com/ayutaz/vokra/pull/285) at
+15:36:34 UTC. Root fast-forwards local main to this exact commit and preserves
+the reviewed source/documentation branches. Nine PRs remain open. This
+supersedes earlier pending-#285/main routing only; all model/owner/Apple gates
+and historical observations remain separate.
+
+The [durable acceptance receipt](https://github.com/ayutaz/vokra/pull/285#issuecomment-6344839744)
+records all sixteen current required context/application pairs and all ten
+exact-head workflows successful, with strict protection unchanged. The full
+71-check inventory has 68 success, one intentional skip and two nonrequired
+aggregate records still marked in progress. **Those two aggregate fields
+are not relabeled successful.** Stronger direct evidence proves their actual
+execution finished: both original native test/cleanup logs and the direct
+final Complete-job step are completed/success, at 15:12:25 UTC for CPU ISA
+and 15:11:46 UTC for Misaki. Other steps are successful except the expected
+x86-only AVX2 step skipped on Apple ARM. Ignored/fixture-gated tests are not
+model passes. This resolves the earlier conservative display-state wait,
+not a required check or computational test. The ordinary exact-head-match
+merge uses no admin/force/status mutation. No workflow is rerun or cancelled.
+
+RMVPE remains source/checkpoint/native/policy/operator/license blocked;
+its hosted parity job is an opt-in skip and the independently refused local
+production-gate rerun remains NOT_RUN. Acceptance changes the dependency
+candidate in source, not any model-completion state or execution permission.
+
+Direct official status retrieval corrects the older cached browser snapshot:
+the [Actions Results incident](https://stspg.io/44w94j036yc8) resolved at
+15:18:46 UTC. A [separate newer incident](https://stspg.io/sx51v1tlpqjc)
+started at 15:28:04; its 15:33:52 update still investigates intermittent
+Issues/PR/search loading errors, with Actions among affected components.
+These are separate incidents; neither is an exact-job causal diagnosis or
+a required-status waiver. The older 14:35 response below describes only
+what that retrieved response reported, not an assertion of continued outage.
+
+PR #283 actually integrates new main `1366bd8d` via ordinary merge commit
+`bbde07a3`, then adds the already reviewed shared RustSec correction separately
+as source head `75b4fffb52f2ffaae27ef55007b95753c0234cc5`. A normal non-force
+push advances its existing branch from `ace09f0c`; fresh API readback confirms
+the new source/base and updated title/body. Relative to main the PR has
+three files, 218 additions/38 deletions: the unchanged original certifi lock
+delta and the existing gate/tests. The gate/tests compare identical to
+reviewed `ff0f26fe`; the lock compares identical to reviewed `ace09f0c`.
+Pillow's held consumer/dependency review is not accepted by this shared fix.
+
+Exact-head offline Python-3.12 tests pass 27/27; diff hygiene, root
+zero-dependency/forbidden-symbol checks and eight compliance regressions
+pass. Actual Rust/build/three-integration-tree comparison to recorded VAST
+`03840e00` again exits zero and retained evidence hashes match; no new
+full-workspace/Python/model verdict is inferred. Following the documented
+source-only push path does not run prohibited local deep Cargo or rent a
+new worker. Original logical commit checks remain distinct from integration
+commit verification.
+
+Nine new exact-head pull-request workflows are present, including
+[Core](https://github.com/ayutaz/vokra/actions/runs/39807066913),
+[Security](https://github.com/ayutaz/vokra/actions/runs/39807066881) and
+[Quality](https://github.com/ayutaz/vokra/actions/runs/39807066957).
+At this observation two workflows run and seven queue. The original new-head
+watch is live; no acceptance is inferred from old-head CI. This is fresh
+verification for real base/code changes, not a repeated unchanged run.
+The old local #285 watcher is intentionally closed after acceptance; this
+does not cancel a GitHub job or assert its stale display fields changed.
+
+PR #284 now has a [durable partial CI diagnosis](https://github.com/ayutaz/vokra/pull/284#issuecomment-6344589433),
+not a Pillow approval. PR #278's actual artifact contract, #271's held source
+and every Draft duty remain unfinished. The full 194-row non-Apple closure,
+approved actual-weight VAST CPU, final clean-HEAD/fresh packet and
+Scaleway-last Apple CPU/Metal/no-fallback/result acceptance remain open.
+
 ## 15:21 UTC continuation: RMVPE candidate PR and exact CI boundaries
 
 This continuation supersedes earlier pending-PR routing only. Accepted main

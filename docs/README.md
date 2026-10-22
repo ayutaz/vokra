@@ -1,13 +1,15 @@
 # Vokra documentation
 
-**2026-10-22 source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
-record main `e6661039` after #282 and complete main CI: 72 successful checks,
-seven event-gated skips and 12 successful listed workflows. The 15:21 UTC
-continuation records ten open PRs: #283's workflows have succeeded but three
-check states remain nonterminal during an official Actions-results incident;
-#285 is the separate, still-blocked RMVPE reference dependency candidate with
-fresh CI in progress. Its green RMVPE job is an opt-in skip, not model parity.
-The earlier 14:04/14:34 snapshots retain their original scope and observations.
+**2026-10-22 15:43 UTC source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
+records main `1366bd8d` after normal #285 acceptance: all sixteen required
+pairs and ten workflows succeed; direct native Complete-job evidence resolves
+two nonrequired stale aggregate displays without relabeling them green.
+Nine PRs remain open. #283 now integrates actual new main and the reviewed
+shared RustSec link correction at `75b4fffb`; fresh exact-head CI is pending.
+The old Actions-results incident resolved; a separate newer incident is
+recorded from the direct official API. Earlier snapshots retain their dated
+scope. RMVPE execution/license gates remain blocked and its parity job was
+an opt-in skip, not actual model parity.
 AudioLDM2 has a candidate newer official reference route, not an adopted or
 API-verified source change; dependency/reference work still precedes a runnable
 lock. All 194 rows, owner/source holds, actual real-weight CPU, final packet
