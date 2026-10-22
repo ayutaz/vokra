@@ -3,8 +3,10 @@
 **2026-10-22 source/CI readback:** [current Mac CPU/Metal status and next gates](handoff/mac-cpu-metal-status-2026-10-22.md)
 record main `e6661039` after #282 and complete main CI: 72 successful checks,
 seven event-gated skips and 12 successful listed workflows. Nine PRs remain
-open in that dated snapshot; #283's new CI is still running. AudioLDM2's
-fixed-source Hub API mismatch needs dependency/reference work before a runnable
+open in that dated snapshot. The 14:34 continuation records #283's limited
+fixed-API-link repair pushed as `ace09f0c`, with fresh CI still pending.
+AudioLDM2 has a candidate newer official reference route, not an adopted or
+API-verified source change; dependency/reference work still precedes a runnable
 lock. All 194 rows, owner/source holds, actual real-weight CPU, final packet
 and Scaleway-last Apple/no-fallback requirements remain open. This is not a
 model, license, release or publication completion claim.

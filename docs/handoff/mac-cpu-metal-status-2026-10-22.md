@@ -7,6 +7,43 @@ This dated record supersedes earlier pending-main/PR routing, not historical
 measurements, owner decisions, model permissions or numerical bounds.
 All five execution requirements and all 194 public model rows remain in scope.
 
+## 14:34 UTC continuation: PR #283 repair pushed, acceptance pending
+
+This continuation supersedes only the earlier #283 routing below. Main is
+still `e6661039`; the original 14:04 snapshot is retained as dated evidence.
+
+The original #283
+[documentation-links job](https://github.com/ayutaz/vokra/actions/runs/39789253663/job/119860568686)
+failed with five HTTP 403 bodies across four distinct API targets. The fourth
+was an existing fixed Qwen2-Audio tree link, outside the gate's three literal
+targets. An independent authenticated official API read confirms its exact
+SHA `0d66378d9e4b1a4d6bdba3969aa87ef777f487cd`, 23 entries and
+`truncated=false`. HTTP 403 alone does not prove its precise upstream cause;
+no certifi regression or missing source-license grant is inferred.
+
+Luna's bounded repair adds only that exact HTTPS target; a fresh authenticated
+HTTP 200 and matching tree identity remain mandatory. Root reviewed both
+scripts, required actual-error fixture corrections, and independently passed
+25 offline tests. Original scan/report/counters, no-redirect credential-safe
+transport, shared limits and the separate original-503 Contents/ref/anchor
+route remain unchanged. No exclusion or status waiver was added. A separate
+root replay accepts the complete native-log-derived report with four offline
+response fixtures; this is not a live HTTP recovery result.
+
+Normal source commit `18130828` passed all five pre-commit gates and was
+cherry-picked onto the actual bot head as `ace09f0c`. A non-force push
+advanced the existing PR branch; the original certifi-only delta is preserved.
+The total PR delta is three files, 99 additions/6 deletions. Its title/body
+disclose both changes and the validation limits. Nine new exact-head
+workflows exist, including
+[Security](https://github.com/ayutaz/vokra/actions/runs/39795709947),
+[Quality](https://github.com/ayutaz/vokra/actions/runs/39795709949) and
+[Core](https://github.com/ayutaz/vokra/actions/runs/39795710007).
+The observed rollup has 12 successful, eight running and 47 queued checks;
+it is not terminal acceptance. Inspect all new-head workflows/checks and
+required context/application pairs before normal protected merge. Do not
+claim live recovery-branch coverage if the ordinary link scan has no errors.
+
 ## Accepted source and package evidence
 
 At 13:54 UTC, the exact-baseline check inventory has 79 terminal checks:
@@ -111,6 +148,36 @@ fetch failed, and the Base README-only curl request was refused by the local
 model guard. No alternative path was used after that refusal. Therefore no
 claim is made that the inspector's expected model-card license is correct
 or incorrect. Keep historical model/source license decisions unchanged.
+
+### 14:34 UTC candidate official route, not an adopted source change
+
+The current official
+[Diffusers v0.41.0 release](https://github.com/huggingface/diffusers/releases/tag/v0.41.0)
+resolves to `086bf9578c0f4acbc66e48cd1e7cc26befd9e10f`; GitHub reports
+its annotated tag unsigned. Its
+[dynamic-module utilities](https://github.com/huggingface/diffusers/blob/086bf9578c0f4acbc66e48cd1e7cc26befd9e10f/src/diffusers/utils/dynamic_modules_utils.py)
+no longer import the old `cached_download` API, and the official
+[AudioLDM2 tests](https://github.com/huggingface/diffusers/blob/086bf9578c0f4acbc66e48cd1e7cc26befd9e10f/tests/pipelines/audioldm2/test_audioldm2.py)
+still name Base and Large. This identifies a candidate independent upstream
+route, not proof of compatibility with the existing authenticated bundle.
+
+Actual [Diffusers 0.41.0 metadata](https://pypi.org/pypi/diffusers/0.41.0/json)
+requires Hub `>=1.32.0,<2.0` and safetensors `>=0.8.0`; therefore the earlier
+Hub 1.27.0 candidate cannot simply be reused. Current official
+[Transformers 5.20.2 metadata](https://pypi.org/pypi/transformers/5.20.2/json)
+requires Hub `>=1.31.0,<3.0`, giving an overlapping interval, not a proved
+closure. Its fixed
+[GPT2 source](https://github.com/huggingface/transformers/blob/18329f1065382e54db698e242cf98bd3f3e5a766/src/transformers/models/gpt2/modeling_gpt2.py)
+and the new Diffusers tests use a generation-capable GPT2LMHeadModel route.
+Exact bundle class/loading/hidden-state semantics, dependencies, native
+licenses, security and model-free API behavior still need review. Do not add
+an invented LM head or silently patch the oracle.
+
+No model/source pin, lock, loader, owner decision or execution gate changed.
+Only official source and package JSON metadata were read; no package archive
+was acquired or installed, and no model was instantiated. A narrow local
+AudioLDM2 source search was refused by the model guard; no alternate reader,
+agent or remote copy was used. The model-card hold also remains unresolved.
 
 ## Full remaining order and completion boundary
 
