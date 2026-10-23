@@ -1,0 +1,64 @@
+name: published RC1 CLI CPU smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_models:
+        description: Explicitly authorize downloading and executing the two reviewed public model pins
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sparse smoke inputs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          sparse-checkout: |
+            tools/parity/release_candidate_cpu_smoke.py
+            tools/parity/release_candidate_published_cli_pairing_pins.json
+            tests/fixtures/audio/jfk-30s.wav
+            scripts/release/run-published-cli-pairing.sh
+            scripts/release/validate_published_cli_pairing.py
+            scripts/release/test_published_cli_pairing.py
+            .github/workflows/release-candidate-published-cli-smoke.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Install pinned UV without cache
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          version: 0.12.5
+          enable-cache: false
+
+      - name: Run offline regression tests
+        run: uv run --no-project --python 3.12 python scripts/release/test_published_cli_pairing.py
+
+      - name: Require explicit model consent
+        env:
+          ALLOW_MODELS: ${{ inputs.allow_models }}
+        run: |
+          if test "$ALLOW_MODELS" = true; then exit 0; fi
+          bash scripts/release/run-published-cli-pairing.sh --allow-models "$ALLOW_MODELS"
+
+      - name: Run published CLI pairing smoke
+        env:
+          ALLOW_MODELS: ${{ inputs.allow_models }}
+        run: bash scripts/release/run-published-cli-pairing.sh --allow-models "$ALLOW_MODELS"
+
+      - name: Upload small JSON evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: published-cli-pairing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vokra-rc1-pairing-evidence/*.json
+          if-no-files-found: error
+          retention-days: 7
