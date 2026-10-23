@@ -1,5 +1,17 @@
 # CPUプレビュー告知前確認 — 2026-10-23
 
+## 新しい組み合わせの先行実測成功 — 2026-10-23 12:12 UTC
+
+#294は通常マージ済み。sidecar不足を修正する#295のレビュー済みsource
+`e17f1446`で、[genuine hosted run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015)が成功した。
+[raw receipt](evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)のartifact digest・
+source/run・公開バイナリと固定モデルのidentity・3経路のCPU指定と実出力を独立確認した。
+Whisper keyphrase、Silero音声214/343 frames・無音0/343の結果は当該runの実測である。
+
+**最終告知判定は引き続き保留。** 先行確認を最終main結果の代用にせず、#295のfresh CI・
+通常マージ・tree照合後のmain実測、成功証拠と英日ガイド/README・現況の文書PR受入を残条件とする。
+旧失敗・旧pin・過去の結果は下記に履歴として保持する。
+
 ## 受入後の実測と現在の残条件 — 2026-10-23 11:40 UTC
 
 Whisper provenance修正と監査・成功証拠・検証workflowを含む#293はmainへ受入済み。

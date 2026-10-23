@@ -3,7 +3,7 @@
 **English** | [日本語](current-status.ja.md)
 
 Reviewed on **2026-10-23 UTC**, against accepted GitHub `main`
-[`4d6efd02a95a3585b98ca718ddc0a6363b634ef3`](https://github.com/ayutaz/vokra/commit/4d6efd02a95a3585b98ca718ddc0a6363b634ef3).
+[`c1515500aabe7893e8176fd304c642e1b8ba2a03`](https://github.com/ayutaz/vokra/commit/c1515500aabe7893e8176fd304c642e1b8ba2a03).
 This is the current routing page. Dated handoffs and benchmarks retain their
 original commits, permissions, measurements and limitations.
 
@@ -27,16 +27,20 @@ promised before 1.0.
 Whisper's repaired provenance/MIT artifact is published at fixed revision
 `bf440f6064ffc882d53d3694729dc4616dc2cfa7`; see the
 [repair evidence](handoff/whisper-base-provenance-repair-2026-10-23.md).
-The first released-CLI/repaired-model pairing attempt stopped before inference
-because the wrapper passed a temporary audio path instead of the committed
-fixture. [The failure receipt](handoff/evidence/published-rc1-cli-pairing-failure-2026-10-23.json)
-is preserved. The correction, a new functional run and the English/Japanese
-guide acceptance remain required before announcing that new pairing.
+The initial pairing attempts stopped before inference on the temporary audio
+path and then a missing checksum sidecar; both failures remain in the
+[execution record](handoff/cpu-preview-announcement-execution-2026-10-23.md).
+The [reviewed-source preflight](handoff/evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)
+now passes all three explicit CPU commands: Whisper keyphrase, Silero speech
+214/343 frames and silence 0/343. That run is bound to PR #295's source,
+not accepted main. #295 acceptance, a final main run and the English/Japanese
+guide acceptance remain required before announcing the repaired pairing.
 
 ## Main CI and open pull requests
 
 Whisper integration [#293](https://github.com/ayutaz/vokra/pull/293) and the
 reviewed Pillow metadata update [#287](https://github.com/ayutaz/vokra/pull/287)
+and fixture-path correction [#294](https://github.com/ayutaz/vokra/pull/294)
 are normally merged. Each passed all sixteen required context/application
 pairs and its relevant audit checks at the exact reviewed source head.
 #293's final source readback was 81 successes and five event-specific skips.
@@ -51,7 +55,7 @@ Nine PRs remain open at this readback (six drafts):
 
 | PR | Head prefix | Current responsibility |
 |---|---|---|
-| [#294](https://github.com/ayutaz/vokra/pull/294) | `7d5bfc11` | Pass the committed audio fixture to the unchanged published-CLI driver; nine offline regressions pass, fresh CI and normal acceptance pending |
+| [#295](https://github.com/ayutaz/vokra/pull/295) | `e17f1446` | Include the committed audio checksum in sparse inputs; nine offline regressions and genuine preflight pass, fresh PR CI and normal acceptance pending |
 | [#290](https://github.com/ayutaz/vokra/pull/290) | `6d1f02dd` | Torch/CUDA reference closure changes require fresh compatibility/native/license evidence and CPU-index responsibility reconciliation; changes requested |
 | [#278](https://github.com/ayutaz/vokra/pull/278) | `11e33a10` | Draft: Candle same-run producer/receipt/consumer contract; preserve artifact size and authentication gates |
 | [#271](https://github.com/ayutaz/vokra/pull/271) | `d777dd71` | Nine production-action updates; missing producer-artifact failure is distinct from #278's extracted-size failure |
@@ -61,7 +65,7 @@ Nine PRs remain open at this readback (six drafts):
 | [#169](https://github.com/ayutaz/vokra/pull/169) | `b3e9d5c1` | Draft: VibeVoice CPU-reference dependency closure |
 | [#152](https://github.com/ayutaz/vokra/pull/152) | `a9f54e1a` | Draft: XCodec2 pre-import/dependency/evidence gates |
 
-PRs #284, #286, #288, #293 and #287 are merged in the accepted main.
+PRs #284, #286, #288, #293, #287 and #294 are merged in the accepted main.
 #291/#292 were closed as incorporated through #293, not independently merged.
 An open PR's green
 ordinary CI does not clear its source, license, owner or real-weight gates.

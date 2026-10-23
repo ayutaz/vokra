@@ -6,6 +6,76 @@ X posting, a new Release, additional HF publication and the full Apple campaign
 are outside these steps. This is a dated execution record; later results are
 appended rather than attributed to earlier runs.
 
+## Reviewed-source preflight passed — 2026-10-23 12:12 UTC
+
+Genuine hosted [run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015),
+attempt 1, job `120405602400`, completed successfully on reviewed PR #295
+source/workflow `e17f1446d66d575da45866db69ad51c0e7f6d882`.
+It is a source preflight, not the required final accepted-main run.
+
+Artifact `12500441411` is a 1,722-byte ZIP with SHA-256
+`cf4c003330ddd3b730be62c9d17ee2d986151ae76bf11ad4cad5b60428a63ca9`,
+matching API metadata. The preserved [raw preflight receipt](evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)
+is 4,841 bytes, SHA-256
+`a7fd7ea73778c73083435bfafa5440cb28f1f4749fe4b200972eb923dce5af94`.
+It retains the complete parsed driver receipt and reports its original size
+4,925 bytes and SHA-256
+`642d91be2b2ee1c7db1a1cc68a79633bdae7caeea64c0324f6b5d0a2bae299be`.
+
+Root independently checked the raw outer digest, source/run binding, genuine
+Linux runtime, exact released CLI identity, both model revision/size/hash/URL
+contracts, fixture geometry/hash and all three unique commands with explicit
+CPU backend and zero exit codes. It also parsed the actual ASR/VAD stdout
+independently: the JFK keyphrase matches, speech is 214/343 frames
+(mean probability 0.5889), silence is 0/343 (0.0025).
+The numbers are read from this run, not copied from the historical receipt.
+This is functional smoke only, without numerical-parity, Metal or performance
+claims. PR CI, normal merge/tree identity and the final main run remain pending.
+
+## Fixture path accepted; missing sidecar isolated — 2026-10-23 12:09 UTC
+
+#294 passed all sixteen required context/app pairs, repo-hygiene, shell tests
+and CUDA/Metal checks at source `7d5bfc1127d760820a6de221fbeb0e990d89938c`.
+The actual repo-hygiene log records nine tests passing in 1.283 seconds.
+It was normally merged as `c1515500aabe7893e8176fd304c642e1b8ba2a03`,
+parent `4d6efd02`; accepted tree `891ed7a817a647bf98e34cf7e4bd8cbf9d725e98`
+matches the reviewed source. At merge 66 checks succeeded, one was skipped
+and optional CoreML/iOS checks were still running; no failure was observed.
+
+Main [run 39950400977](https://github.com/ayutaz/vokra/actions/runs/39950400977),
+attempt 1, job `120403174603`, passed the canonical audio-path gate but stopped
+with `missing audio SHA sidecar: .../tests/fixtures/audio/jfk-30s.wav.sha256`.
+Its nine regressions passed; its driver commands/models remain empty.
+The [raw second failure](evidence/published-rc1-cli-pairing-failure-2-2026-10-23.json)
+is 2,335 bytes, SHA-256
+`5c3ccaaa89ec4802cbbd47d68c7cf98a20ea4832e6d92452631383a467bd0c50`.
+Artifact `12499498951` is a 1,265-byte ZIP whose SHA-256
+`7d6c407477fb273ff8aa40305ef13dee036debbc073bcf1f8217048a2345c87a`
+matches API metadata. The nested 1,546-byte driver receipt has SHA-256
+`0a2e18baa0171023e4ec07662af0658bf1e14c555d4fda8f232d7388f6ae9056`.
+This is a distinct missing-input failure, not another rejection of the fixed
+audio path or an inference result.
+
+The directory metadata lists the WAV, its checksum sidecar and a README.
+The sidecar's text names the expected SHA-256 and repository-relative fixture
+path; its own SHA-256 is
+`e7d194d64ca6ffda7347975ff5937d844c4a6d6b737907f1821fd16fc2b44d90`.
+No audio bytes were read locally. Luna added only that existing sidecar to
+the explicit sparse workflow inputs and extended the actual projected-tree
+regression to fail without it and pass with it. Root independently ran all
+nine tests in a six-file metadata-only projection, without original driver,
+audio or models. Root reviewed the exact two-file diff and opened
+[PR #295](https://github.com/ayutaz/vokra/pull/295), source
+`e17f1446d66d575da45866db69ad51c0e7f6d882`, tree
+`60016146e83341748ee6c4cd1700479934d75afd`.
+
+Fresh PR CI and genuine hosted preflight
+[run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015)
+run in parallel on this reviewed source. The preflight may detect remaining
+integration gaps before merge, but it does not replace the final accepted-main
+run. Normal protected merge, accepted-tree identity, final main smoke, result
+recovery and documentation acceptance remain required.
+
 ## Pillow accepted; fixture correction in review — 2026-10-23 11:40 UTC
 
 #287 was normally squash-merged as

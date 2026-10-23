@@ -3,7 +3,7 @@
 [English](current-status.md) | **日本語**
 
 **確認日: 2026-10-23 UTC**。受入済みGitHub mainは
-[`4d6efd02a95a3585b98ca718ddc0a6363b634ef3`](https://github.com/ayutaz/vokra/commit/4d6efd02a95a3585b98ca718ddc0a6363b634ef3)
+[`c1515500aabe7893e8176fd304c642e1b8ba2a03`](https://github.com/ayutaz/vokra/commit/c1515500aabe7893e8176fd304c642e1b8ba2a03)
 です。このページを現行情報の入口とし、過去のhandoff・測定結果は、そのcommit・
 承認範囲・環境・制限に限定した履歴として読みます。
 
@@ -25,15 +25,18 @@ Python・Unity・Godot・webは配布状況が別々です。workspaceの版か�
 Whisperのprovenance・MITを修正したartifactは、固定revision
 `bf440f6064ffc882d53d3694729dc4616dc2cfa7`で公開済みです。
 [修正証拠](handoff/whisper-base-provenance-repair-2026-10-23.md)を参照してください。
-公開CLIと修正済みモデルの最初の組み合わせ検証は、wrapperが固定fixtureではなく
-一時音声パスを渡したため、推論前に停止しました。
-[失敗receipt](handoff/evidence/published-rc1-cli-pairing-failure-2026-10-23.json)を保存し、
-呼出し修正・新しい機能実測・英日ガイドの受入を、新しい組み合わせの告知前の残条件とします。
+最初の実測は一時音声パス、次はSHA sidecarの不足で推論前に停止し、それぞれを
+[実行記録](handoff/cpu-preview-announcement-execution-2026-10-23.md)に保存しました。
+現在は[レビュー済みsourceの先行実測](handoff/evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)で、
+CPU明示の3コマンドがすべて成功しています。Whisper keyphrase、Silero音声214/343 frames・
+無音0/343です。このrunはPR #295のsourceであり、受入済みmainの結果とは区別します。
+#295受入・最終main実測・英日ガイド受入を、修正済みの組み合わせを告知する前の残条件とします。
 
 ## mainのCIと未完了PR
 
 Whisper統合の[#293](https://github.com/ayutaz/vokra/pull/293)と、レビュー済みPillow metadata更新の
-[#287](https://github.com/ayutaz/vokra/pull/287)は通常マージ済みです。どちらもレビューした
+[#287](https://github.com/ayutaz/vokra/pull/287)、fixtureパス修正の
+[#294](https://github.com/ayutaz/vokra/pull/294)は通常マージ済みです。それぞれレビューした
 正確なsource HEADで必須context/app 16組と関連監査が成功しました。
 #293の最終source確認は成功81・イベント別skip 5です。#287のoptional iOS/muslジョブは
 マージ確認時点では進行中であり、完了した成功として数えません。
@@ -45,7 +48,7 @@ PR受入と、その後のmain push CI・未完了の手動機能実測は区別
 
 | PR | head先頭 | 残る責務 |
 |---|---|---|
-| [#294](https://github.com/ayutaz/vokra/pull/294) | `7d5bfc11` | 公開CLIの既存driverへ固定fixtureパスを渡す修正。オフライン回帰9件成功、新CI・通常受入待ち |
+| [#295](https://github.com/ayutaz/vokra/pull/295) | `e17f1446` | 固定音声SHA sidecarを最小checkoutへ含める。オフライン回帰9件・genuine先行実測成功、PR CI・通常受入待ち |
 | [#290](https://github.com/ayutaz/vokra/pull/290) | `6d1f02dd` | Torch/CUDA reference closure変更。新しい互換性・native/license証拠とCPU index責務の整理が必要。変更要求中 |
 | [#278](https://github.com/ayutaz/vokra/pull/278) | `11e33a10` | draft。Candleのsame-run producer・receipt・consumer契約。サイズ／認証gateは緩和しない |
 | [#271](https://github.com/ayutaz/vokra/pull/271) | `d777dd71` | production action 9件の更新。producer artifact未発見は#278の展開サイズ超過と別問題 |
@@ -55,7 +58,7 @@ PR受入と、その後のmain push CI・未完了の手動機能実測は区別
 | [#169](https://github.com/ayutaz/vokra/pull/169) | `b3e9d5c1` | draft。VibeVoice CPU reference依存closure |
 | [#152](https://github.com/ayutaz/vokra/pull/152) | `a9f54e1a` | draft。XCodec2のpre-import・依存・証拠gate |
 
-#284・#286・#288・#293・#287は受入済みmainへマージされています。
+#284・#286・#288・#293・#287・#294は受入済みmainへマージされています。
 #291/#292は#293へ取り込んでcloseし、個別マージとは区別します。通常CIがgreenでも、source・
 license・owner・実weight gateの解決にはなりません。
 [告知計画](handoff/cpu-preview-announcement-plan-2026-10-23.md)で必須経路と保留中の

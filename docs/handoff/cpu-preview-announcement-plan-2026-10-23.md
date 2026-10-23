@@ -1,5 +1,41 @@
 # CPUプレビュー告知までの実行計画 — 2026-10-23
 
+## 先行実測成功、main結果待ち — 2026-10-23 12:12 UTC
+
+#295のレビュー済みsource `e17f1446`でのgenuine hosted先行確認
+[run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015)は成功した。
+[回収したraw receipt](evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)を
+GitHub artifactのdigestと照合し、source/run、公開CLI、固定2モデル、fixture、
+CPU明示3コマンドと出力の意味をrootが独立確認した。
+Whisper keyphraseが一致し、Sileroは音声214/343 frames、無音0/343。
+これは当該PR sourceの機能smokeで、数値parity・Metal・性能や最終mainの結果ではない。
+
+残りは「#295のfresh CI・通常マージ → tree一致確認・最終main実測 →
+英日導入ガイド/README・現況・成功証拠の文書PR受入 → 最新main」。
+先行確認を追加しても最終main実測や文書受入の終了条件は省略しない。
+
+## 入力一式の追加修正と先行確認 — 2026-10-23 12:09 UTC
+
+#294は必須context/app 16組と関連チェック成功後、通常マージした。
+受入済みmainは `c1515500aabe7893e8176fd304c642e1b8ba2a03`、
+tree `891ed7a817a647bf98e34cf7e4bd8cbf9d725e98` はレビューしたsourceと一致する。
+実測run `39950400977` は固定音声パスの条件を通ったが、sparse checkoutに
+`tests/fixtures/audio/jfk-30s.wav.sha256` がないため推論前に停止した。
+[2回目の失敗receipt](evidence/published-rc1-cli-pairing-failure-2-2026-10-23.json)を別名保存した。
+
+fixtureディレクトリのmetadataを監査し、wav・既存SHA sidecar・説明READMEの3件を確認した。
+sidecarの固定hash/pathは既存契約と一致し、音声本体を読み込まずに確認した。
+必要sidecarを明示checkoutへ追加した修正は[#295](https://github.com/ayutaz/vokra/pull/295)、
+HEAD `e17f1446d66d575da45866db69ad51c0e7f6d882`。
+metadataだけの最小6ファイルtreeで回帰9件が成功し、sidecar欠落の負例も実テストで失敗する。
+元driver・wrapper・pins・hash/path/同意/runtime gateは変更していない。
+
+再度CI完了後に入力不足が発覚する待ち時間を減らすため、今回はfresh CIと並行して
+レビュー済みの同PR HEADでgenuine hosted先行確認run `39951135015`を起動した。
+これは追加の統合確認であり、最終main結果の代用にはしない。
+成功したsource/treeを固定し、通常マージ後にtree一致を確認して、受入済みmainで最終実測する。
+その後に成功証拠・英日ガイド/現況の文書PRを受入し、最新mainへ戻す終了条件は維持する。
+
 ## PR受入と修正PR — 2026-10-23 11:40 UTC
 
 #287はHEAD `86d5dad8`の必須context/app 16組と関連Python監査・repo-hygiene・
