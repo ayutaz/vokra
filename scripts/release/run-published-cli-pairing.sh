@@ -52,7 +52,6 @@ tag_json="$work/tag.json"
 cli="$work/$cli_name"
 sidecar="$work/$cli_name.sha256"
 manifest="$work/vokra-desktop-manifest.json"
-audio="$work/jfk-30s.wav"
 receipt="$work/driver-receipt.json"
 
 curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 --silent --show-error "https://api.github.com/repos/ayutaz/vokra/releases/tags/$tag" -o "$release"
@@ -60,7 +59,9 @@ curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-tim
 curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 --silent --show-error "https://github.com/ayutaz/vokra/releases/download/$tag/$cli_name" -o "$cli"
 curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 --silent --show-error "https://github.com/ayutaz/vokra/releases/download/$tag/$cli_name.sha256" -o "$sidecar"
 curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 --silent --show-error "https://github.com/ayutaz/vokra/releases/download/$tag/vokra-desktop-manifest.json" -o "$manifest"
-curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 --silent --show-error "https://raw.githubusercontent.com/ayutaz/vokra/$tag/tests/fixtures/audio/jfk-30s.wav" -o "$audio"
+# The accepted driver deliberately rejects copied/temp audio paths.  Use the
+# committed sparse-checkout fixture so its path and bytes are both canonical.
+audio="$root/tests/fixtures/audio/jfk-30s.wav"
 
 uv run --no-project --python 3.12 python "$validator" --pins "$pins" --release "$release" --tag "$tag_json" --cli "$cli" --cli-name "$cli_name" --sidecar "$sidecar" --manifest "$manifest" --audio "$audio" --head "$source_head"
 chmod 700 "$cli"
