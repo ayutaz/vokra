@@ -96,3 +96,50 @@ fixture、コード、script、build/config、hook自身の変更、未解決bas
 新規PRのfresh exact-head CIと通常マージはまだ未完了。
 それらの実結果はPR/最終引渡しで別途確認し、この時点の状態を成功扱いしない。
 全モデルcampaignやScalewayは告知準備とは別の残作業である。
+
+### 遠隔静的回帰とcleanupの追記（2026-10-23 03:58 UTC）
+
+hookを含む変更は引き続きdeepに分類されるため、Macで重いpre-pushを実行せず、
+VASTで変更対象に限定したモデルなしshell回帰を実施した。Rust source、Cargo manifest、
+root lockfileの変更はなく、workspace Cargoや実weightの検証を代替する主張ではない。
+
+- 対象source: `bf53e3605debf8dc402320923a882615ecaf8c2e`。
+- 転送archiveは下記3ファイルのみ。SHA-256
+  `30501ef5fba2ba6316c5b2516427cafb853c255f352411633f739720e510d681`。
+  `.env`、HF token、モデル、保護manifest、既存dirty guardは転送していない。
+- `.githooks/pre-push`:
+  `c2965376708c09ff1bad1397103c751332761d01ee2b99cda8be7195deb5dc02`。
+- `.githooks/lib-fastpath.sh`:
+  `0476c336440553a66b3153c0ba78b4747800daad530745df49ce5acfe315cdcc`。
+- `scripts/test-pre-push-fastpath.sh`:
+  `675012335ddca467c1ccfd66ec8b39ef1064cc3228994ed7574d947e0163b072`。
+
+最初のinstance `57317301`（固有label `vokra-hook-static-444e8928d2ff`、
+storage込みUSD 0.135556/hour）は、provider応答内の料金集計をinstance本体と誤認して
+転送前に停止した。実応答形状をoffline回帰へ追加して修正し、rootが個別ID/labelを
+確認してdestroyした。個別readbackは `instances: null`。
+
+再試行instance `57317485`（固有label `vokra-hook-static-505ddac7cc56`、
+storage込みUSD 0.122223/hour）は、所有確認、SSH転送、remote shell検証の各段階で
+exit 0を記録した。remote shellはarchiveと3ファイルのhash、tar member allowlist、
+`bash -n`、実回帰script成功、`OK` case数63、出力64 KiB以下をすべて強制する。
+Cargo/compliance境界は回帰fixture内のmockであり、モデルやCargoは実行していない。
+
+controller自体はdestroyの成功テキストをJSONとして解析して失敗し、非ゼロ終了した。
+このため自動lifecycle全体をgreenとは記録せず、ローカルのcleanup-unconfirmed receiptも
+成功receiptへ書き換えていない。remote native出力本文・digestは最終receiptとして
+回収できておらず、回収済みとは主張しない。上記はremote shell exit 0と、その固定した
+検査script・source契約に基づく静的回帰結果である。
+使用した一時controllerのSHA-256は
+`2ee5d02e0484d42d38fd49c610585041f4e3d000864133aad0cf68d5303d9e4c`。
+
+rootが削除要求後の `57317485` を独立に個別照会し、`instances: null`を確認した。
+どちらも今回作成したinstanceと保存データをdestroy済み。再試行の追加作成はしない。
+全ページのinstance再照会も `success: true` / `total_instances: 0` / 空配列だった。
+これはその時点のinstance inventoryであり、別建てvolumeの全件監査ではない。
+両試行はそれぞれUSD 0.20/hour以下・30分以内で終了した。既存guardは不変。
+実compliance scannerのローカル回帰も8/8成功した。
+
+この限定した遠隔検証と手動cleanup照合を根拠に、対応するcode pushだけに既存の
+`VOKRA_SKIP_HOOKS=1`運用を適用する。PR上のfresh exact-head CI、保護された通常マージ、
+Whisperのlicense/provenance問題は、依然として別の受入項目である。
