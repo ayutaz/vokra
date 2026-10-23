@@ -2,8 +2,8 @@
 
 [English](current-status.md) | **日本語**
 
-**確認日: 2026-10-23 UTC**。ローカルとGitHubのmainは
-[`151d94a8613d5bd4acb1671a461f59742c37b8fc`](https://github.com/ayutaz/vokra/commit/151d94a8613d5bd4acb1671a461f59742c37b8fc)
+**確認日: 2026-10-23 UTC**。受入済みGitHub mainは
+[`4d6efd02a95a3585b98ca718ddc0a6363b634ef3`](https://github.com/ayutaz/vokra/commit/4d6efd02a95a3585b98ca718ddc0a6363b634ef3)
 です。このページを現行情報の入口とし、過去のhandoff・測定結果は、そのcommit・
 承認範囲・環境・制限に限定した履歴として読みます。
 
@@ -22,20 +22,31 @@
 Python・Unity・Godot・webは配布状況が別々です。workspaceの版から配布済みと推定せず、
 各bindingのREADMEを確認します。pre-1.0のAPI/ABI安定性や全catalog完了は保証しません。
 
+Whisperのprovenance・MITを修正したartifactは、固定revision
+`bf440f6064ffc882d53d3694729dc4616dc2cfa7`で公開済みです。
+[修正証拠](handoff/whisper-base-provenance-repair-2026-10-23.md)を参照してください。
+公開CLIと修正済みモデルの最初の組み合わせ検証は、wrapperが固定fixtureではなく
+一時音声パスを渡したため、推論前に停止しました。
+[失敗receipt](handoff/evidence/published-rc1-cli-pairing-failure-2026-10-23.json)を保存し、
+呼出し修正・新しい機能実測・英日ガイドの受入を、新しい組み合わせの告知前の残条件とします。
+
 ## mainのCIと未完了PR
 
-受入済みmainのcheckは**77件がすべて終了（成功70、イベント別skip 7）**し、pushの
-9 workflowもすべて成功しました。[Core CI](https://github.com/ayutaz/vokra/actions/runs/39828281086)・
-[CI Quality](https://github.com/ayutaz/vokra/actions/runs/39828281152)を含みます。
-以前のFA-v3のin-progress表示も解消しています。この結果は現在の未コミットの文書・
-guard差分のCI結果ではありません。mainの必須context/app 16組、strict更新要件、
+Whisper統合の[#293](https://github.com/ayutaz/vokra/pull/293)と、レビュー済みPillow metadata更新の
+[#287](https://github.com/ayutaz/vokra/pull/287)は通常マージ済みです。どちらもレビューした
+正確なsource HEADで必須context/app 16組と関連監査が成功しました。
+#293の最終source確認は成功81・イベント別skip 5です。#287のoptional iOS/muslジョブは
+マージ確認時点では進行中であり、完了した成功として数えません。
+PR受入と、その後のmain push CI・未完了の手動機能実測は区別します。この文書ブランチや
+無関係なdirty guardを検証した結果でもありません。mainの必須context/app 16組、strict更新要件、
 管理者への強制、linear history、会話解決要件は変更していません。
 
-未完了PRは8件（うちdraft 6件）です。
+未完了PRは9件（うちdraft 6件）です。
 
 | PR | head先頭 | 残る責務 |
 |---|---|---|
-| [#287](https://github.com/ayutaz/vokra/pull/287) | `efaf7d02` | VibeVoice **1.5B**のPillow更新。CI成功69／skip 1だがchanges requested・merge blocked。正準lock/package/license hash整合を修正する |
+| [#294](https://github.com/ayutaz/vokra/pull/294) | `7d5bfc11` | 公開CLIの既存driverへ固定fixtureパスを渡す修正。オフライン回帰9件成功、新CI・通常受入待ち |
+| [#290](https://github.com/ayutaz/vokra/pull/290) | `6d1f02dd` | Torch/CUDA reference closure変更。新しい互換性・native/license証拠とCPU index責務の整理が必要。変更要求中 |
 | [#278](https://github.com/ayutaz/vokra/pull/278) | `11e33a10` | draft。Candleのsame-run producer・receipt・consumer契約。サイズ／認証gateは緩和しない |
 | [#271](https://github.com/ayutaz/vokra/pull/271) | `d777dd71` | production action 9件の更新。producer artifact未発見は#278の展開サイズ超過と別問題 |
 | [#198](https://github.com/ayutaz/vokra/pull/198) | `5614a92c` | draft。日付付き法令出典の照合。法務sign-off・マージ済みpolicyではない |
@@ -44,8 +55,11 @@ guard差分のCI結果ではありません。mainの必須context/app 16組、s
 | [#169](https://github.com/ayutaz/vokra/pull/169) | `b3e9d5c1` | draft。VibeVoice CPU reference依存closure |
 | [#152](https://github.com/ayutaz/vokra/pull/152) | `a9f54e1a` | draft。XCodec2のpre-import・依存・証拠gate |
 
-#284・#286・#288は受入済みmainへマージされています。通常CIがgreenでも、source・license・
-owner・実weight gateの解決にはなりません。この文書更新ではPRのマージ・再実行をしません。
+#284・#286・#288・#293・#287は受入済みmainへマージされています。
+#291/#292は#293へ取り込んでcloseし、個別マージとは区別します。通常CIがgreenでも、source・
+license・owner・実weight gateの解決にはなりません。
+[告知計画](handoff/cpu-preview-announcement-plan-2026-10-23.md)で必須経路と保留中の
+モデル・CI・法務課題を分けています。
 
 ## モデルとApple対応
 
@@ -80,8 +94,12 @@ artifact公開は記録された範囲だけに有効で、全catalogは**完成
 
 ## セキュリティ・法務・運用の境界
 
-GitHubの全ページを再確認した結果、Dependabot未解決は**572件**（critical 93／high 247／
-medium 173／low 59、修正版の指定あり556／なし16）です。Code Scanning未解決は8件で、
+2026-10-23の最新GitHub全ページ再確認で、Dependabot未解決は**638件**（critical 94／high 259／
+medium 201／low 84、修正版の指定あり614／なし24）です。すべて`tools/parity/`または
+`integrations/`配下のpip警告で、critical/highは353件です。
+[日付付きmetadata集計receipt](handoff/evidence/announcement-security-readback-2026-10-23.json)に
+件数とmanifest分布を記録し、以前の572件のsnapshotは履歴として保持します。
+Code Scanning未解決は8件で、
 Scorecard 4件とserverテスト中のCodeQL `rust/log-injection` #68–#71です。
 テスト中という理由だけでfalse positiveとせず、dismissもしていません。repository全体・
 reference環境等のalertであり、first-party-onlyのroot runtimeへ外部依存を追加したものでは
@@ -94,9 +112,11 @@ bot確認とCaliforniaのHTTP 403により、法令全体を新たに確認済�
 保証ではありません。
 
 maintainer Macでのモデル取得・実行、workspace全体／`vokra-models`のCargoは禁止のままです。
-文書checkはstatic/offlineに限定し、この作業ではVAST/Scalewayの起動、モデル・registry・HF・
-Xへの公開をしません。新しいprovider在庫確認もしておらず、過去の停止・削除済みIDを現在の
-workerや転送元として扱いません。
+文書checkはstatic/offlineに限定します。告知作業では削除済みVAST workerとgenuine hosted
+Actionsを使い、それぞれの失敗・cleanup証拠を
+[実行記録](handoff/cpu-preview-announcement-execution-2026-10-23.md)へ保存しています。
+手順1–4には新Release・registry・HF・X公開を含めません。過去の削除済みIDを現在のworkerや
+転送元として扱いません。
 
 前の作業のlocal-model guard修正は未コミットの別差分として保持しています。オフライン検証済み
 ですが、mainへマージ済み・モデル対応完了という意味ではありません。
