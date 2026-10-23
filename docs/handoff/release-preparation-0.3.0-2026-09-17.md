@@ -1,5 +1,9 @@
 # Vokra 0.3.0 release-preparation record — 2026-09-17
 
+> **2026-10-23 supersession:** Use the [current status](../current-status.md)
+> for present-day main, release and PR routing. This preparation record keeps
+> its exact historical release evidence, permissions and no-promotion limits.
+
 > **2026-10-13 current routing / supersession:** The [fresh snapshot](documentation-refresh-2026-10-13.md) supersedes older current-readback notes: main is `7d38061c`, #199 is merged, and v0.3.0 remains the one tag/release with 18 assets. No new upload, registry publication, native three-OS assembly verification, ABI freeze or GA decision is inferred. Retain the exact dated preparation/release evidence below.
 
 > **2026-10-08 current-readback boundary:** `v0.3.0` remains the GitHub-only,

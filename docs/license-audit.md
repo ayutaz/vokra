@@ -1,5 +1,15 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-23 current routing / limits:** [current status](current-status.md)
+> records main `151d94a8`, the stable `v0.3.0` and published desktop preview
+> `v0.4.0-rc.1`, eight open PRs and metadata-only 136 full / 58 non-full.
+> The all-pages security snapshot has 572 Dependabot / eight Code Scanning
+> alerts; a first-party-only root runtime does not close reference/integration
+> findings. See the [legal-source retrieval boundary](legal-compliance.md)
+> and refreshed vendor-term records. This is not a new model/dependency
+> license approval, signer, scope hash or publication/withdrawal authorization;
+> all dated audit rows below and the protected manifest remain untouched.
+
 > **2026-10-17 current routing only:** use the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > for baseline main `5f1dfc1e`, the seven open PRs and pending exact scopes.
 > Successful #259 ordinary CI is not a license/native/operator sign-off.

@@ -16,7 +16,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 ## 1. native 自前再実装（whisper.cpp 型）
 
 - モデル定義を Rust で自前実装し、**上流の safetensors checkpoint のみ**を使う（`torch.onnx.export` の dynamo/scriptmodule 分裂に耐性）。既存例: `crates/vokra-models/src/whisper/`（base〜large-v3）, `.../piper_plus/`, `.../silero_vad/`, `.../speaker/`（CAM++ speaker encoder）。
-- **GPU backend 対応は `Compute` seam 経由**（`vokra-models/src/compute.rs`）: モデルの hot op（GEMM/GEMV/softmax/layer_norm/gelu/conv1d）を CPU kernel 直呼びでなく `Compute` に通すと、feature=metal/cuda build 時に Metal/CUDA へ swap できる（既定 CPU、非対応 backend は明示 `UnsupportedOp` = silent CPU fallback 禁止 FR-EX-08）。Whisper / piper-plus / CAM++ は配線済み。GPU parity は device-gated で CPU を oracle にする（→ skill `numerical-parity`）。
+- **GPU backend 対応は `Compute` seam 経由**（`vokra-models/src/compute.rs`）: モデルの hot op（GEMM/GEMV/softmax/layer_norm/gelu/conv1d）を CPU kernel 直呼びでなく `Compute` に通すと、feature=metal/cuda build 時に Metal/CUDA へ swap できる（既定 CPU、非対応 backend は明示 `UnsupportedOp` = silent CPU fallback 禁止 FR-EX-08）。Whisper / piper-plus / CAM++ は配線済み。GPU parity は device-gated とし、CPU との比較は独立した上流 reference を先に検証した後の補助的な差分確認に限る。GPU/CPU parity だけでモデル対応の完了や公開可否を主張しない（→ skill `numerical-parity`）。
 - **runtime に ONNX を絶対に入れない**（FR-LD-05、恒久）。onnxruntime / onnx / protobuf / prost / ort への依存禁止（deny.toml で ban 済み）。
 - **piper-plus 系は native 自前実装**（wrap 廃止・依頼者決定 2026-07-02）。G2P（8 言語）のみ当面 piper-plus 実装を流用。
 - **eSpeak-NG 禁止**（GPL-3.0）。G2P は piper-plus 独自 or IPA 辞書ベース。

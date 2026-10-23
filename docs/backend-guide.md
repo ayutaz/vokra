@@ -144,13 +144,13 @@ the meta block below).
 
 ## 6. Owner / contributor boundary
 
-**2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
-record baseline main `5f1dfc1e`, seven open PRs and #259's green ordinary CI
-with patched upstream compilation/API still unrun. The retained 10/16
-inventory is 136 code/artifact-full / 58 non-full across 194 repositories,
-not new backend or Apple parity evidence. Resolve non-Apple prerequisites
-and approved real-weight CPU before final packets and Scaleway; no CPU
-fallback or owner/publication approval is inferred.
+**2026-10-23 current routing:** the [documentation map](README.md) is the
+entry point for the live PR and model-readiness ledger. Public `main` is
+`151d94a8613d5bd4acb1671a461f59742c37b8fc` and the workspace line is
+`0.4.0-rc.1`; the latest stable release is `v0.3.0`. The RC and ordinary CI
+do not constitute real-weight CPU parity, Apple CPU/Metal/no-fallback evidence,
+or owner/publication approval. Resolve non-Apple prerequisites and approved
+real-weight CPU before final packets and Scaleway; no CPU fallback is inferred.
 
 The historical **2026-10-13 metadata snapshot** uses exact GitHub `main`
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` and reports 194 repositories,
@@ -175,9 +175,10 @@ OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec, and Voice Gender Classifier.
 All former immutable packet inputs were destroyed with their VAST storage;
 none is retained or immediately executable. Each packet must be regenerated
 on a new disposable VAST worker immediately before transfer to Scaleway.
-In the current 0.3.0 line, the 2026-09-11 Apple batch passed the exact
-approval-bound CPU/Metal checks for the named GigaAM v3, GigaAM Multilingual,
-OmniASR, ReazonSpeech, BiCodec and Voice Gender scopes. Those verdicts apply
+In a dated 2026-09-11 Apple batch recorded against the then-current 0.3.0
+release line, the named GigaAM v3, GigaAM Multilingual, OmniASR, ReazonSpeech,
+BiCodec and Voice Gender scopes passed their exact approval-bound CPU/Metal
+checks. Those verdicts apply
 only to their exact heads and contracts; source-level route completeness does
 not generalize to the catalog. The historical 2026-10-08 metadata/card-only public audit
 at exact GitHub `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`
@@ -194,13 +195,15 @@ status.
 This guide documents the *procedure*. It does **not** run devices: real GPU /
 NPU parity and soak on physical hardware (an Apple Neural Engine, a Hexagon
 device, an Android phone) are owner tasks. A contributor lands the crate, the
-coverage contract and the CPU-oracle parity harness; the owner runs it on the
+coverage contract and a parity harness that compares against a CPU path first
+validated against an independent upstream reference; CPU/GPU agreement alone
+is not model completion. The owner runs the required exact-scope checks on
 metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-10-08 — against exact GitHub `main` checkout
-`d100d93778191ccab77bd1c37fe3552e3d889758` and the five implemented compute backends,
+**Last verified: 2026-10-23 — against public GitHub `main` checkout
+`151d94a8613d5bd4acb1671a461f59742c37b8fc` and the five implemented compute backends,
 the generic convolution seams above, the CoreML whole-submodel delegate path,
 and the SDK-gated QNN delegate scaffold.**
 

@@ -11,6 +11,10 @@
 > below are dated 2026-07-07 evidence and must not be read as current hardware
 > guarantees or as a promoted threshold.
 
+**2026-10-23 status recheck:** this remains an owner-run VAST measurement aid
+and is not promoted to an always-on gate. The dated benchmark values and
+hardware conditions below remain historical evidence only.
+
 Reference-measurement harness that samples the Whisper large-v3 CUDA RTF `N`
 times on a real GPU and reduces the collected JSONL into a markdown report
 with **mean / median / stddev / CV / p50 / p95 / p99 / min / max /

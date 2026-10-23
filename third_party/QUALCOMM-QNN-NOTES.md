@@ -1,5 +1,11 @@
 # Qualcomm AI Engine Direct (QNN) — EULA / distribution compliance record
 
+> **2026-10-23 source review boundary:** the current probe is still a raw-loader
+> reachability scaffold, not authenticated device identity, graph execution or
+> Hexagon parity. See [current status](../docs/current-status.md). No SDK terms
+> were installed/accepted or newly authenticated by this documentation task;
+> the exact-version SDK/EULA and owner-gated re-issue duties below remain open.
+
 **Status**: implementation/design boundary for the `vokra-backend-qnn` crate;
 it is not a legal-compliance certification or a claim that a functional QNN
 artifact or critical-safe SKU has shipped. **Scope**: this file records *how

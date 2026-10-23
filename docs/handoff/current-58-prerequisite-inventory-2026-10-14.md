@@ -1,5 +1,10 @@
 # Current 58-row prerequisite inventory
 
+> **2026-10-23 supersession:** Current main, release and PR routing are
+> maintained in the [current status](../current-status.md). This row-specific
+> inventory remains a dated evidence record; its old rows, hashes, counts and
+> permission boundaries are unchanged.
+
 > **2026-10-17 current routing:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
 > link this row-specific inventory to the current PR queue. The retained
 > 10/16 TSV is hash-identical to the 10/14 snapshot below; this documentation

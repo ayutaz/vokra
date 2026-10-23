@@ -1,5 +1,13 @@
 # GA Definition-of-Done judgment record — v1.0 GA (M5-12)
 
+> **2026-10-23 supersession:** Use [`docs/current-status.md`](../current-status.md)
+> or the [Japanese counterpart](../current-status.ja.md) for current release
+> and project status. This remains an unfilled owner judgment template: no
+> verdict, signature, milestone date, threshold, or review execution is added
+> here. The latest stable source release is `v0.3.0`; the published desktop
+> preview is `v0.4.0-rc.1` with 22 assets. Dated observations below remain
+> historical.
+
 > **2026-10-17 current routing:** the [current status and remaining tasks](../handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > replace older current campaign/PR pointers. This remains a judgment
 > template, not an executed review: no GA verdict, milestone date, metric,

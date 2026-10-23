@@ -1,5 +1,11 @@
 # M5 (v1.0 GA) Owner Verification Checklist
 
+> **2026-10-23 current routing:** use [current status](current-status.md) for
+> main `151d94a8`, complete source CI, eight open PRs, metadata-only 136/58
+> and the fresh 572 Dependabot / eight Code Scanning snapshot. No checkbox,
+> signed scope, legal/model approval, ABI freeze or GA verdict changes.
+> Dated observations below do not become fresh verification by this pointer.
+
 > **2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > record baseline main `5f1dfc1e`, seven open PRs and original model-free
 > stages 1–2 accepted. Non-Apple/owner, real-weight CPU, final packet,

@@ -11,9 +11,12 @@ authorized CD; they are not present in the tracked UPM tree.
 
 ## Status
 
-The workspace and UPM metadata are released at `0.3.0` (`v0.3.0`). The UPM
-registry publication remains owner-gated; the GitHub release workflow assembles
-the signed package tarball and native slices. This source checkout intentionally
+The latest stable package metadata and production release are `0.3.0`
+(`v0.3.0`). That GitHub Release includes the signed Unity package tarball and
+native slices; the UPM registry publication remains owner-gated. The source
+package metadata on this checkout tracks the newer `0.4.0-rc.1` workspace,
+while the current GitHub-only `v0.4.0-rc.1` preview is CPU-only desktop and
+does not include a Unity package tarball. This source checkout intentionally
 does not contain those binaries: its tracked `Plugins/` tree contains only
 `.gitkeep`/`.meta` placeholders. The release job is the source of truth for the
 assembled package (see `.github/workflows/release.yml`, job
@@ -81,14 +84,17 @@ runnable because the native libraries are not included yet.
 }
 ```
 
-Before opening the Unity project, clone the repository, check out the released
-`v0.3.0` tag, and stage the native library
+Before opening the Unity project for a source build, clone the repository,
+check out the desired tag, and stage the native library
 for the target platform:
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
 cd vokra
+# Stable production source:
 git checkout --detach v0.3.0
+# Or, for the published desktop-preview source (source build only; no Unity release tarball):
+# git checkout --detach v0.4.0-rc.1
 
 # Host desktop (macOS, Linux, or Windows): stages the current host library.
 scripts/build-unity-plugin.sh
@@ -107,16 +113,20 @@ artifacts, not a release claim.
 
 ### GitHub Release tarball (production)
 
-Download `com.vokra.unity-0.3.0.tgz` from the authorized `v0.3.0` GitHub
-Release and drag it into Package Manager's *Add package from tarball…* dialog.
-OpenUPM publication remains a separate owner-gated decision.
+Download `com.vokra.unity-0.3.0.tgz` (and its published SHA-256) from the
+authorized `v0.3.0` GitHub Release and drag it into Package Manager's *Add
+package from tarball…* dialog. The current GitHub-only `v0.4.0-rc.1` preview
+contains no Unity package tarball. OpenUPM publication remains a separate
+owner-gated decision.
 
 ## Samples
 
 Import the *VAD -> ASR -> TTS demo* from the Package Manager window.
 Demo model weights (Silero VAD v5 MIT, Whisper base MIT, piper-plus
-voice MIT) are NOT bundled, and the `v0.3.0` GitHub Release contains no GGUF
-assets. Before running `Samples~/VadAsrTts/scripts/fetch-demo-models.sh`, set
+voice MIT) are NOT bundled, and the stable `v0.3.0` GitHub Release contains no
+GGUF assets. The `v0.4.0-rc.1` desktop preview is not a verified model source.
+Before running
+`Samples~/VadAsrTts/scripts/fetch-demo-models.sh`, set
 all three URL environment variables to independently verified MIT sources;
 release presence alone does not make the model fetches usable. See the sample
 README for the required variables and license/provenance checks (NFR-DS-04).

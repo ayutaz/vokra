@@ -141,12 +141,27 @@ is_docs_only_diff() {
             # remain deep by default.
             scripts/ci/plan-nightly-full-parity.sh)
                 ;;
-            # Scripts / tooling that may be exercised elsewhere in the hook or in tests:
-            scripts/*|tools/*|.githooks/*)
+            # Scripts / hook tooling remain deep, but Markdown under the
+            # repository's tooling trees is documentation-only. Keep the
+            # exception path-local: a script, config, fixture, or helper in
+            # these trees still falls through to the deep path.
+            scripts/*|.githooks/*)
                 trigger="$f"; break ;;
-            # Test fixtures / harness (may bind test output):
+            tools/*)
+                case "$f" in
+                    *.md) ;;
+                    *) trigger="$f"; break ;;
+                esac ;;
+            # Test fixtures / harness may bind test output, including fixture
+            # README files. Other test Markdown (parity/API/design notes) is
+            # documentation-only, but any non-Markdown test file remains deep.
+            tests/fixtures/*|tests/*/fixtures/*)
+                trigger="$f"; break ;;
             tests/*|integrations/*)
-                trigger="$f"; break ;;
+                case "$f" in
+                    *.md) ;;
+                    *) trigger="$f"; break ;;
+                esac ;;
             # Documentation-shape files → OK to skip:
             docs/*|.github/*|*.md|*.yml|*.yaml|.gitattributes|.gitignore|.editorconfig|LICENSE|NOTICE|README|CONTRIBUTING*|CHANGELOG*|include/*.h)
                 ;;
