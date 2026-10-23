@@ -64,6 +64,8 @@ jobs:
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Published CLI pairing offline regression suite
+        run: uv run --no-project --python 3.12 python scripts/release/test_published_cli_pairing.py
       - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
         # windows-latest checks out with core.autocrlf=true, so any hashed
         # fixture without an explicit .gitattributes eol pin arrives with
