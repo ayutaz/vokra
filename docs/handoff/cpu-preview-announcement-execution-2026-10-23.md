@@ -6,6 +6,36 @@ X posting, a new Release, additional HF publication and the full Apple campaign
 are outside these steps. This is a dated execution record; later results are
 appended rather than attributed to earlier runs.
 
+## Pillow accepted; fixture correction in review — 2026-10-23 11:40 UTC
+
+#287 was normally squash-merged as
+`4d6efd02a95a3585b98ca718ddc0a6363b634ef3`, parent `710ae91d`.
+Its exact source `86d5dad8` passed all sixteen required context/app pairs,
+Python license audit, repo-hygiene and the relevant CUDA/Metal checks.
+The API readback confirmed merged/closed, with the expected source head.
+Optional iOS/musl checks remained live at merge; no failure was present and
+those pending checks are not reported as completed successes.
+
+The root reviewed Luna's two-file correction and opened
+[PR #294](https://github.com/ayutaz/vokra/pull/294), source
+`7d5bfc1127d760820a6de221fbeb0e990d89938c`, on this accepted main.
+Helper blob `7f74b12d105d2f35dfa2e065ee4f0020e5c8aedd` passes the committed
+fixture path instead of downloading a temporary copy. Test blob
+`86e80b65da3d19cec1de05e53eda703d4bd883a7` retains the eight existing tests
+and adds one real-wrapper, stubbed-command handoff regression.
+Root review corrected driver identification and the exact-call-count assertion
+before acceptance. A five-file projection without driver/audio/models passes
+all nine final tests; the previous wrapper fails the new path assertion.
+No actual model/runtime success is claimed by these isolated tests.
+Fresh CI and normal merge are pending before the next hosted model run.
+
+The latest all-pages selected-metadata GitHub readback is preserved in
+[the security receipt](evidence/announcement-security-readback-2026-10-23.json):
+638 open pip alerts (94 critical, 259 high, 201 medium, 84 low), all under
+tools/parity or integrations; 614 name a patched version and 24 do not.
+The eight open Code Scanning alerts remain. This supersedes the earlier
+572-alert count without rewriting its dated evidence or dismissing findings.
+
 ## Accepted integration and genuine hosted failure — 2026-10-23 11:28 UTC
 
 [PR #293](https://github.com/ayutaz/vokra/pull/293) was normally squash-merged

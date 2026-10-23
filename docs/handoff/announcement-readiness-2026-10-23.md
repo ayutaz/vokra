@@ -1,5 +1,26 @@
 # CPUプレビュー告知前確認 — 2026-10-23
 
+## 受入後の実測と現在の残条件 — 2026-10-23 11:40 UTC
+
+Whisper provenance修正と監査・成功証拠・検証workflowを含む#293はmainへ受入済み。
+#291/#292は取り込み先を記録してcloseし、Pillow metadata修正#287も通常マージ済みである。
+受入済みmainは `4d6efd02a95a3585b98ca718ddc0a6363b634ef3`。
+新WhisperのMIT/provenance修正済み公開状態は、下記の修正記録と公開成功receiptに従う。
+
+一方、genuine Actionsの[公開CLI実測run](https://github.com/ayutaz/vokra/actions/runs/39944971172)は、
+wrapperが一時音声パスを渡したことにより、元driverの固定fixtureパスgateで停止した。
+[raw失敗receipt](evidence/published-rc1-cli-pairing-failure-2026-10-23.json)のモデル・コマンド欄は空。
+既存RC1 binaryと入力identityの照合成功は、推論成功とは区別する。
+修正[#294](https://github.com/ayutaz/vokra/pull/294)はレビュー済み2ファイルと
+オフライン回帰9件でPR化済みだが、fresh CI・通常マージ・新しい実測は未完了。
+
+**新Whisperと公開済みRC1 CLIを案内する告知は引き続き保留。**
+#294受入、新しい3経路の成功receipt回収・独立確認、英日ガイド/現況の文書PR受入を残条件とする。
+現在のセキュリティ再確認は
+[638 Dependabot／8 Code Scanning](evidence/announcement-security-readback-2026-10-23.json)で、
+後段の572件は以前の観測である。全pip警告はtools/parityまたはintegrations配下に属し、
+配布CLIへ同梱される依存とは区別するが、全面的なsecurity-clean判定には使わない。
+
 ## 後続の修正と現在の受入待ち — 2026-10-23 09:29 UTC
 
 以下の当初判定は、旧Whisper pinの調査時点の記録として保持する。

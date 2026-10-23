@@ -1,5 +1,28 @@
 # CPUプレビュー告知までの実行計画 — 2026-10-23
 
+## PR受入と修正PR — 2026-10-23 11:40 UTC
+
+#287はHEAD `86d5dad8`の必須context/app 16組と関連Python監査・repo-hygiene・
+CUDA/Metal check成功後、通常マージした。現在の受入済みmainは
+`4d6efd02a95a3585b98ca718ddc0a6363b634ef3`。
+optional iOS/muslジョブはマージ観測時点では進行中であり、成功へ読み替えない。
+
+fixtureの受渡し修正は[#294](https://github.com/ayutaz/vokra/pull/294)、
+HEAD `7d5bfc1127d760820a6de221fbeb0e990d89938c`としてPR化した。
+main上のwrapperと回帰テストだけの2ファイル変更で、元driver・workflow・pin・guardは変更しない。
+Lunaの候補とrootの独立した最小5ファイル検証で、オフライン回帰9件が成功した。
+新しい動的テストは実wrapperをfake uv/curl/gitで動かし、識別したdriver呼出しへ
+固定fixtureの絶対パスが1回だけ渡ることを確認する。旧wrapperでは実際に失敗する。
+本物のdriver、音声、モデル、ネットワークをこの回帰では使わない。
+
+残る順序は「#294 fresh CI・通常マージ → 公開CLI実測成功 →
+成功証拠・英日ガイド/現況の文書PR受入 → 最新main」。
+告知前の最終判定はその後で、X原稿・投稿は手順4までには含めない。
+公開中のPRは引き続き9件（#287を受入、#294を追加）で、他8件の保留条件は後段を維持する。
+最新セキュリティreadbackは638 Dependabot alerts・8 Code Scanning alertsであり、
+[日付付き集計receipt](evidence/announcement-security-readback-2026-10-23.json)を保存した。
+過去の572件は各時点の履歴として保持する。
+
 ## 告知までの現行計画 — 2026-10-23 11:28 UTC
 
 この節を現在の計画とし、後段は各時点の履歴として保持する。
