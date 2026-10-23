@@ -1,7 +1,7 @@
 # @vokra/web
 
 The source package is currently unpublished (`web/pkg/package.json` keeps the
-`0.0.0-dev` version). This README was reviewed on 2026-10-04 against the
+`0.0.0-dev` version). This README was reviewed on 2026-10-23 against the
 current WebGPU/WASM loader; do not infer an npm registry release from the
 source tree.
 

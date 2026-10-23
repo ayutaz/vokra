@@ -1,5 +1,14 @@
 # Mac CPU / Metal pre-Scaleway remaining-task inventory (2026-09-05)
 
+> **2026-10-23 current inventory routing:** [current status](../current-status.md)
+> records accepted main `151d94a8`, eight open PRs and complete main CI.
+> The fresh [metadata-only row inventory](model-inventory-2026-10-23.tsv)
+> remains 194 repositories / 193 GGUF-bearing / 198 files, CPU/Metal
+> code-artifact-full 136 and non-full 58. These are not new model/device passes.
+> Keep every row and the distinct frozen 63-row owner packet; actual BF16,
+> HiFTNet/all four BigVGAN prerequisites, independent real-weight CPU and
+> final packet/Apple/result duties remain open. Older queue notes retain dates.
+
 > **2026-10-22 16:13 UTC source acceptance:** [#283's complete fresh CI](mac-cpu-metal-status-2026-10-22.md#1613-utc-continuation-pr-283-accepted-on-complete-fresh-ci)
 > produces main `ce36c27d` after 69 successful checks/one intentional skip,
 > sixteen required pairs and nine successful workflows. Earlier pending

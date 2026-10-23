@@ -1,5 +1,9 @@
 # Desktop release completeness follow-up — 2026-10-07
 
+> **2026-10-23 supersession:** Use the [current status](../current-status.md)
+> for present-day main, release and PR routing. This record preserves the exact
+> desktop receipt history, build boundaries and publication limitations below.
+
 > **2026-10-13 current routing / supersession:** PR [#199](https://github.com/ayutaz/vokra/pull/199) was merged on 2026-10-08 at `edc2ab5404f1b9d23dab121f9b4d7e1657ea9db9` (reviewed head `cf36b448a63105fc8d97147982212cabf08485b5`). The source is accepted into current main `7d38061c`; pending-review statements below describe earlier checkpoints. This refresh does not newly validate macOS/Windows native builds, same-run complete assembly or publication, and does not relabel the original FAIL receipts. The [current release readback](documentation-refresh-2026-10-13.md) still has the single v0.3.0 release/18 assets; source acceptance alone is not evidence of replaced assets.
 
 ## Scope and baseline

@@ -109,11 +109,14 @@ Quantization presets available: `--quantize q4_k` / `q5_k` / `q6_k`
 
 - **Whisper base CPU**: RTF < 0.3 target (parity with whisper.cpp on the
   same CPU; both use K-quant and a hand-tuned kernel path).
-- **Whisper large-v3 on RTX 4090**: **RTF < 0.15** end-to-end (measured
-  0.081–0.115). This includes device-resident encoder + per-decoder-step
-  device residency + a fused FA v2 causal-attention kernel. whisper.cpp's
-  CUDA path is typically 2–3× slower on the same GPU because it goes
-  through cuBLAS rather than a fused kernel.
+- **Dated CUDA reference, not a current guarantee**: the report set in
+  [`docs/bench-baselines/vast-2026-07-10/`](bench-baselines/vast-2026-07-10/)
+  used Whisper large-v3 on an NVIDIA RTX 4090 (driver `560.35.03`), the
+  `/root/jfk-30s.wav` 11-second input, and ten samples on 2026-07-10. The
+  decomposed path recorded RTF samples `0.735571–0.786904`; gated FA v2
+  recorded `0.753041–0.820891`. These are exact-setup reference measurements,
+  not a whisper.cpp comparison, a general GPU-performance claim, or the
+  formal `<0.10` gate.
 
 ### 3.4 What you have to reconcile
 
@@ -125,13 +128,13 @@ Quantization presets available: `--quantize q4_k` / `q5_k` / `q6_k`
 ## 4. From `faster-whisper` (Python)
 
 The source Python package now exposes `Session` and its generated `ctypes`
-table covers the complete current C function set. It remains an unpublished pre-1.0
-surface: the four native wheels must pass final-head CI, and no PyPI/TestPyPI
-destination has been authorized. See the
-[binding status](../bindings/python/README.md). Source-checkout evaluation is
-available now, but do not replace a production `faster-whisper` dependency
-with a registry `vokra` package until a specific release is published and
-verified.
+table covers the complete current C function set. The stable `v0.3.0` GitHub
+release contains four platform wheel assets; PyPI and TestPyPI remain
+unpublished. The newer `0.4.0-rc.1` source line is a desktop preview and has no
+Python wheel release. See the [binding status](../bindings/python/README.md).
+Source-checkout evaluation is available now, but do not replace a production
+`faster-whisper` dependency with a registry `vokra` package until a specific
+registry release is published and verified.
 
 For the currently documented **drop-in HTTP client** path, run
 [`integrations/vokra-server`](../integrations/vokra-server) — it exposes

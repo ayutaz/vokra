@@ -1,5 +1,9 @@
 # 現況と残タスク — 2026-10-17
 
+> **2026-10-23 supersession:** 現在のmain・release・PR routing・CI/security snapshotは
+> [current status](../current-status.md)を参照する。この記録の旧HEAD、件数、測定値、承認範囲、
+> 公開不可境界は当時の履歴として変更しない。
+
 ## 読み方と確認範囲
 
 この記録は、Mac CPU／Apple Metal対応の現況・PRキュー・次の判断をまとめる

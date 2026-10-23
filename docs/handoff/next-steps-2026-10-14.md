@@ -1,5 +1,9 @@
 # 残タスクと実行計画 — 2026-10-14 JST
 
+> **2026-10-23 supersession:** 現在のmain・release・PR routingは
+> [current status](../current-status.md)を入口とする。この計画の旧順序、観測、
+> 承認範囲、公開不可境界はdated historyとして保持する。
+
 > **2026-10-17の現況:** [現況と残タスク](current-status-and-remaining-tasks-2026-10-17.md)を
 > 最新の入口とする。baseline mainは`5f1dfc1e`、未マージPRは7件。#259は72成功／
 > 意図したskip1で通常CI完了だが、追加パッチの実compile/API未実施のためDraft。

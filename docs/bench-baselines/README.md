@@ -1,5 +1,13 @@
 # `docs/bench-baselines/` — index & provenance (X-06-T17)
 
+> **2026-10-23 current-status pointer:** For the current release and project
+> status, use [`docs/current-status.md`](../current-status.md) or its
+> [Japanese counterpart](../current-status.ja.md). This index preserves the
+> measured baselines and dated provenance below; this documentation refresh
+> does not rerun benchmarks or change any gate value. The latest stable source
+> release is `v0.3.0`; the published desktop preview is `v0.4.0-rc.1` with
+> 22 assets.
+
 This directory mixes three *kinds* of file that must never be confused. The
 2026-07-18 M5-14 report recorded the cost of confusing them: overwriting a
 **CI-gate** baseline with an **M1-rig** number falsely reddens main CI,

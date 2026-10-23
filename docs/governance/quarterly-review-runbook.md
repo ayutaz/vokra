@@ -1,5 +1,13 @@
 # 四半期 Go/No-go review 運用手順 runbook
 
+> **2026-10-23 supersession:** 現在のリリース／プロジェクト状態は
+> [`docs/current-status.md`](../current-status.md) または
+> [日本語版](../current-status.ja.md) を参照してください。本書は手動の
+> owner review runbook のままであり、この更新では review、署名、開始日、
+> 閾値、Go/No-go 判定を追加しません。最新の安定 source release は
+> `v0.3.0`、公開済み desktop preview は `v0.4.0-rc.1`（22 assets）です。
+> 日付付きの観測値は履歴として保持します。
+
 **文書 ID**: VOKRA-GOV-002
 **最終更新**: 2026-10-08（exact GitHub `main`、tag/release APIとtracked review recordの現況を再照合）
 **位置付け**: 本runbookのKill switch表（撤退条件 A〜L）と

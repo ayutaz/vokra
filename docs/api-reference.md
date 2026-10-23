@@ -61,20 +61,15 @@ Each binding documents its own idiomatic surface on top of the C ABI:
   the header comments and the tutorials are the reference for now. The first
   docs.rs render is verified by the owner after a crates.io publish.
 
-## 5. Current 0.3.0 release and Apple verification status
+## 5. Current release and Apple verification status
 
-The current release line is workspace version `0.3.0`.
-
-**2026-10-17 current campaign snapshot:** baseline main `5f1dfc1e` includes
-accepted model-free Candle CPU/API work. PR #259's normal CI is complete
-(72 successful checks / one intentional skip), but its additional observer
-patch still needs actual upstream library/API verification and remains Draft.
-The latest retained inventory is dated 2026-10-16: 194 repositories,
-136 code/artifact-full / 58 non-full. This documentation refresh does not
-rerun that inventory, regenerate an API/header, or prove real-weight CPU or
-Apple parity. See the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
-for the seven open PRs and the non-Apple → VAST → final packet → Scaleway →
-result/cleanup sequence. Historical snapshots below retain their original scope.
+The current workspace line is `0.4.0-rc.1`; the latest stable release is
+`v0.3.0`. Public `main` is `151d94a8613d5bd4acb1671a461f59742c37b8fc`
+(2026-10-22 UTC). The RC is a CPU-only preview: it does not establish
+real-weight CPU parity, Apple CPU/Metal/no-fallback coverage, full-catalog
+completion, or numerical parity. See the [documentation map](README.md) for
+the live PR and model-readiness ledger. Historical snapshots below retain
+their original scope and must not be read as current counts.
 
 **2026-10-13 metadata snapshot:** the exact GitHub `main` checkout is
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`. The fresh metadata/card-only

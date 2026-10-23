@@ -62,9 +62,10 @@ Apple/Scaleway worker, verify the manifest there, retain only small evidence,
 and destroy the VAST instance afterward. No Scaleway run or Hugging Face upload
 has occurred.
 
-## Current 0.3.0 release status
+## Current release/status boundary
 
-The current workspace release line is `0.3.0`. The parity figures below remain
+The latest stable GitHub release remains `v0.3.0`. The current checkout is on
+the `v0.4.0-rc.1` release line; the parity figures below remain
 a historical pre-documentation-refresh snapshot from PR #79 at `d8a93bc3`,
 against `origin/main` `41ce9ffd`; they are not refreshed by this README update.
 The independent CPU packet and source-level Metal route are not a blanket
@@ -73,8 +74,8 @@ bounded 2026-09-11 Scaleway run, with publication still `NO_UPLOAD`; see the
 [dated Apple results](../../../docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md),
 table row `OmniASR CTC 1B`. That snapshot's parity summary is 109 passes and
 13 expected skips; those numbers and the coverage values immediately below are
-history-only. The current metadata-only public inventory (2026-10-08, exact
-`main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`) is 194 public
+history-only. The metadata-only public inventory (2026-10-23, exact
+`main` checkout `151d94a8613d5bd4acb1671a461f59742c37b8fc`) is 194 public
 repositories, 193 GGUF-bearing repositories and 198 GGUF files. Its CPU
 classification is `full=136/partial=43/no-runtime-binder=14/not-artifact=1`,
 and its Metal classification is
@@ -84,8 +85,12 @@ completion verdict for every public row. The named OmniASR packet result does
 not close the global catalog denominator or authorize a public artifact
 replacement.
 
-The current GitHub release is `v0.3.0` with 18 release assets. External
-package registries and any OmniASR public-artifact replacement remain
+The current stable GitHub release is `v0.3.0` with 18 release assets. A
+separate GitHub-only prerelease `v0.4.0-rc.1` (22 assets, source
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`, prerelease) is not a stable
+release and does not change this
+OmniASR publication boundary. External package registries and any OmniASR
+public-artifact replacement remain
 unauthorized; the former statement that there were 0 release tags and 0
 GitHub Releases belongs to the dated PR #79 snapshot above.
 

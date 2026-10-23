@@ -1,5 +1,12 @@
 # Mac CPU / Metal owner disposition packet (2026-09-07)
 
+> **2026-10-23 current-status boundary:** [current status](../current-status.md)
+> replaces older PR/CI routing, not this immutable decision scope. Preserve
+> the frozen 63 rows, hashes, signers and decisions; the fresh public inventory's
+> 58 non-full rows is a different denominator. Green source CI and this
+> documentation refresh grant no owner/legal, execution, upload or withdrawal
+> approval. No protected input is read, rewritten or materialized.
+
 > **2026-10-17 current-status boundary:** the [current status and remaining tasks](current-status-and-remaining-tasks-2026-10-17.md)
 > update PR/CI routing only. #259's successful ordinary CI is not an owner,
 > operator, model or license approval. Its new compiler/input-delivery scope

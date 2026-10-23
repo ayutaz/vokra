@@ -31,6 +31,12 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 > numerical parity, and it does not update model/Space/HF/registry/X/Scaleway
 > artifacts.
 >
+> **Current source checkpoint (2026-10-23 UTC):** public `main` is
+> `151d94a8613d5bd4acb1671a461f59742c37b8fc`. The workspace is still on the
+> `0.4.0-rc.1` development line; the latest stable release remains `v0.3.0`.
+> Open pull requests and model-readiness status are tracked in the
+> [documentation map](docs/README.md), not inferred from this release note.
+>
 > **Historical prepublication note (2026-10-17):** `v0.4.0-rc.1` packaging was
 > in progress; the published Latest remains `v0.3.0`. At source `9ee5834d`,
 > Whisper base ASR and Silero VAD v5 speech/silence passed hosted Linux CPU

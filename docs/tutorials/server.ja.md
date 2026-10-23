@@ -106,7 +106,7 @@ cap 外である。
 
 ## Keeping this page current
 
-**最終確認日: 2026-10-04 — `integrations/vokra-server/src/config.rs`
+**最終確認日: 2026-10-23 — `integrations/vokra-server/src/config.rs`
 <!-- anchor: integrations/vokra-server/src/config.rs --> のフラグ surface に
 対して確認。**
 
