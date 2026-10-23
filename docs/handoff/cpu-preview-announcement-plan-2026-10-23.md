@@ -1,5 +1,83 @@
 # CPUプレビュー告知までの実行計画 — 2026-10-23
 
+## 告知までの現行計画 — 2026-10-23 11:28 UTC
+
+この節を現在の計画とし、後段は各時点の履歴として保持する。
+GitHubの再確認時点でmainは `710ae91dec29066627a123a4d98e519465f2fe67`。
+開いているPRは9件（通常3件、Draft 6件）。
+目標は既存 `v0.4.0-rc.1` のCPUプレビューを、公開済みLinux CLIと固定した
+Whisper ASR / Silero VADの動作証拠、再現可能な英日導入手順を添えて告知できる状態にすること。
+全モデル・Apple Metal対応完了とは区別する。現時点では告知準備完了とは判定しない。
+
+### 完了した前提と、今回確認した停止原因
+
+- [#293](https://github.com/ayutaz/vokra/pull/293)は通常マージ済み。
+  Whisper provenance回帰・MIT一次資料の訂正・公開成功証拠・CIの固定GGUF入力・
+  手動の公開CLI検証workflowがmainへ入った。
+- [#291](https://github.com/ayutaz/vokra/pull/291)と
+  [#292](https://github.com/ayutaz/vokra/pull/292)は#293への取り込みを記録してclose済み。
+  個別マージ済みという意味ではなく、旧失敗・cancel結果も成功へ変更していない。
+- 公開CLI実測の[run 39944971172](https://github.com/ayutaz/vokra/actions/runs/39944971172)は失敗。
+  モデルなしの8回帰は成功したが、実測driverが
+  `audio must be the committed fixture tests/fixtures/audio/jfk-30s.wav` と拒否した。
+  wrapperが渡した音声は一時ディレクトリ内で、固定fixtureパスの契約と一致しない。
+  receiptのcommandsとmodelsは空であり、モデル動作の失敗や成功はまだ観測していない。
+  CLI・sidecar・manifest・音声の入力identity照合結果と、この機能未実行を分けて扱う。
+- 失敗artifact `12497962386`（ZIP 1,279 bytes、SHA-256
+  `3fe73478e61a03e846dd426e8599af718f91cad966bbdc30033076376736196c`）を回収し、
+  API digestと照合済み。中のdriver receiptは1,516 bytes、SHA-256
+  `3b01dab9f54327606854f63a0b25a1adb0081b1b2566b7b4027c2200ee1b343b`。
+  7日で失効するActions artifactだけを恒久的な証拠にせず、後続の結果記録へ保存する。
+
+### 現在の9 PRの扱い
+
+| PR | 現況・次の作業 | 告知との関係 |
+|---|---|---|
+| [#287](https://github.com/ayutaz/vokra/pull/287) | Pillow更新と版別MIT-CMU監査metadataの修正済み。最新main取り込み後のHEAD `86d5dad8`でfresh CI進行中。必須check・関連監査・レビューを確認して通常マージ | 優先して片付ける。CLI実測の修正とは並行可能 |
+| [#290](https://github.com/ayutaz/vokra/pull/290) | Torch/CUDA依存closure更新に対する新しい互換性・native/license証拠とCPU index契約の整理が必要。mainとの競合も解消してからfresh CI | 保留可。今回のWhisper/Silero CLI告知の必須PRではない |
+| [#278](https://github.com/ayutaz/vokra/pull/278) | Draft。artifact展開上限の契約不一致とmusl server-compat失敗の原因修正・実artifact検証が必要 | 告知後続。#271より先に受入条件を解決 |
+| [#271](https://github.com/ayutaz/vokra/pull/271) | Actions 9更新。#278の前提解決後、producer artifact未発見を独立に確認し、main整合・fresh CI | 告知後続。#278の上限超過と同一原因扱いしない |
+| [#198](https://github.com/ayutaz/vokra/pull/198) | Draft。法務一次資料・版・適用範囲・owner/legal判断を解決 | 保留可。告知で法令適合を主張しない |
+| [#191](https://github.com/ayutaz/vokra/pull/191) | Draft。Kyutai依存/upstream・独立reference・実weight等の条件を解決 | 別モデルcampaignとして継続 |
+| [#182](https://github.com/ayutaz/vokra/pull/182) | Draft。VibeVoice native/license/owner・実weight等と#290/#169の責務を整理 | 別モデルcampaignとして継続 |
+| [#169](https://github.com/ayutaz/vokra/pull/169) | Draft。#182の受入とcollector/security責務の包含確認後に整理 | #182受入前に重複扱いで閉じない |
+| [#152](https://github.com/ayutaz/vokra/pull/152) | Draft。XCodec2依存/native/license/owner・実weight/Apple条件を解決 | 別モデルcampaignとして継続 |
+
+#287以外の8件は、この再確認でmainとの競合がある。保留解除時には競合解消と
+変更後HEADでのCI・レビューが必要で、過去のgreen/skipを受入証拠として流用しない。
+
+### これからの実行順と完了条件
+
+1. **音声fixtureの受け渡しを修正するPRを作る。** Lunaがwrapperと必要な回帰を担当し、
+   managerが差分・証拠をレビューする。既存driverの固定fixture・identity・同意・
+   genuine Actionsの条件を維持し、受け渡すパスを契約へ合わせる。
+   新しい回帰は今回の実際のパス契約違反を検出するものにする。
+   focused static/offline検証とfresh CI後、通常マージする。
+2. **並行して#287を完了する。** 最新HEADの必須context/app、関連Python監査、
+   レビュー・会話解決・base条件を確認し、問題がなければ通常マージする。
+   他8 PRの未解決条件は上表で保持し、告知のための一括マージは行わない。
+3. **修正後mainで公開CLIの実測を成功させる。** 同じ公開RC1バイナリ・新Whisper固定pin・
+   固定Silero・固定fixtureでASR、VAD speech、VAD silenceの3経路を実行する。
+   run/source/workflow・入力identity・CPU指定・exit・semantic判定を結び付けた
+   小さなJSONを回収・独立確認する。失敗時は原因を特定し、変更後の検証へ進む。
+   今回の失敗を成功扱いしたり、単なる無変更再実行でパス違反を解決扱いしない。
+4. **証拠と利用手順の文書PRを受入する。** README英日、RC1導入ガイド英日、
+   current-status英日、文書入口・readiness・実行記録を実測結果へ合わせる。
+   今回の失敗と新しい成功receiptを保存し、旧pin・旧結果は履歴として残す。
+   関連ドキュメントgateとfresh CIを通してマージし、ローカルを最新mainへ戻す。
+5. **告知の最終判定・原稿を作る。** 公開Release/HF URL、導入手順、検証環境・制約、
+   残PRの扱いと告知経路に影響する重大な未解決問題の有無を再確認する。
+   「CPUプレビュー」「Linuxで実測したWhisper ASR / Silero VAD」という範囲で案内する。
+   配布OSのpackaging結果とモデル実測を分け、全catalog・Metal・数値parity・速度/品質保証・
+   全面security-cleanを主張しない。X原稿と実際の投稿は別操作として扱う。
+
+現在の最短経路は「fixture受け渡し修正PRと#287 → 公開CLI実測成功 → 文書PR → 告知判定」。
+Scalewayと全catalog検証を今回のCPUプレビュー告知の待ち条件にはしない。
+既存RC1本体の不具合が実測で判明した場合は、その修正とRC2の検証・公開を追加する。
+この時点では新しいバージョン公開が必要という証拠はない。
+ローカルでのモデル取得・実行はせず、既存dirty guardと保護manifestを維持する。
+直近のVAST workerは削除確認済みで、今回の検証はGitHub-hosted runnerを使用している。
+
 ## 最小checkout回帰とPR gate — 2026-10-23 10:57:05 UTC
 
 統合先#293の受入対象は `80eff153f90e7158c9a85a78b36f8f18f9ab1ab0` の12ファイル。
