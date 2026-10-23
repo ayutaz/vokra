@@ -126,7 +126,10 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 ## Quick start
 
 You need Git and Rust 1.89 or newer (the effective MSRV; the CPU backend
-requires 1.89). Build the CLI from source:
+requires 1.89). The commands below build the CLI from your source checkout;
+they are not the published prebuilt RC1 binary. For the tested prebuilt
+platform assets and their exact release checks, use the [v0.4.0-rc.1 preview
+guide](docs/release-0.4.0-rc1.md).
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
@@ -134,16 +137,29 @@ cd vokra
 cargo build --release -p vokra-cli
 ```
 
-Download the published Whisper base GGUF and run the included public-domain
-audio fixture:
+Download the repaired published Whisper base GGUF at its immutable revision,
+verify it before invoking the CLI, and run the included public-domain audio
+fixture. This is a Linux example because it uses `sha256sum`:
 
 ```sh
-curl -L https://huggingface.co/vokra/whisper-base/resolve/main/whisper-base.gguf \
-  -o whisper-base.gguf
+WHISPER_URL='https://huggingface.co/vokra/whisper-base/resolve/bf440f6064ffc882d53d3694729dc4616dc2cfa7/whisper-base.gguf'
+WHISPER_SHA256='5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014'
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  "$WHISPER_URL" \
+  -o whisper-base.gguf && \
+printf '%s  %s\n' "$WHISPER_SHA256" whisper-base.gguf | sha256sum -c - && \
 target/release/vokra-cli run \
+  --backend cpu \
   --model whisper-base.gguf \
   --input tests/fixtures/audio/jfk-30s.wav
 ```
+
+The fixed revision and hash above identify the repaired public model, not the
+historical Whisper pin used by the published RC1 hosted smoke. The published
+RC1 CLI was verified with the repaired Whisper and Silero pins in the final
+Linux CPU receipt; see the [final pairing evidence](docs/handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json).
+These source-build commands are local instructions and are not themselves that
+published-CLI receipt.
 
 Use the built-in help before converting or running another architecture:
 

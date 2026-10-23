@@ -2,9 +2,10 @@
 
 **English** | [日本語](current-status.ja.md)
 
-Reviewed on **2026-10-23 UTC**, against local and GitHub `main`
-[`151d94a8613d5bd4acb1671a461f59742c37b8fc`](https://github.com/ayutaz/vokra/commit/151d94a8613d5bd4acb1671a461f59742c37b8fc).
-This is the current routing page. Dated handoffs and benchmarks retain their
+Runtime/source baseline reviewed on **2026-10-23 UTC**, before this documentation update:
+[`0d51bb01e56da6ce5f72375cc5fdddc599beac3c`](https://github.com/ayutaz/vokra/commit/0d51bb01e56da6ce5f72375cc5fdddc599beac3c).
+This accepted GitHub main is the final model run's source; this documentation
+update preserves that runtime code. This is the current routing page. Dated handoffs and benchmarks retain their
 original commits, permissions, measurements and limitations.
 
 ## Releases and source
@@ -24,22 +25,39 @@ states; consult their binding READMEs rather than inferring distribution from
 the workspace version. No API/ABI stability or full-catalog completion is
 promised before 1.0.
 
+Whisper's repaired provenance/MIT artifact is published at fixed revision
+`bf440f6064ffc882d53d3694729dc4616dc2cfa7`; see the
+[repair evidence](handoff/whisper-base-provenance-repair-2026-10-23.md).
+The [final accepted-main run](https://github.com/ayutaz/vokra/actions/runs/39953770618)
+and [preserved receipt](handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json)
+verify the released RC1 Linux CLI with repaired Whisper and fixed Silero:
+all three explicit CPU commands returned zero, the Whisper keyphrase matched,
+Silero speech was 214/343 frames and silence 0/343. The two earlier input
+failures and successful source preflight remain separate in the
+[execution record](handoff/cpu-preview-announcement-execution-2026-10-23.md).
+This validates that fixed functional pairing, not all models, other platforms'
+model inference, numerical parity, Metal or performance.
+
 ## Main CI and open pull requests
 
-The exact accepted main has **77 terminal checks: 70 successful and seven
-event-specific skips**. All nine push workflows completed successfully,
-including [Core CI](https://github.com/ayutaz/vokra/actions/runs/39828281086)
-and [CI Quality](https://github.com/ayutaz/vokra/actions/runs/39828281152).
-The earlier stale FA-v3 in-progress display has resolved. These results do
-not verify the uncommitted documentation or guard changes in this worktree.
+Whisper integration [#293](https://github.com/ayutaz/vokra/pull/293) and the
+reviewed Pillow metadata update [#287](https://github.com/ayutaz/vokra/pull/287)
+and fixture input corrections [#294](https://github.com/ayutaz/vokra/pull/294)
+and [#295](https://github.com/ayutaz/vokra/pull/295)
+are normally merged. Each passed all sixteen required context/application
+pairs and its relevant audit checks at the exact reviewed source head.
+Source PR acceptance is separate from later main-push workflows and the
+successful manual functional run. Dated exact-head counts and optional-job
+observations are preserved in the execution record rather than promoted into
+an all-current-workflows-green claim. The unrelated dirty guard remains separate.
 Main retains sixteen strict required context/application pairs, administrator
 enforcement, linear history and conversation resolution; no protection was changed.
 
-Eight PRs remain open at this readback (six drafts):
+Eight held follow-up PRs remain open at this readback (six drafts):
 
 | PR | Head prefix | Current responsibility |
 |---|---|---|
-| [#287](https://github.com/ayutaz/vokra/pull/287) | `efaf7d02` | VibeVoice **1.5B** Pillow update: 69 successful checks / one skip, but changes requested and merge blocked; reconcile canonical lock/package/license bindings before acceptance |
+| [#290](https://github.com/ayutaz/vokra/pull/290) | `6d1f02dd` | Torch/CUDA reference closure changes require fresh compatibility/native/license evidence and CPU-index responsibility reconciliation; changes requested |
 | [#278](https://github.com/ayutaz/vokra/pull/278) | `11e33a10` | Draft: Candle same-run producer/receipt/consumer contract; preserve artifact size and authentication gates |
 | [#271](https://github.com/ayutaz/vokra/pull/271) | `d777dd71` | Nine production-action updates; missing producer-artifact failure is distinct from #278's extracted-size failure |
 | [#198](https://github.com/ayutaz/vokra/pull/198) | `5614a92c` | Draft: dated legal-source reconciliation; not a legal sign-off or merged policy |
@@ -48,9 +66,12 @@ Eight PRs remain open at this readback (six drafts):
 | [#169](https://github.com/ayutaz/vokra/pull/169) | `b3e9d5c1` | Draft: VibeVoice CPU-reference dependency closure |
 | [#152](https://github.com/ayutaz/vokra/pull/152) | `a9f54e1a` | Draft: XCodec2 pre-import/dependency/evidence gates |
 
-PRs #284, #286 and #288 are merged in the accepted main. An open PR's green
+PRs #284, #286, #288, #293, #287, #294 and #295 are merged in the accepted main.
+#291/#292 were closed as incorporated through #293, not independently merged.
+An open PR's green
 ordinary CI does not clear its source, license, owner or real-weight gates.
-This documentation task does not merge or rerun PRs.
+The [announcement plan](handoff/cpu-preview-announcement-plan-2026-10-23.md)
+separates its required path from the held model/CI/legal follow-ups.
 
 ## Model and Apple completion
 
@@ -90,9 +111,12 @@ and [owner packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
 
 ## Security, law and operational boundaries
 
-The fresh all-pages GitHub readback has **572 open Dependabot alerts**:
-93 critical, 247 high, 173 medium and 59 low; 556 name a patched version and
-16 do not. Eight Code Scanning alerts remain: four Scorecard findings and
+The final all-pages GitHub readback on 2026-10-23 has **599 open Dependabot alerts**:
+90 critical, 236 high, 189 medium and 84 low; 575 name a patched version and
+24 do not. All are pip alerts under `tools/parity/` or `integrations/`;
+326 are critical/high. The [dated selected-metadata receipt](handoff/evidence/announcement-security-final-readback-2026-10-23.json)
+records the counts and manifest distribution; the earlier 572/638-alert snapshots
+remain historical. Eight Code Scanning alerts remain: four Scorecard findings and
 CodeQL `rust/log-injection` #68–#71 in server test code. A test-file location
 is not a false-positive disposition; no finding was dismissed. These
 repository-wide/reference-environment alerts are not a new external dependency
@@ -106,9 +130,11 @@ watermark integration remains `Deferred`; standalone AudioSeal does not
 establish deployment compliance.
 
 The maintainer Mac must not download or execute models or run workspace-wide /
-`vokra-models` Cargo. Documentation checks are static/offline. This task creates
-no VAST/Scaleway instance and performs no model, registry, Hugging Face or X
-publication. No fresh provider inventory is claimed; old destroyed/stopped
+`vokra-models` Cargo. Documentation checks are static/offline. The announcement
+execution used a now-destroyed VAST worker and a genuine hosted Actions run;
+the [execution record](handoff/cpu-preview-announcement-execution-2026-10-23.md)
+preserves their distinct failures and cleanup evidence. No new Release,
+registry, Hugging Face or X publication is part of steps 1–4. Old destroyed
 IDs are not current workers or usable transfer sources.
 
 The previous task's uncommitted local-model guard repair remains separate

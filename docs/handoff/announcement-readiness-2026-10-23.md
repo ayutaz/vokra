@@ -1,5 +1,80 @@
 # CPUプレビュー告知前確認 — 2026-10-23
 
+## 最終mainの機能確認完了、文書受入待ち — 2026-10-23 12:34 UTC
+
+#295は通常マージ済みで、受入済みmainは `0d51bb01e56da6ce5f72375cc5fdddc599beac3c`。
+レビュー・先行確認したtreeとの一致を確認後、同mainの
+[run 39953770618](https://github.com/ayutaz/vokra/actions/runs/39953770618)で
+公開RC1 CLIと修正済みWhisper・固定Sileroの3経路が成功した。
+[最終raw receipt](evidence/published-rc1-cli-pairing-final-2026-10-23.json)を回収し、artifact digest、
+source/run、公開バイナリ・モデル・音声のidentity、CPU指定・終了コードと実出力を独立確認した。
+Whisper keyphrase一致、VAD音声214/343 frames・無音0/343は当該main runの結果である。
+新しい機能smokeの保留条件は解決し、旧pinと2回の失敗は下記に履歴として残す。
+
+告知前の残条件は、この証拠と英日README・導入ガイド・現況をまとめた文書PRの
+static gate・fresh CI・通常マージと、最新mainへの移動である。
+その後に手順5の最終告知確認・原稿へ進む。全モデル・Metal・数値parity・性能や
+security-cleanを主張する条件ではない。最新警告は
+[599 Dependabot／8 Code Scanning](evidence/announcement-security-final-readback-2026-10-23.json)であり、
+先の572/638件は各時点の観測として保持している。
+
+## 新しい組み合わせの先行実測成功 — 2026-10-23 12:12 UTC
+
+#294は通常マージ済み。sidecar不足を修正する#295のレビュー済みsource
+`e17f1446`で、[genuine hosted run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015)が成功した。
+[raw receipt](evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)のartifact digest・
+source/run・公開バイナリと固定モデルのidentity・3経路のCPU指定と実出力を独立確認した。
+Whisper keyphrase、Silero音声214/343 frames・無音0/343の結果は当該runの実測である。
+
+**最終告知判定は引き続き保留。** 先行確認を最終main結果の代用にせず、#295のfresh CI・
+通常マージ・tree照合後のmain実測、成功証拠と英日ガイド/README・現況の文書PR受入を残条件とする。
+旧失敗・旧pin・過去の結果は下記に履歴として保持する。
+
+## 受入後の実測と現在の残条件 — 2026-10-23 11:40 UTC
+
+Whisper provenance修正と監査・成功証拠・検証workflowを含む#293はmainへ受入済み。
+#291/#292は取り込み先を記録してcloseし、Pillow metadata修正#287も通常マージ済みである。
+受入済みmainは `4d6efd02a95a3585b98ca718ddc0a6363b634ef3`。
+新WhisperのMIT/provenance修正済み公開状態は、下記の修正記録と公開成功receiptに従う。
+
+一方、genuine Actionsの[公開CLI実測run](https://github.com/ayutaz/vokra/actions/runs/39944971172)は、
+wrapperが一時音声パスを渡したことにより、元driverの固定fixtureパスgateで停止した。
+[raw失敗receipt](evidence/published-rc1-cli-pairing-failure-2026-10-23.json)のモデル・コマンド欄は空。
+既存RC1 binaryと入力identityの照合成功は、推論成功とは区別する。
+修正[#294](https://github.com/ayutaz/vokra/pull/294)はレビュー済み2ファイルと
+オフライン回帰9件でPR化済みだが、fresh CI・通常マージ・新しい実測は未完了。
+
+**新Whisperと公開済みRC1 CLIを案内する告知は引き続き保留。**
+#294受入、新しい3経路の成功receipt回収・独立確認、英日ガイド/現況の文書PR受入を残条件とする。
+現在のセキュリティ再確認は
+[638 Dependabot／8 Code Scanning](evidence/announcement-security-readback-2026-10-23.json)で、
+後段の572件は以前の観測である。全pip警告はtools/parityまたはintegrations配下に属し、
+配布CLIへ同梱される依存とは区別するが、全面的なsecurity-clean判定には使わない。
+
+## 後続の修正と現在の受入待ち — 2026-10-23 09:29 UTC
+
+以下の当初判定は、旧Whisper pinの調査時点の記録として保持する。
+その後、[Whisper修正記録](whisper-base-provenance-repair-2026-10-23.md)と
+[公開成功receipt](evidence/whisper-base-provenance-repair-2026-10-23.json)に従って、
+MITの一次資料・具体的なsource revision・テンソル内容を確認した新しいartifactを公開した。
+現在の修正済み固定revisionは `bf440f6064ffc882d53d3694729dc4616dc2cfa7`。
+`whisper-base.gguf` は290,859,488 bytes、SHA-256
+`5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014` である。
+旧pinのlicense/provenance記述を、この新artifactの判断へ流用しない。
+
+回帰・監査・公開証拠、固定GGUFを使うCI修正、配布済みCLIを試す手動workflowは、
+[PR #293](https://github.com/ayutaz/vokra/pull/293)の
+`8f2f9433919daed9f70b1d6d7d4eb9220282bfd6`へ統合した。
+受入済みmainは引き続き `92a336318a54f659fa991c129aaa991f46ea6231`。
+この時点で統合HEADのCIはGitHubのrunner割当待ちで、PRは未マージである。
+
+**新Whisperと公開済みRC1 CLIの組み合わせは、まだ機能smoke未完了。**
+モデルの公開修正だけで配布CLIとの互換性を成功扱いせず、手動workflowの受入・
+実際のhosted実行・結果回収と英日ガイド更新を告知前の残条件として維持する。
+現在の進行順は[告知計画](cpu-preview-announcement-plan-2026-10-23.md)、
+実行・失敗・cleanupの事実は[実行記録](cpu-preview-announcement-execution-2026-10-23.md)を参照する。
+X投稿、新規Release、全モデル・Apple/Metal完了はこの追記の成果ではない。
+
 ## 対象と判定
 
 依頼された計画の1（文書push・PR・CI・通常マージ）と2（公開対象の最終確認）を扱う。
