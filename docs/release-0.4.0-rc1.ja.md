@@ -31,6 +31,15 @@ source/tag `d84d311e98d0abb2987b5c4e96157ae8f2068e1a`のrun
 [原本結果と制限](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)と
 [候補版受入記録](handoff/release-0.4.0-rc1-packaging-2026-10-17.md)を参照してください。
 
+> **2026-10-23 ライセンス/provenance確認警告 — Whisper quickstartの推奨・共有は保留。**
+> 下記の公開済みCPU smokeと固定artifact identityは、書き換えていない過去の証跡です。
+> ただし、固定したHugging Face Whisper card/APIはweightを`apache-2.0`とし、upstreamの
+> distribution sourceを具体的なupstream repository revisionに結び付けず一般的に記載しています。
+> 一方、OpenAI upstreamの`LICENSE`とrepositoryのlicense auditはWhisperをMITとして記録しています。
+> この不整合は未解決です。upstream source、revision、license、attribution、artifact provenanceを
+> 照合して解消するまで、下記commandは正確な過去の再現手順としてのみ扱い、新たなlicense承認、
+> 再配布の推奨、weightの再公開・共有許可とは扱わないでください。[2026-10-23 announcement-readiness確認記録](handoff/announcement-readiness-2026-10-23.md)を参照してください。
+
 ## Choose an asset
 
 | 環境 | CLI asset |

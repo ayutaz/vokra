@@ -39,6 +39,19 @@ quality/performance benchmark, or Apple/Metal acceptance.
 See the [original result and limits](handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
 and [candidate acceptance record](handoff/release-0.4.0-rc1-packaging-2026-10-17.md).
 
+> **2026-10-23 license/provenance review warning — hold Whisper quickstart
+> recommendation and sharing.** The historical published CPU smoke and the
+> exact pinned artifact identity below remain recorded evidence; they have not
+> been rewritten. However, the pinned Hugging Face Whisper card/API still
+> reports the weight as `apache-2.0` and describes its upstream distribution
+> source generically, without a concrete upstream repository revision. The
+> OpenAI upstream `LICENSE` and the repository's license audit identify Whisper
+> as MIT. This discrepancy remains unresolved. Until the upstream source,
+> revision, license, attribution, and artifact provenance are reconciled, the
+> commands below are exact historical reproduction instructions only—not a new
+> license approval, redistribution recommendation, or permission to republish
+> or share the weight. See the [2026-10-23 announcement-readiness review](handoff/announcement-readiness-2026-10-23.md).
+
 ## Choose an asset
 
 | Platform | CLI asset |
