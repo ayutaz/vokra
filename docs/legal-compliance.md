@@ -14,8 +14,8 @@
 | 一次資料 | 今回の取得・確認範囲 | 残る境界 |
 |---|---|---|
 | [EU AI Act原規則](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32024R1689)・[2026年改正PDF](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32026R1744) | bot確認ページとなり本文取得不可 | Article 50/111/113と施行・経過措置の現行再確認は未完了 |
-| [California現行条文](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?sectionNum=22757.6.&lawCode=BPC) | HTTP 403 | 旧SB 942提出版や未マージdraftを現行条文の代用にしない |
-| [S.1367公式議案ページ](https://www.congress.gov/bill/119th-congress/senate-bill/1367) | 取得表示は2025年提出時のキャッシュ | 現在の成立・改正状況を保証しない |
+| [California Secretary of State 2024 Senate bill chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2024/senate-bills.pdf) | HTTP 200。SB 942 → Chapter 291、2024-09-19のchapter記録を確認 | これはchaptered statuteの歴史的な公式indexであり、403となる現行BPC §22757.6 endpointの代用となる現行法再認証ではない。2025年以降の改正・現行codificationは未確認 |
+| [S.1367 official GovInfo record (BILLS-119s1367is)](https://www.govinfo.gov/app/details/BILLS-119s1367is) | HTTP 200。119th Congress, 1st Session、2025-04-09 introduced / referred to Senate Judiciary Committeeを確認 | 法案の公式記録であり、成立・改正・2026-10-23時点の審議状況をこのページだけで保証しない |
 | [Tennessee SB2096公式履歴](https://wapp.capitol.tn.gov/apps/BillInfo/Default?BillNumber=SB2096&GA=113) | 2024年Public Chapter 588の成立履歴を取得 | その後の全改正・適用事実の確認ではない |
 | [Apple App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/) | 5.5はMDM、1.2はUGCの通報・filter/block等の対策を扱う | アプリの具体的な機能・AI生成物と審査適用を個別確認する |
 | [Google Play AI policy](https://support.google.com/googleplay/android-developer/answer/13985936)・[説明](https://support.google.com/googleplay/android-developer/answer/14094294) | 禁止コンテンツ防止、アプリ内report/flag機構、実在人物のAI音声・動画生成の例を確認 | 実装・moderation・他のDeveloper Policiesへの対応はdeployer側で必要 |
@@ -278,7 +278,7 @@ Vokraのmodel-zoo適格性を示すものではない。法令・訴訟のstatus
 配布の都度、公式一次資料と個別の法務確認を行う。
 
 - **米国著作権訴訟**: [Kadrey v. Meta（米国北部カリフォルニア地区裁判所の事件情報）](https://cand.uscourts.gov/cases-e-filing/cases/323-cv-03417-vc/kadrey-et-al-v-meta-platforms-inc) などの事件は、係属状況・争点・判断が更新され得る。本文書はfair use、責任、学習データの適法性について結論を示さない。
-- **Section 230**: [47 U.S.C. §230（米国法典）](https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title47-section230) は条文上の制度であり、AI生成音声への適用可否や個別責任を本書だけで判断できない。2025年の判例動向を一般化しない。
+- **Section 230**: [47 U.S.C. §230（米国法典、GovInfoの2023 Edition）](https://www.govinfo.gov/content/pkg/USCODE-2023-title47/html/USCODE-2023-title47-chap5-subchapII-partI-sec230.htm) は条文上の制度であり、AI生成音声への適用可否や個別責任を本書だけで判断できない。これはGovInfoの2023 Editionであり、2026-10-23時点の改正を再認証したものではない。2025年の判例動向を一般化しない。
 - **Training data provenance**: 学習データ、重み、コード、モデルカード、利用規約、同意・撤回条件はモデルごとに異なる。公式model-zooへの収録可否・license tier・配布可否は、個別モデルの一次資料と [`docs/license-audit.md`](license-audit.md) のsign-offを根拠にownerが判断する。本節の一覧や「training data sourceが公開されている」ことだけで適格性を決めない。
 
 Vokraは一般目的の推論ランタイムであり、利用者がロードするモデルのライセンス、学習データの権利、用途の適法性を自動判定・保証しない。これは法的免責やsafe harborの主張ではなく、責任分界の記録である。
@@ -375,5 +375,5 @@ M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / G
 - [HHS: Covered Entities and Business Associates](https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html)
 - [HHS: Business Associates](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/business-associates/index.html)
 - [Kadrey v. Meta case — U.S. District Court, Northern District of California](https://cand.uscourts.gov/cases-e-filing/cases/323-cv-03417-vc/kadrey-et-al-v-meta-platforms-inc)
-- [47 U.S.C. §230（米国法典）](https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title47-section230)
+- [47 U.S.C. §230（米国法典、GovInfo 2023 Edition）](https://www.govinfo.gov/content/pkg/USCODE-2023-title47/html/USCODE-2023-title47-chap5-subchapII-partI-sec230.htm)
 - [VOICEVOX 利用規約](https://voicevox.hiroshiba.jp/term/)

@@ -27,7 +27,7 @@ Whisperを試せるという積極的な告知は保留。** バイナリ配布�
 | checksum | `.sha256`テキスト11件を取得。テキスト自体のAPI digestと、対象ファイル名・payload digestを全件照合 | 新たな全バイナリ再ダウンロードではない |
 | CLI SBOM | 7,706 bytes、SHA-256 `2e56df7b51859bd2f61b2fc3f9fd942be3f8c0b6db8f298843e5f7f4d605ba0a`、first-party 12 packages | normal runtime Cargo closure。OS・toolchain・全ソースの安全性を保証しない |
 | C ABI SBOM | 6,545 bytes、SHA-256 `cb4c13f199f9d7bdf4059db645541f0e6720d53b851c833c0ef9030922bb1a24`、first-party 10 packages | 同上。Python参考環境や独立integrationはこのclosureに含まれない |
-| 元のCPU receipt | [artifact 12111439059](https://github.com/ayutaz/vokra/actions/runs/39062234813/artifacts/12111439059) の`receipt.json` 5,395 bytesを再取得。SHA-256 `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697` | 小さなJSONだけをメモリ上で確認。モデル・バイナリ・音声本体は取得・実行しない |
+| 元のCPU receipt | [公開workflow run 39062234813](https://github.com/ayutaz/vokra/actions/runs/39062234813) のartifact ID `12111439059`から認証済みREST APIで`receipt.json` 5,395 bytesを再取得。SHA-256 `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697` | artifactの直接UI/downloadには認証が必要。小さなJSONだけをメモリ上で確認し、モデル・バイナリ・音声本体は取得・実行しない |
 
 receiptは元のassembled Linux CLI 13,344,272 bytes / SHA-256
 `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`、
@@ -143,3 +143,16 @@ rootが削除要求後の `57317485` を独立に個別照会し、`instances: n
 この限定した遠隔検証と手動cleanup照合を根拠に、対応するcode pushだけに既存の
 `VOKRA_SKIP_HOOKS=1`運用を適用する。PR上のfresh exact-head CI、保護された通常マージ、
 Whisperのlicense/provenance問題は、依然として別の受入項目である。
+
+### PRのリンク検査修正
+
+[PR #289](https://github.com/ayutaz/vokra/pull/289) の初回head `a2d73778`では、
+必須`documentation-links`が失敗した。reportは5件のerrorを記録し、内訳は
+法務文書の3種類の公式URL（US Codeの同一URLを2箇所、California条文、Congress議案）と、
+本書のartifact直接UIリンクである。他のチェック成功でこの失敗を免除しない。
+
+artifactは認証済みAPIで存在・未失効・元のrun/sourceの一致を再確認した。
+直接UI/downloadへの認証要件を明示し、読者向けのリンクを公開workflow runへ修正した。
+artifact ID、元のreceiptのsize/SHA、元の実行結果は変更しない。
+法務文書の修正も公式資料への案内と取得境界を扱い、法的結論・過去の確認日・owner判断や
+CIの除外設定を変更しない。修正後HEADのCI受入は、初回失敗と別に確認する。
