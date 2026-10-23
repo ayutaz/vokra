@@ -885,13 +885,14 @@ entries:
   # ---- shared GPU C ABI GGUF identity (ci-platform.yml) -------------------
 
   - name: ci-platform-campplus-gguf
-    kind: artifact
+    kind: checkpoint
     owning_workflow: .github/workflows/ci-platform.yml
     owning_line: 178
     upstream:
       url: https://huggingface.co/vokra/campplus-speaker-encoder
       license: Apache-2.0
     pinned_value:
+      hf_id: vokra/campplus-speaker-encoder
       hf_revision: "7963b5f8e21a75d900e4fc4d6b342ba3f989f6f9"
       sha256: "c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea"
       bytes: 27684640
@@ -904,13 +905,14 @@ entries:
       The workflow verifies all three identities on cache hits and misses.
 
   - name: ci-platform-whisper-base-gguf
-    kind: artifact
+    kind: checkpoint
     owning_workflow: .github/workflows/ci-platform.yml
     owning_line: 179
     upstream:
       url: https://huggingface.co/vokra/whisper-base
       license: MIT
     pinned_value:
+      hf_id: vokra/whisper-base
       hf_revision: "bf440f6064ffc882d53d3694729dc4616dc2cfa7"
       sha256: "5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014"
       bytes: 290859488
