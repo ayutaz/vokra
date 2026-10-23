@@ -1,5 +1,23 @@
 # CPUプレビュー告知前確認 — 2026-10-23
 
+## 最終mainの機能確認完了、文書受入待ち — 2026-10-23 12:34 UTC
+
+#295は通常マージ済みで、受入済みmainは `0d51bb01e56da6ce5f72375cc5fdddc599beac3c`。
+レビュー・先行確認したtreeとの一致を確認後、同mainの
+[run 39953770618](https://github.com/ayutaz/vokra/actions/runs/39953770618)で
+公開RC1 CLIと修正済みWhisper・固定Sileroの3経路が成功した。
+[最終raw receipt](evidence/published-rc1-cli-pairing-final-2026-10-23.json)を回収し、artifact digest、
+source/run、公開バイナリ・モデル・音声のidentity、CPU指定・終了コードと実出力を独立確認した。
+Whisper keyphrase一致、VAD音声214/343 frames・無音0/343は当該main runの結果である。
+新しい機能smokeの保留条件は解決し、旧pinと2回の失敗は下記に履歴として残す。
+
+告知前の残条件は、この証拠と英日README・導入ガイド・現況をまとめた文書PRの
+static gate・fresh CI・通常マージと、最新mainへの移動である。
+その後に手順5の最終告知確認・原稿へ進む。全モデル・Metal・数値parity・性能や
+security-cleanを主張する条件ではない。最新警告は
+[599 Dependabot／8 Code Scanning](evidence/announcement-security-final-readback-2026-10-23.json)であり、
+先の572/638件は各時点の観測として保持している。
+
 ## 新しい組み合わせの先行実測成功 — 2026-10-23 12:12 UTC
 
 #294は通常マージ済み。sidecar不足を修正する#295のレビュー済みsource

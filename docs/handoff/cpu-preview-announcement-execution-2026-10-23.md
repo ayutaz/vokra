@@ -6,6 +6,73 @@ X posting, a new Release, additional HF publication and the full Apple campaign
 are outside these steps. This is a dated execution record; later results are
 appended rather than attributed to earlier runs.
 
+## Documentation acceptance packet prepared — 2026-10-23 12:40 UTC
+
+The English/Japanese README and RC1 guides now use the repaired immutable
+Whisper pin, fixed Silero pin and final accepted-main functional receipt.
+The public examples verify downloads before explicit CPU invocation. Source
+build instructions and published binaries remain distinct; the old pin and
+receipts retain their historical attribution. Root review corrected an ASR
+transcription error before acceptance, then matched the quoted final stdout
+to the raw JSON rather than retyping it. Luna owns the four product documents;
+root owns current status, index, dated plan/readiness/execution and evidence.
+
+Final static checks passed: doc-example self-test and full checker (144 blocks
+across 26 documents), document references, runbook path citations, community
+documents and parity sidecar citations, plus whitespace checks. The example
+checker reports 30 Tier C deferred blocks; these are not executed Swift,
+Unity, Godot or device/model passes. Guide shell syntax and exact final
+receipt/pin/output cross-checks also passed. Local model/weight/binary execution
+and workspace/model Cargo were not run. Normal pre-commit gates remain enabled.
+
+This documentation packet is step 4's deliverable. Its fresh PR CI and normal
+merge, followed by a local fast-forward to latest main, remain the acceptance
+conditions; the final handoff must read those external states back before
+claiming completion. X draft/post and new Release/HF publication are outside
+steps 1–4. Held follow-up PRs retain their concrete conditions.
+
+## Final accepted-main pairing passed — 2026-10-23 12:34 UTC
+
+#295 was normally squash-merged as
+`0d51bb01e56da6ce5f72375cc5fdddc599beac3c`, parent `c1515500`.
+All sixteen required context/app pairs and related repo-hygiene, shell and
+CUDA/Metal checks passed at reviewed source `e17f1446`. At the merge audit,
+69 checks succeeded, one skipped and optional Unity packaging remained live;
+no failure was present. Accepted tree `60016146e83341748ee6c4cd1700479934d75afd`
+matches the reviewed source/preflight tree, and main's ref was read back.
+
+The separate final [main run 39953770618](https://github.com/ayutaz/vokra/actions/runs/39953770618),
+attempt 1, job `120414427584`, completed successfully. Source/workflow and
+driver runtime head/expected head all bind to this accepted main, not the
+earlier PR source. Artifact `12501077608` is a 1,722-byte ZIP whose SHA-256
+`f6a6de25969c28893883f3b32e2bc4915a4e62645302b360e2a00277aa51ce75`
+matches GitHub API metadata. The [raw final receipt](evidence/published-rc1-cli-pairing-final-2026-10-23.json)
+is 4,841 bytes, SHA-256
+`6847284189c1ef8625ea61044967e797e72c58659cbfaf6be580794f4c0afde3`.
+It reports nested driver bytes 4,925 and SHA-256
+`1e6f440c829c606ea68ef0c49fee2af217b659906014019ba21676817f7e3c44`.
+
+Root independently checked the raw outer digest, source/run/runtime binding,
+unchanged exact released CLI/model/fixture identities, three unique explicit
+CPU commands and zero exits. It parsed the final run's actual stdout:
+the JFK keyphrase matches; speech is 214/343 frames (0.5889) and silence
+0/343 (0.0025). These final values were read from this receipt even though
+they agree with the preflight. This establishes step 3's bounded functional
+pairing, without numerical-parity, Metal, performance or full-catalog claims.
+
+The final all-pages security readback is separately preserved in
+[the final selected-metadata receipt](evidence/announcement-security-final-readback-2026-10-23.json):
+599 open pip alerts (90 critical, 236 high, 189 medium, 84 low), 575 with a
+named patched version and 24 without, all under tools/parity or integrations.
+326 are critical/high; the eight Code Scanning alerts remain. The earlier
+572/638 observations and receipts are historical rather than overwritten.
+No finding was dismissed or model/license/owner gate cleared by these counts.
+
+Step 4's product-guide/README, current-status and evidence PR remains to be
+accepted before returning to latest main. The unrelated dirty guard and
+protected-manifest boundary remain unchanged. No new VAST/Scaleway worker,
+Release, registry, HF upload or X post was introduced for these final runs.
+
 ## Reviewed-source preflight passed — 2026-10-23 12:12 UTC
 
 Genuine hosted [run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015),

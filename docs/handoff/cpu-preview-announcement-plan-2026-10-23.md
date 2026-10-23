@@ -1,5 +1,32 @@
 # CPUプレビュー告知までの実行計画 — 2026-10-23
 
+## 手順4の受入条件と次の段階 — 2026-10-23 12:40 UTC
+
+本更新で、最終mainの成功証拠、英日README・導入ガイド、現況・最新警告集計と
+dated実行記録を文書packetとして揃えた。関連static gateは成功し、未実行のdevice/toolchain検証は
+実行済みに数えていない。本packetのfresh PR CI・通常マージ・最新mainへの移動をもって
+手順1–4の受入を完了する。最終報告ではPR/HEAD/CIとローカルbranchを実際に読み戻す。
+その後の残計画は、手順5の告知最終確認・X原稿である。投稿操作は別に扱う。
+全catalog・Apple/Metalの残課題と保留中8 PRは後続として保持し、今回の完了へ含めない。
+
+## 最終main実測成功、文書受入へ — 2026-10-23 12:34 UTC
+
+#295は必須context/app 16組と関連チェック成功後に通常マージ済み。
+受入済みmain `0d51bb01e56da6ce5f72375cc5fdddc599beac3c` のtree
+`60016146e83341748ee6c4cd1700479934d75afd` がレビュー・先行確認したsourceと一致した。
+そのmainでの[最終run 39953770618](https://github.com/ayutaz/vokra/actions/runs/39953770618)も成功し、
+[raw成功receipt](evidence/published-rc1-cli-pairing-final-2026-10-23.json)を回収・独立確認済み。
+公開RC1 CLI＋修正済みWhisper・固定Sileroで、CPU明示の3コマンドが終了コード0、
+Whisper keyphrase一致、VAD音声214/343 frames・無音0/343となった。
+
+手順3はこの固定範囲で完了した。手順4では英日README・RC1導入ガイド、現況と証拠を
+同じ文書PRへまとめ、関連static gateとfresh CI後に通常マージし、最新mainへ戻す。
+その受入前に手順4完了や告知準備完了とは判定しない。X原稿・投稿は手順5として残す。
+未完了の後続PRは8件（#290/#278/#271/#198/#191/#182/#169/#152）で、
+各具体的な保留条件は維持する。全catalog・Scaleway・Metal完了には読み替えない。
+最終セキュリティ再取得は[599 Dependabot／8 Code Scanning](evidence/announcement-security-final-readback-2026-10-23.json)。
+572件・638件だった各時点の記録はそのまま保持する。
+
 ## 先行実測成功、main結果待ち — 2026-10-23 12:12 UTC
 
 #295のレビュー済みsource `e17f1446`でのgenuine hosted先行確認

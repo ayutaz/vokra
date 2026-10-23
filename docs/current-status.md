@@ -2,9 +2,10 @@
 
 **English** | [日本語](current-status.ja.md)
 
-Reviewed on **2026-10-23 UTC**, against accepted GitHub `main`
-[`c1515500aabe7893e8176fd304c642e1b8ba2a03`](https://github.com/ayutaz/vokra/commit/c1515500aabe7893e8176fd304c642e1b8ba2a03).
-This is the current routing page. Dated handoffs and benchmarks retain their
+Runtime/source baseline reviewed on **2026-10-23 UTC**, before this documentation update:
+[`0d51bb01e56da6ce5f72375cc5fdddc599beac3c`](https://github.com/ayutaz/vokra/commit/0d51bb01e56da6ce5f72375cc5fdddc599beac3c).
+This accepted GitHub main is the final model run's source; this documentation
+update preserves that runtime code. This is the current routing page. Dated handoffs and benchmarks retain their
 original commits, permissions, measurements and limitations.
 
 ## Releases and source
@@ -27,35 +28,35 @@ promised before 1.0.
 Whisper's repaired provenance/MIT artifact is published at fixed revision
 `bf440f6064ffc882d53d3694729dc4616dc2cfa7`; see the
 [repair evidence](handoff/whisper-base-provenance-repair-2026-10-23.md).
-The initial pairing attempts stopped before inference on the temporary audio
-path and then a missing checksum sidecar; both failures remain in the
+The [final accepted-main run](https://github.com/ayutaz/vokra/actions/runs/39953770618)
+and [preserved receipt](handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json)
+verify the released RC1 Linux CLI with repaired Whisper and fixed Silero:
+all three explicit CPU commands returned zero, the Whisper keyphrase matched,
+Silero speech was 214/343 frames and silence 0/343. The two earlier input
+failures and successful source preflight remain separate in the
 [execution record](handoff/cpu-preview-announcement-execution-2026-10-23.md).
-The [reviewed-source preflight](handoff/evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)
-now passes all three explicit CPU commands: Whisper keyphrase, Silero speech
-214/343 frames and silence 0/343. That run is bound to PR #295's source,
-not accepted main. #295 acceptance, a final main run and the English/Japanese
-guide acceptance remain required before announcing the repaired pairing.
+This validates that fixed functional pairing, not all models, other platforms'
+model inference, numerical parity, Metal or performance.
 
 ## Main CI and open pull requests
 
 Whisper integration [#293](https://github.com/ayutaz/vokra/pull/293) and the
 reviewed Pillow metadata update [#287](https://github.com/ayutaz/vokra/pull/287)
-and fixture-path correction [#294](https://github.com/ayutaz/vokra/pull/294)
+and fixture input corrections [#294](https://github.com/ayutaz/vokra/pull/294)
+and [#295](https://github.com/ayutaz/vokra/pull/295)
 are normally merged. Each passed all sixteen required context/application
 pairs and its relevant audit checks at the exact reviewed source head.
-#293's final source readback was 81 successes and five event-specific skips.
-#287's optional iOS/musl jobs were still running at its merge readback; their
-pending state is not a completed pass. Source PR acceptance is separate from
-later main-push workflows and the pending manual functional run. These results
-do not certify this document branch or the unrelated dirty guard.
+Source PR acceptance is separate from later main-push workflows and the
+successful manual functional run. Dated exact-head counts and optional-job
+observations are preserved in the execution record rather than promoted into
+an all-current-workflows-green claim. The unrelated dirty guard remains separate.
 Main retains sixteen strict required context/application pairs, administrator
 enforcement, linear history and conversation resolution; no protection was changed.
 
-Nine PRs remain open at this readback (six drafts):
+Eight held follow-up PRs remain open at this readback (six drafts):
 
 | PR | Head prefix | Current responsibility |
 |---|---|---|
-| [#295](https://github.com/ayutaz/vokra/pull/295) | `e17f1446` | Include the committed audio checksum in sparse inputs; nine offline regressions and genuine preflight pass, fresh PR CI and normal acceptance pending |
 | [#290](https://github.com/ayutaz/vokra/pull/290) | `6d1f02dd` | Torch/CUDA reference closure changes require fresh compatibility/native/license evidence and CPU-index responsibility reconciliation; changes requested |
 | [#278](https://github.com/ayutaz/vokra/pull/278) | `11e33a10` | Draft: Candle same-run producer/receipt/consumer contract; preserve artifact size and authentication gates |
 | [#271](https://github.com/ayutaz/vokra/pull/271) | `d777dd71` | Nine production-action updates; missing producer-artifact failure is distinct from #278's extracted-size failure |
@@ -65,7 +66,7 @@ Nine PRs remain open at this readback (six drafts):
 | [#169](https://github.com/ayutaz/vokra/pull/169) | `b3e9d5c1` | Draft: VibeVoice CPU-reference dependency closure |
 | [#152](https://github.com/ayutaz/vokra/pull/152) | `a9f54e1a` | Draft: XCodec2 pre-import/dependency/evidence gates |
 
-PRs #284, #286, #288, #293, #287 and #294 are merged in the accepted main.
+PRs #284, #286, #288, #293, #287, #294 and #295 are merged in the accepted main.
 #291/#292 were closed as incorporated through #293, not independently merged.
 An open PR's green
 ordinary CI does not clear its source, license, owner or real-weight gates.
@@ -110,12 +111,12 @@ and [owner packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
 
 ## Security, law and operational boundaries
 
-The latest all-pages GitHub readback on 2026-10-23 has **638 open Dependabot alerts**:
-94 critical, 259 high, 201 medium and 84 low; 614 name a patched version and
+The final all-pages GitHub readback on 2026-10-23 has **599 open Dependabot alerts**:
+90 critical, 236 high, 189 medium and 84 low; 575 name a patched version and
 24 do not. All are pip alerts under `tools/parity/` or `integrations/`;
-353 are critical/high. The [dated selected-metadata receipt](handoff/evidence/announcement-security-readback-2026-10-23.json)
-records the counts and manifest distribution; the earlier 572-alert snapshot
-remains historical. Eight Code Scanning alerts remain: four Scorecard findings and
+326 are critical/high. The [dated selected-metadata receipt](handoff/evidence/announcement-security-final-readback-2026-10-23.json)
+records the counts and manifest distribution; the earlier 572/638-alert snapshots
+remain historical. Eight Code Scanning alerts remain: four Scorecard findings and
 CodeQL `rust/log-injection` #68–#71 in server test code. A test-file location
 is not a false-positive disposition; no finding was dismissed. These
 repository-wide/reference-environment alerts are not a new external dependency

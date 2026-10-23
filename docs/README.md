@@ -1,7 +1,7 @@
 # Vokra documentation
 
 Start with the current guides below. **Last reviewed: 2026-10-23 UTC**,
-against accepted main `c1515500aabe7893e8176fd304c642e1b8ba2a03`.
+against accepted main `0d51bb01e56da6ce5f72375cc5fdddc599beac3c`.
 
 [Current project status](current-status.md) / [現状と残作業（日本語）](current-status.ja.md)
 is the canonical current main, release, PR, catalog and security readback.

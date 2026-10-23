@@ -2,9 +2,10 @@
 
 [English](current-status.md) | **日本語**
 
-**確認日: 2026-10-23 UTC**。受入済みGitHub mainは
-[`c1515500aabe7893e8176fd304c642e1b8ba2a03`](https://github.com/ayutaz/vokra/commit/c1515500aabe7893e8176fd304c642e1b8ba2a03)
-です。このページを現行情報の入口とし、過去のhandoff・測定結果は、そのcommit・
+**確認日: 2026-10-23 UTC**。この文書更新前の実測・ソース確認の基準は、受入済みGitHub main
+[`0d51bb01e56da6ce5f72375cc5fdddc599beac3c`](https://github.com/ayutaz/vokra/commit/0d51bb01e56da6ce5f72375cc5fdddc599beac3c)
+です。最終モデル実測はこのソースで行い、本更新はruntime codeを維持しています。
+このページを現行情報の入口とし、過去のhandoff・測定結果は、そのcommit・
 承認範囲・環境・制限に限定した履歴として読みます。
 
 ## リリースとソース
@@ -25,30 +26,31 @@ Python・Unity・Godot・webは配布状況が別々です。workspaceの版か�
 Whisperのprovenance・MITを修正したartifactは、固定revision
 `bf440f6064ffc882d53d3694729dc4616dc2cfa7`で公開済みです。
 [修正証拠](handoff/whisper-base-provenance-repair-2026-10-23.md)を参照してください。
-最初の実測は一時音声パス、次はSHA sidecarの不足で推論前に停止し、それぞれを
-[実行記録](handoff/cpu-preview-announcement-execution-2026-10-23.md)に保存しました。
-現在は[レビュー済みsourceの先行実測](handoff/evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)で、
-CPU明示の3コマンドがすべて成功しています。Whisper keyphrase、Silero音声214/343 frames・
-無音0/343です。このrunはPR #295のsourceであり、受入済みmainの結果とは区別します。
-#295受入・最終main実測・英日ガイド受入を、修正済みの組み合わせを告知する前の残条件とします。
+[受入済みmainの最終実測](https://github.com/ayutaz/vokra/actions/runs/39953770618)と
+[保存したreceipt](handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json)で、
+公開RC1 Linux CLIと修正済みWhisper・固定Sileroの組み合わせを確認しました。
+CPU明示の3コマンドがすべて終了コード0で、Whisper keyphraseが一致、Sileroは
+音声214/343 frames・無音0/343でした。先の入力不足2件とsourceの先行成功結果は、
+[実行記録](handoff/cpu-preview-announcement-execution-2026-10-23.md)に別々に保持しています。
+これは固定した組み合わせの機能確認で、全モデル・他OSの実モデル推論・数値parity・
+Metal・性能の検証ではありません。
 
 ## mainのCIと未完了PR
 
 Whisper統合の[#293](https://github.com/ayutaz/vokra/pull/293)と、レビュー済みPillow metadata更新の
 [#287](https://github.com/ayutaz/vokra/pull/287)、fixtureパス修正の
-[#294](https://github.com/ayutaz/vokra/pull/294)は通常マージ済みです。それぞれレビューした
+[#294](https://github.com/ayutaz/vokra/pull/294)・[#295](https://github.com/ayutaz/vokra/pull/295)は
+通常マージ済みです。それぞれレビューした
 正確なsource HEADで必須context/app 16組と関連監査が成功しました。
-#293の最終source確認は成功81・イベント別skip 5です。#287のoptional iOS/muslジョブは
-マージ確認時点では進行中であり、完了した成功として数えません。
-PR受入と、その後のmain push CI・未完了の手動機能実測は区別します。この文書ブランチや
-無関係なdirty guardを検証した結果でもありません。mainの必須context/app 16組、strict更新要件、
+PR受入、その後のmain push CI、成功した手動機能実測は区別します。各HEADの件数と
+optionalジョブの観測は実行記録に日付付きで残し、全現行workflow成功という判断へ
+読み替えません。無関係なdirty guardも別の差分です。mainの必須context/app 16組、strict更新要件、
 管理者への強制、linear history、会話解決要件は変更していません。
 
-未完了PRは9件（うちdraft 6件）です。
+保留中の後続PRは8件（うちdraft 6件）です。
 
 | PR | head先頭 | 残る責務 |
 |---|---|---|
-| [#295](https://github.com/ayutaz/vokra/pull/295) | `e17f1446` | 固定音声SHA sidecarを最小checkoutへ含める。オフライン回帰9件・genuine先行実測成功、PR CI・通常受入待ち |
 | [#290](https://github.com/ayutaz/vokra/pull/290) | `6d1f02dd` | Torch/CUDA reference closure変更。新しい互換性・native/license証拠とCPU index責務の整理が必要。変更要求中 |
 | [#278](https://github.com/ayutaz/vokra/pull/278) | `11e33a10` | draft。Candleのsame-run producer・receipt・consumer契約。サイズ／認証gateは緩和しない |
 | [#271](https://github.com/ayutaz/vokra/pull/271) | `d777dd71` | production action 9件の更新。producer artifact未発見は#278の展開サイズ超過と別問題 |
@@ -58,7 +60,7 @@ PR受入と、その後のmain push CI・未完了の手動機能実測は区別
 | [#169](https://github.com/ayutaz/vokra/pull/169) | `b3e9d5c1` | draft。VibeVoice CPU reference依存closure |
 | [#152](https://github.com/ayutaz/vokra/pull/152) | `a9f54e1a` | draft。XCodec2のpre-import・依存・証拠gate |
 
-#284・#286・#288・#293・#287・#294は受入済みmainへマージされています。
+#284・#286・#288・#293・#287・#294・#295は受入済みmainへマージされています。
 #291/#292は#293へ取り込んでcloseし、個別マージとは区別します。通常CIがgreenでも、source・
 license・owner・実weight gateの解決にはなりません。
 [告知計画](handoff/cpu-preview-announcement-plan-2026-10-23.md)で必須経路と保留中の
@@ -97,11 +99,11 @@ artifact公開は記録された範囲だけに有効で、全catalogは**完成
 
 ## セキュリティ・法務・運用の境界
 
-2026-10-23の最新GitHub全ページ再確認で、Dependabot未解決は**638件**（critical 94／high 259／
-medium 201／low 84、修正版の指定あり614／なし24）です。すべて`tools/parity/`または
-`integrations/`配下のpip警告で、critical/highは353件です。
-[日付付きmetadata集計receipt](handoff/evidence/announcement-security-readback-2026-10-23.json)に
-件数とmanifest分布を記録し、以前の572件のsnapshotは履歴として保持します。
+2026-10-23の最終GitHub全ページ再確認で、Dependabot未解決は**599件**（critical 90／high 236／
+medium 189／low 84、修正版の指定あり575／なし24）です。すべて`tools/parity/`または
+`integrations/`配下のpip警告で、critical/highは326件です。
+[日付付きmetadata集計receipt](handoff/evidence/announcement-security-final-readback-2026-10-23.json)に
+件数とmanifest分布を記録し、以前の572件・638件のsnapshotは履歴として保持します。
 Code Scanning未解決は8件で、
 Scorecard 4件とserverテスト中のCodeQL `rust/log-injection` #68–#71です。
 テスト中という理由だけでfalse positiveとせず、dismissもしていません。repository全体・
