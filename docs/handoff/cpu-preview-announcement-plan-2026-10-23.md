@@ -1,5 +1,15 @@
 # CPUプレビュー告知までの実行計画 — 2026-10-23
 
+## 最小checkout回帰とPR gate — 2026-10-23 10:57:05 UTC
+
+統合先#293の受入対象は `80eff153f90e7158c9a85a78b36f8f18f9ab1ab0` の12ファイル。
+手動workflowの回帰が読むworkflow自身もsparse checkoutへ含め、モデルなしの
+必要5ファイルだけで全8回帰が成功することを確認した。workflowを省く負例では、
+実際の既存テストがFileNotFoundErrorになることも確認済みである。
+同じ回帰を既存repo-hygieneジョブへ追加し、今後はPR時点でも不足を検出する。
+job・権限・trigger・依存追加やgate緩和は行っていない。新HEADのfresh CI受入、
+mainへの通常マージ、genuine hostedでの公開CLI実測、文書受入という終了条件は維持する。
+
 ## 検証workflowの規約修正 — 2026-10-23 10:14 UTC
 
 統合先#293の受入対象HEADは `525b2a222828adf3b2205cb8a99b44ce10a9860b`。

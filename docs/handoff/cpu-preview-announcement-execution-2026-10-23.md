@@ -271,3 +271,37 @@ The local management-document checkpoint `d15e5c41` passed all five ordinary
 compile-free pre-commit gates and remains on
 `docs/cpu-preview-pairing-20261023`, with the unrelated dirty guard preserved.
 It has not been pushed into an extra CI queue while model acceptance is pending.
+
+## Sparse-input dependency review and PR regression — 2026-10-23 10:57:05 UTC
+
+Before merging, the manager found a concrete dependency gap in `525b2a22`:
+the newly invoked offline suite reads its own workflow YAML, which the
+positive sparse checkout did not include. This was identified before any
+hosted model dispatch; it is not recorded as a completed model run.
+
+Luna added the workflow itself to the allowlist and an eighth regression.
+The regression materializes only the five offline inputs, invokes the same
+existing workflow test in two projected trees, requires FileNotFoundError
+when the YAML is omitted and requires success when included. A preliminary
+test-owned set-helper proof was rejected during manager review and replaced
+with this real subprocess/FileNotFound regression.
+
+The manager independently copied only workflow/helper/validator/test/pins
+into `/private/tmp/vokra-rc1-root-projection.MDXhj1` and ran all eight tests
+there successfully. Original driver, audio, model data, credentials and the
+protected manifest were not copied. Canonical hygiene and actionlint passed
+on the actual candidate. Uploaded Git blobs matched the locally tested files.
+
+The dependency fix was published as `bf8be533ef8c86038b3c3b594aada86437be8bf1`.
+One additional two-line step wires the same suite into the existing PR
+repo-hygiene job, so this contract is checked before merge as well as before
+manual model execution. All existing jobs, permissions, triggers and gates
+are preserved; no new job or dependency was introduced. The two candidate
+workflows passed canonical hygiene together, and actionlint passed both.
+
+The final reviewed #293 head is now
+`80eff153f90e7158c9a85a78b36f8f18f9ab1ab0`, tree
+`3dc5ad30d465caa9940e9c79b11f429400af08ec`. Fresh CI and the post-merge
+released-CLI/new-model result remain required. Superseded runs were sent
+cancellation requests by exact old head; some had already completed when
+the requests arrived. No current-head check or main workflow was waived.
