@@ -1,5 +1,11 @@
 # VAD -> ASR -> TTS demo (com.vokra.unity Sample)
 
+> **2026-10-23 current-status pointer:** Use [`docs/current-status.md`](../../../../../docs/current-status.md)
+> or the [Japanese counterpart](../../../../../docs/current-status.ja.md) for
+> current release and project status. The latest stable source release is
+> `v0.3.0`; the published desktop preview is `v0.4.0-rc.1` with 22 assets.
+> This sample documentation refresh adds no runtime or model-execution claim.
+
 Minimal end-to-end pipeline showing the three demonstrated verticals of the
 v0.1 MVP Vokra C ABI:
 
@@ -33,6 +39,12 @@ export VOKRA_WHISPER_URL=<verified-whisper-gguf-url>
 export VOKRA_PIPER_URL=<verified-piper-gguf-url>
 bash Samples~/VadAsrTts/scripts/fetch-demo-models.sh
 ```
+
+The fetcher defaults to GitHub `releases/latest/download/…` asset names for
+convenience, but the currently published `v0.3.0` release contains no GGUF
+model assets, and a desktop preview is not a verified model source. Set all
+three URL overrides above to independently verified MIT sources before
+fetching; otherwise the default endpoints may return missing assets.
 
 Verify license and provenance against
 [`docs/license-audit.md`](../../../../../docs/license-audit.md) before fetching.
@@ -83,6 +95,12 @@ just `Application.streamingAssetsPath/models/<file>`.
 The runner still accepts `-vokraModelsDir <abs>` for headless / scripted
 runs; when that override is supplied, the helper is bypassed and the given
 absolute path is used verbatim.
+
+On WebGL, Unity uses the main-thread async byte-fetch path documented in
+`PipelineRunner.RunWebGlAsync`: model and input bytes are fetched through
+`ReadBytesAsync`, VAD yields between chunks, and the one-shot ASR/TTS calls may
+block the browser tab for their duration. Other platforms use the single
+background-thread path described above.
 
 ## Command-line flags
 

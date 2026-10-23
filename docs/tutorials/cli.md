@@ -270,7 +270,7 @@ make, not one Vokra makes behind your back.
 
 ## Keeping this page current
 
-**Last verified: 2026-10-08 — against the `run` / `convert` / `bench` / `f0` /
+**Last verified: 2026-10-23 — against the `run` / `convert` / `bench` / `f0` /
 `npu-bakeoff` argument parsers in `crates/vokra-cli/src/`.**
 
 - **Update responsibility**: a PR that adds or renames a CLI flag updates this

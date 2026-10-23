@@ -1,5 +1,11 @@
 # Mac CPU / Metal full-coverage execution ledger (2026-08-28)
 
+> **2026-10-23 current routing:** [current status](../current-status.md) and the
+> [fresh row snapshot](model-inventory-2026-10-23.tsv) replace older live-status
+> pointers only: 194 repositories, 136 code-artifact-full / 58 non-full,
+> not whole-catalog Apple completion. All exact historical counts, source heads,
+> packets, hashes, owner decisions and results below remain unchanged.
+
 > **2026-10-13 current routing / supersession:** The [latest snapshot](documentation-refresh-2026-10-13.md) records main `7d38061c`, unchanged metadata-only 136 full / 58 unresolved and six open PRs. The [private 41-wheel static closure audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) is complete and its worker/data destroyed, but supplies no new owner/legal, real-weight CPU, Apple or publication approval. Earlier counts, failures, execution heads and signed scopes below remain dated history.
 
 > **2026-10-08 current-routing pointer:** the 2026-09-09 snapshot below is

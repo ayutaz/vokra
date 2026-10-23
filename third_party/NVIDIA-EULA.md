@@ -1,5 +1,15 @@
 # NVIDIA CUDA / cuDNN — EULA compliance record
 
+> **2026-10-23 source/terms readback:** [current status](../docs/current-status.md)
+> separates source reachability from device and legal completion. The CUDA
+> driver probe remains SDK-free; cuDNN detection is not implemented. The
+> [current CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html), page dated
+> 2026-01-26, has application-only access/distribution conditions and critical
+> application limitations. Its distribution section does not contain the
+> formerly quoted private-directory wording; do not attribute that quotation
+> to the current text. Confirm the exact installed SDK/component terms before
+> use or redistribution; this is no compliance certification or new grant.
+
 **Status**: implementation/design boundary for the `vokra-backend-cuda` crate;
 it is not a legal-compliance certification or a claim that a critical-safe SKU
 has shipped. **Scope**: this file records *how Vokra is intended to remain
@@ -33,20 +43,22 @@ red line). Confirm the applicable version at implementation / release time:
 - The redistribution terms attached to the specific toolkit version in use
   (the "Attachment A / redistributable" list shipped with that toolkit).
 
-The load-bearing constraint Vokra designs around is the CUDA EULA's requirement
-that redistributed NVIDIA runtime libraries be *"installed only in a private
-(non-shared) directory location"*, plus the *"not tested … for use in … critical
-applications"* disclaimer. Vokra's response to both is below.
+The current CUDA EULA §1.1.2 conditions SDK redistribution on an application
+with material additional functionality and access limited to that application;
+the CUDA supplement identifies distributable components. §1.2 also limits
+critical-application use. The earlier private-directory quotation is not a
+verified clause of the current page. Vokra's conservative no-bundle policy
+below stays unchanged; it is not a legal conclusion about every SDK version.
 
 ## Vokra's compliance strategy — the 5 points (M2-03 WP completion condition)
 
 1. **Bundle nothing.** Vokra does **not** ship, statically link, or otherwise
    redistribute `cudart` / `cudnn` / `cublas` / the driver in any release
-   artifact. This sidesteps the "private (non-shared) directory" redistribution
-   requirement entirely — there is nothing to place. In particular, the Unity
-   Asset Store's *shared plugins directory* layout is a plausible EULA violation
-   for a bundled NVIDIA runtime, so the Unity package (M2-11) must also ship no
-   NVIDIA runtime (a constraint shared with M2-11).
+   artifact. This policy avoids relying on a proprietary-runtime redistribution
+   grant; it does not waive terms applicable to the developer's installed SDK.
+   Unity packages (M2-11), including shared-plugin layouts, must likewise ship
+   no NVIDIA runtime. Do not infer a directory-specific EULA violation without
+   reviewing the applicable component/version terms.
    *Enforced by CI (M2-03-T23): a distribution scan fails the build if any
    `libcudart*` / `libcudnn*` / `libcublas*` / `cudart64_*.dll` / `cudnn*.dll` /
    `cublas*.dll` (or a static equivalent) is present in a release artifact.*

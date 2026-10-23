@@ -1,5 +1,11 @@
 # Mac CPU / Metal status and next gates (2026-10-22)
 
+> **2026-10-23 supersession:** use [current status](../current-status.md) for
+> accepted main `151d94a8`, complete main CI and eight open PRs. #284, #286
+> and #288 are merged. The queue, main hashes and provider observations below
+> retain their original observation times; none is a fresh provider inventory
+> or proof that the model/Apple campaign has finished.
+
 Observed through 14:04 UTC. Code baseline:
 `e6661039f509a228c46ae5bd33cde66f05eca951` on main, after normal protected
 acceptance of [PR #282](https://github.com/ayutaz/vokra/pull/282).

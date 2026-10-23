@@ -1,5 +1,14 @@
 # Security remediation plan (2026-09-21)
 
+> **2026-10-23 all-pages readback:** [current status](../current-status.md)
+> records **572 open Dependabot alerts**: 93 critical, 247 high, 173 medium,
+> 59 low; 556 name a patched version and 16 do not. Eight Code Scanning
+> findings remain: CodeQL `rust/log-injection` #68–#71 in server tests and
+> Scorecard `CIIBestPracticesID`, `CodeReviewID`, `SASTID`, `VulnerabilitiesID`.
+> A test-code location is not a false-positive disposition. No alert is
+> dismissed or fixed by this readback; historical counts below retain dates.
+> Current main is `151d94a8` with complete CI and eight open PRs (six drafts).
+
 > **2026-10-13 current routing / supersession:** At main `7d38061c`, the [fresh all-pages readback](documentation-refresh-2026-10-13.md) has 199 open Dependabot alerts: 183 patched-version / 16 without; critical 3, high 67, medium 74, low 55. Eight Code Scanning findings remain: four Scorecard rules and four new CodeQL `rust/log-injection` alerts #68–#71 in `integrations/vokra-server/tests/wyoming_compat.rs`. Triage the exact findings rather than infer a false positive or runtime exploitability from their test location. Protection still has 16 strict required context/application pairs with admin enforcement. Six PRs remain open; #229 is green/mergeable at its recorded head, not merged by this task. Older queues below are historical; no alert dismissal or remediation is inferred.
 
 **Status:** active. This is the execution plan for the open Dependabot and

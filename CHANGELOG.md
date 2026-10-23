@@ -12,6 +12,19 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+### Changed
+
+- Post-preview maintenance through main `151d94a8` updates selected isolated
+  reference/server dependencies, including aiohttp, urllib3, certifi, Pillow,
+  TLS/QUIC and OpenTelemetry closures. This does not replace the published
+  `v0.4.0-rc.1` payload or clear every security, license or model gate.
+
+### Added
+
+- Model-free PCM/session and KV observer checks, including synthesized Kyutai
+  PCM coverage (#267, #268). These do not establish independent full real-weight
+  transcription or Apple CPU/Metal/no-fallback acceptance.
+
 ### Fixed
 
 - Construct KV-cache binary16 scales from exact IEEE-754 exponent bits rather
@@ -19,20 +32,25 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 - Apply the exact beam-search length-normalization identities for exponents
   zero and one without an unnecessary approximate power call.
 
-## [0.4.0-rc.1]
+## [0.4.0-rc.1] — 2026-10-17
 
 ### Preview scope
 
 - Release candidate for evaluation, not an API/ABI stability promise or full
-  model-catalog completion. The intended desktop CLI/C ABI payload is CPU-only;
+  model-catalog completion. The published desktop CLI/C ABI payload is CPU-only;
   optional GPU support and per-model Apple CPU/Metal/no-fallback acceptance
   remain separate work. No external package registry or model-weight update
   is part of this GitHub preview.
 - At source `9ee5834d`, hosted Linux CPU functional smoke passed Whisper base
   ASR and Silero VAD v5 speech/silence with fixed model revisions and hashes
   (#261, #262). This is not independent numerical parity, WER/CER, a performance
-  benchmark, or proof of other models or platforms. The candidate's actual
-  packaged binary must pass its own release validation before publication.
+  benchmark, or proof of other models or platforms. The subsequent exact
+  published tag/source `d84d311e98d0abb2987b5c4e96157ae8f2068e1a` passed
+  packaged Linux Whisper/Silero smoke and native three-OS CLI/C ABI validation
+  in [release run 39062234813](https://github.com/ayutaz/vokra/actions/runs/39062234813).
+- Published as a GitHub prerelease with 22 assets on 2026-10-17. Latest stable
+  remains `v0.3.0`; this release does not ship Python, Unity, Godot, web or
+  XCFramework packages, and does not enable external package registries.
 - Installation and model/backend limitations are documented in the
   [preview guide](https://github.com/ayutaz/vokra/blob/v0.4.0-rc.1/docs/release-0.4.0-rc1.md)
   ([日本語](https://github.com/ayutaz/vokra/blob/v0.4.0-rc.1/docs/release-0.4.0-rc1.ja.md)).

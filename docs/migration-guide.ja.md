@@ -108,10 +108,13 @@ vokra-cli convert --model whisper \
 
 - **Whisper base CPU**: RTF < 0.3 が目標（whisper.cpp と同 CPU で同等。
   両者とも K-quant と手書きカーネルを使います）。
-- **Whisper large-v3、RTX 4090**: e2e で **RTF < 0.15**（実測
-  0.081〜0.115）。encoder + decoder-step とも device 常駐 + FA v2
-  causal-attention 融合カーネル。whisper.cpp の CUDA 経路は同じ GPU で
-  通常 2〜3 倍遅くなります（cuBLAS 経由で融合カーネルではないため）。
+- **日付付き CUDA reference（現在の保証ではない）**:
+  [`docs/bench-baselines/vast-2026-07-10/`](bench-baselines/vast-2026-07-10/)
+  の report は 2026-07-10、Whisper large-v3、NVIDIA RTX 4090（driver
+  `560.35.03`）、`/root/jfk-30s.wav` の 11 秒入力、10 samples という構成。
+  decomposed path の RTF sample は `0.735571〜0.786904`、gated FA v2 は
+  `0.753041〜0.820891` だった。これは exact setup の reference 測定であり、
+  whisper.cpp との比較や一般的な GPU 性能主張、formal `<0.10` gate ではない。
 
 ### 3.4 折り合いをつけるべき点
 
@@ -123,11 +126,12 @@ vokra-cli convert --model whisper \
 ## 4. `faster-whisper`（Python）から
 
 source Python packageは`Session`をexportし、生成済み`ctypes` tableも現行C
-header の現行 function set をすべて覆います。ただし未公開の pre-1.0 surface です。
-4 native wheelsのfinal-head CIとPyPI/TestPyPI公開先の明示承認は未完了です。
-[binding status](../bindings/python/README.md)を参照してください。source checkout
-での評価は可能ですが、特定versionが公開・検証されるまではproductionの
-`faster-whisper`依存をregistry上の`vokra` packageへ置換しないでください。
+header の現行 function set をすべて覆います。安定版 `v0.3.0` の GitHub
+release には4 platform wheel assetが含まれますが、PyPIとTestPyPIは未公開です。
+より新しい `0.4.0-rc.1` のsource系列はdesktop previewで、Python wheel release
+はありません。[binding status](../bindings/python/README.md)を参照してください。
+source checkoutでの評価は可能ですが、特定のregistry releaseが公開・検証される
+まではproductionの`faster-whisper`依存をregistry上の`vokra` packageへ置換しないでください。
 
 現在文書化されている **HTTP クライアントのドロップイン置換**は
 [`integrations/vokra-server`](../integrations/vokra-server) を起動して

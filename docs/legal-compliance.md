@@ -1,9 +1,31 @@
 # legal-compliance.md — Vokra 音声 AI 法務対応
 
-**最終更新**: 2026-10-08（文書境界更新；公式一次資料の最終確認日は2026-08-30）
+**最終更新**: 2026-10-23（取得可否・実装境界の更新；法令本文の一括現行確認は未完了。以下の2026-08-30確認は履歴）
 **目的**: EU AI Act Article 50、California SB 942、Tennessee ELVIS Act、連邦 NO FAKES Act、Apple App Review Guidelines、Google Play AI-Generated Content policy について、Vokra provider と deployer が法務確認すべき論点と現行実装の境界を記録する。
 
 **重要な注意**: 本書は法的助言ではなく、Vokra が法令・ストア規約を満たすことを表明するものでもない。適用範囲、役割（provider/deployer）、地域、例外、契約、実際の音声出力を弁護士または各プラットフォームで確認すること。以下の「要法務確認」は未確定事項として扱う。
+
+## 2026-10-23 一次資料・現況の確認境界
+
+現行mainは `151d94a8`。全体の状態は [現況ページ](current-status.ja.md) を参照する。
+下表は今回取得できた範囲を区別するもので、旧条文の施行日・例外・閾値を
+今回の日付で再認証するものではない。本文の過去の確認日とowner判断は保持する。
+
+| 一次資料 | 今回の取得・確認範囲 | 残る境界 |
+|---|---|---|
+| [EU AI Act原規則](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32024R1689)・[2026年改正PDF](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32026R1744) | bot確認ページとなり本文取得不可 | Article 50/111/113と施行・経過措置の現行再確認は未完了 |
+| [California現行条文](https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?sectionNum=22757.6.&lawCode=BPC) | HTTP 403 | 旧SB 942提出版や未マージdraftを現行条文の代用にしない |
+| [S.1367公式議案ページ](https://www.congress.gov/bill/119th-congress/senate-bill/1367) | 取得表示は2025年提出時のキャッシュ | 現在の成立・改正状況を保証しない |
+| [Tennessee SB2096公式履歴](https://wapp.capitol.tn.gov/apps/BillInfo/Default?BillNumber=SB2096&GA=113) | 2024年Public Chapter 588の成立履歴を取得 | その後の全改正・適用事実の確認ではない |
+| [Apple App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/) | 5.5はMDM、1.2はUGCの通報・filter/block等の対策を扱う | アプリの具体的な機能・AI生成物と審査適用を個別確認する |
+| [Google Play AI policy](https://support.google.com/googleplay/android-developer/answer/13985936)・[説明](https://support.google.com/googleplay/android-developer/answer/14094294) | 禁止コンテンツ防止、アプリ内report/flag機構、実在人物のAI音声・動画生成の例を確認 | 実装・moderation・他のDeveloper Policiesへの対応はdeployer側で必要 |
+| [HHS covered entities](https://www.hhs.gov/hipaa/for-professionals/covered-entities/index.html)・[business associates](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/business-associates/index.html) | HIPAAの主体・契約上の分界を取得 | オフライン推論やbackend選択だけでHIPAA適合を保証しない |
+
+`WatermarkConfig::backend_status()` は引き続き `Deferred`。通常の合成経路への自動
+markingは提供されず、standalone AudioSealは法的十分性の証拠ではない。
+[PR #198](https://github.com/ayutaz/vokra/pull/198) はhead `5614a92c` の未マージdraftであり、
+下の2026-10-08時点のhead/CI記述はその日付の履歴に限る。この更新はdraft内容の採用、
+法務sign-off、配布・実行・公開許可を追加しない。
 
 **2026-10-04 文書レビューの境界:** 本文の2026-08-30法令確認日は履歴として保持する。
 一次資料への再アクセスを試みたが、EUR-Lexのbot確認とCalifornia条文ページの取得失敗により、

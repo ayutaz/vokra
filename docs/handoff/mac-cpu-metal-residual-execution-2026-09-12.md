@@ -1,5 +1,11 @@
 # Mac CPU / Metal residual execution ledger (2026-09-12)
 
+> **2026-10-23 current routing:** use [current status](../current-status.md),
+> accepted main `151d94a8` and the [fresh metadata inventory](model-inventory-2026-10-23.tsv).
+> Current code/artifact classification is 136 full / 58 non-full, not new
+> real-weight or Apple proof. This supersedes old queue pointers, not the
+> 135/59 historical evidence, numerical bounds, owner scopes or publications.
+
 > **2026-10-13 current routing / supersession:** The [latest snapshot](documentation-refresh-2026-10-13.md) remains metadata-only 136 full / 58 unresolved at main `7d38061c`. The [private static closure audit](vibevoice-realtime-static-closure-audit-2026-10-13.md) is finished with worker/data cleanup and original guard restoration, not full model/Apple or legal approval. The 135/59 values and all exact-head execution outcomes below remain dated evidence.
 
 > **2026-10-08 supersession boundary:** the 135-full / 59-unresolved audit

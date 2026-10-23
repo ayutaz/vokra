@@ -27,6 +27,12 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 > これはCPU-only previewです。macOS/Windowsのmodel推論、Apple Metal/no-fallback、全catalog完了、
 > performance、数値parityを主張せず、model/Space/HF/registry/X/Scaleway artifactも更新していません。
 >
+> **現在のsource checkpoint（2026-10-23 UTC）:** 公開 `main` は
+> `151d94a8613d5bd4acb1671a461f59742c37b8fc` です。workspace は引き続き
+> `0.4.0-rc.1` の開発系列で、最新の安定版releaseは `v0.3.0` です。
+> open PR と model readiness の状況は、このrelease noteから推測せず
+> [文書マップ](docs/README.md)を参照してください。
+>
 > **過去の公開前記録（2026-10-17）:** `v0.4.0-rc.1`の配布準備中で、公開済みLatestは
 > 引き続き`v0.3.0`です。source `9ee5834d`では、Whisper base ASRとSilero VAD v5の
 > 音声・無音判定がhosted Linux CPUの機能smokeに成功しました。数値parityや

@@ -108,7 +108,7 @@ is a hard error rather than a lazy failure on first request.
 
 ## Keeping this page current
 
-**Last verified: 2026-10-04 — against the flag surface in
+**Last verified: 2026-10-23 — against the flag surface in
 `integrations/vokra-server/src/config.rs`
 <!-- anchor: integrations/vokra-server/src/config.rs -->.**
 

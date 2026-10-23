@@ -7,11 +7,11 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: source implementation current; PyPI/TestPyPI unpublished; GitHub wheels available
 
-**Reviewed:** 2026-10-08 against the generated C header and the current
-source/documentation tree. The released workspace tag remains `v0.3.0`;
-this checkout may contain unreleased documentation changes.
+**Reviewed:** 2026-10-23 against the generated C header and the current
+source/documentation tree. The workspace on this branch is `0.4.0-rc.1`;
+the latest published Python wheel release remains `v0.3.0`.
 
-The workspace is `0.3.0`. The `v0.3.0` GitHub source release (2026-09-20)
+The `v0.3.0` GitHub source release (2026-09-20)
 attaches the four platform wheels (`vokra-0.3.0-py3-none-*.whl`) as release
 assets; nothing is published on PyPI or TestPyPI. Source checkouts keep the
 development metadata `0.1.0.dev0` (release builds set `VOKRA_BUILD_VERSION`).
@@ -33,11 +33,12 @@ The source-side C-ABI drift is closed in this worktree:
   loads the matching native library after asserting the public API and exact
   generated table.
 
-This is still not a PyPI publication claim. The GitHub `v0.3.0` release
-contains four platform wheel assets, while the package remains unpublished on
-PyPI/TestPyPI. This documentation refresh does not re-run the historical
-release CI; any index upload requires separate authorization and destination
-verification.
+This is still not a PyPI publication claim. The latest GitHub Python binding
+release is `v0.3.0` and contains four platform wheel assets, while the
+package remains unpublished on PyPI/TestPyPI. The `v0.4.0-rc.1` desktop
+preview does not change that Python publication status. This documentation
+refresh does not re-run the historical release CI; any index upload requires
+separate authorization and destination verification.
 
 The release matrix is Linux x86_64 (`manylinux_2_28`), macOS arm64, macOS
 x86_64, and Windows x86_64. The two macOS architectures are separate truthful

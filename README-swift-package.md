@@ -1,12 +1,12 @@
 # Vokra Swift Package
 
-The workspace release is `0.3.0` (`v0.3.0`), and the XCFramework is published
-as the GitHub Release asset `Vokra.xcframework.zip`. This guide was reviewed
-on 2026-10-08 against exact `main` checkout
-`d100d93778191ccab77bd1c37fe3552e3d889758`; the released tag remains the
-consumer pin. Current `main`'s `Package.swift` uses the pinned `v0.3.0` GitHub
-binary target URL and checksum, while the released `v0.3.0` tag retains its
-local XCFramework path. For local development, build the XCFramework with the
+The current workspace line is `0.4.0-rc.1`; the latest stable XCFramework
+consumer release remains `v0.3.0`, published as the GitHub Release asset
+`Vokra.xcframework.zip`. This guide was reviewed on 2026-10-23 against public
+`main` `151d94a8613d5bd4acb1671a461f59742c37b8fc`; the released stable tag
+remains the consumer pin. Current `main`'s `Package.swift` still uses the pinned
+`v0.3.0` GitHub binary target URL and checksum, while the released `v0.3.0` tag
+retains its local XCFramework path. For local development, build the XCFramework with the
 script below and use a consumer-side local package or `binaryTarget(path:)`.
 Apple Silicon CPU/Metal hardware evidence is not implied by this package guide
 and remains a

@@ -27,10 +27,12 @@ respected when requested.
 
 ## Supported versions
 
-The current supported release is `0.3.0`, published on 2026-09-20 with Git tag
-`v0.3.0` and a GitHub release. External package registries remain disabled.
-Security fixes are made on the current pre-1.0 development line. Older commits,
-private builds, and unreleased snapshots do not receive backports.
+The current supported stable release is `0.3.0`, published on 2026-09-20 with
+Git tag `v0.3.0` and a GitHub release. The workspace development line is
+`0.4.0-rc.1`; its prerelease status does not change the stable support policy.
+External package registries remain disabled. Security fixes are made on the
+current pre-1.0 development line. Older commits, private builds, and
+unreleased snapshots do not receive backports.
 
 ## In scope
 
