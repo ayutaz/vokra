@@ -17,6 +17,7 @@ PINS = ROOT / "tools/parity/release_candidate_published_cli_pairing_pins.json"
 HELPER = ROOT / "scripts/release/run-published-cli-pairing.sh"
 VALIDATOR = ROOT / "scripts/release/validate_published_cli_pairing.py"
 WORKFLOW = ROOT / ".github/workflows/release-candidate-published-cli-smoke.yml"
+AUDIO_SIDECAR = ROOT / "tests/fixtures/audio/jfk-30s.wav.sha256"
 
 
 class HostedPairingTests(unittest.TestCase):
@@ -165,6 +166,7 @@ esac
 
     def test_workflow_is_manual_sparse_read_only_and_uploads_only_json(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertTrue(AUDIO_SIDECAR.read_text(encoding="utf-8").strip())
         self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("push:", text)
         self.assertIn("type: boolean", text)
@@ -195,18 +197,20 @@ esac
                 break
         required = {
             path.relative_to(ROOT).as_posix()
-            for path in (PINS, HELPER, VALIDATOR, WORKFLOW, Path(__file__).resolve())
+            for path in (PINS, HELPER, VALIDATOR, WORKFLOW, Path(__file__).resolve(), AUDIO_SIDECAR)
         }
         self.assertTrue(required <= sparse)
 
         selected = "HostedPairingTests.test_workflow_is_manual_sparse_read_only_and_uploads_only_json"
 
-        def run_projected(include_workflow: bool) -> subprocess.CompletedProcess[str]:
+        def run_projected(include_workflow: bool, include_sidecar: bool) -> subprocess.CompletedProcess[str]:
             with tempfile.TemporaryDirectory(prefix="vokra-projected-") as td:
                 projected_root = Path(td)
                 sources = [PINS, HELPER, VALIDATOR, Path(__file__).resolve()]
                 if include_workflow:
                     sources.append(WORKFLOW)
+                if include_sidecar:
+                    sources.append(AUDIO_SIDECAR)
                 for source in sources:
                     destination = projected_root / source.relative_to(ROOT)
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -216,11 +220,15 @@ esac
                 env["UV_CACHE_DIR"] = str(projected_root / "uv-cache")
                 return subprocess.run(["uv", "run", "--no-project", "--python", "3.12", "python", str(projected_root / Path(__file__).relative_to(ROOT)), selected], cwd=projected_root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
 
-        negative = run_projected(include_workflow=False)
+        negative = run_projected(include_workflow=False, include_sidecar=True)
         self.assertNotEqual(negative.returncode, 0)
         self.assertIn("FileNotFoundError", negative.stderr)
         self.assertIn("release-candidate-published-cli-smoke.yml", negative.stderr)
-        positive = run_projected(include_workflow=True)
+        sidecar_negative = run_projected(include_workflow=True, include_sidecar=False)
+        self.assertNotEqual(sidecar_negative.returncode, 0)
+        self.assertIn("FileNotFoundError", sidecar_negative.stderr)
+        self.assertIn("jfk-30s.wav.sha256", sidecar_negative.stderr)
+        positive = run_projected(include_workflow=True, include_sidecar=True)
         self.assertEqual(positive.returncode, 0, positive.stderr)
 
 

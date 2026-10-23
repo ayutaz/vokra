@@ -27,6 +27,7 @@ jobs:
             tools/parity/release_candidate_cpu_smoke.py
             tools/parity/release_candidate_published_cli_pairing_pins.json
             tests/fixtures/audio/jfk-30s.wav
+            tests/fixtures/audio/jfk-30s.wav.sha256
             scripts/release/run-published-cli-pairing.sh
             scripts/release/validate_published_cli_pairing.py
             scripts/release/test_published_cli_pairing.py
