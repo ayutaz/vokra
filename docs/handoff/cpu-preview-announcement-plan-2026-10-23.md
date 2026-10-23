@@ -1,5 +1,15 @@
 # CPUプレビュー告知までの実行計画 — 2026-10-23
 
+## 検証workflowの規約修正 — 2026-10-23 10:14 UTC
+
+統合先#293の受入対象HEADは `525b2a222828adf3b2205cb8a99b44ce10a9860b`。
+旧HEAD `8f2f9433`ではCUDA・MetalのCIジョブが成功した一方、repo-hygieneが
+setup-uvをhelper経由だけで使用する構成を拒否した。workflow内で既存7件の
+モデルなし回帰を直接UV実行するステップと、そのテストのsparse checkoutを追加した。
+修正候補そのものへのcanonical hygiene検査、回帰、actionlintは成功済み。
+新HEADのfresh CI受入・mainへの通常マージ・実モデルsmokeという残条件は維持する。
+後段のHEAD・CI値は各確認時点の履歴である。
+
 ## 実行時の統合方針 — 2026-10-23 09:06 UTC
 
 Whisper関連の#291（回帰・監査・公開証拠）、#292（CI入力identity修正）、

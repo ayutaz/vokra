@@ -236,3 +236,38 @@ superseded heads and sent ordinary cancellation requests to free execution
 slots for the integrated head. A request alone is not terminal proof. No
 main or unrelated worker was stopped, no final-head check was bypassed, and
 no local model/Cargo operation occurred.
+
+## Workflow hygiene correction — 2026-10-23 10:14 UTC
+
+The integrated `8f2f9433` head's CUDA and Metal jobs both passed, including
+their fixed-GGUF/C ABI stages. Fifteen of sixteen required contexts passed;
+the parity matrix itself passed both fusion modes while its required echo
+aggregator was still queued.
+
+An actual additional failure occurred in repo-hygiene job `120332591709`,
+run `39929080825`: the canonical workflow checker rejected the new smoke job
+because it installed setup-uv but had no direct UV invocation in its YAML
+run steps. The helper did invoke UV, but the repository's static same-job
+contract did not follow that indirection. The manager's earlier local checks
+had not applied this canonical gate to the modified candidate; the failure
+was not waived as advisory or treated as a success.
+
+Luna added the existing seven model-free regression tests to sparse checkout
+and an explicit UV Python 3.12 test step immediately after setup-uv and before
+model consent. The parent UV invocation may provision its interpreter;
+the tests' child invocations retain their offline/no-download restriction.
+No checker, consent, pin, runtime or publication gate was weakened.
+
+The manager independently ran the unchanged canonical checker from a
+temporary positive-allowlist mirror containing the actual modified workflow:
+one workflow, zero crons, all checks passed. Seven offline UV tests and
+actionlint also passed, and local Git blob IDs matched the two uploaded blobs.
+The resulting #293 head is `525b2a222828adf3b2205cb8a99b44ce10a9860b`;
+its tree is `4d73fef5d4fa47779aacc86d9e77f2e1deebe063`. Only the workflow and
+its focused test changed from the preceding integrated head. Fresh CI is
+required again. No released-CLI/new-model success or merge is claimed yet.
+
+The local management-document checkpoint `d15e5c41` passed all five ordinary
+compile-free pre-commit gates and remains on
+`docs/cpu-preview-pairing-20261023`, with the unrelated dirty guard preserved.
+It has not been pushed into an extra CI queue while model acceptance is pending.
