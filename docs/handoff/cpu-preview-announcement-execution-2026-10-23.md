@@ -6,6 +6,47 @@ X posting, a new Release, additional HF publication and the full Apple campaign
 are outside these steps. This is a dated execution record; later results are
 appended rather than attributed to earlier runs.
 
+## Accepted integration and genuine hosted failure — 2026-10-23 11:28 UTC
+
+[PR #293](https://github.com/ayutaz/vokra/pull/293) was normally squash-merged
+as main `710ae91dec29066627a123a4d98e519465f2fe67`. Its tree
+`3dc5ad30d465caa9940e9c79b11f429400af08ec` matches the reviewed final source
+`80eff153f90e7158c9a85a78b36f8f18f9ab1ab0`. All 16 required context/app
+checks and the relevant CUDA, Metal and repo-hygiene jobs passed; the final
+source-check readback was 81 successes and five event-specific skips.
+#291 and #292 were closed as incorporated, with their exact original blobs
+preserved in #293. Their earlier failures/cancellations remain historical.
+#287 was updated to this main and approved at source `86d5dad8`; fresh CI
+is still pending at this entry. Its preserved reference/API/owner holds remain.
+
+The manual model-consented
+[run 39944971172](https://github.com/ayutaz/vokra/actions/runs/39944971172)
+executed on genuine GitHub-hosted Linux at main `710ae91d`, attempt 1,
+job `120385282760`. Its eight offline regressions passed. The subsequent
+driver rejected the temporary audio path with
+`audio must be the committed fixture tests/fixtures/audio/jfk-30s.wav`.
+Commands and models are empty; no model inference result is claimed.
+The wrapper had passed a temporary copy even though the committed fixture
+was included in the sparse checkout. The next correction must preserve the
+driver's canonical-path and identity gates and change the wrapper invocation,
+with a regression for this actual contract violation before another model run.
+
+The [raw failure receipt](evidence/published-rc1-cli-pairing-failure-2026-10-23.json)
+is 2,277 bytes, SHA-256
+`4629530b4e221e06f6aa04dbf110dca75f2d927b6dea6358937f274a8c15b43a`.
+It was recovered from artifact `12497962386`; the 1,279-byte ZIP SHA-256
+`3fe73478e61a03e846dd426e8599af718f91cad966bbdc30033076376736196c`
+matches GitHub's API digest. The nested driver receipt is 1,516 bytes,
+SHA-256 `3b01dab9f54327606854f63a0b25a1adb0081b1b2566b7b4027c2200ee1b343b`.
+The receipt separately records successful release CLI/sidecar/manifest/fixture
+identity checks; those checks are not a successful functional smoke.
+
+The local management-document branch was normally merged with accepted main,
+without staging or changing the unrelated dirty guard. Its SHA-256 remains
+`0e268b8ca047d16019ba4df60ef478d44b615d38e73313adc4c7bd392fe93351`.
+No local model/audio/binary was downloaded or executed. The previous VAST
+worker's recorded destruction is unchanged; no new VAST worker was allocated.
+
 ## Initial state and boundaries
 
 Accepted main at execution start:
