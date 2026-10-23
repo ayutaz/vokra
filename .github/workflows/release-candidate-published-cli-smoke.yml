@@ -30,6 +30,7 @@ jobs:
             scripts/release/run-published-cli-pairing.sh
             scripts/release/validate_published_cli_pairing.py
             scripts/release/test_published_cli_pairing.py
+            .github/workflows/release-candidate-published-cli-smoke.yml
           sparse-checkout-cone-mode: false
 
       - name: Install pinned UV without cache

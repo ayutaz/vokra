@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -132,6 +133,45 @@ class HostedPairingTests(unittest.TestCase):
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", text)
         self.assertIn("runner.temp }}/vokra-rc1-pairing-evidence/*.json", text)
         self.assertNotIn("--push", text)
+
+    def test_sparse_checkout_projects_every_offline_test_input(self) -> None:
+        lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+        marker = lines.index("          sparse-checkout: |")
+        sparse = set()
+        for line in lines[marker + 1:]:
+            if line.startswith("            "):
+                sparse.add(line.strip())
+            else:
+                break
+        required = {
+            path.relative_to(ROOT).as_posix()
+            for path in (PINS, HELPER, VALIDATOR, WORKFLOW, Path(__file__).resolve())
+        }
+        self.assertTrue(required <= sparse)
+
+        selected = "HostedPairingTests.test_workflow_is_manual_sparse_read_only_and_uploads_only_json"
+
+        def run_projected(include_workflow: bool) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory(prefix="vokra-projected-") as td:
+                projected_root = Path(td)
+                sources = [PINS, HELPER, VALIDATOR, Path(__file__).resolve()]
+                if include_workflow:
+                    sources.append(WORKFLOW)
+                for source in sources:
+                    destination = projected_root / source.relative_to(ROOT)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+                env = os.environ.copy()
+                env["UV_PYTHON_DOWNLOADS"] = "never"
+                env["UV_CACHE_DIR"] = str(projected_root / "uv-cache")
+                return subprocess.run(["uv", "run", "--no-project", "--python", "3.12", "python", str(projected_root / Path(__file__).relative_to(ROOT)), selected], cwd=projected_root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+
+        negative = run_projected(include_workflow=False)
+        self.assertNotEqual(negative.returncode, 0)
+        self.assertIn("FileNotFoundError", negative.stderr)
+        self.assertIn("release-candidate-published-cli-smoke.yml", negative.stderr)
+        positive = run_projected(include_workflow=True)
+        self.assertEqual(positive.returncode, 0, positive.stderr)
 
 
 if __name__ == "__main__":
