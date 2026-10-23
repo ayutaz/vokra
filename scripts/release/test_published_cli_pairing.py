@@ -113,6 +113,56 @@ class HostedPairingTests(unittest.TestCase):
             evidence = Path(td) / "vokra-rc1-pairing-evidence/pairing-receipt.json"
             self.assertEqual(json.loads(evidence.read_text(encoding="utf-8"))["status"], "BLOCKED")
 
+    def test_wrapper_handoff_captures_canonical_audio_without_driver_or_network(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vokra-handoff-") as td:
+            root = Path(td)
+            fakebin = root / "bin"
+            fakebin.mkdir()
+            capture = root / "captured-audio-path"
+            fake_uv = fakebin / "uv"
+            fake_uv.write_text("""#!/bin/sh
+set -eu
+previous=
+audio_argument=
+receipt=
+is_driver=false
+for argument in "$@"; do
+  if [ "$previous" = "--audio" ]; then audio_argument="$argument"; fi
+  case "$argument" in */release_candidate_cpu_smoke.py) is_driver=true ;; esac
+  if [ "$previous" = "--receipt" ]; then receipt="$argument"; fi
+  previous="$argument"
+done
+if [ "$is_driver" = true ]; then printf '%s\\n' '{"status":"PASS"}' > "$receipt"; fi
+if [ "$is_driver" = true ]; then printf '%s' "$audio_argument" > "${CAPTURE:?}"; printf '1\\n' >> "${DRIVER_CALLS:?}"; fi
+""", encoding="utf-8")
+            fake_curl = fakebin / "curl"
+            fake_curl.write_text("""#!/bin/sh
+set -eu
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then output="$2"; shift 2; else shift; fi
+done
+if [ -n "$output" ]; then : > "$output"; fi
+""", encoding="utf-8")
+            fake_git = fakebin / "git"
+            fake_git.write_text("""#!/bin/sh
+set -eu
+case "$*" in
+  *"rev-parse HEAD") printf '%s\\n' HEAD ;;
+  *"hash-object "*) printf '%s\\n' 4107f83b64fe59d6a121d051271c9b41e763649b ;;
+  *) exit 1 ;;
+esac
+""", encoding="utf-8")
+            for executable in (fake_uv, fake_curl, fake_git):
+                executable.chmod(0o700)
+            env = os.environ.copy()
+            driver_calls = root / "driver-call-count"
+            env.update({"GITHUB_ACTIONS": "true", "GITHUB_SHA": "HEAD", "GITHUB_WORKFLOW_SHA": "workflow-sha", "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1", "RUNNER_TEMP": str(root), "CAPTURE": str(capture), "DRIVER_CALLS": str(driver_calls), "PATH": f"{fakebin}:{env['PATH']}"})
+            result = subprocess.run(["bash", str(HELPER), "--allow-models", "true"], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(driver_calls.read_text(encoding="utf-8").splitlines(), ["1"])
+            self.assertEqual(capture.read_text(encoding="utf-8"), str(ROOT / "tests/fixtures/audio/jfk-30s.wav"))
+
     def test_workflow_is_manual_sparse_read_only_and_uploads_only_json(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", text)
