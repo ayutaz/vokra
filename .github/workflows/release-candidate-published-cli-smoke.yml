@@ -29,6 +29,7 @@ jobs:
             tests/fixtures/audio/jfk-30s.wav
             scripts/release/run-published-cli-pairing.sh
             scripts/release/validate_published_cli_pairing.py
+            scripts/release/test_published_cli_pairing.py
           sparse-checkout-cone-mode: false
 
       - name: Install pinned UV without cache
@@ -36,6 +37,9 @@ jobs:
         with:
           version: 0.12.5
           enable-cache: false
+
+      - name: Run offline regression tests
+        run: uv run --no-project --python 3.12 python scripts/release/test_published_cli_pairing.py
 
       - name: Require explicit model consent
         env:
