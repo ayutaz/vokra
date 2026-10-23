@@ -1,5 +1,29 @@
 # CPUプレビュー告知前確認 — 2026-10-23
 
+## 後続の修正と現在の受入待ち — 2026-10-23 09:29 UTC
+
+以下の当初判定は、旧Whisper pinの調査時点の記録として保持する。
+その後、[Whisper修正記録](whisper-base-provenance-repair-2026-10-23.md)と
+[公開成功receipt](evidence/whisper-base-provenance-repair-2026-10-23.json)に従って、
+MITの一次資料・具体的なsource revision・テンソル内容を確認した新しいartifactを公開した。
+現在の修正済み固定revisionは `bf440f6064ffc882d53d3694729dc4616dc2cfa7`。
+`whisper-base.gguf` は290,859,488 bytes、SHA-256
+`5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014` である。
+旧pinのlicense/provenance記述を、この新artifactの判断へ流用しない。
+
+回帰・監査・公開証拠、固定GGUFを使うCI修正、配布済みCLIを試す手動workflowは、
+[PR #293](https://github.com/ayutaz/vokra/pull/293)の
+`8f2f9433919daed9f70b1d6d7d4eb9220282bfd6`へ統合した。
+受入済みmainは引き続き `92a336318a54f659fa991c129aaa991f46ea6231`。
+この時点で統合HEADのCIはGitHubのrunner割当待ちで、PRは未マージである。
+
+**新Whisperと公開済みRC1 CLIの組み合わせは、まだ機能smoke未完了。**
+モデルの公開修正だけで配布CLIとの互換性を成功扱いせず、手動workflowの受入・
+実際のhosted実行・結果回収と英日ガイド更新を告知前の残条件として維持する。
+現在の進行順は[告知計画](cpu-preview-announcement-plan-2026-10-23.md)、
+実行・失敗・cleanupの事実は[実行記録](cpu-preview-announcement-execution-2026-10-23.md)を参照する。
+X投稿、新規Release、全モデル・Apple/Metal完了はこの追記の成果ではない。
+
 ## 対象と判定
 
 依頼された計画の1（文書push・PR・CI・通常マージ）と2（公開対象の最終確認）を扱う。
