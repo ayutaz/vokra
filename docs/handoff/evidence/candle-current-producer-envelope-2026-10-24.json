@@ -1,0 +1,64 @@
+{
+  "application_receipt_sha256": "b8434371a63ca337623e6e6b4d658abba9ad94161fd78623845fcabb71e092e6",
+  "artifact_digest": "d716b3820fdddf95002ad0cc174e9bc0a9404335bbc409260092f15ee51e902d",
+  "artifact_id": 12548826112,
+  "artifact_name": "kyutai-candle-paste-application-evidence-40060353787-1",
+  "artifact_size": 259315,
+  "caller": "applied-advisory",
+  "caller_workflow_path": ".github/workflows/kyutai-candle-applied-advisory.yml",
+  "final_lock_sha256": "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6",
+  "members": [
+    {
+      "bytes": 258168,
+      "path": "application_receipt.json",
+      "sha256": "b8434371a63ca337623e6e6b4d658abba9ad94161fd78623845fcabb71e092e6"
+    },
+    {
+      "bytes": 849778,
+      "path": "baseline_cpu_metadata.json",
+      "sha256": "b841518f8cf968d3d7997b9bf9259d6e35ddb1c2977d3e5c102aa799bd2a8cde"
+    },
+    {
+      "bytes": 1149393,
+      "path": "baseline_whole_metadata.json",
+      "sha256": "30a2ca40e3ab5502b64db0c686aeb01bc223de93772a865553dc4545db5621bb"
+    },
+    {
+      "bytes": 38252,
+      "path": "candidate.lock",
+      "sha256": "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8"
+    },
+    {
+      "bytes": 35980,
+      "path": "final.lock",
+      "sha256": "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6"
+    },
+    {
+      "bytes": 847544,
+      "path": "overlay_cpu_metadata.json",
+      "sha256": "2682ad06b8b39382905fecde4ac31d98b64fb5c9c59fd7125aa5703f74291bd8"
+    },
+    {
+      "bytes": 1145613,
+      "path": "overlay_whole_metadata.json",
+      "sha256": "880468709e96e85fd48249ab0a3e413de1049dcbca40015faffbeb28d7c8dff1"
+    },
+    {
+      "bytes": 8320,
+      "path": "source_receipt.json",
+      "sha256": "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"
+    }
+  ],
+  "producer_job_name": "source-only paste overlay metadata application (not build/parity)",
+  "producer_workflow_name": "Kyutai Candle paste overlay source-only application",
+  "producer_workflow_path": ".github/workflows/kyutai-candle-paste-application.yml",
+  "repository": "ayutaz/vokra",
+  "run_attempt": 1,
+  "run_id": 40060353787,
+  "run_ref": "refs/pull/278/merge",
+  "schema": 1,
+  "source_commit": "e6a55d2722a65870ef52a6c9f6ecfc0e90f38362",
+  "source_head": "a4a9c5b09baba4951b3b702066e47e966850abc3",
+  "workflow_name": "kyutai-candle-applied-advisory",
+  "workflow_sha": "69aef2357d15f6ed443e4e5965435427f14c6c66"
+}

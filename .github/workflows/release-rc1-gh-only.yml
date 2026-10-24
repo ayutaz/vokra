@@ -50,7 +50,7 @@ jobs:
             tools/release/publish_config.py
             scripts/release/extract-changelog.py
             CHANGELOG.md
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
       - name: Validate fixed RC tag and source SHA
@@ -103,34 +103,34 @@ jobs:
             /*
             !/tools/parity/cosyvoice2_llm_reference/**
             !/tests/parity/silero_vad/**
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-capi-linux
           path: reuse/linux-capi
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-capi-macos
           path: reuse/macos-capi
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-capi-windows
           path: reuse/windows-capi
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-cli-linux-x86_64
           path: reuse/linux-cli
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-cli-linux-musl-x86_64
           path: reuse/linux-musl-cli
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-cli-macos-aarch64
           path: reuse/macos-cli
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: vokra-cli-windows-x86_64
           path: reuse/windows-cli
@@ -162,7 +162,7 @@ jobs:
             verify --version "$RC_VERSION" --dist-dir dist/desktop
           test "$(git rev-parse HEAD)" = "${{ needs.validate-input.outputs.source_sha }}"
       - name: Upload complete RC desktop payload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
           path: dist/desktop
@@ -188,10 +188,10 @@ jobs:
             /*
             !/tools/parity/cosyvoice2_llm_reference/**
             !/tests/parity/silero_vad/**
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
           path: dist/desktop
@@ -242,7 +242,7 @@ jobs:
             --github-run-attempt "$GITHUB_RUN_ATTEMPT_VALUE"
       - name: Upload bounded RC smoke receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-rc1-cpu-smoke-receipt-${{ needs.validate-input.outputs.source_sha }}
           path: ${{ runner.temp }}/vokra-rc1-cpu-smoke/receipt.json
@@ -266,10 +266,10 @@ jobs:
           sparse-checkout: |
             tools/release
             include/vokra.h
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
           path: dist/desktop
@@ -304,10 +304,10 @@ jobs:
           sparse-checkout: |
             tools/release
             include/vokra.h
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
           path: dist/desktop
@@ -346,13 +346,13 @@ jobs:
           sparse-checkout: |
             tools/release
             include/vokra.h
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
       - name: Verify uv runtime on Windows
         shell: bash
         run: uv run --help >/dev/null
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
           path: dist/desktop
@@ -389,10 +389,10 @@ jobs:
             /*
             !/tools/parity/cosyvoice2_llm_reference/**
             !/tests/parity/silero_vad/**
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
         with:
           version: "0.8.22"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-rc1-desktop-payload-${{ needs.validate-input.outputs.source_sha }}
           path: dist/desktop

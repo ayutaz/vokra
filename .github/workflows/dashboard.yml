@@ -50,7 +50,7 @@ jobs:
       # scripts below still run through uv so every Python invocation follows
       # the repository's package-manager policy.
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Oracle the generator (stdlib-only, fast)
         run: |
@@ -67,7 +67,7 @@ jobs:
             --out site/index.html
 
       - name: Upload dashboard artifact (always available)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: vokra-benchmark-dashboard
           path: site/index.html

@@ -178,11 +178,11 @@ esac
         self.assertIn("sparse-checkout-cone-mode: false", text)
         self.assertIn("scripts/release/test_published_cli_pairing.py", text)
         self.assertIn("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", text)
-        self.assertIn("astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7", text)
+        self.assertIn("astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884", text)
         self.assertIn("enable-cache: false", text)
         self.assertIn("run: uv run --no-project --python 3.12 python scripts/release/test_published_cli_pairing.py", text)
         self.assertNotIn("actions/cache", text)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", text)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", text)
         self.assertIn("runner.temp }}/vokra-rc1-pairing-evidence/*.json", text)
         self.assertNotIn("--push", text)
 
