@@ -899,7 +899,8 @@ def validate_artifact(root: Path, *, profile: str | AuditProfile | None = None, 
             raise AuditError("current artifact envelope is required")
         current_artifact.validate_envelope(envelope)
         expected = {row["path"]: (row["bytes"], row["sha256"]) for row in envelope["members"]}
-        files = _walk_regular_files(root, max_bytes=MAX_ARTIFACT_BYTES, exact_bytes=sum(size for size, _digest in expected.values()))
+        expected_total = sum(size for size, _digest in expected.values())
+        files = _walk_regular_files(root, max_bytes=expected_total, exact_bytes=expected_total)
     else:
         expected = {relative: (size, digest) for relative, size, digest in selected.expected_members}
         files = _walk_regular_files(root, max_bytes=selected.extracted_bytes, exact_bytes=selected.extracted_bytes)

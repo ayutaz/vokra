@@ -140,6 +140,61 @@ class AppliedAuditProfileTests(unittest.TestCase):
         if CURRENT_ENVELOPE is None:
             self.assertEqual(receipt["total_bytes"], audit_lock.APPLIED_PROFILE.extracted_bytes)
 
+    def test_current_envelope_total_allows_registered_extraction_over_4mib(self) -> None:
+        total = 4_333_048
+        sizes = [500_000] * 7 + [833_048]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rows = []
+            for index, (name, size) in enumerate(zip(current_artifact.MEMBER_NAMES, sizes, strict=True)):
+                data = bytes((index + 1,)) * size
+                (root / name).write_bytes(data)
+                rows.append({"path": name, "bytes": size, "sha256": audit_lock._sha256(data)})
+            envelope = {
+                "schema": current_artifact.CURRENT_SCHEMA,
+                "repository": current_artifact.PRODUCTION_REPOSITORY,
+                "caller": "applied-advisory",
+                "workflow_name": current_artifact.CALLERS["applied-advisory"],
+                "caller_workflow_path": current_artifact.CALLER_PATHS["applied-advisory"],
+                "producer_workflow_path": current_artifact.PRODUCER_WORKFLOW_PATH,
+                "producer_workflow_name": current_artifact.PRODUCER_WORKFLOW_NAME,
+                "producer_job_name": current_artifact.PRODUCER_JOB_NAME,
+                "run_id": 123,
+                "run_attempt": 1,
+                "source_head": "a" * 40,
+                "workflow_sha": "b" * 40,
+                "run_ref": "refs/pull/123/merge",
+                "artifact_id": 456,
+                "artifact_name": "kyutai-candle-paste-application-evidence-123-1",
+                "artifact_digest": "c" * 64,
+                "artifact_size": 259_361,
+                "source_commit": current_artifact.SOURCE_COMMIT,
+                "final_lock_sha256": current_artifact.FINAL_LOCK_SHA256,
+                "members": rows,
+                "application_receipt_sha256": rows[0]["sha256"],
+            }
+            with mock.patch.object(audit_lock, "_validate_applied_metadata"):
+                receipt = audit_lock.validate_artifact(root, profile="current", envelope=envelope)
+            self.assertEqual(receipt["total_bytes"], total)
+            self.assertGreater(receipt["total_bytes"], audit_lock.MAX_ARTIFACT_BYTES)
+
+            (root / "unexpected").write_bytes(b"x")
+            with self.assertRaises(audit_lock.AuditError):
+                audit_lock.validate_artifact(root, profile="current", envelope=envelope)
+            (root / "unexpected").unlink()
+
+            mutated = dict(envelope)
+            mutated["members"] = [dict(row) for row in envelope["members"]]
+            mutated["members"][1]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(audit_lock.AuditError, "artifact member hash/size mismatch"):
+                audit_lock.validate_artifact(root, profile="current", envelope=mutated)
+
+            member_over_cap = dict(envelope)
+            member_over_cap["members"] = [dict(row) for row in envelope["members"]]
+            member_over_cap["members"][0]["bytes"] = current_artifact.MAX_MEMBER_BYTES + 1
+            with self.assertRaises(current_artifact.CurrentArtifactError):
+                current_artifact.validate_envelope(member_over_cap)
+
     def test_authenticated_application_metadata_binds_cpu_whole_and_lock(self) -> None:
         if not ACTUAL_APPLIED.is_dir():
             self.skipTest("hosted application-89 artifact is not present")
