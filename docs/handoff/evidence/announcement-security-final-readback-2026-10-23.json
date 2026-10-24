@@ -1,0 +1,162 @@
+{
+  "schema": 1,
+  "observed_at": "2026-10-23T12:33:32.452136+00:00",
+  "repository": "ayutaz/vokra",
+  "method": "Authenticated GitHub REST, all pages, open alerts; selected metadata only; no packages installed or executed",
+  "dependabot": {
+    "open": 599,
+    "severity": {
+      "critical": 90,
+      "high": 236,
+      "low": 84,
+      "medium": 189
+    },
+    "ecosystems": {
+      "pip": 599
+    },
+    "patched_version_named": 575,
+    "no_patched_version_named": 24,
+    "outside_tools_parity_or_integrations": 0,
+    "critical_high": 326,
+    "critical_high_manifest_counts": {
+      "integrations/vokra-misaki-g2p/uv.lock": 2,
+      "tools/parity/ast/uv.lock": 1,
+      "tools/parity/baichuan_audio_instruct/uv.lock": 1,
+      "tools/parity/bark/uv.lock": 1,
+      "tools/parity/canary_1b_reference/uv.lock": 31,
+      "tools/parity/chatterbox_t3/uv.lock": 1,
+      "tools/parity/chattts/uv.lock": 1,
+      "tools/parity/clap/uv.lock": 1,
+      "tools/parity/conv_tasnet/uv.lock": 1,
+      "tools/parity/cosyvoice2_llm_reference/uv.lock": 1,
+      "tools/parity/cosyvoice2_reference/pyproject.toml": 10,
+      "tools/parity/cosyvoice3_reference/pyproject.toml": 10,
+      "tools/parity/csm_1b_reference/uv.lock": 1,
+      "tools/parity/dac/uv.lock": 28,
+      "tools/parity/deberta_v3/uv.lock": 1,
+      "tools/parity/deepfake_detection/uv.lock": 1,
+      "tools/parity/dfn3/uv.lock": 1,
+      "tools/parity/dia_1_6b_reference/uv.lock": 1,
+      "tools/parity/facodec/uv.lock": 1,
+      "tools/parity/firered_asr_aed_l/uv.lock": 1,
+      "tools/parity/focalcodec/uv.lock": 1,
+      "tools/parity/gigaam_v3/uv.lock": 1,
+      "tools/parity/magnet_medium_30secs/uv.lock": 1,
+      "tools/parity/magnet_small_10secs/uv.lock": 1,
+      "tools/parity/melodyflow_t24_30secs/uv.lock": 1,
+      "tools/parity/melotts/uv.lock": 1,
+      "tools/parity/mms_1b_all/uv.lock": 1,
+      "tools/parity/moss_audio/api_smoke/uv.lock": 1,
+      "tools/parity/moss_audio/pyproject.toml": 2,
+      "tools/parity/moss_audio/uv.lock": 3,
+      "tools/parity/moss_audio_tokenizer_nano/uv.lock": 1,
+      "tools/parity/moss_audio_tokenizer_v2/uv.lock": 1,
+      "tools/parity/moss_tts_local/uv.lock": 1,
+      "tools/parity/mossformer2_ss_16k/uv.lock": 1,
+      "tools/parity/nanocodec/uv.lock": 28,
+      "tools/parity/neucodec/uv.lock": 28,
+      "tools/parity/neutts_air/uv.lock": 1,
+      "tools/parity/omniasr_ctc/uv.lock": 1,
+      "tools/parity/owsm_v4_medium_1b_reference/uv.lock": 1,
+      "tools/parity/parler_tts/uv.lock": 1,
+      "tools/parity/pyannote_diarization/uv.lock": 31,
+      "tools/parity/pyannote_segmentation/uv.lock": 31,
+      "tools/parity/qwen3_asr/uv.lock": 1,
+      "tools/parity/qwen3_tts/uv.lock": 1,
+      "tools/parity/rmvpe/uv.lock": 1,
+      "tools/parity/sbv2/uv.lock": 1,
+      "tools/parity/speechbrain_lang_id/uv.lock": 1,
+      "tools/parity/speecht5_tts/uv.lock": 1,
+      "tools/parity/t5_encoder/uv.lock": 1,
+      "tools/parity/ultravox/uv.lock": 1,
+      "tools/parity/uv.lock": 28,
+      "tools/parity/vibevoice_1_5b_reference/pyproject.toml": 2,
+      "tools/parity/vibevoice_1_5b_reference/uv.lock": 3,
+      "tools/parity/vibevoice_realtime_0_5b_reference/pyproject.toml": 2,
+      "tools/parity/vibevoice_realtime_0_5b_reference/uv.lock": 30,
+      "tools/parity/whisper_extras/uv.lock": 1,
+      "tools/parity/whisper_medusa/uv.lock": 1,
+      "tools/parity/xcodec2/pyproject.toml": 7,
+      "tools/parity/xcodec2/uv.lock": 8,
+      "tools/parity/xy_tokenizer_reference/uv.lock": 1
+    }
+  },
+  "code_scanning": {
+    "open": 8,
+    "alerts": [
+      {
+        "number": 71,
+        "path": "integrations/vokra-server/tests/wyoming_compat.rs",
+        "rule": "rust/log-injection",
+        "severity": "medium",
+        "state": "open",
+        "tool": "CodeQL"
+      },
+      {
+        "number": 70,
+        "path": "integrations/vokra-server/tests/wyoming_compat.rs",
+        "rule": "rust/log-injection",
+        "severity": "medium",
+        "state": "open",
+        "tool": "CodeQL"
+      },
+      {
+        "number": 69,
+        "path": "integrations/vokra-server/tests/wyoming_compat.rs",
+        "rule": "rust/log-injection",
+        "severity": "medium",
+        "state": "open",
+        "tool": "CodeQL"
+      },
+      {
+        "number": 68,
+        "path": "integrations/vokra-server/tests/wyoming_compat.rs",
+        "rule": "rust/log-injection",
+        "severity": "medium",
+        "state": "open",
+        "tool": "CodeQL"
+      },
+      {
+        "number": 7,
+        "path": "no file associated with this alert",
+        "rule": "CIIBestPracticesID",
+        "severity": "low",
+        "state": "open",
+        "tool": "Scorecard"
+      },
+      {
+        "number": 5,
+        "path": "no file associated with this alert",
+        "rule": "CodeReviewID",
+        "severity": "high",
+        "state": "open",
+        "tool": "Scorecard"
+      },
+      {
+        "number": 4,
+        "path": "no file associated with this alert",
+        "rule": "SASTID",
+        "severity": "medium",
+        "state": "open",
+        "tool": "Scorecard"
+      },
+      {
+        "number": 3,
+        "path": "no file associated with this alert",
+        "rule": "VulnerabilitiesID",
+        "severity": "high",
+        "state": "open",
+        "tool": "Scorecard"
+      }
+    ]
+  },
+  "selected_metadata_capture_sha256": {
+    "vokra-announcement-dependabot-final-readback-20261023.jsonl": "15b62ad985a674158154d6bb5fda9818ff7f5464c53a96a55852b0ef2fb6ffc1",
+    "vokra-announcement-code-scanning-final-readback-20261023.jsonl": "b1065f558b77346f5196f0b8862eb67b42c269fa5f843a5aeddd336a130564b1"
+  },
+  "limits": [
+    "No findings dismissed, no severity altered, no gate weakened",
+    "Reference/integration pip alerts are not dependencies bundled in the first-party-only released CPU CLI; this classification is not a blanket security assurance",
+    "This readback does not establish model, Apple/Metal, independent numerical parity, legal or owner completion"
+  ]
+}

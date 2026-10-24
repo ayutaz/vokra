@@ -58,19 +58,14 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
   チュートリアルがリファレンス。初回の docs.rs render は crates.io publish 後に
   owner が確認する。
 
-## 5. 現行 0.3.0 release と Apple 検証 status
+## 5. 現行 release と Apple 検証 status
 
-現行の workspace release line は `0.3.0` である。
-
-**2026-10-17 current campaign snapshot:** baseline main `5f1dfc1e`には、
-受理済みのmodel-free Candle CPU/API対応が含まれる。PR #259の通常CIは72成功・
-意図したskip1件で完了したが、追加observerパッチの実upstream library/API検証は
-未実施のためDraftを維持する。最新の保持inventoryは10月16日の194 repositories、
-136 code/artifact-full／58 non-fullである。この文書更新ではinventoryを再取得せず、
-API/header再生成、実weight CPU、Apple parityの完了も主張しない。
-[現況と残タスク](handoff/current-status-and-remaining-tasks-2026-10-17.md)に、未マージ7 PRと
-非Apple前提 → VAST → 最終packet → Scaleway → 結果記録・cleanupの順序をまとめる。
-以下のhistorical snapshotは当時の範囲を保持する。
+現在の workspace 開発系列は `0.4.0-rc.1`、最新の安定版 release は
+`v0.3.0` である。公開 `main` は `151d94a8613d5bd4acb1671a461f59742c37b8fc`
+（2026-10-22 UTC）。RC は CPU-only preview であり、実weight CPU parity、
+Apple CPU/Metal/no-fallback、全catalog完了、数値parityを確立しない。
+live な PR と model readiness の台帳は[文書マップ](README.md)を参照すること。
+以下の historical snapshot は当時の範囲を保持するため、現在の件数とは解釈しない。
 
 **2026-10-13 metadata snapshot:** exact GitHub `main` checkout は
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`。fresh metadata/card-only

@@ -57,7 +57,10 @@ exceptions = [
     # code). Neither copy reaches the shipped binary:
     #   * 0.26.11 — ureq <- jpreprocess-naist-jdic BUILD-dependency (fetches
     #     the JA dictionary at build time), same G2P chain as the CC0 crates;
-    #   * 1.0.8   — reqwest, a DEV-dependency (the /health probe client).
+    #   * 1.0.10  — reqwest, a DEV-dependency (the /health probe client;
+    #     updated from 1.0.8 to satisfy RUSTSEC-2026-0381).
+    #     The 0.26.11 compatibility package re-exports this separately
+    #     resolved 1.x trust store, so it must resolve to 1.0.10 or newer.
     # Scoped per crate for the same reason as CC0: a future CDLA dependency
     # that does ship in the binary should come back for review.
     # Evaluation recorded in docs/license-audit.md.

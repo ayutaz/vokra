@@ -41,8 +41,8 @@ transformers_security_patched_minimum = "5.10.0"
 isolated_transformers_pin = "transformers==5.10.4"
 isolated_huggingface_hub_pin = "huggingface-hub==1.29.0"
 transformers_compatibility_status = "BLOCKED_UNVERIFIED_API_SMOKE"
-lock_sha256 = "c53133843ca81d3854e2676566b1f3b61a6b5d80a84b31aecf90f8362c3f5dd8"
-lock_package_rows_sha256 = "e74bb016e7bd12d09a37fc6b1be959a3bd9f3d9ee6872950d7c6c493537468b0"
+lock_sha256 = "db0297c2335b4285dad08269a7cc11c018f1caac183ee3df25f704ac8327554a"
+lock_package_rows_sha256 = "bbd7ebcd21a8ca653ad4f89d87ab66a3ef466261d903b0ba45e1a2dca6a24785"
 lock_package_count = 44
 lock_package_rows_schema = "package-resolution-and-dependency-markers-v2"
 lock_resolution_markers = ["sys_platform != 'darwin'", "sys_platform == 'darwin'"]
@@ -78,7 +78,7 @@ primary_evidence = [
 ]
 license_conclusion_map = "version-keyed name==version mapping emitted by vibevoice_1_5b_dump_reference.py from authenticated package_rows"
 license_conclusion_count = 44
-license_audit_rows_sha256 = "91034b0a115c6c7cebede9f89375980e6541f33f59229d22cd178e3874c599f3"
+license_audit_rows_sha256 = "a1ffb4e43fd0d92ae6ded4983aec73c590f3277425139901cdd108ad797f3140"
 
 license_conclusions = [
     { name = "annotated-doc", version = "0.0.5", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/annotated-doc/0.0.5/json", route = "reference-only" },
@@ -105,7 +105,7 @@ license_conclusions = [
     { name = "networkx", version = "3.6.1", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json", route = "reference-only" },
     { name = "numpy", version = "2.2.6", license = "BSD-3-Clause_PLUS_BUNDLED_NOTICES_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/numpy/2.2.6/json", route = "reference-only" },
     { name = "packaging", version = "26.3", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/packaging/26.3/json", route = "reference-only" },
-    { name = "pillow", version = "12.3.0", license = "HPND_REVIEWED", primary_source = "https://pypi.org/pypi/pillow/12.3.0/json", route = "reference-only" },
+    { name = "pillow", version = "13.0.0", license = "MIT-CMU_REVIEWED", primary_source = "https://pypi.org/pypi/pillow/13.0.0/json", route = "reference-only" },
     { name = "pygments", version = "2.21.0", license = "BSD-2-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/pygments/2.21.0/json", route = "reference-only" },
     { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json", route = "reference-only" },
     { name = "regex", version = "2026.7.19", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/regex/2026.7.19/json", route = "reference-only" },

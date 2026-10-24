@@ -1,5 +1,13 @@
 # Go / No-go review record — v0.5 (M2)
 
+> **2026-10-23 supersession:** Use [`docs/current-status.md`](../current-status.md)
+> or the [Japanese counterpart](../current-status.ja.md) for current release
+> and project status. This remains an unfilled owner-review template: no
+> metric, signature, milestone date, threshold, publication decision, or
+> Go/No-go verdict is added here. The latest stable source release is
+> `v0.3.0`; the published desktop preview is `v0.4.0-rc.1` with 22 assets.
+> Dated observations below remain historical.
+
 > **2026-10-17 current routing:** the [current status and remaining tasks](../handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > supply the current campaign/PR pointer. This remains an owner-review
 > template, not an executed review or Go verdict. No metric, signature,

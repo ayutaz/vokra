@@ -32,7 +32,9 @@ jobs:
             .github/workflows/kyutai-candle-candidate-advisory.yml
             .github/workflows/kyutai-candle-applied-advisory.yml
             tools/parity/kyutai_candle_reference/audit_lock.py
+            tools/parity/kyutai_candle_reference/current_artifact.py
             tools/parity/kyutai_candle_reference/test_audit_lock.py
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
           sparse-checkout-cone-mode: false
 
       - name: Install uv
@@ -52,7 +54,7 @@ jobs:
             tools/parity/kyutai_candle_reference/test_audit_lock.py --self-test
 
       - name: Download exact producer artifact
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: "11951567227"
           github-token: ${{ github.token }}
@@ -108,7 +110,7 @@ jobs:
 
       - name: Upload bounded advisory evidence
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kyutai-candle-source-advisory-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vokra-candle-source-advisory-${{ github.run_id }}-${{ github.run_attempt }}/advisory-report.json

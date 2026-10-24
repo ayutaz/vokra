@@ -1,5 +1,12 @@
 # M2-03 CUDA large-v3 RTF variance report — template
 
+> **2026-10-23 current-status pointer:** Use [`current-status.md`](current-status.md)
+> or the [Japanese counterpart](current-status.ja.md) for current release and
+> project status. This remains an owner-run VAST measurement template; this
+> documentation refresh performs no model/GPU run and changes no threshold or
+> reference value. The latest stable source release is `v0.3.0`; the published
+> desktop preview is `v0.4.0-rc.1` with 22 assets.
+
 _This is a **template**. The owner fills in the values after a two-mode
 `tools/parity/cuda_rtf_variance.sh` run on a vast.ai RTX 4090 (or any
 CUDA host). The filled report is committed alongside the raw JSONL under

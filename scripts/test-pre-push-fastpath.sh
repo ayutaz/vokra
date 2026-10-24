@@ -39,6 +39,7 @@ run_case() {
     local expected="$2"
     local files="$3"
     local envvar="${4:-}"
+    local base_mode="${5:-ok}"
 
     local verdict
     verdict=$(
@@ -51,7 +52,11 @@ run_case() {
 
         # Shadow the two calls the classifier makes.
         FAKE_FILES="$files"
-        diff_base() { echo "fake-base"; }
+        if [ "$base_mode" = "fail" ]; then
+            diff_base() { return 1; }
+        else
+            diff_base() { echo "fake-base"; }
+        fi
         git() {
             if [ "${1:-}" = "diff" ] && [ "${2:-}" = "--name-only" ]; then
                 if [ -n "$FAKE_FILES" ]; then
@@ -345,6 +350,23 @@ run_case "nightly parity matrix planner only" \
     "fast" \
     "scripts/ci/plan-nightly-full-parity.sh"
 
+# --- FAST-PATH cases for documentation nested outside docs/** ---
+run_case "integration Markdown guide" \
+    "fast" \
+    "integrations/vokra-godot/README.md"
+
+run_case "integration nested Markdown guide" \
+    "fast" \
+    "integrations/vokra-server/docs/scope.md"
+
+run_case "test parity Markdown guide" \
+    "fast" \
+    "tests/parity/README.md"
+
+run_case "tooling Markdown guide" \
+    "fast" \
+    "tools/bench/ios-device/README.md"
+
 # --- DEEP-PATH cases (anything Rust-adjacent kills the fast-path) ---
 
 run_case "tools/parity Python + .rs together kills fast-path" \
@@ -358,6 +380,14 @@ run_case "tools/parity non-Python (bash script) kills fast-path" \
 run_case "tests/fixtures non-.sha256 (README) kills fast-path" \
     "deep" \
     "tests/fixtures/sbv2/README.md"
+
+run_case "nested test fixture Markdown kills fast-path" \
+    "deep" \
+    "tests/parity/fixtures/m1-02/kquant/README.md"
+
+run_case "test non-Markdown helper kills fast-path" \
+    "deep" \
+    "tests/parity/run-fixture.sh"
 
 run_case "tests/fixtures manifest.json kills fast-path" \
     "deep" \
@@ -395,9 +425,17 @@ run_case "tools/ kills fast-path" \
     "deep" \
     "tools/eval/librispeech_wer.py"
 
+run_case "tooling non-Markdown helper kills fast-path" \
+    "deep" \
+    "tools/bench/ios-device/run.sh"
+
 run_case ".githooks/ (hook self-change) kills fast-path" \
     "deep" \
     ".githooks/pre-push"
+
+run_case ".githooks helper mixed with docs kills fast-path" \
+    "deep" \
+    "$(printf '.githooks/lib-fastpath.sh\ndocs/current-status.md\n')"
 
 run_case "tests/ kills fast-path" \
     "deep" \
@@ -406,6 +444,10 @@ run_case "tests/ kills fast-path" \
 run_case "integrations/ kills fast-path" \
     "deep" \
     "integrations/vokra-server/Cargo.toml"
+
+run_case "integration non-Markdown helper kills fast-path" \
+    "deep" \
+    "$(printf 'integrations/vokra-godot/README.md\nintegrations/vokra-godot/package.json\n')"
 
 run_case "unrecognised extension kills fast-path" \
     "deep" \
@@ -421,6 +463,12 @@ run_case "VOKRA_HOOK_DEEP=1 forces deep on docs-only input" \
     "CLAUDE.md" \
     "VOKRA_HOOK_DEEP=1"
 
+run_case "unresolvable diff base falls through to deep" \
+    "deep" \
+    "CLAUDE.md" \
+    "" \
+    "fail"
+
 echo
 echo "--- PRODUCTION HOOK integration cases (Cargo/compliance mocked) ---"
 
@@ -430,6 +478,10 @@ run_hook_case "deletion-only runs compliance and skips Cargo" \
 
 run_hook_case "docs-only on Darwin stays on the light path" \
     0 "refs/heads/topic $sha40 refs/heads/topic $sha40" Darwin "docs/README.md" normal 0 \
+    "pre-push: OK (fast-path" no yes
+
+run_hook_case "nested integration docs on Darwin stay on the light path" \
+    0 "refs/heads/topic $sha40 refs/heads/topic $sha40" Darwin "integrations/vokra-godot/README.md" normal 0 \
     "pre-push: OK (fast-path" no yes
 
 run_hook_case "deep path on Darwin refuses before Cargo" \

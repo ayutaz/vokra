@@ -1,6 +1,6 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-10-04 documentation review; runtime evidence dated separately)**:
+**State (2026-10-23 documentation review; runtime evidence dated separately)**:
 the original **T01-T18 scope landed**. All
 data-bearing trampolines now use real Variant dispatch, including
 `session_vad_open_stream` returning a live `VokraStream` Object. The official

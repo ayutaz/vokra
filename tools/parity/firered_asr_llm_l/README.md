@@ -7,6 +7,11 @@
 > use `scripts/publish/vast-ai/run-firered-asr-llm-l-validation.sh`, which exits
 > before acquisition until the blocker is resolved.
 
+**2026-10-23 status recheck:** the checked-in pre-acquisition gate remains
+blocked at `main` `151d94a8613d5bd4acb1671a461f59742c37b8fc`. This refresh does
+not infer a new owner decision or acquisition/conversion evidence; the dated
+status wording above is retained as the original evidence record.
+
 Offline sidecar for **FireRedTeam/FireRedASR-LLM-L**
 (`FireRedTeam/FireRedASR-LLM-L`, Apache-2.0 weight record, ~16.6 GB BF16
 historical estimate) — the preparer is intended to bridge a future

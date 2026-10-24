@@ -1,4 +1,9 @@
-# Vokra ABI Changelog (historical prerelease buckets; current line: v0.3.0)
+# Vokra ABI Changelog (historical prerelease buckets; current source line: v0.4.0-rc.1)
+
+> **2026-10-23 current routing:** [current status](current-status.md) distinguishes
+> the published desktop preview from stable `v0.3.0` and post-preview main.
+> No C header, ABI entry, historical anchor, advisory gate or owner-gated
+> freeze is changed by this documentation refresh.
 
 > **2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > supply the current campaign/PR pointer at baseline main `5f1dfc1e`.

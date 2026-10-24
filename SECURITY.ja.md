@@ -25,10 +25,12 @@ credit は advisory 内で調整し、匿名の希望を尊重します。
 
 ## サポート対象
 
-現在サポート対象の release は `0.3.0` です。2026-09-20 に Git tag
-`v0.3.0` と GitHub release を公開しました。外部 package registry は引き続き
-無効です。セキュリティ修正は現行の pre-1.0 development line に適用します。
-古い commit、private build、未公開 snapshot への backport は行いません。
+現在サポート対象の安定版 release は `0.3.0` です。2026-09-20 に Git tag
+`v0.3.0` と GitHub release を公開しました。workspace の開発系列は
+`0.4.0-rc.1` ですが、prerelease であることは安定版のサポート方針を変更しません。
+外部 package registry は引き続き無効です。セキュリティ修正は現行の pre-1.0
+development line に適用します。古い commit、private build、未公開 snapshot への
+backport は行いません。
 
 ## 対象範囲
 

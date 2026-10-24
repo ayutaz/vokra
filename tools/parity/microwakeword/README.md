@@ -16,6 +16,7 @@
 > independent stage-trace fixture generation, and package-scoped Path C on
 > VAST; it remains `NO_UPLOAD`:
 > `scripts/publish/vast-ai/run-microwakeword-validation.sh`.
+
 >
 > The dedicated lock SHA-256 is
 > `984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2`;
@@ -23,6 +24,11 @@
 > `d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7`,
 > and its first-party license digest is
 > `4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c`.
+
+**2026-10-23 status recheck:** the independent LiteRT stage-trace parity gate
+is still not recorded as passed, so this sidecar remains blocked at `main`
+`151d94a8613d5bd4acb1671a461f59742c37b8fc`. No model acquisition, local
+execution, publication, or owner approval is inferred by this refresh.
 
 License evidence is version-keyed in `microwakeword_inspect.py`; the only
 locked package is the first-party preparer. This removes the former

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,26 @@ import sys
 import tempfile
 import time
 from typing import Any
+
+try:
+    import current_artifact
+except ModuleNotFoundError:  # pragma: no cover - exercised by spec-loaded tests
+    _CURRENT_SPEC = importlib.util.spec_from_file_location("current_artifact", Path(__file__).with_name("current_artifact.py"))
+    if _CURRENT_SPEC is None or _CURRENT_SPEC.loader is None:
+        raise
+    current_artifact = importlib.util.module_from_spec(_CURRENT_SPEC)
+    _CURRENT_SPEC.loader.exec_module(current_artifact)
+    sys.modules["current_artifact"] = current_artifact
+
+try:
+    import audit_lock
+except ModuleNotFoundError:  # pragma: no cover - exercised by spec-loaded tests
+    _AUDIT_SPEC = importlib.util.spec_from_file_location("audit_lock", Path(__file__).with_name("audit_lock.py"))
+    if _AUDIT_SPEC is None or _AUDIT_SPEC.loader is None:
+        raise
+    audit_lock = importlib.util.module_from_spec(_AUDIT_SPEC)
+    sys.modules["audit_lock"] = audit_lock
+    _AUDIT_SPEC.loader.exec_module(audit_lock)
 
 
 MAX_DEADLINE = 900
@@ -251,6 +272,17 @@ def _verify_application(root: Path) -> dict[str, Any]:
         if _sha256(path) != expected:
             raise CompatibilityError(f"application artifact hash mismatch: {name}")
     return _verify_application_receipt(_json(root / "application_receipt.json"))
+
+
+def _verify_current_application(root: Path, envelope_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        envelope = current_artifact.validate_envelope(json.loads(_bounded_read(envelope_path, current_artifact.MAX_ENVELOPE_BYTES), object_pairs_hook=current_artifact._reject_duplicate_json))
+        measured, _receipt_hash = current_artifact.member_map(root)
+    except (current_artifact.CurrentArtifactError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CompatibilityError(f"current application envelope/member validation failed: {exc}") from exc
+    if measured != {"members": envelope["members"], "application_receipt_sha256": envelope["application_receipt_sha256"]}:
+        raise CompatibilityError("current application member hashes do not match producer envelope")
+    return _verify_application_receipt(_json(root / "application_receipt.json")), envelope
 
 
 def _sanitized_env(*, cargo_home: Path, target_dir: Path, offline: bool, home: Path | None = None) -> dict[str, str]:
@@ -685,7 +717,7 @@ fn signatures() {
     return result
 
 
-def check(application_root: Path, output: Path, deadline_seconds: int) -> int:
+def check(application_root: Path, output: Path, deadline_seconds: int, envelope_path: Path | None = None) -> int:
     started = time.monotonic()
     deadline = started + deadline_seconds
     receipt: dict[str, Any] = {
@@ -710,7 +742,32 @@ def check(application_root: Path, output: Path, deadline_seconds: int) -> int:
             raise CompatibilityError("workflow checkout head is malformed")
         receipt["workflow_checkout_head"] = workflow_head
         repo = Path(__file__).resolve().parents[3]
-        application_receipt = _verify_application(application_root)
+        if envelope_path is None:
+            application_receipt = _verify_application(application_root)
+            current_envelope = None
+        else:
+            application_receipt, current_envelope = _verify_current_application(application_root, envelope_path)
+            token = os.environ.get("GITHUB_TOKEN", "")
+            repository = os.environ.get("GITHUB_REPOSITORY", "")
+            receipt["producer_authentication"] = audit_lock.validate_current_producer(
+                repository=repository,
+                token=token,
+                envelope=current_envelope,
+                api=audit_lock._api_json,
+                deadline=deadline,
+            )
+            receipt["application"] = {
+                "run": current_envelope["run_id"],
+                "attempt": current_envelope["run_attempt"],
+                "head": current_envelope["source_head"],
+                "workflow_sha": current_envelope["workflow_sha"],
+                "run_ref": current_envelope["run_ref"],
+                "caller": current_envelope["caller"],
+                "artifact": current_envelope["artifact_name"],
+                "artifact_id": current_envelope["artifact_id"],
+                "artifact_digest": current_envelope["artifact_digest"],
+                "artifact_size": current_envelope["artifact_size"],
+            }
         receipt["application_proofs"] = {
             "source_files_pre": application_receipt["source_proof_pre"]["files_checked"],
             "source_files_post": application_receipt["source_proof_post"]["files_checked"],
@@ -871,12 +928,13 @@ def check(application_root: Path, output: Path, deadline_seconds: int) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--application-root", type=Path, required=True)
+    parser.add_argument("--envelope", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--deadline-seconds", type=int, default=900)
     args = parser.parse_args(argv)
     if args.deadline_seconds <= 0 or args.deadline_seconds > MAX_DEADLINE:
         parser.error(f"--deadline-seconds must be in 1..{MAX_DEADLINE}")
-    return check(args.application_root, args.output, args.deadline_seconds)
+    return check(args.application_root, args.output, args.deadline_seconds, args.envelope)
 
 
 if __name__ == "__main__":

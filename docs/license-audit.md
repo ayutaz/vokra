@@ -1,5 +1,15 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
+> **2026-10-23 current routing / limits:** [current status](current-status.md)
+> records main `151d94a8`, the stable `v0.3.0` and published desktop preview
+> `v0.4.0-rc.1`, eight open PRs and metadata-only 136 full / 58 non-full.
+> The all-pages security snapshot has 572 Dependabot / eight Code Scanning
+> alerts; a first-party-only root runtime does not close reference/integration
+> findings. See the [legal-source retrieval boundary](legal-compliance.md)
+> and refreshed vendor-term records. This is not a new model/dependency
+> license approval, signer, scope hash or publication/withdrawal authorization;
+> all dated audit rows below and the protected manifest remain untouched.
+
 > **2026-10-17 current routing only:** use the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > for baseline main `5f1dfc1e`, the seven open PRs and pending exact scopes.
 > Successful #259 ordinary CI is not a license/native/operator sign-off.
@@ -352,6 +362,16 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 | **CC0-1.0** | `encoding-index-{japanese,korean,simpchinese,singlebyte,tradchinese}` + `encoding_index_tests` | **許可**（依頼者承認 2026-07-19、理由「ライブラリに制約が出ない」）。実体は Unicode↔レガシー CJK の**符号位置対応表 = データ**。`allow` への一括追加ではなく crate 限定にしたのは、CC0 が著作権は放棄しても**特許権を waive しない**ため（Vokra が Apache-2.0 を選んだ理由は特許 grant）。将来の CC0 **コード**依存は改めて審査を要する |
 | **CDLA-Permissive-2.0** | `webpki-roots`（0.26.11 / 1.0.8） | **許可**（同承認）。Mozilla の CA 証明書バンドル = 同じく許諾型データライセンスで下流に義務を課さない。0.26.11 は `ureq` ← `jpreprocess-naist-jdic` の **build-dependency**、1.0.8 は `reqwest` の **dev-dependency** — **いずれも製品バイナリには入らない** |
 
+**2026-10-22 lockfile maintenance supplement（履歴行を上書きしない）**: `integrations/vokra-server/Cargo.lock` は `webpki-roots` 1.x を 1.0.8 から **1.0.10**（CDLA-Permissive-2.0、checksum `1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9`）へ更新した。[RustSec RUSTSEC-2026-0381 の公式 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0381.html) は `>=1.0.10` を patched とし、0.26.11 compatibility package も別解決される 1.x 側を 1.0.10 以上にする必要があると明記している。これは依存ロックの安全更新であり、2026-07-19 の crate-scoped CDLA 許可、`deny.toml` の policy、モデルの §3.1 owner/legal sign-off を変更・追加するものではない。0.26.11 は `ureq` 側の build-dependency であり、その互換パッケージが参照する共有 1.x 解決先として 1.0.10 が同じ build chain に到達する一方、`reqwest` 側からも 1.0.10 が dev-dependency として解決される。両経路とも製品バイナリに入らないという到達性の判断は維持する。`integrations/vokra-piper-g2p/Cargo.lock` と `integrations/vokra-server-bench/Cargo.lock` には、他のpackageを変更せず同じ 1.0.8 → 1.0.10 の安全更新だけを適用した。これは `vokra-server` の既存 crate-scoped CDLA 許可を他のworkspaceへ拡張するものではない。`vokra-server-bench` では `ureq` 3 の通常依存（既定のTLS feature）として `webpki-roots` に到達するが、rootのzero-dependency runtime graphには入らない。
+
+同日、VASTのモデル非使用・隔離依存監査ゲートが検出した `rustls-webpki` RUSTSEC-2026-0382（0.103.15）について、3つの隔離 lockfile のみを 0.103.16（ISC、checksum `4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281`）へ更新した。[RustSec RUSTSEC-2026-0382 の公式 advisory](https://rustsec.org/advisories/RUSTSEC-2026-0382.html) が示す patched 範囲 `>=0.103.16, <0.104.0-alpha.1` に入る。0.103.16のlockfile上の依存名（`ring`、`rustls-pki-types`、`untrusted`）は0.103.15と同一で、root Cargo.lock、deny policy、owner/legal sign-offは変更していない。VAST gateの最終結果や全体auditのPASSはこのlockfile更新だけでは主張しない。
+
+同日、同じVASTのモデル非使用・隔離依存監査ゲートで `rustls` 0.23.45 に報告された RUSTSEC-2026-0346/0347/0348/0349 について、`integrations/vokra-piper-g2p/Cargo.lock` と `integrations/vokra-server-bench/Cargo.lock` の2つだけを、server lockfileですでに使用している 0.23.46（Apache-2.0 OR ISC OR MIT、checksum `48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf`）へ更新した。[RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346.html)、[RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347.html)、[RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348.html)、[RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349.html) の各公式 advisory が示す patched 条件 `>=0.23.46` に入る。今回の2 lockfileで解決された依存名（`log`、`once_cell`、`ring`、`rustls-pki-types`、`rustls-webpki`、`subtle`、`zeroize`）は更新前後で不変であり、調査対象とした共通TLS関連package（`rustls-webpki`、`rustls-pki-types`、`ring`、`untrusted`）の比較でも、他のversion skewは確認されなかった（`tokio-rustls 0.26.4` はserver lockfileだけに存在）。root Cargo.lock、deny policy、owner/legal sign-offは変更していない。これはlockfile修正の記録であり、VAST gateの最終結果や全体auditのPASSを主張するものではない。
+
+同日、GitHub CIのcargo-audit whole-lock job `119728320097` が、既存の狭い依存グラフ監査では省略される未使用optional lock recordsまで走査し、`integrations/vokra-server/Cargo.lock` の `quinn-proto` 0.11.16 に RUSTSEC-2026-0338/0339/0340/0341/0342 を報告したため、同lockfileの `quinn-proto` だけを 0.11.18（MIT OR Apache-2.0、checksum `a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc`）へ更新した。[RUSTSEC-2026-0338](https://rustsec.org/advisories/RUSTSEC-2026-0338.html)、[RUSTSEC-2026-0339](https://rustsec.org/advisories/RUSTSEC-2026-0339.html)、[RUSTSEC-2026-0340](https://rustsec.org/advisories/RUSTSEC-2026-0340.html)、[RUSTSEC-2026-0341](https://rustsec.org/advisories/RUSTSEC-2026-0341.html)、[RUSTSEC-2026-0342](https://rustsec.org/advisories/RUSTSEC-2026-0342.html) の公式 advisoryでは、0338/0340のpatched条件は `>=0.11.18`、0339/0341/0342は `>=0.11.17` であり、0.11.18が5件すべてを満たす。今回のlockfileで解決された依存名（`bytes`、`getrandom`、`lru-slab`、`rand`、`rand_pcg`、`ring`、`rustc-hash`、`rustls`、`rustls-pki-types`、`slab`、`thiserror`、`tinyvec`、`tracing`、`web-time`）は更新前後で不変で、root Cargo.lock、deny policy、owner/legal sign-offは変更していない。更新後のwhole-lock再監査は未実施である。
+
+同じGitHub CI cargo-audit whole-lock jobのyanked warningについては、`chacha20` 0.10.1を、公式indexでyankedではない0.10.2（MIT OR Apache-2.0、checksum `65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06`）へ更新した。0.10.2 archiveの依存定義と今回のlockfileで解決された依存名（`cfg-if`、`cpufeatures`、`rand_core`）を照合し、既存の選択feature範囲を広げていない。これらはlockfile修正の記録であり、更新後のwhole-lock再監査、VAST gateの最終結果、全体auditのPASSを主張するものではない。
+
 **RUSTSEC ignore 2 件**（`integrations/vokra-server/deny.toml` と各 lockfile
 横の `osv-scanner.toml` に根拠を記載）:
 
@@ -474,7 +494,7 @@ compositionであり、standalone EnCodec配布やHF再公開を追加しない�
 
 | モデル | Weight License | 一次資料（CC 引用） | Registry 分類（機械） | 公式 zoo 適格 | Owner sign-off |
 |---|---|---|---|---|---|
-| **Whisper base/small/medium/large-v3/turbo** | **MIT** | `openai/whisper` GitHub リポジトリ LICENSE ファイル（MIT）；Hugging Face `openai/whisper-base` 〜 `openai/whisper-large-v3-turbo` model cards の license: mit タグ | `Permissive` | ✓ | ______________ |
+| **Whisper base/small/medium/large-v3/turbo** | **MIT** | OpenAI の[固定 README](https://github.com/openai/whisper/blob/86098128c0b4f24f0e2aa2994de830614b474227/README.md#license) は code と model weights を MIT と明記し、同 revision の [LICENSE](https://github.com/openai/whisper/blob/86098128c0b4f24f0e2aa2994de830614b474227/LICENSE) に帰属表示を収録。2026-10-23 に確認した `openai/whisper-base` の HF card は Apache-2.0 であり、MIT 判断の根拠にはしない（[照合記録](handoff/whisper-base-provenance-repair-2026-10-23.md)） | `Permissive` | ✓ | ______________ |
 | **Silero VAD v6.2.1** | **MIT** | `snakers4/silero-vad` GitHub リポジトリ LICENSE ファイル（MIT、2026-07-30 CC fetch = release tag `v6.2.1`）；v6.2.1 release notes（2026-02-24、"Make ONNX Runtime optional"、architecture unchanged from v5 per upstream `tinygrad_model.py` + `utils_vad.py` primary source）；同 tag の `silero_vad.onnx` git blob sha `80c5592e…` は v5.1.2 blob `b3e3a900…` と別（retrained weights、同一 topology）；同 tag に **`silero_vad_16k.safetensors`**（16k-only redistribution artifact、1.2 MB）も追加 | `Permissive` | ☑ Commercial 2026-07-30 yousan（依頼者委任 = CC 判断） | **判定根拠**: MIT（同一ライセンス継続、architecture unchanged、weight retrain のみ）。**Published**: 2026-07-30 CC が `huggingface.co/vokra/silero-vad-v6.2.1` へ push 済（2.18 MB GGUF、30 tensor、`vokra.silero.version = v6.2.1` stamp、変換 recipe = `vokra-cli convert --model silero-vad --silero-variant v6.2.1 --input silero_vad.onnx --output silero-vad-v6.2.1.gguf`）。 |
 | **Kokoro-82M** | **Apache-2.0** | Hugging Face `hexgrad/Kokoro-82M` model card の license: apache-2.0 タグ；同リポジトリ LICENSE | `Permissive` | ✓ | ______________ |
 | **piper-plus (依頼者作) 全モデル** | **MIT** | `ayutaz/piper-plus` GitHub リポジトリ LICENSE (MIT)；ONNX voice model の LICENSE も MIT | `Permissive` | ✓ | ______________ |

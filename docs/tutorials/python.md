@@ -2,8 +2,9 @@
 
 **English** | [日本語](python.ja.md)
 
-> **Implementation status (reviewed 2026-10-04): workspace release `0.3.0`,
-> source-complete; PyPI/TestPyPI unpublished, GitHub wheel assets available.**
+> **Implementation status (reviewed 2026-10-23): workspace line `0.4.0-rc.1`,
+> source-complete; PyPI/TestPyPI unpublished. The latest stable GitHub release
+> remains `v0.3.0` and has the recorded wheel assets.**
 > The package root exports `Session`, `Stream`, `Event`, and typed errors, and
 > its generated table covers the complete current C function set. The GitHub
 > `v0.3.0` release has wheel assets, but no PyPI release has been verified or

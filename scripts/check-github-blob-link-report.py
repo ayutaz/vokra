@@ -2,11 +2,12 @@
 """Fail-closed final gate for the pinned lychee v0.24.2 JSON report.
 
 The ordinary lychee scan remains authoritative for every link.  This gate has
-one deliberately narrow recovery path: a GitHub ``/blob/<single-segment-ref>/
+two deliberately narrow recovery paths: a GitHub ``/blob/<single-segment-ref>/
 <path>`` response whose original status is exactly HTTP 503 may be rechecked
-through the authenticated Contents API.  The API response must identify the
-same repository, ref, path, bytes, Git blob SHA, and requested line anchor.
-No URL is ignored and no other status or host is recovered.
+through the authenticated Contents API, and the five exact public GitHub API
+URLs observed in the pinned report may be rechecked after an original HTTP
+403.  The API responses must identify the expected resource exactly.  No URL
+is ignored and no other status or host is recovered.
 """
 
 from __future__ import annotations
@@ -39,6 +40,54 @@ _REF_RE = re.compile(r"^[^/\\?#]+$")
 _ANCHOR_RE = re.compile(r"^L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _REF_PAGE_SIZE = 100
+_TREE_MODE_RE = re.compile(r"^[0-7]{6}$")
+_TREE_TYPES = {"blob", "tree", "commit"}
+
+
+@dataclass(frozen=True)
+class ApiRecheckTarget:
+    url: str
+    kind: str
+    sha: str | None = None
+    entry_count: int | None = None
+    release_id: int | None = None
+    tag_name: str | None = None
+    html_url: str | None = None
+
+
+_API_RECHECK_TARGETS: dict[str, ApiRecheckTarget] = {
+    "https://api.github.com/repos/microsoft/VibeVoice/git/trees/94da20d98b2fa7688e9cbfaf7692ddb4954f7600?recursive=1": ApiRecheckTarget(
+        url="https://api.github.com/repos/microsoft/VibeVoice/git/trees/94da20d98b2fa7688e9cbfaf7692ddb4954f7600?recursive=1",
+        kind="tree",
+        sha="94da20d98b2fa7688e9cbfaf7692ddb4954f7600",
+        entry_count=121,
+    ),
+    "https://api.github.com/repos/kamo-naoyuki/pytorch_complex/git/trees/8a2ad1e47f3df25a30eb426f6ad781b89103fab3?recursive=1": ApiRecheckTarget(
+        url="https://api.github.com/repos/kamo-naoyuki/pytorch_complex/git/trees/8a2ad1e47f3df25a30eb426f6ad781b89103fab3?recursive=1",
+        kind="tree",
+        sha="8a2ad1e47f3df25a30eb426f6ad781b89103fab3",
+        entry_count=17,
+    ),
+    "https://api.github.com/repos/astral-sh/uv/releases/tags/0.12.5": ApiRecheckTarget(
+        url="https://api.github.com/repos/astral-sh/uv/releases/tags/0.12.5",
+        kind="release",
+        release_id=370794065,
+        tag_name="0.12.5",
+        html_url="https://github.com/astral-sh/uv/releases/tag/0.12.5",
+    ),
+    "https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1": ApiRecheckTarget(
+        url="https://api.github.com/repos/QwenLM/Qwen2-Audio/git/trees/0d66378d9e4b1a4d6bdba3969aa87ef777f487cd?recursive=1",
+        kind="tree",
+        sha="0d66378d9e4b1a4d6bdba3969aa87ef777f487cd",
+        entry_count=23,
+    ),
+    "https://api.github.com/repos/RustSec/advisory-db/git/trees/9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63?recursive=1": ApiRecheckTarget(
+        url="https://api.github.com/repos/RustSec/advisory-db/git/trees/9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63?recursive=1",
+        kind="tree",
+        sha="9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63",
+        entry_count=2315,
+    ),
+}
 
 
 class GateError(Exception):
@@ -253,6 +302,30 @@ class BlobTarget:
     fragment: str
 
 
+def parse_api_recheck_target(url: str) -> ApiRecheckTarget:
+    """Return a target only for the five literal HTTPS API URLs."""
+    if not isinstance(url, str) or any(ord(character) < 0x20 or ord(character) == 0x7F for character in url):
+        raise GateError("unsupported GitHub API URL")
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError as exc:
+        raise GateError("unsupported GitHub API URL") from exc
+    if (
+        parts.scheme != "https"
+        or parts.netloc != "api.github.com"
+        or parts.username
+        or parts.password
+        or port is not None
+        or parts.fragment
+    ):
+        raise GateError("unsupported GitHub API URL")
+    target = _API_RECHECK_TARGETS.get(url)
+    if target is None:
+        raise GateError("unsupported GitHub API URL")
+    return target
+
+
 def parse_blob_target(url: str) -> BlobTarget:
     if any(ord(character) < 0x20 or ord(character) == 0x7F for character in url):
         raise GateError("unsafe GitHub blob URL")
@@ -371,16 +444,81 @@ def _verify_content(target: BlobTarget, payload: Mapping[str, Any], requested_ap
             raise GateError("GitHub line anchor is absent")
 
 
+def _validate_token(token: str | None) -> None:
+    if not isinstance(token, str) or not token.strip():
+        raise GateError("GITHUB_TOKEN is required for recovery")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in token):
+        raise GateError("invalid GITHUB_TOKEN")
+
+
+def _verify_api_recheck_payload(target: ApiRecheckTarget, payload: Any) -> str:
+    if not isinstance(payload, dict):
+        raise GateError("API response is not an object")
+    if target.kind == "tree":
+        if payload.get("sha") != target.sha:
+            raise GateError("API tree SHA mismatch")
+        if payload.get("truncated") is not False:
+            raise GateError("API tree response is truncated")
+        entries = payload.get("tree")
+        if not isinstance(entries, list) or len(entries) != target.entry_count:
+            raise GateError("API tree entry count mismatch")
+        paths: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise GateError("invalid API tree entry")
+            path = entry.get("path")
+            mode = entry.get("mode")
+            entry_type = entry.get("type")
+            sha = entry.get("sha")
+            if (
+                not isinstance(path, str)
+                or not path
+                or path in paths
+                or not isinstance(mode, str)
+                or not _TREE_MODE_RE.fullmatch(mode)
+                or entry_type not in _TREE_TYPES
+                or not isinstance(sha, str)
+                or not _SHA1_RE.fullmatch(sha)
+            ):
+                raise GateError("invalid API tree entry")
+            size = entry.get("size")
+            if "size" in entry and (not _is_int(size) or size < 0):
+                raise GateError("invalid API tree entry")
+            paths.add(path)
+        return f"tree {target.sha} entries={target.entry_count}"
+    if (
+        not _is_int(payload.get("id"))
+        or payload.get("id") != target.release_id
+        or payload.get("tag_name") != target.tag_name
+        or payload.get("html_url") != target.html_url
+    ):
+        raise GateError("API release identity mismatch")
+    return f"release id={target.release_id} tag={target.tag_name}"
+
+
+def recover_403_api(
+    target: ApiRecheckTarget,
+    opener: Any,
+    token: str | None,
+    deadline: float,
+) -> str:
+    _validate_token(token)
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "vokra-ci-api-link-gate/1",
+        "Authorization": f"Bearer {token}",
+    }
+    payload = _request_api_json(opener, target.url, headers, deadline, reject_pagination=True)
+    return _verify_api_recheck_payload(target, payload)
+
+
 def recover_503_blob(
     target: BlobTarget,
     opener: Any,
     token: str | None,
     deadline: float,
 ) -> None:
-    if not isinstance(token, str) or not token.strip():
-        raise GateError("GITHUB_TOKEN is required for recovery")
-    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in token):
-        raise GateError("invalid GITHUB_TOKEN")
+    _validate_token(token)
     if time.monotonic() >= deadline:
         raise GateError("fallback deadline exceeded")
     api_path = quote(target.path, safe="/")
@@ -497,23 +635,34 @@ def check_report(
         return True
     opener = opener or build_opener(NoRedirectHandler())
     deadline = time.monotonic() + deadline_seconds
-    candidates: dict[str, BlobTarget] = {}
+    blob_candidates: dict[str, BlobTarget] = {}
+    api_candidates: dict[str, ApiRecheckTarget] = {}
     for body in errors:
         status = body["status"]
-        if status.get("code") != 503:
-            raise GateError("unhandled non-503 link failure")
-        target = parse_blob_target(body["url"])
-        candidates.setdefault(target.url, target)
-    if not candidates:
-        raise GateError("no recoverable 503 blob failure")
-    if len(candidates) > MAX_FALLBACK_URLS:
+        code = status.get("code")
+        if code == 503:
+            target = parse_blob_target(body["url"])
+            blob_candidates.setdefault(target.url, target)
+        elif code == 403 and body["url"] in _API_RECHECK_TARGETS:
+            target = parse_api_recheck_target(body["url"])
+            api_candidates.setdefault(target.url, target)
+        else:
+            raise GateError("unhandled non-recoverable link failure")
+    if not blob_candidates and not api_candidates:
+        raise GateError("no recoverable link failure")
+    if len(blob_candidates) + len(api_candidates) > MAX_FALLBACK_URLS:
         raise GateError("fallback URL limit exceeded")
-    recovered: list[str] = []
-    for target in candidates.values():
+    recovered_blobs: list[str] = []
+    for target in blob_candidates.values():
         recover_503_blob(target, opener, token, deadline)
-        recovered.append(target.url)
-    for url in recovered:
+        recovered_blobs.append(target.url)
+    recovered_api: list[tuple[str, str]] = []
+    for target in api_candidates.values():
+        recovered_api.append((target.url, recover_403_api(target, opener, token, deadline)))
+    for url in recovered_blobs:
         print(f"Recovered original HTTP 503 via exact GitHub Contents file: {url}")
+    for url, identity in recovered_api:
+        print(f"Authenticated GitHub API recheck passed: {identity} ({url})")
     return True
 
 

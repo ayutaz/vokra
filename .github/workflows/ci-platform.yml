@@ -166,26 +166,43 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ runner.temp }}/vokra-ci-gguf
-          key: ci-gguf-campplus-c760971d-whisper-base-7e774425
+          # Include the complete immutable artifact identities so the cache
+          # cannot resurrect the pre-repair Whisper GGUF after a provenance
+          # replacement. The verification step below remains authoritative
+          # even on a cache hit.
+          key: ci-gguf-campplus-7963b5f8e21a75d900e4fc4d6b342ba3f989f6f9-c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea-whisper-base-bf440f6064ffc882d53d3694729dc4616dc2cfa7-5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014
       - name: Download real GGUFs (huggingface.co/vokra, public)
         if: (matrix.feature == 'metal' || matrix.feature == 'cuda') && steps.gguf-cache.outputs.cache-hit != 'true'
         env:
           DEST: ${{ runner.temp }}/vokra-ci-gguf
+          CAMPPLUS_REVISION: 7963b5f8e21a75d900e4fc4d6b342ba3f989f6f9
+          WHISPER_REVISION: bf440f6064ffc882d53d3694729dc4616dc2cfa7
         run: |
           set -euo pipefail
           mkdir -p "${DEST}"
           curl -fsSL --retry 3 -o "${DEST}/campplus.gguf" \
-            https://huggingface.co/vokra/campplus-speaker-encoder/resolve/main/campplus.gguf
+            "https://huggingface.co/vokra/campplus-speaker-encoder/resolve/${CAMPPLUS_REVISION}/campplus.gguf"
           curl -fsSL --retry 3 -o "${DEST}/whisper-base.gguf" \
-            https://huggingface.co/vokra/whisper-base/resolve/main/whisper-base.gguf
+            "https://huggingface.co/vokra/whisper-base/resolve/${WHISPER_REVISION}/whisper-base.gguf"
       - name: Verify real GGUFs (pinned SHA-256)
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
         env:
           GGUF_DIR: ${{ runner.temp }}/vokra-ci-gguf
+          CAMPPLUS_SIZE: 27684640
+          WHISPER_SIZE: 290859488
+          CAMPPLUS_SHA256: c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea
+          WHISPER_SHA256: 5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014
         run: |
           set -euo pipefail
           [[ -f "${GGUF_DIR}/campplus.gguf" && ! -L "${GGUF_DIR}/campplus.gguf" ]]
           [[ -f "${GGUF_DIR}/whisper-base.gguf" && ! -L "${GGUF_DIR}/whisper-base.gguf" ]]
+          size_of() {
+            if size="$(stat -c '%s' "$1" 2>/dev/null)"; then
+              printf '%s\n' "${size}"
+            else
+              stat -f '%z' "$1"
+            fi
+          }
           sha256_of() {
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "$1" | awk '{print $1}'
@@ -193,8 +210,10 @@ jobs:
               shasum -a 256 "$1" | awk '{print $1}'
             fi
           }
-          [[ "$(sha256_of "${GGUF_DIR}/campplus.gguf")" == "c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea" ]]
-          [[ "$(sha256_of "${GGUF_DIR}/whisper-base.gguf")" == "7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27" ]]
+          [[ "$(size_of "${GGUF_DIR}/campplus.gguf")" == "${CAMPPLUS_SIZE}" ]]
+          [[ "$(size_of "${GGUF_DIR}/whisper-base.gguf")" == "${WHISPER_SIZE}" ]]
+          [[ "$(sha256_of "${GGUF_DIR}/campplus.gguf")" == "${CAMPPLUS_SHA256}" ]]
+          [[ "$(sha256_of "${GGUF_DIR}/whisper-base.gguf")" == "${WHISPER_SHA256}" ]]
       - name: C ABI backend selector (--features ${{ matrix.feature }})
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
         env:

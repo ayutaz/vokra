@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 from pathlib import Path
 import stat
@@ -17,6 +18,7 @@ import unittest
 from unittest import mock
 
 import audit_lock
+import current_artifact
 
 
 def good_report() -> dict:
@@ -36,6 +38,122 @@ def good_report() -> dict:
 
 
 class AuditLockTests(unittest.TestCase):
+    def test_current_producer_requires_completed_unique_job_and_current_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "application"
+            root.mkdir()
+            for name in current_artifact.MEMBER_NAMES:
+                (root / name).write_bytes((name + "\n").encode())
+            envelope = current_artifact.build_envelope(
+                root,
+                repository="ayutaz/vokra",
+                run_id=123,
+                run_attempt=1,
+                source_head="a" * 40,
+                workflow_sha="b" * 40,
+                run_ref="refs/pull/123/merge",
+                caller="applied-advisory",
+                artifact_id=456,
+                artifact_name="kyutai-candle-paste-application-evidence-123-1",
+                artifact_digest="c" * 64,
+                artifact_size=4096,
+            )
+            envelope_name = "kyutai-candle-paste-current-envelope-123-1-applied-advisory"
+            responses = {
+                "run": {
+                    "id": 123, "run_attempt": 1, "head_sha": "a" * 40,
+                    "status": "in_progress", "conclusion": None,
+                    "name": "kyutai-candle-applied-advisory",
+                    "path": ".github/workflows/kyutai-candle-applied-advisory.yml",
+                    "repository": {"full_name": "ayutaz/vokra"},
+                    "referenced_workflows": [{"path": f"ayutaz/vokra/{current_artifact.PRODUCER_WORKFLOW_PATH}@{'b' * 40}", "ref": "refs/pull/123/merge", "sha": "b" * 40}],
+                },
+                "jobs": {"total_count": 1, "jobs": [{
+                    "id": 999, "name": current_artifact.PRODUCER_JOB_API_NAMES["applied-advisory"][0],
+                    "run_id": 123, "run_attempt": 1, "head_sha": "a" * 40,
+                    "workflow_name": "kyutai-candle-applied-advisory",
+                    "status": "completed", "conclusion": "success",
+                }]},
+                "artifacts": {"total_count": 2, "artifacts": [
+                    {"id": 456, "name": envelope["artifact_name"], "digest": "sha256:" + "c" * 64, "size_in_bytes": 4096, "expired": False, "workflow_run": {"id": 123, "head_sha": "a" * 40}},
+                    {"id": 789, "name": envelope_name, "digest": "sha256:" + "d" * 64, "size_in_bytes": 512, "expired": False, "workflow_run": {"id": 123, "head_sha": "a" * 40}},
+                ]},
+            }
+            current_env = {
+                "VOKRA_CANDLE_CURRENT_RUN_ID": "123",
+                "VOKRA_CANDLE_CURRENT_RUN_ATTEMPT": "1",
+                "VOKRA_CANDLE_CURRENT_SOURCE_HEAD": "a" * 40,
+                "VOKRA_CANDLE_CURRENT_WORKFLOW_SHA": "b" * 40,
+                "VOKRA_CANDLE_CURRENT_RUN_REF": "refs/pull/123/merge",
+                "VOKRA_CANDLE_PRODUCER_SOURCE_HEAD": "a" * 40,
+                "VOKRA_CANDLE_PRODUCER_WORKFLOW_SHA": "b" * 40,
+                "VOKRA_CANDLE_PRODUCER_RUN_REF": "refs/pull/123/merge",
+                "VOKRA_CANDLE_PRODUCER_CALLER": "applied-advisory",
+                "VOKRA_CANDLE_CURRENT_CALLER": "applied-advisory",
+                "VOKRA_CANDLE_CURRENT_ARTIFACT_ID": "456",
+                "VOKRA_CANDLE_CURRENT_ARTIFACT_NAME": envelope["artifact_name"],
+                "VOKRA_CANDLE_CURRENT_ARTIFACT_DIGEST": "c" * 64,
+                "VOKRA_CANDLE_CURRENT_ENVELOPE_ID": "789",
+                "VOKRA_CANDLE_CURRENT_ENVELOPE_NAME": envelope_name,
+                "VOKRA_CANDLE_CURRENT_ENVELOPE_DIGEST": "d" * 64,
+            }
+            with mock.patch.dict(os.environ, current_env, clear=False):
+                def api(url: str, _token: str, _deadline: float) -> dict:
+                    if "/attempts/" in url:
+                        return responses["jobs"]
+                    if url.endswith("/artifacts?per_page=100"):
+                        return responses["artifacts"]
+                    return responses["run"]
+
+                binding = audit_lock.validate_producer(
+                    repository="ayutaz/vokra", token="test", api=api,
+                    deadline=audit_lock._now() + 5, profile="current", current_envelope=envelope,
+                )
+                self.assertEqual(binding["producer_job_id"], 999)
+                duplicate = copy.deepcopy(responses)
+                duplicate["jobs"]["total_count"] = 2
+                duplicate["jobs"]["jobs"].append(dict(duplicate["jobs"]["jobs"][0], id=1000))
+                with self.assertRaises(audit_lock.AuditError):
+                    audit_lock.validate_producer(
+                        repository="ayutaz/vokra", token="test", api=lambda url, token, deadline: duplicate["jobs"] if "/attempts/" in url else duplicate["artifacts"] if url.endswith("/artifacts?per_page=100") else duplicate["run"],
+                        deadline=audit_lock._now() + 5, profile="current", current_envelope=envelope,
+                    )
+            for label, mutate in (
+                ("completed-run", lambda value: value["run"].update(status="completed", conclusion="success")),
+                ("missing-references", lambda value: value["run"].pop("referenced_workflows")),
+                ("wrong-reference-sha", lambda value: value["run"]["referenced_workflows"].__setitem__(0, {"path": f"ayutaz/vokra/{current_artifact.PRODUCER_WORKFLOW_PATH}@{'b' * 40}", "ref": "refs/pull/123/merge", "sha": "c" * 40})),
+                ("wrong-reference-ref", lambda value: value["run"]["referenced_workflows"].__setitem__(0, {"path": f"ayutaz/vokra/{current_artifact.PRODUCER_WORKFLOW_PATH}@{'b' * 40}", "ref": "refs/heads/main", "sha": "b" * 40})),
+                ("wrong-head", lambda value: value["run"].update(head_sha="c" * 40)),
+                ("wrong-run-id", lambda value: value["run"].update(id=124)),
+                ("wrong-run-attempt", lambda value: value["run"].update(run_attempt=2)),
+                ("wrong-repository", lambda value: value["run"]["repository"].update(full_name="other/repo")),
+                ("missing-producer-job", lambda value: value["jobs"].update(total_count=0, jobs=[])),
+                ("wrong-job-run", lambda value: value["jobs"]["jobs"][0].update(run_id=124)),
+                ("wrong-job-attempt", lambda value: value["jobs"]["jobs"][0].update(run_attempt=2)),
+                ("wrong-job-head", lambda value: value["jobs"]["jobs"][0].update(head_sha="c" * 40)),
+                ("wrong-job-workflow", lambda value: value["jobs"]["jobs"][0].update(workflow_name="other")),
+                ("failed-job", lambda value: value["jobs"]["jobs"][0].update(conclusion="failure")),
+                ("wrong-primary-digest", lambda value: value["artifacts"]["artifacts"][0].update(digest="sha256:" + "e" * 64)),
+                ("wrong-primary-size", lambda value: value["artifacts"]["artifacts"][0].update(size_in_bytes=4095)),
+                ("expired-primary", lambda value: value["artifacts"]["artifacts"][0].update(expired=True)),
+                ("wrong-envelope-digest", lambda value: value["artifacts"]["artifacts"][1].update(digest="sha256:" + "e" * 64)),
+                ("wrong-envelope-size", lambda value: value["artifacts"]["artifacts"][1].update(size_in_bytes=current_artifact.MAX_ENVELOPE_BYTES + 1)),
+                ("wrong-envelope-name", lambda value: value["artifacts"]["artifacts"][1].update(name="wrong")),
+                ("wrong-primary-id", lambda value: value["artifacts"]["artifacts"][0].update(id=457)),
+                ("artifact-pagination", lambda value: value["artifacts"].update(total_count=3)),
+                ("duplicate-artifact-id", lambda value: (value["artifacts"].update(total_count=3), value["artifacts"]["artifacts"].append(dict(value["artifacts"]["artifacts"][1], id=456)))),
+                ("duplicate-artifact-name", lambda value: (value["artifacts"].update(total_count=3), value["artifacts"]["artifacts"].append(dict(value["artifacts"]["artifacts"][1], id=790, name=value["artifacts"]["artifacts"][0]["name"]))),),
+            ):
+                with self.subTest(label=label):
+                    candidate = copy.deepcopy(responses)
+                    mutate(candidate)
+                    with mock.patch.dict(os.environ, current_env, clear=False):
+                        with self.assertRaises(audit_lock.AuditError):
+                            audit_lock.validate_producer(
+                                repository="ayutaz/vokra", token="test", api=lambda url, token, deadline: candidate["jobs"] if "/attempts/" in url else candidate["artifacts"] if url.endswith("/artifacts?per_page=100") else candidate["run"],
+                                deadline=audit_lock._now() + 5, profile="current", current_envelope=envelope,
+                            )
+
     def _run_orchestrated(self, returncode: int, report: dict | None = None, *, stdout: bytes | None = None, timed_out: bool = False, stdout_truncated: bool = False, stderr_truncated: bool = False) -> tuple[int, dict]:
         report = report or good_report()
         result = audit_lock.CommandResult(
@@ -356,6 +474,56 @@ class AuditLockTests(unittest.TestCase):
             rc, evidence = self._run_orchestrated(0, **kwargs)
             self.assertEqual((rc, evidence["audit"]["classification"], evidence["audit"]["command"][expected_field]), (2, "ERROR_OUTPUT_LIMIT", True))
 
+    def test_current_profile_runs_supplemental_coverage_before_and_after(self) -> None:
+        report = good_report()
+        report["lockfile"]["dependency-count"] = audit_lock.CURRENT_PROFILE.lock_dependency_count
+
+        def run_with_coverage(values: list[dict[str, object]]) -> tuple[int, dict, int]:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                cwd, home, db, artifact = (root / name for name in ("cwd", "home", "db", "artifact"))
+                cwd.mkdir()
+                home.mkdir()
+                db.mkdir()
+                artifact.mkdir()
+                (artifact / "final.lock").write_bytes(b"synthetic current lock")
+                result = audit_lock.CommandResult(
+                    ("/trusted/cargo-audit", "audit"),
+                    0,
+                    json.dumps(report).encode(),
+                    b"",
+                    False,
+                    False,
+                )
+                coverage = iter(values)
+                with mock.patch.dict(os.environ, {"HOME": str(root / "runner-home"), "GITHUB_TOKEN": "secret", "GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}, clear=False):
+                    with mock.patch.object(audit_lock, "_load_current_envelope", return_value={}):
+                        with mock.patch.object(audit_lock, "_sha256", return_value=audit_lock.CURRENT_PROFILE.lock_sha256):
+                            with mock.patch.object(audit_lock, "_validate_applied_source_absence", side_effect=coverage) as checked:
+                                rc = audit_lock.run_audit(
+                                    artifact_root=artifact,
+                                    db=db,
+                                    cwd=cwd,
+                                    cargo_home=home,
+                                    auditor="cargo-audit",
+                                    repository="ayutaz/vokra",
+                                    output=root / "report.json",
+                                    profile="current",
+                                    current_envelope_path=root / "envelope.json",
+                                    verifier=lambda *args, **kwargs: {"binary_path": "/trusted/cargo-audit"},
+                                    producer_validator=lambda **kwargs: {"run_id": 123},
+                                    artifact_validator=lambda *args, **kwargs: {"members": {}, "total_bytes": 0},
+                                    provenance=lambda *args, **kwargs: {"commit": audit_lock.ADVISORY_DB_COMMIT, "tree": audit_lock.ADVISORY_DB_TREE, "tracked_untracked_status": "clean"},
+                                    command_runner=lambda *args, **kwargs: result,
+                                    host_guard=lambda _env: None,
+                                )
+                return rc, json.loads((root / "report.json").read_text()), checked.call_count
+
+        rc, evidence, calls = run_with_coverage([{"marker": "before"}, {"marker": "before"}])
+        self.assertEqual((rc, evidence["status"], calls), (0, "PASS", 2))
+        rc, evidence, calls = run_with_coverage([{"marker": "before"}, {"marker": "after"}])
+        self.assertEqual((rc, evidence["audit"]["classification"], calls), (2, "ERROR_SUPPLEMENTAL_COVERAGE_CHANGED", 2))
+
     def test_guard_and_child_environment_are_fail_closed(self) -> None:
         calls: list[str] = []
         with self.assertRaises(audit_lock.AuditError):
@@ -487,9 +655,14 @@ class AuditLockTests(unittest.TestCase):
                 self.assertIn(f".github/workflows/{workflow_name}", text)
         self.assertIn('artifact-ids: "11951567227"', source)
         self.assertIn('artifact-ids: "11961100426"', candidate)
-        self.assertIn('artifact-ids: "11985400172"', applied)
-        self.assertIn("run-id: 38758745134", applied)
-        self.assertIn("--profile applied", applied)
+        self.assertIn("source-application:", applied)
+        self.assertIn("caller: applied-advisory", applied)
+        self.assertIn("artifact-ids: ${{ needs.source-application.outputs.primary_artifact_id }}", applied)
+        self.assertIn("artifact-ids: ${{ needs.source-application.outputs.envelope_artifact_id }}", applied)
+        self.assertIn("--profile current", applied)
+        self.assertIn("--current-envelope", applied)
+        self.assertNotIn('artifact-ids: "11985400172"', applied)
+        self.assertNotIn("run-id: 38758745134", applied)
         self.assertNotIn("--profile applied", source)
         self.assertNotIn("--profile applied", candidate)
         self.assertNotIn("--token", audit_lock.main.__code__.co_names)

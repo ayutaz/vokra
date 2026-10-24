@@ -27,4 +27,5 @@ After placing a library, open the project in Unity once and set the plugin's
 platform import settings (target OS/CPU) in the Inspector, then commit the
 generated `.meta` if you want the settings tracked. iOS static linking
 (`DllImport("__Internal")`, NFR-RL-03) is provided by the `com.vokra.unity`
-official package (current release `0.3.0`, FR-API-04), not by this v0.1 demo.
+official package (current package metadata `0.4.0-rc.1`, FR-API-04), not by
+this v0.1 demo.

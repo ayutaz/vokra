@@ -1,5 +1,13 @@
 # Kill Switch C / K メトリクス計測 runbook
 
+> **2026-10-23 supersession:** Use [`docs/current-status.md`](../current-status.md)
+> or the [Japanese counterpart](../current-status.ja.md) for current release
+> and project status. This remains a manual, owner-executed measurement
+> runbook: no metrics collection, milestone-date substitution, threshold,
+> or Go/No-go verdict is added here. The latest stable source release is
+> `v0.3.0`; the published desktop preview is `v0.4.0-rc.1` with 22 assets.
+> Dated observations below remain historical.
+
 > **2026-10-17 current routing:** use the [current status and remaining tasks](../handoff/current-status-and-remaining-tasks-2026-10-17.md)
 > for campaign/PR status. The measurements, release/calendar observations
 > and owner decisions below retain their own dates. No metrics collection,
