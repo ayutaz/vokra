@@ -1,5 +1,9 @@
 # Current 58-row static prerequisite readback — 2026-10-15 JST
 
+> **2026-10-23 supersession:** Use the [current status](../current-status.md)
+> for present-day main, release and PR routing. This readback preserves its
+> exact historical inputs, hashes, findings and fail-closed permissions.
+
 ## Subsequent four-family input binding review
 
 A bounded read-only review at accepted main

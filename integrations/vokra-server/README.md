@@ -7,7 +7,7 @@ async / serde stack it links (axum, hyper, tokio, tower, serde,
 serde_json) never touches the root `Cargo.lock` (NFR-DS-02, enforced by
 `scripts/check-zero-deps.sh`).
 
-**Documentation review:** 2026-10-04. This README documents the M2-09 (v0.5)
+**Documentation review:** 2026-10-23. This README documents the M2-09 (v0.5)
 delivery: single-binary launch,
 CLI/config surface, bind/security posture, musl static distribution,
 the 4-API compatibility matrix, and connection examples for

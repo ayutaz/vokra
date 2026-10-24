@@ -2,6 +2,11 @@
 
 # Current status (2026-08-29): BLOCKED
 
+**2026-10-23 status recheck:** the checked-in source/license gate remains
+blocked at `main` `151d94a8613d5bd4acb1671a461f59742c37b8fc`. This refresh does
+not infer a new owner decision; the dated evidence and refusal boundary below
+remain the applicable local gate.
+
 The upstream weight/code release is governed by the custom Boson Higgs TTS 3
 Research-and-Non-Commercial license, and its exact SGLang/codec source closure
 has not been authenticated. There is intentionally no `uv.lock`; do not sync,

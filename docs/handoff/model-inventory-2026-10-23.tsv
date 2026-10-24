@@ -1,0 +1,195 @@
+repo	revision	gguf_files	architecture	cpu_code	metal_code	reason
+vokra/ace-step-1.5	90715dd335e1998d31731f18ddbaf8b392cc71f4	1	ace_step	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/ast-finetuned-audioset	b23eb8b8fdc5514b911afd18077fe00618932b13	1	ast	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/audiobox-aesthetics	39ed36136989ec253f33418094535b5e943438c7	1	audiobox-aesthetics	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/audiogen-medium	d537e1f92fc1665768be050c0e615c603717dc4e	1	musicgen	partial	blocked-by-cpu	the authenticated legacy LM-only artifact has a native CPU/Metal raw-code route, but contains neither its T5-large conditioner nor the official 16 kHz EnCodec decoder; both remain explicit companion boundaries
+vokra/audioldm2	5bbf9df2c5580afc62816a1349f178ea96a1caab	1	audioldm2	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/audioldm2-large	1f549d873359b09a1d2cad44dd63888eb29b1d73	1	audioldm2	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/audioseal-real-weight	72a886a4754f898255211055741cc8f36f2e00c1	1	audioseal_real_weight	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/baichuan-audio	5d41a238b74221c43b8a2fe1927c798e4c6ef8e0	1	baichuan_audio	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/bark	f304ddcdfd9218994731ec3b09e89b9961b8b751	1	bark	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/bark-small	09802c56a2b2e8ad87835115b94b38031fde29b6	1	bark	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/bicodec	9760a082df544265b2b6410581c5e4a3945c93e8	1	bicodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/bigvgan-base-24khz-100band	810b57851fc78498b2550b303dc489d4a1d932ed	1	bigvgan	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/bigvgan-v2-22khz-80band-256x	a376d87ef840ead0d549fc134cfaa7a90311f93a	1	bigvgan	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/bigvgan-v2-24khz-100band-256x	90b5c7fa8f9c201eb33d2f01aeb7a3eb322e708e	2	bigvgan	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/bigvgan-v2-44khz-128band-512x	8eec0a737f46f773a56e0c532c4211e3bbdb33fb	1	bigvgan	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/campplus-speaker-encoder	7963b5f8e21a75d900e4fc4d6b342ba3f989f6f9	1	campplus	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/canary-1b-flash	bc252b830cd34f732ea5d730576c783c60048189	1	canary-1b-flash	partial	blocked-by-cpu	the live 1,292-tensor GGUF contains only the FastConformer encoder; the strict complete CPU/Metal runtime requires the released four-layer AED decoder, 5,248-piece aggregate tokenizer and authenticated 1,374-tensor manifest prepared from the pinned .nemo checkpoint
+vokra/canary-1b-v2	a2ed1680cfc8eb7523744c48695cdbe16f68976f	2	canary	partial	blocked-by-cpu	the two live GGUF filenames are identical 688-tensor copies of the 24-layer timestamp auxiliary CTC checkpoint, while their metadata claims the 32-layer/8-layer AED model; they contain no Transformer decoder or tokenizer. The pinned 6.36 GB .nemo carries the correct 3.85 GB ./model_weights.ckpt separately, and the runtime must reject the live artifact pending a corrected complete conversion
+vokra/canary-qwen-2.5b	4a894c430ed793144acdaa1b07410b071501cb82	1	canary-qwen	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/chatterbox-multilingual-v3	95c8bf4409c237de930c2eec0274fb2b99a21a09	1	chatterbox	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/chatterbox-nano-v1	49b2f3612ec3e479eb64ce49ab27ae82cbf0b206	1	chatterbox_nano	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/chatterbox-turbo-v1	10fee774c6c5ed890e39cea76d0ae1a320f7a4eb	1	chatterbox_turbo	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/chattts	2202eb0a2faa43e378af5fba01996e76860eacc5	1	chattts	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/chinese-roberta-wwm-ext-large	42201d07523983914c683d431c2ecce7d88ecf6f	1	bert_base	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/clap-htsat-fused	b6c90b7eb353ba7fa6f25c5f2a278c555ef0d939	1	clap	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/conv-tasnet-libri1mix	a030c16c8827e6580f639569b90f114ab762c7bb	1	conv_tasnet	partial	blocked-by-cpu	the public GGUF stamps conflicting CC-BY-SA-3.0 provenance and the old kernel=16/stride=8 topology; the pinned official checkpoint is kernel=32/stride=16 and upstream license declarations remain unresolved
+vokra/cosyvoice2-0.5b	d707e0277e2a29e8fbd3972aec1b6a1cba0192ea	1	cosyvoice2	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/crisperwhisper	15337c90aa01d26b45bd70bc4b8991936823ee6b	1	crisper-whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/csm-1b	81613fc840fa995f4c8f1c48749fd731ed6424b8	1	csm	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/dac-16khz	10e37fc86b57320d9f7339f3d2ee831af9655ac0	1	dac	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/dac-24khz	d4e6bbff62e70c99dfe8a08d3779cf243e104cf5	1	dac	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/dac-44khz	20073ecbdd15b0826ebbde3dc6f00f463592a6fc	1	dac	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/data2vec-audio-base	e17ffe12e4a6e96b9ed0f50b689ba031fc0e5c18	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/deberta-v2-large-japanese-char-wwm	fb75652c6bbc2daf39fb1089079ea75a68d9597f	1	deberta_v2	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/deberta-v3-large	a36bdb29209e214b81dee9a3c80484320aa4d66a	1	deberta_v3	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/deepfake-audio-detection-v2	3eb02d838debc59d2c92d7e028f8cc2b52fcba30	1	deepfake_detection	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/deepfilternet3	d90bcdab8093ad9c7dbd53eaf420c017f9a972b2	1	denoise	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/dia-1.6b	dd1df2a129fed7d15c365caeabaae227ccfe8537	1	dia	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/distil-whisper-large-v3.5	fe3ea9cce80a4727778485e6725131b9646a6fcd	1	distil-whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/distil-whisper-medium.en	d666fbc670d8cb03942eb808e21e873d0127524e	1	distil-whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/distill-neucodec	1471e4d9b82bfb98ae201f02e746fca346c3eb56	1	neucodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/dnsmos-p808-p835	39293917b4fccf66b149c0734140427f29f5ff84	1	dnsmos	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/ecapa-tdnn	24be4349fe41004d3d551efa0fe9562cb2adb522	1	ecapa_tdnn	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/emotion2vec	fcdce49fd5ce07ffd37c2f18aaa3ec6fd6c3b78e	1	emotion2vec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/facebook-denoiser	f50187791c52af3a90e479fcbacba3f267702eaa	1	facebook_denoiser	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/fcpe	93271c742e2f926e3ca84fb44b81606f1aa342cf	1	fcpe	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/firered-asr-aed-l	3796c285b9e9f68ec9dc70cfe06e6b2b8f06cfb3	1	firered_asr_aed_l	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/firered-vad	0d61063e1d19f34da3950a67ee505f0719f2eb51	1	firered_vad	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/focalcodec-12-5hz	213e11c0105a71d6ea3f0883ab7e1f7509cf4ce2	1	focalcodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/focalcodec-25hz	346b834d7399b5276419c57683cef235b2c84e0f	1	focalcodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/focalcodec-50hz	f9b5504c2e4fd7c4545e4b1a1344968b54f81813	1	focalcodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/frcrn	e4badbcb1dda0a91a59318f29417dde6c65e9f8b	1	frcrn	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/fsmn-vad-zh-cn-16k-common	ea6fe20a02b0b465023ad1ed080b9d92994f5d3d	1	fsmn-vad	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/fun-cosyvoice3-0.5b-2512	37e7d22a665d96dd7eb2e10e43ff4571783670cc	1	cosyvoice3	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/funcodec	ea8be2e051ede0365496e8cd3b24d732c8bc6ffb	1	funcodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/granite-speech-4.1-2b	3e1984c8a8e3278024768c8e399dc4846654c428	1	granite_speech	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/hibiki-2b	19c22b7fb19c567d99862eff4671991ab8cd189d	1	hibiki	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/hifigan-libritts-22050	2f92dbb313c9a9eee683af06987777be35c6d8ec	1	hifigan_vocoder	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/htdemucs-multi	23d1e2c9bd4662172bef1daf73dc0dcee58857a6	1	htdemucs_multi	no-runtime-binder	blocked-by-cpu	the live 2,132-tensor GGUF is a bag of multiple prefixed Demucs checkpoints, but carries no authenticated member ordering, per-member config or ensemble weights. Runtime execution cannot infer those contracts from tensor shapes
+vokra/hubert-large-ls960	fd95a6790cbd256663023c82446f8ce93ab4e9ba	1	hubert	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/irodori-tts-500m-v3	28e3efaf41f0890784d88f4744c34269e80bdd41	1	irodori-tts	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/kimi-audio	a9d3c39cf9c9e546be37bd4da595adb2d45a027f	1	kimi_audio	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/kokoro-82m	d35c09b2c56c915df40172bd7e06f7bc491f301d	1	kokoro-82m-istftnet	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/kokoro-82m-stacked	a8ae4b22e78d47bfc932e004612a7c93bfe5c880	1	kokoro-82m-istftnet	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/kotoba-whisper-v2.2	3f727f3544c577312cae84ddd1c66abd999d0504	1	kotoba-whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/kyutai-stt-2.6b-en	c8f5779f1471f34734aafe1999082ca33862bc5e	1	kyutai-stt	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/kyutai-tts-1.6b-en-fr	f9620b81e2fafd4d1f6da6f75eea9f410ff6117b	1	kyutai-tts	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/lang-id-voxlingua107	0076abe0e94a3e7389137516df107d063238338d	1	lang_id_ecapa	partial	blocked-by-cpu	the public GGUF contains only 200 ECAPA embedding tensors: it omits the official XVector classifier, ordered 107-label encoder and the variant-specific 60-mel/256-d contract; the strict converter/runtime now require and execute the official prepared checkpoint, but the live artifact needs an authorized gated replacement
+vokra/melotts-chinese	2d02213da50af3d5384c2f972681014a2eb05ab5	1	melotts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/melotts-english	41fc375b3677373e2141ba5b80cd072581ee4308	1	melotts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/melotts-japanese	5c61fa7b6f723c039e7d4721f3d5ab77b99d867e	1	melotts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/melotts-korean	3737e27dba5f54e98ab3ae816bf610ae6edaeeb2	1	melotts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/melotts-spanish	1ee8c1c2df484ea59bd7382f88b292b0da95df3e	1	melotts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/metricgan-plus-voicebank	2d5cbd8520a4c2edd2098102cf66592626e9d074	1	metricgan_plus	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/mimi	13e99bbb3c423a5bcefe82b5fca210e18d024cff	1	mimi	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/miocodec-25hz-44khz-v2	9649acef233f066b29b9cace87c5ccdb072e08ae	1	miocodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/mms-1b-all-base	b3cde35ad11e0c67549ae4d45ab3f0c2dea026e5	1	wav2vec2_ctc	partial	blocked-by-cpu	the public 8.9 MB file is an adapter only, not the verified 1B backbone, and its topology/license stamp is incompatible
+vokra/moonshine-base	4f714fa4b08dcbc7389019accf7438b0e18d140b	1	moonshine	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moonshine-tiny	1e7a7e36e314fb77beab8702d22b23ed06a4a87b	1	moonshine	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moshiko-7b-bf16	49699359c70c4bb1306539ca8a361dbfb9b786d1	1	moshi	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moss-audio-4b-instruct	dbceb26a30dc4c187ea5da2ae607d14f2463e2ca	1	moss_tts	partial	blocked-by-cpu	the public file carries the historical moss_tts stamp and placeholder axes, but its exact 901-tensor manifest reaches the strict MOSS-Audio legacy binder for token-level CPU/Metal execution. The old file has no authenticated embedded tokenizer/chat/processor sidecars, so CLI string generation remains fail-closed; corrected moss_audio conversion and real-weight parity are separate pending gates
+vokra/moss-audio-8b-instruct	e194997c8d3a225fcfd6f9359ffbe7ce8668b871	1	moss_tts	partial	blocked-by-cpu	the public file carries the historical moss_tts stamp and placeholder axes, but its exact 901-tensor manifest reaches the strict MOSS-Audio legacy binder for token-level CPU/Metal execution. The old file has no authenticated embedded tokenizer/chat/processor sidecars, so CLI string generation remains fail-closed; corrected moss_audio conversion and real-weight parity are separate pending gates
+vokra/moss-audio-tokenizer-full	5bcca99d5e0460a1a2581a6a419ccd89d11b509d	1	moss_audio_tokenizer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moss-audio-tokenizer-nano	0e1b26b38ad963f7787db63c9ea0799cf310373f	1	moss_audio_tokenizer	partial	blocked-by-cpu	the exact 374-tensor Nano checkpoint has a native CPU/Metal decode route, but the live GGUF incorrectly stamps Full name, variant and upstream provenance; the manifest-scoped legacy repair remains visible pending an authorized correctly stamped replacement
+vokra/moss-tts	bc6aa53cb629f365c6161578c705716d0349d5f6	1	moss_tts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moss-tts-local-transformer-v1.5	1a613a7e0ef36d02e51f7b990bce05e4627ea8df	1	moss_tts	partial	blocked-by-cpu	the fixed-revision Local binder and CPU/Metal generation source are present, but the CLI intentionally has no Local task until the required 48 kHz stereo MOSS Audio Tokenizer v2 companion is strictly bound and real-weight verified
+vokra/moss-tts-nano-100m	a540cb68f55195dbb6644f191fd67d61e2f6061f	1	moss_tts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moss-tts-v1.5	2b0d04ab3ab016d7bcafd7622496c5762dd87782	1	moss_tts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/moss-voice-generator	314fbb587953bebfe5ab3ad425358c3232ff5b36	1	moss_tts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/mossformer2-ss-16k	0e9ba9258cead4252f8e5279598af296ada08bf7	1	mossformer2_ss_16k	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/mp-senet-dns	6017b7d70cf779c03f2fe061b56aa475e870d739	2	mp_senet	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/musicgen-large	306a9091012eb15e8ad3e108a72dd2ea0bfd8586	1	musicgen	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/musicgen-medium	29b20532e56d3a4803ce1488e03aace0f976e5cc	1	musicgen	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/musicgen-melody	3046aff1158f4351d92f73d51afb0814939eddb3	1	musicgen	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/musicgen-small	30e7e356c9d8326c42965a337e810162d7cdbc70	1	musicgen	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/naturalspeech3-facodec-v2	da6263e2c1a203641a5d4346a8a04d4eab4c738f	1	facodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/nemotron-3.5-asr-streaming-0.6b	45d7c1a210bc226d468e09ba09df7f61dd552d5b	1	nemotron_asr_streaming	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/neucodec	53e4d3530d089fd30344e133c7271c9227c16703	1	neucodec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/neutts-air	df2b47ec81862f0e3a19eb2638a6a2bcd2f13b8c	1	neutts-air	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/nisqa-v2-weight	89718b026e17d3d048aa394ef8c8ddd14fee9cd8	1	nisqa_v2_weight	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/nkf-aec	919667269b7aaf0641ac48fc491a5463381f2469	1	nkf_aec	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/nsnet2	983e1cc1397810201f93a121a9daf60cf247813b	1	nsnet2	partial	blocked-by-cpu	the exact public tensor header is runtime-compatible, but the live GGUF mis-stamps the released model as MIT/permissive; Microsoft's fixed source revision assigns released non-code content to CC-BY-4.0, so corrected provenance and attribution require an authorized gated replacement
+vokra/omniasr-ctc-1b	79a921ab9d464ef134d1d0057202b9dd59ef926a	1	omniasr-ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/owsm-v4-medium-1b	1c491e291b29ac922c5d660c05c134c1e3d67314	1	owsm-v4-medium-1b	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/parakeet-ctc-1.1b	ea89a33ba60b3a0be36e7c091086515078a58935	1	parakeet-ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/parakeet-tdt-0.6b-v3	e2448d380310b49b74a6776e9903929ae5a4467d	1	parakeet-tdt	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/parakeet-tdt-1.1b	3bc0fb6f33204d39c8a76fcd1a7dd987f3662192	1	parakeet-tdt-1_1b	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/parler-tts-mini-multilingual	6f0f56788f06e6d514e0fab8530663b8af8b1fe2	1	parler_tts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/parler-tts-mini-v1	cb02a124c8d125231b396a293608f2488ae2e4d2	1	parler_tts	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/piper-plus-css10-ja-6lang	25e963b334ad77f89d77a07928e6dfdf7ff1fbf5	1	piper-plus-mb-istft-vits2	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/piper-plus-mera-multilingual	91837920abbe7bea8d81a2b843fdbdcf90aee16a	1	piper-plus-mb-istft-vits2	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/pyannote-segmentation-3.0	50bf4e510e0c689668384aec0f866f02e0fcaea8	1	pyannote-segmentation	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/pyannote-speaker-diarization-3.1	a2bc759121b1cf64d3fc669be9785af963eb54b4	1	pyannote-speaker-diarization	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/pyannote-wespeaker-voxceleb-resnet34-lm	8e27acd8a875088f1a7321f40610397bf964a446	1	wespeaker	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/qwen2-5-omni-7b	ba080198d380554356f68501cd96cd25eb4e149e	1	qwen2-omni	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/qwen2-audio-7b-instruct	57421d5970ee83f2d5561888fd45476765ed27dd	1	qwen2_audio	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/qwen3-asr-0.6b	dafd780826d041323b79a0444dca343fc0034aa2	1	qwen3_asr	partial	blocked-by-cpu	the live dense GGUF predates the executable Qwen3-ASR conversion contract: it lacks the three exact audio-execution metadata keys and all five byte-authenticated tokenizer/chat/generation sidecars. The native source route is complete on CPU/Metal, but deliberately rejects this historical artifact pending an authorized gated replacement
+vokra/qwen3-asr-1.7b	7d160c2a319bfd2bf4b35274ba52af12b302ed62	1	qwen3_asr	partial	blocked-by-cpu	the live dense GGUF predates the executable Qwen3-ASR conversion contract: it lacks the three exact audio-execution metadata keys and all five byte-authenticated tokenizer/chat/generation sidecars. The native source route is complete on CPU/Metal, but deliberately rejects this historical artifact pending an authorized gated replacement
+vokra/qwen3-tts-12hz-0.6b-base	69de218e2a6deafb67acaee565ad0e53e756f04e	1	qwen3_tts	partial	blocked-by-cpu	the live 478-tensor Base manifest is authentic, but the GGUF predates the variant size/type/speaker-encoder contract and embedded Qwen2 BPE sidecars. The native main plus explicit Qwen3-TTS-Tokenizer-12Hz companion route is complete on CPU/Metal, but this historical main is rejected and no gated public companion artifact has been authorized
+vokra/qwen3-tts-12hz-0.6b-customvoice	3f605b47383b79b82dc6ac0cff4dee7894b3baa2	1	qwen3_tts	partial	blocked-by-cpu	the live 402-tensor CustomVoice manifest correctly omits the Base-only speaker encoder, but vokra.model.name is incorrectly stamped as 0.6B-Base and the artifact predates the variant metadata and BPE sidecars. The native main plus explicit neural speech-tokenizer companion route is complete on CPU/Metal, but the historical main remains fail-closed
+vokra/qwen3-tts-12hz-1.7b-base	b73ee6dd5eeef69ce4a797a48d8367cfed7e393d	1	qwen3_tts	partial	blocked-by-cpu	the live 480-tensor 1.7B-Base manifest contains the official 2048-wide speaker encoder and 1024x2048 small-to-MTP projection, but its model name and topology metadata are mis-stamped as 0.6B. It also lacks the BPE sidecars required by the complete native CPU/Metal main plus explicit neural speech-tokenizer companion route
+vokra/qwen3-tts-12hz-1.7b-customvoice	2f528f51b9ab27273929d12c3c2e22ec26315ee4	1	qwen3_tts	partial	blocked-by-cpu	the live 404-tensor 1.7B-CustomVoice manifest correctly omits the speaker encoder and contains the 1024x2048 small-to-MTP projection, but its model name/topology are mis-stamped as 0.6B and it lacks the BPE sidecars required by the complete native CPU/Metal main plus explicit neural speech-tokenizer companion route
+vokra/reazonspeech-nemo-v2	d626a5dc5ca3bf17ea4582f8f1641f93e35477c4	1	reazonspeech_nemo_v2	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/rmvpe	3eb5fa8946f1074ba3959074c5cde95ec22b8c91	1	rmvpe	partial	blocked-by-cpu	the public 181,010,688-byte GGUF at revision 3eb5fa8946f1074ba3959074c5cde95ec22b8c91 carries the supported fixed E2E0 tensor manifest, but mis-stamps yxlllc/RMVPE as MIT/permissive even though that exact repository declares no license; the strict CPU/Metal loader rejects it pending an authorized provenance-corrected replacement
+vokra/rnnoise-v0.2	bedd79292105b7975ddb2383c24c06d4390c100b	1	rnnoise	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sber-gigaam-multilingual	dc0a9f4e1150adc05418b2bb5eabbdf19099a5b4	1	gigaam_multilingual	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sber-gigaam-v3	61f78f803eb436b4b86cfa71724eec7d57e6f9c2	1	sber_gigaam_v3	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sbv2-v2-jp-extra-base	1234c6d41925f79307a1238c34c3188e562bcec9	1	sbv2	partial	blocked-by-cpu	the live 1,264-tensor GGUF predates the strict SBV2 converter and keeps raw dec/dp/enc_p/enc_q/flow/sdp upstream names without the required runtime metadata. Native CPU parity exists for a corrected conversion, but the public artifact and production Japanese G2P remain explicit boundaries
+vokra/seamless-m4t-v2-large	75105667d1df57e8a4ab75239a9bfd4e6c2e84d7	0		not-artifact	not-artifact	public repo has no GGUF
+vokra/sepformer-dns4-16k-enhancement	19a50e782e6cb3432e8ef83aa5c96c64ba368273	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sepformer-libri2mix	0122ff7f506c443761d88aca051ceea7b4280e20	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sepformer-libri3mix	d534a770960df3c4a3dedf4b7ffd99512414959a	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sepformer-wham16k-enhancement	fbfeac0ca62f8f945cd697b939d9f52db92be851	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sepformer-whamr-8khz	e972347a5c9d5fd83e6d526b6f6264428e1db122	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sepformer-whamr16k	d1f5097420fcd7ac256ebc7a76af0b86f7d31898	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sepformer-wsj02mix	1af0a18371188eaa6f66ab4af4af0200c2eff9d5	1	sepformer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sgmse-voicebank	c37e93159b4129b2c582c44f8170b44cf6e3e531	1	sgmse_voicebank	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/silero-vad-v5	3670dfed054980307eeb1711c6329c29b80bdf14	1	silero-vad	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/silero-vad-v6.2.1	71b5166f04232f26fb1ae5f74d67aa32ec62695e	1	silero-vad	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/smart-turn-v2	ad7ebf5f07bf092913e204b8b932bc94dc2f8955	1	smart_turn	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/snac-24khz	17fe131f825e82151ad87c511c49fef4b9209564	1	snac	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/snac-44khz	3c7e4fad6b0b2ac34e65c674647d9914780cb90e	1	snac	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/sortformer-diar-4spk-v1	8cc3ad79fec93d1fa69cf04c56591d6bc26d804a	1	sortformer	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/speechbrain-spkrec-ecapa-voxceleb	3dc7704b5861e348edafc0d800291887a284a476	1	ecapa_tdnn	partial	blocked-by-cpu	the 83,239,904-byte public restamped GGUF has tensor data out of bounds at mfa.conv.conv.weight; the native 200-tensor runtime and strict replacement converter pass parity, but the live artifact itself must be replaced
+vokra/speecht5-hifigan	25742080536eab3b9edb8ad97f296470bf5ac20a	1	speecht5_hifigan	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/speecht5-tts	43cf6592038616d116a98fde4764d827ece59033	1	speecht5	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/speechtokenizer	576865f9e04b1f046b5c6601813c288b6439a8b2	1	speechtokenizer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/step-audio2-mini	33cf2499217070b145934d75f05a0788d703c509	1	step_audio2_mini	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/ten-vad	8a3cc665b0dfc0c08fe23e341bb514dff84b0835	1	ten_vad	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/tiger-dnr	8c8c78888684ecc8eef6beca3434c7ec9247bb70	1	tiger_separator	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/tiger-speech	e50793924eaae3897cee01f7f7791d14c296c7ed	1	tiger_separator	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/titanet-l	f72b242b120d9cddc35170ad77667d63cc74a4df	1	titanet-large	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/titanet-large	a8cbe31e36fa01124d0770e2f048354092ac1353	1	titanet-large	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/ultravox-v0-5-llama-3-2-1b	ddbbeec5bfcb09c71a1f88971b794e3e5da811f9	2	ultravox	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/utmos22-strong	49974674621965c7b83cb4f4793dd362e48a43de	1	utmos	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/vibevoice-1.5b	dec190628f58928fc247b1205b9da2dabc58b9da	1	vibevoice	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/vibevoice-asr	b9715cd06abf7a0d837bc8eacea9ddfe0ce25cd3	1	vibevoice_asr	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/vibevoice-realtime-0.5b	59831601f7f88c9ac0137a15a232ef850afb8781	1	vibevoice_streaming	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/vieneu-tts-v3-turbo	a7902f28e8e5e7527de5f21ca7ee30e91a383b56	1	vieneu_v3_turbo	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/vocos-encodec-24khz	68cce2a1a7b624dd20db698ba3c63c6122205609	1	vocos	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/vocos-mel-24khz	3fb388b9ed98406a1492a8f89aa12bf1927cc7d2	2	vocos	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/voice-gender-classifier	f1bb0985d62504dcead1012460ee045220f821a3	1	voice_gender_classifier	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/voxcpm-0.5b	ee0ca6d6728c947ecf170e6711bdfbd6decaf0d5	1	voxcpm2	partial	blocked-by-cpu	route/binder exists, but the released-artifact CPU forward is incomplete
+vokra/voxtral-mini-3b-2507	bc4887e1641461b348a9baa38ece4cdb9a628bb8	1	voxtral	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/voxtral-mini-4b-realtime-2602	0c3acebf538c27f546190583029551566ae349bd	1	voxtral	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/voxtral-small-24b-2507	e4b91594dc76f4f25cd8331ad6362d53c3b1f09a	1	voxtral	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-base-960h	d26896270da3e54ed85fb867d8d4c5eaba2ef357	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-large-960h-lv60-self	8225f1b5ea55963d211e6826b21c062b36a67a8f	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-large-xlsr-53	670c5f10c65978f0c51c82685dbbfa0e7467a7ab	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-large-xlsr-53-arabic	6e5765b0e2fbc956294323854205192ef03a16c8	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-large-xlsr-53-chinese-zh-cn	ca8f2180f140d01fab0beeda44dc8b3d60c0a930	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-large-xlsr-53-japanese	cd2fae5aeaa1554c5461386ac6de23c6d558c5e5	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wav2vec2-xlsr-53-espeak-cv-ft	dab6aa4aac45746981912c4eadb8ac42c2734f82	1	wav2vec2_ctc	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wavtokenizer-large	fa3dc6c15581c76c86be61513003fd84fa161d54	1	wavtokenizer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wavtokenizer-large-speech-75token	103a577083a7221728cc7c60354044acc664657c	1	wavtokenizer	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/wespeaker	a20ec15a61be1b5c5cb0f4805dbf72bb341e946f	1	wespeaker	partial	blocked-by-cpu	the public 219-tensor file contains the supported official ResNet34-LM topology, but stamps its CC-BY-4.0 weights as apache-2.0/permissive and omits required attribution; the strict native binder refuses the provenance mismatch pending an authorized gated replacement
+vokra/whisper-base	dddd93ff6301a82aa3750d398cb2e0a599cd9e83	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-large-v2	50313d5e29d314b78a088d90a3b16e03df33c8cb	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-large-v3	ffaa3203f06f94124839a5c744e20d6488e1f0e8	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-large-v3-turbo-german	3ba6a0eb5da7b61b857491f376b1f1330e74f9b5	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-medium	459ff893d135e4dd6791514f3366f159a6103b27	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-medium.en	04dff4befa2898c88ddf7786fd3f7c648c7624e7	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-medusa-v1	c4694c09482f5d349eca8b9f305243a3c2d970d1	1	whisper-medusa-v1	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-small	25cbdd78c6ae52adeb6ad455a4441416e81e6d40	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-tiny	d120090f962e947da21ea2932612ecf9f9020b91	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/whisper-turbo	26d2d3b79efe197bf5f8f99554542594ce027a17	1	whisper	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/xcodec2	2b6adcf787a8f9ec957b985c8c1664ba2007f7c2	1	xcodec2	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/xtts-v2	0ce1bd209ffa00f19ead08e54403d9ca2721b408	1	xtts	no-runtime-binder	blocked-by-cpu	converter/public artifact has no complete CLI runtime binder
+vokra/xvector	9b0530f8e71603ee303f9f7534b79ecfc8f8696f	1	xvector	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/xvector-voxceleb	00e4e360a5c1d7c6d0d6cbbc209fe7d49e25c4f3	1	xvector	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/xy-tokenizer	20b5ddb81b038567485bd2b92e53ff5df536d323	1	xy_tokenizer	no-runtime-binder	blocked-by-cpu	the live GGUF has an empty tensor manifest and contains metadata only, so there is no checkpoint payload for a CPU or Metal runtime to bind
+vokra/yue-upsampler	6eea19bd301c5214123ee69217a61a989ffe80d0	1	yue_upsampler	full	full	complete CPU route and declared Metal code path; artifact parity is separate
+vokra/yue-xcodec-mini	83c14a67ed792a0d5b3b61fff8ae35a04c6da8fa	1	yue_xcodec_mini	partial	blocked-by-cpu	the exact 2,145-F32-tensor public composite now has strict CPU/Metal 12-codebook token-to-44.1-kHz decode through its embedded Vocos head. PCM encode remains an explicit boundary until the released acoustic encoder, HuBERT/RepCodec semantic path, fusion projection and RVQ search are independently bound; no simpler codec or CPU fallback is substituted
+vokra/zonos-v0.1-transformer	b1bf5c56d470eb9097e9b04f9deca364576574ba	1	zonos	full	full	complete CPU route and declared Metal code path; artifact parity is separate

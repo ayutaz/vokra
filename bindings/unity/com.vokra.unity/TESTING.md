@@ -1,6 +1,6 @@
 # Vokra Unity — Testing procedure
 
-**Current evidence status (reviewed 2026-10-04; device evidence dated
+**Current evidence status (reviewed 2026-10-23; device evidence dated
 separately):** the CI and nightly procedures below
 remain the authoritative automation paths. No physical iOS/Android device
 results are recorded in this file yet; owner device verification remains an

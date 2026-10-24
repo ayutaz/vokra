@@ -1,5 +1,9 @@
 # Mac CPU / Metal six-stage execution readback — 2026-10-18
 
+> **2026-10-23 supersession:** Use the [current status](../current-status.md)
+> for present-day main, release and PR routing. This readback preserves the
+> exact stage ordering, receipts, holds and no-promotion boundaries below.
+
 > **Current PR acceptance and remaining plan:** [#268 is normally merged](#pr-268-accepted-after-complete-fresh-ci)
 > at main `8ae9566e`. Complete fresh CI closes only the synthesized-session
 > source batch. The [remaining order](#remaining-six-stage-order-after-pr-268)

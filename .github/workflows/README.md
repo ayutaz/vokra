@@ -1,9 +1,11 @@
 # Vokra CI/CD workflow 目次
 
-**2026-10-16 Candle routing supplement:** the current checkout contains 56
-workflow definitions. The dated 10/08 inventory below is historical, not the
-current total. This change does not alter the 16 protected context/app pairs
-or branch-protection settings.
+**2026-10-23 current workflow readback:** the current checkout contains 59
+`.yml` workflow definitions. The dated 10/08 inventory below is historical,
+not the current total. The eight Candle routing definitions and the three
+GitHub-only release-candidate definitions are included in that current count.
+This readback does not alter the 16 protected context/app pairs or
+branch-protection settings.
 
 | Candle definition | Trigger / purpose |
 |---|---|
@@ -67,6 +69,17 @@ CPU-blocked 57 / non-artifact 1: 58 unresolved rows, not all-model Apple
 completion. Bounded Apple results and later source-only/real-weight probes
 are recorded in [the current documentation index](../../docs/README.md).
 No CI rerun or model execution was performed for this readback.
+
+**2026-10-23 current readback:** GitHub `main` is
+`151d94a8613d5bd4acb1671a461f59742c37b8fc`. The stable release remains
+`v0.3.0`; the latest published prerelease is the GitHub-only
+`v0.4.0-rc.1` (22 assets, exact source
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`, prerelease and not a
+stable release). The metadata/card-only public inventory remains CPU full 136 /
+partial 43 / no-runtime-binder 14 / non-artifact 1, and Metal full 136 /
+CPU-blocked 57 / non-artifact 1. These are catalog classifications, not a
+blanket Apple-device completion verdict. The exact main SHA and release facts
+are a current snapshot; the dated 10/08 readback above remains historical.
 
 **2026-10-07 desktop workflow inventory note:** the 2026-10-04 inventory above
 is retained as historical evidence. The checkout now contains 48 workflow files;
@@ -272,6 +285,9 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | reusable workflow call / workflow_dispatch | .github/workflows/python-wheels.yml | 4 native Python wheels の version normalize、native build、repair、archive/architecture/RECORD検証。`release.yml` から同一runでcall |
 | reusable workflow call / workflow_dispatch | .github/workflows/release-desktop-preflight.yml | Linux (glibc/musl) / macOS arm64 / Windows x86_64 の CPU-only C ABI + CLI を同一run内でbuild・identity/loader/help検証・upload。既存の `vokra-capi-macos` / `vokra-capi-windows` artifact member は維持 |
 | pull_request / workflow_dispatch | .github/workflows/desktop-release-completeness.yml | 上記 producer の same-run handoff を Release/registryへ公開せず組立。Windows `vokra-cli.exe` ZIP、2件のSBOM、決定的manifest/sha256、assembled Linux `--help`、desktop release regression を検証 |
+| pull_request (path-filtered) | .github/workflows/release-candidate-source-tests.yml | GitHub-only RC の model-free source/metadata regression。protected model trees は sparse checkout から除外 |
+| workflow_dispatch | .github/workflows/release-candidate-cpu-smoke.yml | reviewed pins を入力にした hosted Linux CPU smoke。Metal parity、数値 parity、安定版公開を主張しない |
+| workflow_dispatch | .github/workflows/release-rc1-gh-only.yml | exact source SHA に対する GitHub-only `v0.4.0-rc.1` desktop/CPU smoke preview。registry publish を呼ばない |
 
 release パイプ内の job は全て advisory (branch protection 対象外)。crate publish は
 `crates-io-dry-run` の green を人手で確認したうえで `crates-io-publish` を走らせる 2 段。

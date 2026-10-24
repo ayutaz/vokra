@@ -1,0 +1,515 @@
+# CPU preview announcement execution — 2026-10-23
+
+This executes steps 1–4 of the
+[announcement plan](cpu-preview-announcement-plan-2026-10-23.md).
+X posting, a new Release, additional HF publication and the full Apple campaign
+are outside these steps. This is a dated execution record; later results are
+appended rather than attributed to earlier runs.
+
+## Documentation acceptance packet prepared — 2026-10-23 12:40 UTC
+
+The English/Japanese README and RC1 guides now use the repaired immutable
+Whisper pin, fixed Silero pin and final accepted-main functional receipt.
+The public examples verify downloads before explicit CPU invocation. Source
+build instructions and published binaries remain distinct; the old pin and
+receipts retain their historical attribution. Root review corrected an ASR
+transcription error before acceptance, then matched the quoted final stdout
+to the raw JSON rather than retyping it. Luna owns the four product documents;
+root owns current status, index, dated plan/readiness/execution and evidence.
+
+Final static checks passed: doc-example self-test and full checker (144 blocks
+across 26 documents), document references, runbook path citations, community
+documents and parity sidecar citations, plus whitespace checks. The example
+checker reports 30 Tier C deferred blocks; these are not executed Swift,
+Unity, Godot or device/model passes. Guide shell syntax and exact final
+receipt/pin/output cross-checks also passed. Local model/weight/binary execution
+and workspace/model Cargo were not run. Normal pre-commit gates remain enabled.
+
+This documentation packet is step 4's deliverable. Its fresh PR CI and normal
+merge, followed by a local fast-forward to latest main, remain the acceptance
+conditions; the final handoff must read those external states back before
+claiming completion. X draft/post and new Release/HF publication are outside
+steps 1–4. Held follow-up PRs retain their concrete conditions.
+
+## Final accepted-main pairing passed — 2026-10-23 12:34 UTC
+
+#295 was normally squash-merged as
+`0d51bb01e56da6ce5f72375cc5fdddc599beac3c`, parent `c1515500`.
+All sixteen required context/app pairs and related repo-hygiene, shell and
+CUDA/Metal checks passed at reviewed source `e17f1446`. At the merge audit,
+69 checks succeeded, one skipped and optional Unity packaging remained live;
+no failure was present. Accepted tree `60016146e83341748ee6c4cd1700479934d75afd`
+matches the reviewed source/preflight tree, and main's ref was read back.
+
+The separate final [main run 39953770618](https://github.com/ayutaz/vokra/actions/runs/39953770618),
+attempt 1, job `120414427584`, completed successfully. Source/workflow and
+driver runtime head/expected head all bind to this accepted main, not the
+earlier PR source. Artifact `12501077608` is a 1,722-byte ZIP whose SHA-256
+`f6a6de25969c28893883f3b32e2bc4915a4e62645302b360e2a00277aa51ce75`
+matches GitHub API metadata. The [raw final receipt](evidence/published-rc1-cli-pairing-final-2026-10-23.json)
+is 4,841 bytes, SHA-256
+`6847284189c1ef8625ea61044967e797e72c58659cbfaf6be580794f4c0afde3`.
+It reports nested driver bytes 4,925 and SHA-256
+`1e6f440c829c606ea68ef0c49fee2af217b659906014019ba21676817f7e3c44`.
+
+Root independently checked the raw outer digest, source/run/runtime binding,
+unchanged exact released CLI/model/fixture identities, three unique explicit
+CPU commands and zero exits. It parsed the final run's actual stdout:
+the JFK keyphrase matches; speech is 214/343 frames (0.5889) and silence
+0/343 (0.0025). These final values were read from this receipt even though
+they agree with the preflight. This establishes step 3's bounded functional
+pairing, without numerical-parity, Metal, performance or full-catalog claims.
+
+The final all-pages security readback is separately preserved in
+[the final selected-metadata receipt](evidence/announcement-security-final-readback-2026-10-23.json):
+599 open pip alerts (90 critical, 236 high, 189 medium, 84 low), 575 with a
+named patched version and 24 without, all under tools/parity or integrations.
+326 are critical/high; the eight Code Scanning alerts remain. The earlier
+572/638 observations and receipts are historical rather than overwritten.
+No finding was dismissed or model/license/owner gate cleared by these counts.
+
+Step 4's product-guide/README, current-status and evidence PR remains to be
+accepted before returning to latest main. The unrelated dirty guard and
+protected-manifest boundary remain unchanged. No new VAST/Scaleway worker,
+Release, registry, HF upload or X post was introduced for these final runs.
+
+## Reviewed-source preflight passed — 2026-10-23 12:12 UTC
+
+Genuine hosted [run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015),
+attempt 1, job `120405602400`, completed successfully on reviewed PR #295
+source/workflow `e17f1446d66d575da45866db69ad51c0e7f6d882`.
+It is a source preflight, not the required final accepted-main run.
+
+Artifact `12500441411` is a 1,722-byte ZIP with SHA-256
+`cf4c003330ddd3b730be62c9d17ee2d986151ae76bf11ad4cad5b60428a63ca9`,
+matching API metadata. The preserved [raw preflight receipt](evidence/published-rc1-cli-pairing-preflight-2026-10-23.json)
+is 4,841 bytes, SHA-256
+`a7fd7ea73778c73083435bfafa5440cb28f1f4749fe4b200972eb923dce5af94`.
+It retains the complete parsed driver receipt and reports its original size
+4,925 bytes and SHA-256
+`642d91be2b2ee1c7db1a1cc68a79633bdae7caeea64c0324f6b5d0a2bae299be`.
+
+Root independently checked the raw outer digest, source/run binding, genuine
+Linux runtime, exact released CLI identity, both model revision/size/hash/URL
+contracts, fixture geometry/hash and all three unique commands with explicit
+CPU backend and zero exit codes. It also parsed the actual ASR/VAD stdout
+independently: the JFK keyphrase matches, speech is 214/343 frames
+(mean probability 0.5889), silence is 0/343 (0.0025).
+The numbers are read from this run, not copied from the historical receipt.
+This is functional smoke only, without numerical-parity, Metal or performance
+claims. PR CI, normal merge/tree identity and the final main run remain pending.
+
+## Fixture path accepted; missing sidecar isolated — 2026-10-23 12:09 UTC
+
+#294 passed all sixteen required context/app pairs, repo-hygiene, shell tests
+and CUDA/Metal checks at source `7d5bfc1127d760820a6de221fbeb0e990d89938c`.
+The actual repo-hygiene log records nine tests passing in 1.283 seconds.
+It was normally merged as `c1515500aabe7893e8176fd304c642e1b8ba2a03`,
+parent `4d6efd02`; accepted tree `891ed7a817a647bf98e34cf7e4bd8cbf9d725e98`
+matches the reviewed source. At merge 66 checks succeeded, one was skipped
+and optional CoreML/iOS checks were still running; no failure was observed.
+
+Main [run 39950400977](https://github.com/ayutaz/vokra/actions/runs/39950400977),
+attempt 1, job `120403174603`, passed the canonical audio-path gate but stopped
+with `missing audio SHA sidecar: .../tests/fixtures/audio/jfk-30s.wav.sha256`.
+Its nine regressions passed; its driver commands/models remain empty.
+The [raw second failure](evidence/published-rc1-cli-pairing-failure-2-2026-10-23.json)
+is 2,335 bytes, SHA-256
+`5c3ccaaa89ec4802cbbd47d68c7cf98a20ea4832e6d92452631383a467bd0c50`.
+Artifact `12499498951` is a 1,265-byte ZIP whose SHA-256
+`7d6c407477fb273ff8aa40305ef13dee036debbc073bcf1f8217048a2345c87a`
+matches API metadata. The nested 1,546-byte driver receipt has SHA-256
+`0a2e18baa0171023e4ec07662af0658bf1e14c555d4fda8f232d7388f6ae9056`.
+This is a distinct missing-input failure, not another rejection of the fixed
+audio path or an inference result.
+
+The directory metadata lists the WAV, its checksum sidecar and a README.
+The sidecar's text names the expected SHA-256 and repository-relative fixture
+path; its own SHA-256 is
+`e7d194d64ca6ffda7347975ff5937d844c4a6d6b737907f1821fd16fc2b44d90`.
+No audio bytes were read locally. Luna added only that existing sidecar to
+the explicit sparse workflow inputs and extended the actual projected-tree
+regression to fail without it and pass with it. Root independently ran all
+nine tests in a six-file metadata-only projection, without original driver,
+audio or models. Root reviewed the exact two-file diff and opened
+[PR #295](https://github.com/ayutaz/vokra/pull/295), source
+`e17f1446d66d575da45866db69ad51c0e7f6d882`, tree
+`60016146e83341748ee6c4cd1700479934d75afd`.
+
+Fresh PR CI and genuine hosted preflight
+[run 39951135015](https://github.com/ayutaz/vokra/actions/runs/39951135015)
+run in parallel on this reviewed source. The preflight may detect remaining
+integration gaps before merge, but it does not replace the final accepted-main
+run. Normal protected merge, accepted-tree identity, final main smoke, result
+recovery and documentation acceptance remain required.
+
+## Pillow accepted; fixture correction in review — 2026-10-23 11:40 UTC
+
+#287 was normally squash-merged as
+`4d6efd02a95a3585b98ca718ddc0a6363b634ef3`, parent `710ae91d`.
+Its exact source `86d5dad8` passed all sixteen required context/app pairs,
+Python license audit, repo-hygiene and the relevant CUDA/Metal checks.
+The API readback confirmed merged/closed, with the expected source head.
+Optional iOS/musl checks remained live at merge; no failure was present and
+those pending checks are not reported as completed successes.
+
+The root reviewed Luna's two-file correction and opened
+[PR #294](https://github.com/ayutaz/vokra/pull/294), source
+`7d5bfc1127d760820a6de221fbeb0e990d89938c`, on this accepted main.
+Helper blob `7f74b12d105d2f35dfa2e065ee4f0020e5c8aedd` passes the committed
+fixture path instead of downloading a temporary copy. Test blob
+`86e80b65da3d19cec1de05e53eda703d4bd883a7` retains the eight existing tests
+and adds one real-wrapper, stubbed-command handoff regression.
+Root review corrected driver identification and the exact-call-count assertion
+before acceptance. A five-file projection without driver/audio/models passes
+all nine final tests; the previous wrapper fails the new path assertion.
+No actual model/runtime success is claimed by these isolated tests.
+Fresh CI and normal merge are pending before the next hosted model run.
+
+The latest all-pages selected-metadata GitHub readback is preserved in
+[the security receipt](evidence/announcement-security-readback-2026-10-23.json):
+638 open pip alerts (94 critical, 259 high, 201 medium, 84 low), all under
+tools/parity or integrations; 614 name a patched version and 24 do not.
+The eight open Code Scanning alerts remain. This supersedes the earlier
+572-alert count without rewriting its dated evidence or dismissing findings.
+
+## Accepted integration and genuine hosted failure — 2026-10-23 11:28 UTC
+
+[PR #293](https://github.com/ayutaz/vokra/pull/293) was normally squash-merged
+as main `710ae91dec29066627a123a4d98e519465f2fe67`. Its tree
+`3dc5ad30d465caa9940e9c79b11f429400af08ec` matches the reviewed final source
+`80eff153f90e7158c9a85a78b36f8f18f9ab1ab0`. All 16 required context/app
+checks and the relevant CUDA, Metal and repo-hygiene jobs passed; the final
+source-check readback was 81 successes and five event-specific skips.
+#291 and #292 were closed as incorporated, with their exact original blobs
+preserved in #293. Their earlier failures/cancellations remain historical.
+#287 was updated to this main and approved at source `86d5dad8`; fresh CI
+is still pending at this entry. Its preserved reference/API/owner holds remain.
+
+The manual model-consented
+[run 39944971172](https://github.com/ayutaz/vokra/actions/runs/39944971172)
+executed on genuine GitHub-hosted Linux at main `710ae91d`, attempt 1,
+job `120385282760`. Its eight offline regressions passed. The subsequent
+driver rejected the temporary audio path with
+`audio must be the committed fixture tests/fixtures/audio/jfk-30s.wav`.
+Commands and models are empty; no model inference result is claimed.
+The wrapper had passed a temporary copy even though the committed fixture
+was included in the sparse checkout. The next correction must preserve the
+driver's canonical-path and identity gates and change the wrapper invocation,
+with a regression for this actual contract violation before another model run.
+
+The [raw failure receipt](evidence/published-rc1-cli-pairing-failure-2026-10-23.json)
+is 2,277 bytes, SHA-256
+`4629530b4e221e06f6aa04dbf110dca75f2d927b6dea6358937f274a8c15b43a`.
+It was recovered from artifact `12497962386`; the 1,279-byte ZIP SHA-256
+`3fe73478e61a03e846dd426e8599af718f91cad966bbdc30033076376736196c`
+matches GitHub's API digest. The nested driver receipt is 1,516 bytes,
+SHA-256 `3b01dab9f54327606854f63a0b25a1adb0081b1b2566b7b4027c2200ee1b343b`.
+The receipt separately records successful release CLI/sidecar/manifest/fixture
+identity checks; those checks are not a successful functional smoke.
+
+The local management-document branch was normally merged with accepted main,
+without staging or changing the unrelated dirty guard. Its SHA-256 remains
+`0e268b8ca047d16019ba4df60ef478d44b615d38e73313adc4c7bd392fe93351`.
+No local model/audio/binary was downloaded or executed. The previous VAST
+worker's recorded destruction is unchanged; no new VAST worker was allocated.
+
+## Initial state and boundaries
+
+Accepted main at execution start:
+`92a336318a54f659fa991c129aaa991f46ea6231`.
+Existing dirty local guard SHA-256:
+`0e268b8ca047d16019ba4df60ef478d44b615d38e73313adc4c7bd392fe93351`.
+The guard remains unrelated and is not staged. The protected manifest is not
+read, hashed, materialized, changed or committed.
+
+## PR dispositions and work
+
+### Whisper repair — PR #291 opened
+
+Normal pre-commit passed all five compile-free gates. Commit
+`41c445f54ed3515b2fb2c240701d42c8ba12b7d7` contains only the converter regression,
+license source-citation correction and the completed repair evidence.
+[PR #291](https://github.com/ayutaz/vokra/pull/291) was opened against main.
+Its fresh CI is in progress; it is not yet accepted or merged at this entry.
+
+The exact Rust blob matches the recorded VAST overlay SHA-256
+`91306b190af19313bc37ed6a660aa6488a18e97fa9c61b58aba3904fc51f1568`
+on base `92a33631`, with two focused regressions and converter release build
+passed. That is the bounded evidence for the corresponding code push's
+documented remote-verification path; local workspace/model Cargo was not run.
+
+### PR #290 — hold pending new dependency/compatibility evidence
+
+At reviewed head `6d1f02dde190e013b531dc2b4458c26866975a70`, GitHub reported
+mergeable/clean, 69 successful checks and one skip. No review thread was open.
+The root independently compared the base and candidate lock metadata:
+57 package records become 61, Torch 2.7.1 becomes 2.13.0, Triton 3.3.1 becomes
+3.7.1, and the CUDA 12 package set is replaced by a CUDA 13 set including new
+CUDA bindings/pathfinder/toolkit and NVSHMEM records. These are lock records,
+not a measured installed closure.
+
+The current pyproject still records the old authenticated API-smoke receipt
+and a 56-package installed-closure audit. Those results do not certify this
+new dependency set. #169/#182 instead use a specific official CPU-index
+`2.13.0+cpu` contract; identical Torch version text is not equal closure proof.
+Retain #290 open/unmerged until its new selected packages/native/license and
+API evidence, or a reviewed explicit stale-evidence disposition, are supplied.
+No owner or reference-execution gate is cleared by green general CI. This
+reference-only dependency task does not block the bounded Whisper/Silero
+published-CLI announcement path.
+
+### PR #287 — metadata correction under review
+
+Head `efaf7d027259bf0e282ab3393b36e4812f9cce9b` remains changes-requested and
+behind main despite successful general CI. The initial worktree setup was
+refused because the safety hook matched the protected exclusion path. That
+checkout operation was not retried. No protected data was materialized.
+
+The independent metadata-only path retrieves only this PR's pyproject and
+lock into a temporary candidate directory; it does not create another checkout
+or touch the main worktree. Luna prepared canonical lock/package/license-row
+bindings and version-specific Pillow evidence. The root required a fresh
+primary recheck rather than inheriting the previous version's reviewed label.
+PyPI Pillow 13.0.0 reports MIT-CMU, and its tagged LICENSE contains that text.
+Diffusers 0.32.2's official metadata and lock entry establish its Pillow
+dependency. Root review requires the version-specific MIT-CMU conclusion,
+while all transitive/API/owner blocked states remain intact. No candidate has
+been published to this PR at this entry.
+
+## Pending accepted-CLI pairing
+
+The official RC1 release API and direct tag ref were freshly checked:
+release `416018534`, prerelease/non-draft, source
+`d84d311e98d0abb2987b5c4e96157ae8f2068e1a`.
+Linux CLI asset `651405463` is 13,344,272 bytes / SHA-256
+`2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`;
+its sidecar asset `651405477` is 100 bytes / SHA-256
+`093cdf4bad82a2ebcd2d3ac7ed8da6cbba0651e9991e9c969c86cfd1caf72e98`.
+Desktop manifest asset `651405529` is 2,453 bytes / SHA-256
+`32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`.
+No binary/model was acquired on the maintainer Mac.
+
+The smoke wrapper is under Luna implementation and root review. It reuses the
+accepted driver at main `92a33631`, blob
+`4107f83b64fe59d6a121d051271c9b41e763649b`, with baseline pin blob
+`869505eaf238db05074b27599359d3a3fd25f646`, and the new fixed Whisper artifact.
+The original driver receipt in the
+[dated CPU result](release-0.4.0-preview-cpu-results-2026-10-17.md) supplies the
+ASR/VAD command and semantic-check contract. The execution environment must be
+recorded honestly; no hosted-runtime marker is fabricated for a VAST worker.
+
+The local guard allowed driver help but refused local pin-validation and a
+combined read-only source request. Those operations were not retried through
+another source-reading route. Remote execution remains a separate authorized
+task, with positive file allowlists, no local weights, no HF token, bounded
+cost/time and mandatory destruction. No paid worker has been created for
+these steps at the time of this entry.
+
+Guide/current-status updates, the new smoke receipt, fresh CI acceptance,
+normal merges and returning to latest main remain required before step 4 is
+complete. Old warning text and dated RC receipts have not been promoted to a
+new pairing success.
+
+## Progress at 2026-10-23 08:20 UTC
+
+PR #287's reviewed two-file candidate is published as
+`1ffe4d9c5c3bfa2332be5d26c01f3257549a8fb0`, a non-force update retaining the
+previous PR head and accepted main as parents. The candidate tree is accepted
+main plus only the reviewed lock and pyproject changes. Its Pillow 13.0.0
+row records MIT-CMU, and root independently checked the lock bytes, 44-row
+canonical license rendering/digest and unchanged blocked states. The original
+changes-requested review was superseded by an approval on this exact head.
+Fresh CI remains pending; no merge is claimed.
+
+The root submitted a changes-requested review on PR #290's exact reviewed
+head, documenting the changed CUDA closure and the need for current evidence.
+That is a hold on accepting the update, not a model execution or owner/legal
+approval. PR #291 also remains in fresh CI with no merge claimed.
+
+### VAST pairing attempt — genuine runtime gate rejected
+
+The first bounded search found no qualifying offer and allocated nothing.
+A later read-only search returned a qualifying offer; one fresh worker
+`57343389`, label `vokra-rc1-cpu-smoke-4a545131e911`, was created at
+USD 0.1477037037037037/hour including the requested 200 GB storage.
+The worker verified the public CLI, sidecar, manifest, tag/source, fixture and
+the exact accepted driver/pin blobs, then invoked the unchanged driver.
+
+The driver returned exit 1 with
+`real release smoke requires GITHUB_ACTIONS=true`. Its failure receipt has
+empty model/command lists and no audio processing result: no model smoke was
+performed. The driver receipt SHA-256 is
+`6a467955cadd3ab1f4a9ef1bfa5e952805ab118d8fb17d843799c936aed14588`.
+This refusal is preserved as a failure, not weakened by setting a fabricated
+hosted-runtime marker on VAST.
+
+The lifecycle destroyed the worker and individually confirmed absence. Root
+independently obtained `instances: null` for `57343389` and a complete empty
+instance inventory (`success: true`, `total_instances: 0`, `next_token: null`).
+No further paid VAST worker is retained for the hosted-only driver.
+
+The same smoke is being moved to a new manual GitHub-hosted workflow, with
+read-only permissions, explicit model consent, exact released-CLI identity,
+unchanged driver, fixed two-model pins and JSON-only evidence retention.
+The original successful RC1 job `117485177180` in run `39062234813` confirms
+the genuine runtime consent flag `VOKRA_RELEASE_CPU_SMOKE=1`; the flag name
+was read from primary execution metadata, not the refused source files.
+New workflow source must pass review/CI and enter main before its explicit
+manual dispatch. No successful new pairing is claimed yet.
+
+## Source PRs at 2026-10-23 08:40 UTC
+
+Fresh CUDA jobs on #287 and #291 passed their Rust tests and then failed the
+real-GGUF identity step. The public download still used mutable HF `main`
+while the expected Whisper hash/cache key described the pre-repair artifact.
+This is a CI input-contract defect; rerunning the same input is not a fix.
+
+[PR #292](https://github.com/ayutaz/vokra/pull/292), initially
+`0c090f10d2963c21e9d9dd35e8c006237ead0f9a`, pins both downloads to immutable
+revisions and binds the cache to their complete identities. CampPlus retains
+its established SHA-256 at revision `7963b5f8e21a75d900e4fc4d6b342ba3f989f6f9`;
+the repaired Whisper uses the recorded new revision/hash. Exact sizes and
+SHA-256 are checked even on cache hits. YAML syntax and diff hygiene passed;
+the refused local synthetic shell check was not retried.
+
+The first fresh required pin-sync check failed because the four newly named
+revision/hash environment pins were not registered in `.github/pins.yaml`.
+The failure is retained, and the candidate is being corrected by registering
+the real artifact identities rather than allowlisting or weakening the check.
+
+[PR #293](https://github.com/ayutaz/vokra/pull/293), initially
+`210c2981e81b16101774ab70e9b22c3d076f4b06`, adds five files for the genuine
+hosted published-CLI smoke. It is based on #292's reviewed CI fix and must be
+refreshed after that prerequisite is accepted. Manager review, seven offline
+UV Python 3.12 tests, bash syntax and actionlint passed. The output preserves
+the full original driver receipt (including ASR/VAD stdout, audio identities
+and functional-only limits), bounded to 64 KiB of JSON. No hosted model
+dispatch has occurred, and neither PR is claimed merged at this entry.
+
+### Pin registry and CI queue follow-up — 08:56 UTC
+
+The registered candidate passed hosted pin synchronization on both source
+PRs. A further consumer review found that the drift probe does not support
+the proposed `artifact` kind. Both entries now use the existing `checkpoint`
+kind with their real HF repository IDs; revision/hash/size and mismatch
+policies are unchanged. This corrects consumer compatibility rather than
+turning a probe error into an exception.
+
+The resulting reviewed heads are #292
+`9e80f5f802b5ecbb477368865c60ef30a41df8b2` and #293
+`d1e0b3f155544253a53949db62f5ad4db92dddda`. Their fresh CI is pending at
+this entry. Local manager Git-blob hashes match the uploaded workflow and
+pin registry blobs; no unrelated root-worktree changes were included.
+
+Obsolete #287 Core/Quality runs were cancelled after the known identity
+failure; both APIs confirmed completed/cancelled. Its branch still requires
+a latest-main update and fresh CI before acceptance. #291's old head reached
+80 successes, one CUDA identity failure and five skips; that failure is not
+treated as green.
+
+The initial #292 Core run `39926050913` remained queued for over five minutes
+after ordinary cancellation and held up its newer concurrency group. A
+single force-cancel request was sent for that obsolete run, following the
+[GitHub workflow-run API](https://docs.github.com/en/rest/actions/workflow-runs#force-cancel-a-workflow-run).
+The first readback showed the request processing; terminal completion is not
+claimed at this entry. No latest-head check was waived, no source was
+rerun solely because a polling timeout elapsed, and main protections remain
+unchanged.
+
+## Integrated acceptance route — 2026-10-23 09:06 UTC
+
+The obsolete Core run `39926050913` reached completed/cancelled after the
+single force-cancel request. The new group began real jobs rather than
+remaining behind that obsolete run.
+
+On #292's reviewed head `9e80f5f8`, CUDA job `120329573632` in run
+`39928007071` completed successfully: immutable GGUF download, file identity
+checks and the C ABI backend selector all passed. This is the actual
+software-job outcome for that head, not a CUDA-hardware numerical-parity or
+full-catalog claim.
+
+The exact four reviewed #291 blobs and two #292 blobs were integrated into
+#293, whose head is now `8f2f9433919daed9f70b1d6d7d4eb9220282bfd6`.
+Its final 11-file change is the accepted-review unit: converter regression,
+audit/publication evidence, fixed CI identities/registry and the five hosted
+pairing files. This avoids serially invalidating the same source proof with
+multiple prerequisite merges. All final-head CI gates still apply. #291 and
+#292 remain unmerged until that integration is accepted; only then may they
+be closed with explicit incorporation records. #287 remains independent and
+must be refreshed and verified after the shared fix enters main.
+
+Remaining old source-PR runs were individually identified by their exact
+superseded heads and sent ordinary cancellation requests to free execution
+slots for the integrated head. A request alone is not terminal proof. No
+main or unrelated worker was stopped, no final-head check was bypassed, and
+no local model/Cargo operation occurred.
+
+## Workflow hygiene correction — 2026-10-23 10:14 UTC
+
+The integrated `8f2f9433` head's CUDA and Metal jobs both passed, including
+their fixed-GGUF/C ABI stages. Fifteen of sixteen required contexts passed;
+the parity matrix itself passed both fusion modes while its required echo
+aggregator was still queued.
+
+An actual additional failure occurred in repo-hygiene job `120332591709`,
+run `39929080825`: the canonical workflow checker rejected the new smoke job
+because it installed setup-uv but had no direct UV invocation in its YAML
+run steps. The helper did invoke UV, but the repository's static same-job
+contract did not follow that indirection. The manager's earlier local checks
+had not applied this canonical gate to the modified candidate; the failure
+was not waived as advisory or treated as a success.
+
+Luna added the existing seven model-free regression tests to sparse checkout
+and an explicit UV Python 3.12 test step immediately after setup-uv and before
+model consent. The parent UV invocation may provision its interpreter;
+the tests' child invocations retain their offline/no-download restriction.
+No checker, consent, pin, runtime or publication gate was weakened.
+
+The manager independently ran the unchanged canonical checker from a
+temporary positive-allowlist mirror containing the actual modified workflow:
+one workflow, zero crons, all checks passed. Seven offline UV tests and
+actionlint also passed, and local Git blob IDs matched the two uploaded blobs.
+The resulting #293 head is `525b2a222828adf3b2205cb8a99b44ce10a9860b`;
+its tree is `4d73fef5d4fa47779aacc86d9e77f2e1deebe063`. Only the workflow and
+its focused test changed from the preceding integrated head. Fresh CI is
+required again. No released-CLI/new-model success or merge is claimed yet.
+
+The local management-document checkpoint `d15e5c41` passed all five ordinary
+compile-free pre-commit gates and remains on
+`docs/cpu-preview-pairing-20261023`, with the unrelated dirty guard preserved.
+It has not been pushed into an extra CI queue while model acceptance is pending.
+
+## Sparse-input dependency review and PR regression — 2026-10-23 10:57:05 UTC
+
+Before merging, the manager found a concrete dependency gap in `525b2a22`:
+the newly invoked offline suite reads its own workflow YAML, which the
+positive sparse checkout did not include. This was identified before any
+hosted model dispatch; it is not recorded as a completed model run.
+
+Luna added the workflow itself to the allowlist and an eighth regression.
+The regression materializes only the five offline inputs, invokes the same
+existing workflow test in two projected trees, requires FileNotFoundError
+when the YAML is omitted and requires success when included. A preliminary
+test-owned set-helper proof was rejected during manager review and replaced
+with this real subprocess/FileNotFound regression.
+
+The manager independently copied only workflow/helper/validator/test/pins
+into `/private/tmp/vokra-rc1-root-projection.MDXhj1` and ran all eight tests
+there successfully. Original driver, audio, model data, credentials and the
+protected manifest were not copied. Canonical hygiene and actionlint passed
+on the actual candidate. Uploaded Git blobs matched the locally tested files.
+
+The dependency fix was published as `bf8be533ef8c86038b3c3b594aada86437be8bf1`.
+One additional two-line step wires the same suite into the existing PR
+repo-hygiene job, so this contract is checked before merge as well as before
+manual model execution. All existing jobs, permissions, triggers and gates
+are preserved; no new job or dependency was introduced. The two candidate
+workflows passed canonical hygiene together, and actionlint passed both.
+
+The final reviewed #293 head is now
+`80eff153f90e7158c9a85a78b36f8f18f9ab1ab0`, tree
+`3dc5ad30d465caa9940e9c79b11f429400af08ec`. Fresh CI and the post-merge
+released-CLI/new-model result remain required. Superseded runs were sent
+cancellation requests by exact old head; some had already completed when
+the requests arrived. No current-head check or main workflow was waived.

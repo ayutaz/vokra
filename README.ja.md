@@ -27,6 +27,12 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 > これはCPU-only previewです。macOS/Windowsのmodel推論、Apple Metal/no-fallback、全catalog完了、
 > performance、数値parityを主張せず、model/Space/HF/registry/X/Scaleway artifactも更新していません。
 >
+> **現在のsource checkpoint（2026-10-23 UTC）:** 公開 `main` は
+> `151d94a8613d5bd4acb1671a461f59742c37b8fc` です。workspace は引き続き
+> `0.4.0-rc.1` の開発系列で、最新の安定版releaseは `v0.3.0` です。
+> open PR と model readiness の状況は、このrelease noteから推測せず
+> [文書マップ](docs/README.md)を参照してください。
+>
 > **過去の公開前記録（2026-10-17）:** `v0.4.0-rc.1`の配布準備中で、公開済みLatestは
 > 引き続き`v0.3.0`です。source `9ee5834d`では、Whisper base ASRとSilero VAD v5の
 > 音声・無音判定がhosted Linux CPUの機能smokeに成功しました。数値parityや
@@ -103,7 +109,9 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ## クイックスタート
 
 Git と Rust 1.89 以降（effective MSRV。CPU backend が 1.89 を要求）が必要です。
-ソースから CLI をビルドします。
+以下のコマンドは手元のsource checkoutからCLIをビルドするもので、公開済みのprebuilt RC1
+binaryではありません。検証済みprebuilt platform assetと正確なrelease確認は
+[v0.4.0-rc.1 preview guide](docs/release-0.4.0-rc1.ja.md)を使用してください。
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
@@ -111,16 +119,26 @@ cd vokra
 cargo build --release -p vokra-cli
 ```
 
-公開済み Whisper base GGUF を取得し、同梱の Public Domain 音声 fixture を
-実行します。
+immutable revisionの修正済み公開 Whisper base GGUF を取得し、CLIを実行する前に検証してから、
+同梱の Public Domain 音声 fixture を実行します。`sha256sum`を使うLinux例です。
 
 ```sh
-curl -L https://huggingface.co/vokra/whisper-base/resolve/main/whisper-base.gguf \
-  -o whisper-base.gguf
+WHISPER_URL='https://huggingface.co/vokra/whisper-base/resolve/bf440f6064ffc882d53d3694729dc4616dc2cfa7/whisper-base.gguf'
+WHISPER_SHA256='5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014'
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  "$WHISPER_URL" \
+  -o whisper-base.gguf && \
+printf '%s  %s\n' "$WHISPER_SHA256" whisper-base.gguf | sha256sum -c - && \
 target/release/vokra-cli run \
+  --backend cpu \
   --model whisper-base.gguf \
   --input tests/fixtures/audio/jfk-30s.wav
 ```
+
+上記のrevisionとhashは修正済み公開modelのidentityであり、公開済みRC1のhosted smokeで使った
+過去のWhisper pinではありません。公開済みRC1 CLIは、修正済みWhisperとSileroの固定pinを使った
+Linux CPU確認に成功しています。[最終組合せの証跡](docs/handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json)を
+参照してください。上記のsource-build例は手元での手順であり、その公開済みCLI receipt自体ではありません。
 
 別の architecture を変換・実行する前に組み込み help を確認してください。
 

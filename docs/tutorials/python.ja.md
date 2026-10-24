@@ -2,8 +2,8 @@
 
 [English](python.md) | **日本語**
 
-> **実装状態（2026-10-04 照合）: workspace release `0.3.0`、source 実装済み・
-> Python package は PyPI 未公開。GitHub `v0.3.0` release には wheel asset が
+> **実装状態（2026-10-23 照合）: workspace 開発系列 `0.4.0-rc.1`、source 実装済み・
+> Python package は PyPI 未公開。最新安定版の GitHub `v0.3.0` release には wheel asset が
 > ありますが、PyPI 公開は未検証・未承認です。** package root は
 > `Session`、`Stream`、`Event`、typed error を export し、生成 table は現行 C ABI
 > の全 function を覆います。PyPI 公開は未検証・未承認です。正確な

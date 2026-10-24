@@ -12042,9 +12042,9 @@ pub fn convert_file_licensed(
     };
 
     // Override the stamped licence when the caller supplies the distribution
-    // source's SPDX id (add_string overwrites the key in place, so the model's
-    // model_id / source / attribution stamps are preserved — only the licence
-    // and its class change).
+    // source's SPDX id. `model_id` and `attribution` remain intact; `source`
+    // is deliberately rewritten below because its built-in licence parenthetic
+    // would otherwise contradict the explicit override.
     if let Some(lic) = license
         && !matches!(model, ModelKind::VibeVoiceRealtime)
     {
@@ -15329,6 +15329,162 @@ mod compliance_conduit_tests {
         );
         let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
         assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod whisper_license_provenance_tests {
+    use super::{ModelKind, convert_file_licensed};
+    use std::path::PathBuf;
+    use vokra_core::gguf::{GgufFile, chunks};
+
+    fn temp_path(label: &str, extension: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "vokra-whisper-provenance-{label}-{}-{nonce}.{extension}",
+            std::process::id()
+        ))
+    }
+
+    fn synthetic_checkpoint() -> Vec<u8> {
+        // This is the existing degenerate Whisper-like unit-test pattern
+        // (rank-reduced conv1/embed tensors), not a claim about base geometry.
+        // The converter intentionally uses its `whisper-unknown` synthetic
+        // fallback for this fixture while still stamping vanilla provenance.
+        let conv1 = [0.1f32, 0.2, 0.3, 0.4];
+        let embed = [1.0f32, -1.0];
+        let mut payload = Vec::new();
+        for value in conv1.into_iter().chain(embed) {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+        let header = r#"{"model.encoder.conv1.weight":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]},"model.decoder.embed_tokens.weight":{"dtype":"F32","shape":[2],"data_offsets":[16,24]}}"#;
+        let mut checkpoint = Vec::new();
+        checkpoint.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        checkpoint.extend_from_slice(header.as_bytes());
+        checkpoint.extend_from_slice(&payload);
+        checkpoint
+    }
+
+    #[test]
+    fn vanilla_default_is_mit_and_override_is_visible_without_other_drift() {
+        let input = temp_path("input", "safetensors");
+        let vanilla_output = temp_path("vanilla", "gguf");
+        let override_output = temp_path("override", "gguf");
+        std::fs::write(&input, synthetic_checkpoint()).expect("write synthetic checkpoint");
+
+        convert_file_licensed(ModelKind::Whisper, &input, &vanilla_output, None)
+            .expect("vanilla Whisper conversion");
+        convert_file_licensed(
+            ModelKind::Whisper,
+            &input,
+            &override_output,
+            Some("apache-2.0"),
+        )
+        .expect("explicit Whisper licence override");
+
+        let vanilla = GgufFile::parse(std::fs::read(&vanilla_output).expect("read vanilla GGUF"))
+            .expect("parse vanilla GGUF");
+        let overridden =
+            GgufFile::parse(std::fs::read(&override_output).expect("read overridden GGUF"))
+                .expect("parse overridden GGUF");
+
+        assert_eq!(
+            vanilla
+                .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|value| value.as_str()),
+            Some("permissive")
+        );
+        assert_eq!(
+            vanilla
+                .get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|value| value.as_str()),
+            Some("MIT")
+        );
+        assert_eq!(
+            vanilla
+                .get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|value| value.as_str()),
+            Some("openai/whisper (MIT) — OpenAI official release")
+        );
+
+        assert_eq!(
+            overridden
+                .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|value| value.as_str()),
+            Some("permissive")
+        );
+        assert_eq!(
+            overridden
+                .get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|value| value.as_str()),
+            Some("apache-2.0")
+        );
+        assert_eq!(
+            overridden
+                .get(chunks::KEY_PROVENANCE_SOURCE)
+                .and_then(|value| value.as_str()),
+            Some("upstream distribution source (licence apache-2.0 per source)")
+        );
+        assert_eq!(
+            vanilla
+                .get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|value| value.as_str()),
+            overridden
+                .get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|value| value.as_str())
+        );
+
+        // The explicit override changes only the provenance fields intended by
+        // convert_file_licensed; all model metadata and tensor payloads remain
+        // identical.
+        let changed_keys = [
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            chunks::KEY_PROVENANCE_LICENSE,
+            chunks::KEY_PROVENANCE_SOURCE,
+        ];
+        let vanilla_metadata_keys: Vec<_> = vanilla
+            .metadata()
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .filter(|key| !changed_keys.contains(key))
+            .collect();
+        let overridden_metadata_keys: Vec<_> = overridden
+            .metadata()
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .filter(|key| !changed_keys.contains(key))
+            .collect();
+        assert_eq!(
+            vanilla.metadata().len(),
+            overridden.metadata().len(),
+            "override must preserve metadata key count"
+        );
+        assert_eq!(
+            vanilla_metadata_keys, overridden_metadata_keys,
+            "override must not add or remove non-provenance metadata"
+        );
+        for (key, value) in vanilla.metadata() {
+            if changed_keys.contains(&key.as_str()) {
+                continue;
+            }
+            assert_eq!(overridden.get(key), Some(value), "metadata drift at {key}");
+        }
+        assert_eq!(vanilla.tensors().len(), overridden.tensors().len());
+        for tensor in vanilla.tensors() {
+            let other = overridden
+                .tensor_info(&tensor.name)
+                .expect("override must preserve every tensor");
+            assert_eq!(other.dtype, tensor.dtype);
+            assert_eq!(other.dimensions, tensor.dimensions);
+            assert_eq!(overridden.tensor_bytes(other), vanilla.tensor_bytes(tensor));
+        }
+
+        for path in [&input, &vanilla_output, &override_output] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 

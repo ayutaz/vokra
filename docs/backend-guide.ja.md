@@ -137,12 +137,13 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 
 ## 6. owner / contributor 境界
 
-**2026-10-17 current routing:** [現況と残タスク](handoff/current-status-and-remaining-tasks-2026-10-17.md)は
-baseline main `5f1dfc1e`、未マージ7 PR、#259の通常CI成功と追加パッチの実compile/API
-未実施を記録する。保持している10月16日のinventoryは194 repositories、
-136 code/artifact-full／58 non-fullであり、新しいbackend／Apple parity証跡ではない。
+**2026-10-23 current routing:** live な PR と model readiness の台帳は
+[文書マップ](README.md)を起点にする。公開 `main` は
+`151d94a8613d5bd4acb1671a461f59742c37b8fc`、workspace 開発系列は
+`0.4.0-rc.1`、最新安定版は `v0.3.0` である。RC と通常CIは実weight CPU
+parity、Apple CPU/Metal/no-fallback、owner判断や公開許可を確立しない。
 非Apple前提と承認済み実weight CPUを解決後、最終packetとScalewayへ進む。
-CPU fallback、owner判断や公開許可は推定しない。
+CPU fallbackは推定しない。
 
 過去の **2026-10-13 metadata snapshot** は exact GitHub `main` の
 `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` を基準にし、repository 194、
@@ -165,7 +166,7 @@ GigaAM v3、GigaAM Multilingual、OmniASR CTC 1B、ReazonSpeech NeMo v2、BiCode
 Voice Gender Classifier。
 旧 immutable packet input は VAST storage とともに全て破棄済みで、保持も直ちに実行可能な
 状態でもない。Scaleway へ転送する直前に、新しい disposable VAST worker 上で各 packet
-再生成する。現行 0.3.0 系列では、2026-09-11 の Apple batch が named scope の
+再生成する。当時の 0.3.0 release 系列を基準にした、日付付き 2026-09-11 Apple batch では、named scope の
 GigaAM v3、GigaAM Multilingual、OmniASR、ReazonSpeech、BiCodec、Voice Gender
 について approval-bound CPU/Metal check を合格した。これらは exact head と契約に
 限った verdict であり、source-level route の complete を catalog 全体の Apple device
@@ -180,13 +181,15 @@ model weight は実行しておらず、CPU parity、Apple hardware、公開 sta
 
 本ガイドは*手順*を documentation する。device は回さない: 実機（Apple Neural
 Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak は owner
-タスクである。contributor は crate・coverage 契約・CPU-oracle parity harness
-を land し、owner が実機で回して sign-off する。
+タスクである。contributor は crate・coverage 契約と、独立した upstream
+reference で先に検証した CPU 経路と比較する parity harness を land する。
+CPU/GPU の一致だけでは model 完了とはみなさない。owner が必要な exact-scope
+check を metal で回して sign-off する。
 
 ## Keeping this page current
 
-**最終確認日: 2026-10-08 — GitHub の exact `main` checkout
-`d100d93778191ccab77bd1c37fe3552e3d889758`、実装済みの 5 計算バックエンド、上記の汎用
+**最終確認日: 2026-10-23 — GitHub の exact `main` checkout
+`151d94a8613d5bd4acb1671a461f59742c37b8fc`、実装済みの 5 計算バックエンド、上記の汎用
 convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
 delegate scaffold に対して確認。**
 

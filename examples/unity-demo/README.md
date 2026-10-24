@@ -17,7 +17,8 @@ This demo is intentionally narrow. Out-of-scope items and where they live:
 - **(a) Desktop 3 OS only** — macOS / Linux / Windows. **iOS**
   (`DllImport("__Internal")` static linking, **NFR-RL-03**) and **Android**
   (`StreamingAssets` jar-URL → `persistentDataPath` extraction, **NFR-RL-04**)
-  are the **`com.vokra.unity` official package** (current release `0.3.0`;
+  are the **`com.vokra.unity` official package** (current package metadata
+  `0.4.0-rc.1`; the GitHub-only preview has no Unity tarball;
   **FR-API-04**: demo = v0.1 spike, official package = separate surface).
 - **(b) Single worker thread** — `Session`/`Stream` thread-safety
   (`Send + Sync`, atomic ref count, **FR-API-03**) is **v0.1 MVP** scope, so the
