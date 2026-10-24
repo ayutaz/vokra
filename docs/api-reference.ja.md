@@ -60,55 +60,11 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 ## 5. 現行 release と Apple 検証 status
 
-現在の workspace 開発系列は `0.4.0-rc.1`、最新の安定版 release は
-`v0.3.0` である。公開 `main` は `151d94a8613d5bd4acb1671a461f59742c37b8fc`
-（2026-10-22 UTC）。RC は CPU-only preview であり、実weight CPU parity、
-Apple CPU/Metal/no-fallback、全catalog完了、数値parityを確立しない。
-live な PR と model readiness の台帳は[文書マップ](README.md)を参照すること。
-以下の historical snapshot は当時の範囲を保持するため、現在の件数とは解釈しない。
-
-**2026-10-13 metadata snapshot:** exact GitHub `main` checkout は
-`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`。fresh metadata/card-only
-audit は repository 194、GGUF repository 193、GGUF file 198 を報告している。
-CPU は `full=136`、`partial=43`、`no-runtime-binder=14`、`not-artifact=1`、
-Metal は `full=136`、`blocked-by-cpu=57`、`not-artifact=1` である。
-これは catalog metadata の更新であり、API/header や Apple 実機を再検証したものではない。
-別途 2026-10-13 に実施した VibeVoice VAST audit は private な static-only audit で、
-model や API を実行しておらず、CPU/Metal/no-fallback parity や公開可否を確立しない。
-[documentation refresh record](handoff/documentation-refresh-2026-10-13.md) と
-[VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) を参照すること。
-
-**2026-10-08 historical snapshot:** 今回の documentation review と read-only
-metadata/card-only 公開 audit は GitHub の exact `main` checkout
-`d100d93778191ccab77bd1c37fe3552e3d889758` を基準にしている。audit は repository 194、GGUF
-repository 193、GGUF file 198 を報告している。CPU status は `full=136`、`partial=43`、
-`no-runtime-binder=14`、`not-artifact=1`、Metal status は `full=136`、
-`blocked-by-cpu=57`、`not-artifact=1` である。この historical snapshot では未解決の
-public row は58件だった。VibeVoice Realtime-0.5B は strict structural `vibevoice_streaming` binder と
-CLI inspection route に進み partial のままである。605-tensor の完全な checkpoint は変換済みで、
-Microsoft source に対する狭い independent reference probe も受理済みだが、full streaming、
-native CPU parity、Apple CPU/Metal 検証は未完了である。承認済みの Scaleway Apple CPU/reference、Metal/reference、no-fallback batch は
-named scope のみ合格し、その後、明示的に承認された4件の artifact が gated workflow 経由で
-公開された。UTMOS numeric parity は未主張で、`v0.3.0` release tag と GitHub Release は公開済みである。
-2026-10-04 の修正済み VAST source-only audit は固定した Kyutai source input を認証し、
-worker cleanup を独立に確認したが、model weight を実行せず、CPU、Apple hardware、公開
-verdict は変更していない。
-これは public model catalog 全体の対応完了や v1.0 release readiness を主張するものではない。
-
-**2026-09-09 audit-start historical snapshot:** 監査開始時点の PR #79 head は
-`9efcd16eb63b857f48fc00d0b83d1113defd578b` で、当時の remote check は成功 110、
-想定 skip 13、失敗 0 である。監査開始時点の live public audit は
-194 repository（GGUF repository 193、GGUF file 198）。CPU coverage は `full=131`、
-`partial=45`、
-`no-runtime-binder=17`、`not-artifact=1`、Metal は `full=131`、
-`blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
-その監査開始時点の release tag は 0、GitHub Release も 0 である。
-
-GigaAM v3 / Multilingual は conservative な Metal code route が complete だったが、
-Apple hardware verdict は未取得。未解決の public row 63 件は complete と主張しない。
-Scaleway は未開始であり、CI/audit 結果を Apple 実機 evidence の代用とはしなかった。
-UTMOS の legacy Lightning checkpoint は制限付き `weights_only=True` loader が意図的に
-拒否するため、numeric parity は主張しない。
+source基準、release、open PR、モデル・device検証は[現況](current-status.ja.md)を参照してください。
+公開済みCLI/C ABIの正確なassetは[preview導入ガイド](release-0.4.0-rc1.ja.md)で管理します。
+APIの存在、native packaging確認、実モデルの実機検証は別で、このAPI索引は全catalog・
+Metal検証の完了を意味しません。過去のcheckpointは[engineering records](handoff/README.md)から
+参照できます。
 
 ## Keeping this page current
 

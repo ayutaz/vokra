@@ -307,27 +307,10 @@ speexdsp（BSD）の resampler 設計に基づいて native 実装していま�
 
 ## 4. バックエンドの追加
 
-出発点は §2.4 の 6-file pattern です。概略:
-
-1. **`crates/vokra-backend-<name>/` を first-party crate として作る。**
-   optional な Cargo feature で gate し、default ビルドに影響させない。
-2. **`sys.rs` を手書きする。** binding crate を足すのではなく必要な FFI を
-   自分で宣言する — それが `NFR-DS-02` を保つ手段。プラットフォームの
-   ライブラリはリンク時ではなく実行時にロードする（`dlopen` /
-   `LoadLibrary`、WASM なら import object 解決）ので、ドライバの無いマシン
-   でもバイナリは動く。
-3. **`probe.rs` を最後ではなく次に書く。** 検出は正直に — 期待込みで先へ
-   進まず、使えないデバイスは使えないと報告する（`NFR-RL-06`）。
-4. **`context.rs` の kernel は CPU バックエンドを基準に実装する。** CPU
-   kernel が数値のオラクルであり、parity テストはそれと比較する（`NFR-QL-01`）。
-5. **`backend.rs` の op coverage を正直に実装する。** 実装した op だけを
-   申告すること。過少申告は明示エラーになるだけで正しい挙動だが、過大申告は
-   誤った数値を生む（`FR-EX-08`）。
-6. **グラフ経路用に `eval.rs` を配線し、命令的経路用に `Compute` の arm を
-   足す。** 同じ kernel を再利用すること（§2.3）。
-
-すべての `unsafe` ブロックに `// SAFETY:` コメントが必要で、crate は workspace
-マニフェストの opt-out リストに追加します（§1.4）。
+§2.4の6-file構成と、§1の依存・unsafe境界を使います。実装・coverage・統合・parityの
+具体的な手順は[backend guide](backend-guide.ja.md#3-add-a-backend-チェックリスト)へ集約しています。
+§2のとおり、graphと命令的な実行経路はkernelを共有し、未対応演算を拒否します。
+CPUとの比較だけでは独立したモデルparityの証拠にはなりません。
 
 ---
 
@@ -337,7 +320,7 @@ speexdsp（BSD）の resampler 設計に基づいて native 実装していま�
   `NFR-*` / `BR-*` / `IF-*` を解決する
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — PR プロセス、required check、
   依存ポリシー
-- [getting-started.ja.md](getting-started.ja.md) — 5 分のビルド & 実行
+- [getting-started.ja.md](getting-started.ja.md) — ソースbuildと変換レシピ
 - [design/m0-03-gguf-loader.md](design/m0-03-gguf-loader.md) — GGUF ローダー設計
 - [design/vokra-gguf-chunks.md](design/vokra-gguf-chunks.md) — `vokra.*`
   metadata chunk（`FR-LD-02`、`IF-07`）

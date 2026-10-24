@@ -316,28 +316,12 @@ If a change needs neither of these, it needs no new dependency.
 
 ## 4. Adding a backend
 
-The six-file pattern in §2.4 is the starting point. In outline:
-
-1. **Create `crates/vokra-backend-<name>/`** as a first-party crate, gated
-   behind an optional Cargo feature so default builds are unaffected.
-2. **Write `sys.rs` by hand.** Declare the FFI you need yourself rather than
-   adding a binding crate — that is what keeps `NFR-DS-02` intact. Load the
-   platform library at run time (`dlopen` / `LoadLibrary`, or import-object
-   resolution on WASM) rather than link-time, so a machine without the driver
-   still runs the binary.
-3. **Write `probe.rs` next, not last.** Detection must be honest: report the
-   device as unusable rather than proceeding hopefully (`NFR-RL-06`).
-4. **Implement `context.rs` kernels against the CPU backend as the reference.**
-   The CPU kernel is the numerical oracle; parity tests compare against it
-   (`NFR-QL-01`).
-5. **Implement `backend.rs` op coverage truthfully.** Report only ops you
-   actually implement. Under-reporting yields an explicit error, which is
-   correct; over-reporting yields wrong numbers, which is not (`FR-EX-08`).
-6. **Wire `eval.rs` for the graph path and add the `Compute` arm** for the
-   imperative path, reusing the same kernels (§2.3).
-
-Every `unsafe` block needs a `// SAFETY:` comment, and the crate must be added
-to the opt-out list in the workspace manifest (§1.4).
+Use the six-file layout in §2.4 and the dependency/unsafe boundaries in §1.
+The step-by-step implementation, coverage, integration and parity checklist
+lives in the [backend guide](backend-guide.md#3-the-add-a-backend-checklist).
+Both graph and imperative execution must share kernels and reject unsupported
+operations as described in §2; a CPU comparison alone does not establish
+independent model parity.
 
 ---
 
@@ -347,7 +331,7 @@ to the opt-out list in the workspace manifest (§1.4).
   `BR-*` / `IF-*` ID cited in the source
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — PR process, required checks,
   dependency policy
-- [getting-started.md](getting-started.md) — a 5-minute build-and-run
+- [getting-started.md](getting-started.md) — source build and conversion recipes
 - [design/m0-03-gguf-loader.md](design/m0-03-gguf-loader.md) — GGUF loader design
 - [design/vokra-gguf-chunks.md](design/vokra-gguf-chunks.md) — the `vokra.*`
   metadata chunks (`FR-LD-02`, `IF-07`)

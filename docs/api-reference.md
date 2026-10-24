@@ -63,63 +63,12 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 ## 5. Current release and Apple verification status
 
-The current workspace line is `0.4.0-rc.1`; the latest stable release is
-`v0.3.0`. Public `main` is `151d94a8613d5bd4acb1671a461f59742c37b8fc`
-(2026-10-22 UTC). The RC is a CPU-only preview: it does not establish
-real-weight CPU parity, Apple CPU/Metal/no-fallback coverage, full-catalog
-completion, or numerical parity. See the [documentation map](README.md) for
-the live PR and model-readiness ledger. Historical snapshots below retain
-their original scope and must not be read as current counts.
-
-**2026-10-13 metadata snapshot:** the exact GitHub `main` checkout is
-`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`. The fresh metadata/card-only
-audit reports 194 repositories, 193 GGUF-bearing repositories and 198 GGUF
-files: CPU `full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`;
-Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`. These are catalog
-metadata counts, not a new API/header or Apple hardware verification. The
-separate 2026-10-13 VibeVoice VAST audit was static-only and private: it did
-not execute models or APIs, and it does not establish CPU/Metal/no-fallback
-parity or publication eligibility. See the [documentation refresh record](handoff/documentation-refresh-2026-10-13.md)
-and [VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md).
-
-**2026-10-08 historical snapshot:** this documentation review and the read-only
-metadata/card-only public audit use exact GitHub `main` checkout
-`d100d93778191ccab77bd1c37fe3552e3d889758`. The audit reports 194 repositories,
-193 GGUF-bearing repositories and 198 GGUF files. CPU status is `full=136`, `partial=43`,
-`no-runtime-binder=14`, `not-artifact=1`; Metal status is `full=136`,
-`blocked-by-cpu=57`, `not-artifact=1`, recording 58 unresolved public rows in
-that historical snapshot. The
-authorized Scaleway Apple CPU/reference, Metal/reference and no-fallback batch
-passed only for its named scopes; four separately approved artifacts were then
-published through the gated workflow. VibeVoice Realtime-0.5B now has a strict
-structural `vibevoice_streaming` binder and CLI inspection route, so it is
-partial; its complete 605-tensor checkpoint has been converted and a narrow
-independent Microsoft-source reference probe is accepted, but full streaming,
-native CPU parity, and Apple CPU/Metal verification remain pending. UTMOS
-numeric parity remains unclaimed, and the
-`v0.3.0` release tag and GitHub release are published. On 2026-10-04, a
-corrected VAST source-only audit authenticated fixed Kyutai source inputs and
-independently verified cleanup; it did not execute model weights or change the
-CPU, Apple-hardware, or publication verdicts. This is not a claim of
-complete public model-catalog support or v1.0 release readiness.
-
-**2026-09-09 audit-start historical snapshot:** PR #79 was at
-`9efcd16eb63b857f48fc00d0b83d1113defd578b`; its remote checks then reported
-110 successful checks, 13 expected skips, and 0 failures. The audit-start
-public audit reported 194 repositories (193 GGUF repositories, 198 GGUF
-files).
-CPU coverage is
-`full=131`, `partial=45`, `no-runtime-binder=17`, `not-artifact=1`; Metal is
-`full=131`, `blocked-by-cpu=62`, `not-artifact=1`; source-level CPU-only
-coverage is 0.
-At that audit-start snapshot, there were 0 release tags and 0 GitHub Releases.
-
-GigaAM v3 and Multilingual had complete conservative Metal code routes, but
-their Apple-hardware verdicts were not available. The remaining 63 public rows
-were not claimed complete. Scaleway had not started; CI/audit results did not
-substitute for Apple hardware evidence. UTMOS numeric parity was also not
-claimed because its legacy Lightning checkpoint is intentionally refused by
-the restricted `weights_only=True` loader.
+Use [current status](current-status.md) for the source baseline, releases,
+open PRs and model/device verification. Use the
+[preview guide](release-0.4.0-rc1.md) for exact published CLI/C ABI assets.
+API availability, native packaging checks and real-model hardware validation
+are separate; this API index does not establish full-catalog or Metal acceptance.
+Historical checkpoints are indexed in [engineering records](handoff/README.md).
 
 ## Keeping this page current
 

@@ -11,10 +11,10 @@ performance expectations.
 
 | Concern | ONNX Runtime / sherpa-onnx | whisper.cpp | Vokra |
 |---|---|---|---|
-| Loaded file format | ONNX (Protobuf) | GGUF (ggml-audio) | GGUF (`vokra.*` audio chunks) |
-| Speech ops (STFT, iSTFT, mel, VAD state, flow-matching sampler, KV cache) | Ad-hoc host code + graph glue | Whisper-specific inline | **First-class native operators** |
+| Loaded file format | ONNX (Protobuf) | ggml model files (`ggml-*.bin`) | GGUF (`vokra.*` audio chunks) |
+| Speech ops (STFT, iSTFT, mel, VAD state, flow-matching sampler, KV cache) | Model-specific graph + host processing | Whisper-specific implementation | Native operators and runtime functions |
 | Backend seams | Execution Providers (asymmetric op coverage) | CPU + optional CUDA/Metal | CPU + opt-in Metal/CUDA/Vulkan/WebGPU; experimental CoreML whole-submodel delegate; SDK-gated QNN scaffold |
-| Silent CPU fallback | Sometimes | No | **No — explicit error (FR-EX-08)** |
+| Backend placement | Check execution-provider/session configuration | Check model/backend configuration | Unsupported operations return explicit errors (FR-EX-08) |
 | ONNX at runtime | Yes | No | **No** — ONNX is offline conversion only |
 | Weight license enforcement | External | External | Built-in `vokra.provenance.*` gate (CC-BY-NC refused without a research flag) |
 | Distribution | ORT binaries + your app | Single binary | Single binary; **root `Cargo.lock` has only `vokra-*` crates** |
@@ -62,14 +62,15 @@ vokra-cli convert --model whisper \
 
 ### 2.3 What you gain by leaving ONNX behind
 
-- **Correct STFT / iSTFT semantics**: window / hop / normalization / RFFT
-  are explicit attributes, not opset drift.
-- **Streaming KV cache managed by the runtime**: no more manual
-  three-piece decoder splits or 6-GB static caches.
-- **No opset upgrade risk**: `torch.onnx.export`'s dynamo /
-  scriptmodule split does not apply — Vokra reads safetensors /
-  checkpoints directly through the native model implementation
-  (whisper.cpp-style).
+- **Explicit STFT / iSTFT contracts**: window, hop, normalization and RFFT
+  settings are native attributes, with model-specific frontend validation.
+- **Model-owned streaming state**: supported implementations manage their
+  caches and state in the runtime. Check the selected model's actual streaming
+  contract rather than assuming every route is complete.
+- **No runtime ONNX export contract**: supported converters extract checkpoint
+  weights and configuration offline; native implementations load Vokra GGUF.
+  This avoids an ONNX export step for those routes, but does not make an
+  unsupported architecture runnable from its weights alone.
 
 ### 2.4 What you have to reconcile
 
@@ -90,7 +91,7 @@ vokra-cli convert --model whisper \
 | `whisper_full_default_params(WHISPER_SAMPLING_GREEDY)` + `whisper_full` | `vokra_asr_transcribe(s, pcm, n, 16000, &out)` |
 | `whisper_full_get_segment_text` | Full text returned as a single `char*`; per-segment API is planned |
 | `whisper_state` reuse across chunks | `vokra_stream_open` + `vokra_stream_push_pcm` (streaming ASR is v0.5+) |
-| `whisper.cpp` GGUF | **Not compatible** — Vokra GGUFs carry `vokra.*` audio metadata chunks that whisper.cpp does not read, and vice versa. Convert from safetensors. |
+| `whisper.cpp` model file | **Not directly compatible** — use the supported upstream safetensors converter to produce a Vokra GGUF with the required `vokra.*` metadata. |
 
 ### 3.2 Model conversion
 
@@ -181,6 +182,6 @@ users of the runtime — see [`docs/legal-compliance.md`](legal-compliance.md).
 
 ## Next steps
 
-- [Getting Started](getting-started.md) for a 5-minute quick start.
+- [Getting Started](getting-started.md) for source builds and conversion recipes.
 - [Tutorials](tutorials/) for Unity, iOS, and Python integrations.
 - [License audit](license-audit.md) for the full weight-license table.

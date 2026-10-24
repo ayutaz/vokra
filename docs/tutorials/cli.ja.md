@@ -6,12 +6,12 @@
 同じ native runtime 上の 5 つの subcommand — `run` / `convert` / `bench` /
 `f0` / 実験的な `npu-bakeoff` — を、手書きの引数パーサ・外部依存ゼロ
 （`NFR-DS-02`）で提供する。本ページは
-deep dive。5 分コースは [getting-started.md](../getting-started.ja.md) を参照。
+deep dive。ソースbuildの導入は [getting-started.md](../getting-started.ja.md) を参照。
 
 ## 1. ビルド
 
 ```sh
-cargo build --release
+cargo build --release -p vokra-cli
 ```
 
 `target/release/vokra-cli` が生成される。各 subcommand のフルオプションは

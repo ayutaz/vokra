@@ -10,10 +10,10 @@
 
 | 観点 | ONNX Runtime / sherpa-onnx | whisper.cpp | Vokra |
 |---|---|---|---|
-| ロードするファイル形式 | ONNX（Protobuf） | GGUF（ggml-audio） | GGUF（`vokra.*` 音声 chunk） |
-| 音声 op（STFT / iSTFT / mel / VAD 状態 / Flow Matching sampler / KV cache） | ホストコード + graph glue の寄せ集め | Whisper 特化 inline | **第一級ネイティブオペレータ** |
+| ロードするファイル形式 | ONNX（Protobuf） | ggml model file（`ggml-*.bin`） | GGUF（`vokra.*` 音声 chunk） |
+| 音声 op（STFT / iSTFT / mel / VAD 状態 / Flow Matching sampler / KV cache） | モデル固有のgraphとホスト処理 | Whisper固有の実装 | native operatorとruntime function |
 | バックエンドの継目 | Execution Providers（op カバレッジが非対称） | CPU + オプションで CUDA/Metal | CPU + opt-in の Metal / CUDA / Vulkan / WebGPU、experimental CoreML whole-submodel delegate、SDK gate 下の QNN scaffold |
-| silent CPU fallback | 場合による | なし | **なし — 明示エラー（FR-EX-08）** |
+| backend配置 | execution provider・session設定を確認 | モデル・backend設定を確認 | 未対応演算は明示エラー（FR-EX-08） |
 | ランタイムに ONNX | あり | なし | **なし** — ONNX はオフライン変換のみ |
 | weight ライセンス強制 | 外部 | 外部 | 内蔵の `vokra.provenance.*` ゲート（research flag なしで CC-BY-NC を拒否） |
 | 配布形態 | ORT バイナリ + アプリ | 単一バイナリ | 単一バイナリ。**root `Cargo.lock` に `vokra-*` crate のみ** |
@@ -62,13 +62,13 @@ vokra-cli convert --model whisper \
 
 ### 2.3 ONNX を離れて得られるもの
 
-- **STFT / iSTFT のセマンティクスが正確**: window / hop / normalization
-  / RFFT はすべて明示的な attribute で、opset drift の影響を受けません。
-- **KV cache をランタイム側で管理**: decoder の 3 分割や 6GB の静的
-  cache は不要になります。
-- **opset upgrade のリスクなし**: `torch.onnx.export` の dynamo /
-  scriptmodule 分裂は無関係 — Vokra は safetensors / checkpoint を
-  直接読み、ネイティブモデル実装（whisper.cpp 型）で動かします。
+- **STFT / iSTFTの明示的な契約**: window・hop・normalization・RFFTはnative属性で、
+  モデル固有のfrontend検査につながります。
+- **モデルに属するstreaming状態**: 対応実装はcacheと状態をruntimeで管理します。
+  全経路の完了を仮定せず、選んだモデルの実際のstreaming契約を確認してください。
+- **runtimeでONNX export契約を必要としない**: 対応converterがcheckpointの重みと設定を
+  オフラインで抽出し、native実装はVokra GGUFを読み込みます。その経路でONNX exportを
+  省けますが、未対応architectureを重みだけで実行できるという意味ではありません。
 
 ### 2.4 折り合いをつけるべき点
 
@@ -89,7 +89,7 @@ vokra-cli convert --model whisper \
 | `whisper_full_default_params(WHISPER_SAMPLING_GREEDY)` + `whisper_full` | `vokra_asr_transcribe(s, pcm, n, 16000, &out)` |
 | `whisper_full_get_segment_text` | 全テキストが 1 本の `char*` で返る（セグメント別 API は今後） |
 | チャンク間で `whisper_state` を再利用 | `vokra_stream_open` + `vokra_stream_push_pcm`（streaming ASR は v0.5+） |
-| `whisper.cpp` の GGUF | **互換なし** — Vokra の GGUF は `vokra.*` 音声メタデータ chunk を持ち、whisper.cpp は読めません（逆も然り）。safetensors から変換してください。 |
+| `whisper.cpp` のmodel file | **直接の互換なし** — 対応するupstream safetensors converterで、必要な`vokra.*` metadataを持つVokra GGUFを生成してください。 |
 
 ### 3.2 モデル変換
 
@@ -176,6 +176,6 @@ EnCodec）を直接使っていた場合、Vokra はデフォルトで拒否し�
 
 ## 次のステップ
 
-- [Getting Started](getting-started.ja.md) — 5 分クイックスタート
+- [Getting Started](getting-started.ja.md) — ソースbuildと変換レシピ
 - [Tutorials](tutorials/) — Unity / iOS / Python 統合
 - [License audit](license-audit.md) — 全 weight ライセンス一覧

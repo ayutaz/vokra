@@ -1,44 +1,12 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-> **2026-10-23 current routing / limits:** [current status](current-status.md)
-> records main `151d94a8`, the stable `v0.3.0` and published desktop preview
-> `v0.4.0-rc.1`, eight open PRs and metadata-only 136 full / 58 non-full.
-> The all-pages security snapshot has 572 Dependabot / eight Code Scanning
-> alerts; a first-party-only root runtime does not close reference/integration
-> findings. See the [legal-source retrieval boundary](legal-compliance.md)
-> and refreshed vendor-term records. This is not a new model/dependency
-> license approval, signer, scope hash or publication/withdrawal authorization;
-> all dated audit rows below and the protected manifest remain untouched.
-
-> **2026-10-17 current routing only:** use the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
-> for baseline main `5f1dfc1e`, the seven open PRs and pending exact scopes.
-> Successful #259 ordinary CI is not a license/native/operator sign-off.
-> This documentation update performs no new primary-source license audit
-> and changes no dated finding, license class, signer, approval hash,
-> protected manifest or publication/withdrawal gate below.
-
-> **2026-10-13 current routing / supersession:** The [private 41-wheel static audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) found missing bundled license evidence for safetensors 0.5.3 and tokenizers 0.22.2 and ten native-payload distributions. Missing bundled evidence does not mean no license grant: exact-version primary-source/provenance and native redistribution review remains required. Collector verdict is `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; no §3.1 sign-off, license class, signer, model status or publication gate below changes. The [fresh snapshot](handoff/documentation-refresh-2026-10-13.md) replaces older current-status pointers, not dated legal findings.
-
-> **2026-10-08 source-validation boundary:** at `main`
-> `d100d93778191ccab77bd1c37fe3552e3d889758`, the current metadata-only
-> inventory remains 136 CPU/Metal code-artifact-full and 58 unresolved across
-> 194 public repositories. No full-catalog Apple result, new license sign-off,
-> publication authorization, or owner/legal decision is inferred. The dated
-> license rows, hashes, dependency findings and historical Apple evidence below
-> remain unchanged; use the [documentation refresh](handoff/documentation-refresh-2026-10-08.md) for current
-> routing and do not treat this boundary as a fresh primary-source license audit.
-
-> **2026-10-04 reading/supersession boundary:** retain the dated license
-> rows, hashes and owner decisions below; this documentation refresh does not
-> grant a new license, execution scope or upload permission. The bounded
-> 2026-09-11 Apple batch and separately approved four-artifact publication
-> supersede the pre-Scaleway state only for their exact scopes. Later narrow
-> VibeVoice and Kyutai source authentication do not close full model parity
-> or dependency/legal gates. Read [the current documentation index](README.md),
-> [owner scope packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
-> and [execution record](handoff/public-catalog-security-completion-2026-09-29.md)
-> alongside the historical rows. Old retained/stopped VAST IDs below are not
-> a current inventory or a reusable transfer source.
+> **Current routing:** [project status](current-status.md) tracks releases,
+> PRs, catalog readiness and dated security counts. This ledger retains model
+> and dependency findings, signers and publication decisions; a documentation
+> refactor grants no new approval. For the distinct missing bundled-license /
+> native-payload evidence, see the [2026-10-13 static audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md).
+> See [legal compliance](legal-compliance.md) for legal-source limits and
+> [engineering records](handoff/README.md) for earlier routing checkpoints.
 
 **Audit-start snapshot (2026-09-09, PR #79 / implementation head `9efcd16e`)**:
 This records the state reviewed before the documentation refresh; later

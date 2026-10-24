@@ -1,34 +1,11 @@
 # Vokra ABI Changelog (historical prerelease buckets; current source line: v0.4.0-rc.1)
 
-> **2026-10-23 current routing:** [current status](current-status.md) distinguishes
-> the published desktop preview from stable `v0.3.0` and post-preview main.
-> No C header, ABI entry, historical anchor, advisory gate or owner-gated
-> freeze is changed by this documentation refresh.
-
-> **2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
-> supply the current campaign/PR pointer at baseline main `5f1dfc1e`.
-> The static ABI changelog gate passes, including all 124 converter-stamped
-> prefixes. No header is regenerated, baseline anchor advanced, ABI entry
-> rewritten, advisory gate promoted or owner-gated freeze approved.
-
-> **2026-10-13 current routing / supersession:** The [2026-10-13 refresh](handoff/documentation-refresh-2026-10-13.md) records current main/release/model/PR facts. It does not change ABI entries, historical anchors, the advisory gate, or the owner-gated freeze. Older source-validation counts below retain their original verification date.
-
-> **2026-10-08 source-validation boundary:** at `main`
-> `d100d93778191ccab77bd1c37fe3552e3d889758`, the metadata-only catalog
-> remains 136 CPU/Metal code-artifact-full and 58 unresolved across 194 public
-> repositories. The static ABI gate confirms all changed C symbols and 124
-> converter-stamped GGUF prefixes have ledger entries; the active historical
-> anchor remains v1.0-rc. This is not full-catalog Apple evidence and does not rotate the
-> ABI anchor, promote the advisory gate, freeze the ABI, or change any historical
-> entry. `v0.3.0` remains the GitHub-only pre-1.0 release; current routing is in
-> the [documentation refresh](handoff/documentation-refresh-2026-10-08.md).
-
-> **2026-10-04 read-only refresh:** the GitHub API reports one published
-> tag/release, `v0.3.0` (2026-09-20). The local ABI changelog checker passes:
-> all changed C symbols and 124 converter-stamped GGUF prefixes are covered.
-> It still compares the historical v1.0-rc anchor; no snapshot rotation,
-> v1.0 tag, required-check promotion or ABI freeze is performed here.
-> Preserve the dated zero-release observations and milestone buckets below.
+> **Current routing:** [project status](current-status.md) distinguishes
+> published releases, current source and unfinished model/device work.
+> Historical milestone buckets, ABI entries and tooling anchors below remain
+> unchanged; this refactor does not regenerate the C header, advance an anchor
+> or approve an ABI freeze. Earlier routing checkpoints are indexed in
+> [engineering records](handoff/README.md).
 
 This file tracks **binary-facing** surface changes on the way to v1.0 GA (the
 IF-01 freeze point, owned by **M5-13** — see the historical reassignment note

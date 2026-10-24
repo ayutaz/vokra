@@ -2,9 +2,12 @@
 
 **English** | [日本語](getting-started.ja.md)
 
-A 5-minute quick start for **Vokra**. This guide gets VAD → ASR → TTS running
-on CPU. For GPU backends (Metal / CUDA) and distribution artefacts
-(iOS / Unity / Python), see the "Next steps" section at the end.
+This guide covers source builds and example VAD, ASR and TTS conversion/run
+recipes. To try the verified prebuilt CPU distribution first, use the
+[preview installation guide](release-0.4.0-rc1.md). The recipes below describe
+interfaces; they do not establish that every model/platform combination is
+validated. See [current status](current-status.md) for the tested scope and
+"Next steps" for platform-specific integration.
 
 ## Prerequisites
 
@@ -25,7 +28,9 @@ The Vokra runtime is **zero external dependency** — the root `Cargo.lock`
 only contains `vokra-*` crates — so no system packages beyond the Rust
 toolchain are required.
 
-## 1 min: Build
+<a id="1-min-build"></a>
+
+## 1. Build
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
@@ -34,10 +39,11 @@ cargo build --release -p vokra-cli
 ```
 
 This produces the CLI at `target/release/vokra-cli`. Build the C ABI
-separately with `cargo build --release -p vokra-capi` when needed. Reference
-CLI build time: ~2 minutes on a MacBook Air M2 (cold).
+separately with `cargo build --release -p vokra-capi` when needed.
 
-## 2 min: Convert models to GGUF
+<a id="2-min-convert-models-to-gguf"></a>
+
+## 2. Convert models to GGUF
 
 The Vokra runtime loads **GGUF only** — ONNX graphs are never loaded at
 runtime, only through the offline conversion tool. Three common recipes:
@@ -98,7 +104,9 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/me
   --output en_US-lessac-medium.gguf
 ```
 
-## 3 min: Run
+<a id="3-min-run"></a>
+
+## 3. Run
 
 `vokra-cli run` auto-selects the task from the GGUF's `vokra.model.arch`
 metadata (Whisper→ASR / Silero VAD→VAD / piper-plus→TTS).
@@ -131,7 +139,9 @@ metadata (Whisper→ASR / Silero VAD→VAD / piper-plus→TTS).
 # Output: hello.wav (22050 Hz mono PCM)
 ```
 
-## 4 min: Benchmarks
+<a id="4-min-benchmarks"></a>
+
+## 4. Benchmarks
 
 ```sh
 # CPU RTF
@@ -144,18 +154,17 @@ cargo build --release -p vokra-cli --features cuda    # Linux with system CUDA
   --input speech30s.wav --backend cuda
 ```
 
-RTF < 1.0 means real-time. The values below are acceptance targets, not a
-guaranteed result on every machine. The RTX 4090 range 0.081–0.115 is a dated,
-single-shot VAST reference from 2026-07-07, retained in
-[`docs/perf/cuda-large-v3-baseline.json`](perf/cuda-large-v3-baseline.json) and
-the [variance report](m2-cuda-rtf-variance-2026-07-08.md); it is not a current
-CPU or Metal benchmark. Re-run `bench` on the target hardware before making a
-performance claim.
+RTF < 1.0 means real-time. Use the [baseline index](bench-baselines/README.md)
+for dated measurements and their hardware/fixture limits. Measure the selected
+model and backend on your target hardware before making a performance claim.
 
-## 5 min: Call from C ABI
+<a id="5-min-call-from-c-abi"></a>
 
-Include `include/vokra.h` and link `libvokra` (see the [C ABI
-example](../README.md#library-integration) in the top-level README):
+## 5. Call from C ABI
+
+Include `include/vokra.h` and link `libvokra`; the
+[C ABI reference](api-reference.md#2-c-abi--includevokrah) points to the
+generated header and binding surfaces:
 
 ```sh
 cargo build --release -p vokra-capi
