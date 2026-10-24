@@ -3,6 +3,41 @@
 Checkpoint: **07:44 UTC**. This is a dated engineering record, not an assertion
 that every model, dependency audit or Apple backend has been completed.
 
+## Later routing decision: one final acceptance head
+
+To avoid another full strict-base CI cycle, the final #271 candidate combines
+the unchanged 58-file action/pin update with the independently reviewed #297
+lock and these nine dated documentation/evidence files. The intended final
+comparison against accepted main is **68 paths**. Separate commits preserve
+the action, documentation and Pillow responsibilities. The current final head
+and its fresh CI are identified in the PR conversation; the earlier `d404be56`
+head below is a historical checkpoint, not evidence for a later head.
+
+The exact #297 lock is retained, Git blob
+`fc5c9d186875ace170c06d0f0d0cdd72bcc72f32`, 119,465 bytes, SHA-256
+`a99d5bd094c7ebad732f928502d0407f7184cf214173e864a06c396457dd56f0`.
+Both locks contain the same 134 packages; only the Pillow package block changes
+version/artifacts. The additional lock metadata changes are explicitly reviewed:
+revision 3 becomes 5, and the `cuda-bindings` and `text-unidecode` exclusions use
+`python_version < '0'` instead of `python_full_version < '0'`. Both exclusions
+remain false for the required Python 3.12. CPU index, supported/resolution
+markers and all other package blocks are unchanged. The candidate is not
+described as a Pillow-only textual diff.
+
+Primary uv source documents backward-compatible lock revisions in
+[0.8.17](https://github.com/astral-sh/uv/blob/0.8.17/crates/uv-resolver/src/lock/mod.rs#L71-L75)
+and checks the major lock version, not a maximum revision, in
+[0.12.5](https://github.com/astral-sh/uv/blob/0.12.5/crates/uv-resolver/src/lock/mod.rs#L1980-L2008).
+The major lock version remains 1. This is parser-source evidence, not an actual
+sync/install or native model compatibility result. Existing model/license and
+publication gates remain unchanged.
+
+This routing decision supersedes the earlier sequential #271-then-#297 plan
+below. #297 remains open until its exact responsibility is accepted through
+#271 and verified in the accepted main tree; preparation alone does not close
+it. All required checks and the real Candle producer/consumer must run on the
+new combined head. No previous-head success is reused as its merge gate.
+
 ## Accepted main
 
 | PR | Accepted commit | Acceptance evidence |
