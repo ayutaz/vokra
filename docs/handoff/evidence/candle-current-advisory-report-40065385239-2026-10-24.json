@@ -1,0 +1,465 @@
+{
+  "advisory_audit": "PASS",
+  "advisory_database": {
+    "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "no_fetch": true,
+    "report_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT",
+    "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+  },
+  "approval": null,
+  "artifact": {
+    "members": {
+      "application_receipt.json": {
+        "bytes": 258168,
+        "sha256": "9b8bfe2e79a404f01a23b50cb156a4f2039a593ad20855fae2303e63a1ef7f07"
+      },
+      "baseline_cpu_metadata.json": {
+        "bytes": 849778,
+        "sha256": "89df19a1f0021b32e0269239bdff5a2af7aa57fbbfd7bf5fe9560dd8377171c9"
+      },
+      "baseline_whole_metadata.json": {
+        "bytes": 1149393,
+        "sha256": "94b5660219c50e9eab0e204e35e53b383afe30e443ad56e8f2eabd90612581d6"
+      },
+      "candidate.lock": {
+        "bytes": 38252,
+        "sha256": "d10a08e5b3c519c86ab04654eaf88e9d064904b50cdbf1752dd9d629cb725cc8"
+      },
+      "final.lock": {
+        "bytes": 35980,
+        "sha256": "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6"
+      },
+      "overlay_cpu_metadata.json": {
+        "bytes": 847544,
+        "sha256": "659ecad6133669abbd88b39d992a162bdd2fe7dc0ba54587f1036a108b2b2a56"
+      },
+      "overlay_whole_metadata.json": {
+        "bytes": 1145613,
+        "sha256": "1c94f932e4460830ce8e048386f5042a963c90f0d09993c9ab09d52db310c45a"
+      },
+      "source_receipt.json": {
+        "bytes": 8320,
+        "sha256": "157eae9e76a348ff25f9fcf10d3d5943b775563648a7505e2c3e7046670d82ec"
+      }
+    },
+    "total_bytes": 4333048
+  },
+  "audit": {
+    "classification": "PASS",
+    "command": {
+      "argv": [
+        "/home/runner/.cargo/bin/cargo-audit",
+        "audit",
+        "--file",
+        "/home/runner/work/_temp/vokra-candle-applied-advisory-artifact/final.lock",
+        "--db",
+        "/home/runner/work/vokra/vokra/.audit/rustsec-advisory-db",
+        "--no-fetch",
+        "--no-yanked",
+        "--quiet",
+        "--json",
+        "--deny",
+        "warnings"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_truncated": false,
+      "stdout": "{\"database\":{\"advisory-count\":1329,\"last-commit\":null,\"last-updated\":null},\"lockfile\":{\"dependency-count\":154},\"settings\":{\"target_arch\":[],\"target_os\":[],\"severity\":null,\"ignore\":[],\"informational_warnings\":[\"unmaintained\",\"unsound\",\"notice\"]},\"vulnerabilities\":{\"found\":false,\"count\":0,\"list\":[]},\"warnings\":{}}\n",
+      "stdout_bytes": 314,
+      "stdout_sha256": "e69700d8f3148910541de1d1d6e74017a79a98288e613b78ee2756829f88dc44",
+      "stdout_truncated": false,
+      "timed_out": false
+    },
+    "git_after": {
+      "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+      "tracked_untracked_status": "clean",
+      "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+    },
+    "git_before": {
+      "commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+      "tracked_untracked_status": "clean",
+      "tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63"
+    },
+    "report": {
+      "database": {
+        "advisory-count": 1329,
+        "last-commit": null,
+        "last-updated": null
+      },
+      "lockfile": {
+        "dependency-count": 154
+      },
+      "settings": {
+        "ignore": [],
+        "informational_warnings": [
+          "unmaintained",
+          "unsound",
+          "notice"
+        ],
+        "severity": null,
+        "target_arch": [],
+        "target_os": []
+      },
+      "vulnerabilities": {
+        "count": 0,
+        "found": false,
+        "list": []
+      },
+      "warnings": {}
+    },
+    "report_facts": {
+      "database_advisory_count": 1329,
+      "database_last_commit": null,
+      "database_last_commit_fact": "PINNED_DATABASE_OPEN_DOES_NOT_POPULATE_COMMIT",
+      "lock_dependency_count": 154,
+      "vulnerability_count": 0,
+      "vulnerability_found": false,
+      "warning_counts": {},
+      "warning_entries": 0
+    }
+  },
+  "cpu_active_packages": 105,
+  "final_lock_sha256": "21bb31459ac8c2f337cba3e9f79d0e64f48259dc4ed0df9c99ccb0480578a7d6",
+  "license_review": "NOT_PERFORMED",
+  "lock_records": 154,
+  "model_execution": "NOT_AUTHORIZED",
+  "native_registry_package_count": 137,
+  "parsed_lock_record_count": 154,
+  "producer": {
+    "caller": "applied-advisory",
+    "envelope_artifact": {
+      "digest": "98f6c07b068df5c5a65cc2cfd3b874c23762916dbbcbd45ec5b40c5a9f62e926",
+      "id": 12549669205,
+      "name": "kyutai-candle-paste-current-envelope-40065385239-1-applied-advisory",
+      "size_in_bytes": 1115
+    },
+    "primary_artifact": {
+      "digest": "bdf12a083c2cb59d14666bef36178bb5c4e1991fa7ab9bfb3e7bf15b8c3d0942",
+      "id": 12549713896,
+      "name": "kyutai-candle-paste-application-evidence-40065385239-1",
+      "size_in_bytes": 259327
+    },
+    "producer_job_id": 120787434925,
+    "producer_job_name": "current source-only Candle producer / source-only paste overlay metadata application (not build/parity)",
+    "referenced_workflow": {
+      "path": "ayutaz/vokra/.github/workflows/kyutai-candle-paste-application.yml@f0c4ef25a43ecfd42d7b502b8dd178d99ebde1fe",
+      "ref": "refs/pull/278/merge",
+      "sha": "f0c4ef25a43ecfd42d7b502b8dd178d99ebde1fe"
+    },
+    "run_attempt": 1,
+    "run_id": 40065385239,
+    "run_ref": "refs/pull/278/merge",
+    "source_head": "7b28175be8c1e608779f160b6d1beccd67d6b157",
+    "workflow_name": "kyutai-candle-applied-advisory",
+    "workflow_sha": "f0c4ef25a43ecfd42d7b502b8dd178d99ebde1fe"
+  },
+  "root_runtime_audit": "NOT_RUN",
+  "scope": "candle_current_final_lock",
+  "status": "PASS",
+  "supplemental_coverage": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER",
+  "supplemental_coverage_after_command": {
+    "coverage_scope": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER",
+    "database_commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "database_tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63",
+    "registry_package_count": 137,
+    "source_absent_package_count": 17,
+    "source_absent_packages": [
+      {
+        "database_path": "crates/gemm",
+        "name": "gemm",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm",
+        "name": "gemm",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-c32",
+        "name": "gemm-c32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-c32",
+        "name": "gemm-c32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-c64",
+        "name": "gemm-c64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-c64",
+        "name": "gemm-c64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-common",
+        "name": "gemm-common",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-common",
+        "name": "gemm-common",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-f16",
+        "name": "gemm-f16",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-f16",
+        "name": "gemm-f16",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-f32",
+        "name": "gemm-f32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-f32",
+        "name": "gemm-f32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-f64",
+        "name": "gemm-f64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-f64",
+        "name": "gemm-f64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/metal",
+        "name": "metal",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.27.0"
+      },
+      {
+        "database_path": "crates/metal",
+        "name": "metal",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.29.0"
+      },
+      {
+        "database_path": "crates/moshi",
+        "name": "moshi",
+        "role": "workspace_root",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.6.4"
+      }
+    ]
+  },
+  "supplemental_coverage_before": {
+    "coverage_scope": "FIXED_DB_ABSENCE_ONLY_NOT_A_GENERIC_SCANNER",
+    "database_commit": "edb58f5974b83eb8302332821cb6d389777aa351",
+    "database_tree": "9cadd9fc13d75527fa5fd3f14376ed3a1a5e3b63",
+    "registry_package_count": 137,
+    "source_absent_package_count": 17,
+    "source_absent_packages": [
+      {
+        "database_path": "crates/gemm",
+        "name": "gemm",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm",
+        "name": "gemm",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-c32",
+        "name": "gemm-c32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-c32",
+        "name": "gemm-c32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-c64",
+        "name": "gemm-c64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-c64",
+        "name": "gemm-c64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-common",
+        "name": "gemm-common",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-common",
+        "name": "gemm-common",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-f16",
+        "name": "gemm-f16",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-f16",
+        "name": "gemm-f16",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-f32",
+        "name": "gemm-f32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-f32",
+        "name": "gemm-f32",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/gemm-f64",
+        "name": "gemm-f64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.17.1"
+      },
+      {
+        "database_path": "crates/gemm-f64",
+        "name": "gemm-f64",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.18.2"
+      },
+      {
+        "database_path": "crates/metal",
+        "name": "metal",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.27.0"
+      },
+      {
+        "database_path": "crates/metal",
+        "name": "metal",
+        "role": "path_parent",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.29.0"
+      },
+      {
+        "database_path": "crates/moshi",
+        "name": "moshi",
+        "role": "workspace_root",
+        "source": null,
+        "status": "ABSENT",
+        "version": "0.6.4"
+      }
+    ]
+  },
+  "supplemental_path_parent_package_count": 16,
+  "supplemental_workspace_package_count": 1,
+  "tool": {
+    "binary_path": "/home/runner/.cargo/bin/cargo-audit",
+    "binary_sha256": "66f9c8f530950d106c1869ce27ef5a4008bcea53c7716c3ed8117586337ee7d8",
+    "cargo_audit_version": "0.22.2",
+    "install_action_commit": "183e4297cca2404691e9380e1307288dced5c82a",
+    "release_commit": "281452c35cf0870969042374110f099a411bc185",
+    "version_output": "cargo-audit-audit 0.22.2\n",
+    "version_string": "cargo-audit-audit 0.22.2"
+  },
+  "upload": "NO_UPLOAD",
+  "yanked_check": "NOT_CHECKED"
+}
