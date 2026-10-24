@@ -299,7 +299,7 @@ class CpuCompatibilityContractTests(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-22.04", workflow)
         self.assertIn("actions: read", workflow)
         self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", workflow)
-        self.assertIn("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", workflow)
+        self.assertIn("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", workflow)
         self.assertIn("source-application:", workflow)
         self.assertIn("caller: cpu-compatibility", workflow)
         self.assertIn("artifact-ids: ${{ needs.source-application.outputs.primary_artifact_id }}", workflow)

@@ -279,7 +279,7 @@ jobs:
           ls -la "$F"
 
       - name: Upload cdylib artifact (${{ matrix.target }})
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: vokra-godot-${{ matrix.target }}
           path: integrations/vokra-godot/pkg/lib/${{ matrix.target }}/
@@ -314,7 +314,7 @@ jobs:
       # under a common root; we then re-run build-godot-gdextension.sh in
       # --no-build --pack mode to lay out the AssetLib tree.
       - name: Download per-target cdylibs from crossbuild matrix
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: vokra-godot-*
           path: staging/
@@ -369,7 +369,7 @@ jobs:
         run: bash scripts/build-godot-gdextension.sh --no-build --pack
 
       - name: Upload AssetLib package artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Vokra-godot-assetlib
           path: |

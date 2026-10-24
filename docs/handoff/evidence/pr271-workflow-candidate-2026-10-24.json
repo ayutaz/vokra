@@ -1,0 +1,129 @@
+{
+  "schema": 1,
+  "purpose": "PR271 production action pin candidate; workflow-only, no publication or repository write",
+  "source": {
+    "main_commit": "23a6d31397331ed36ed109f2f4863c64858c57be",
+    "pr271_head": "d777dd718c48712c8d1c557a7dc7d49d2ce1fcbc",
+    "pr278_workflow_overlay_commit": "a4a9c5b09baba4951b3b702066e47e966850abc3"
+  },
+  "scope": {
+    "workflow_count": 55,
+    "pr278_overlay_files": [
+      ".github/workflows/kyutai-candle-applied-advisory.yml",
+      ".github/workflows/kyutai-candle-candidate-advisory.yml",
+      ".github/workflows/kyutai-candle-cpu-compatibility.yml",
+      ".github/workflows/kyutai-candle-paste-application.yml",
+      ".github/workflows/kyutai-candle-source-advisory.yml"
+    ],
+    "pins_catalog_changed": false,
+    "pins_catalog_sha256": "73a0c5683f0ea58147007deb4936b1a2cd42f495a95c46232ac0d01fa971381c",
+    "separate_python_pin_sync_candidate": "/private/tmp/vokra-candle-action-pin-sync-20261024/after/"
+  },
+  "action_refs": {
+    "astral-sh/setup-uv": {
+      "tag": "v10.3.0",
+      "commit": "1c37ad07a6a961277cf70c0d37d6f313000f5884"
+    },
+    "actions/upload-artifact": {
+      "tag": "v7.0.2",
+      "commit": "cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+    },
+    "actions/download-artifact": {
+      "tag": "v8.0.2",
+      "commit": "9000827ccba6bdab643e8b6fd33ac0654aef8333"
+    },
+    "taiki-e/install-action": {
+      "tag": "v2.87.28",
+      "commit": "1168f6810a3cb30a3514bf5756a3b7f0422c6df8"
+    },
+    "crate-ci/typos": {
+      "tag": "v1.51.1",
+      "commit": "7f9d0819ca1c008ade73f4b41fa9d258d48f605b"
+    },
+    "github/codeql-action": {
+      "tag": "v4.38.3",
+      "commit": "24c54180a607b1449ed407dd24f251e4e9147c8d"
+    },
+    "ossf/scorecard-action": {
+      "tag": "v2.5.0",
+      "commit": "fa7117db83c52d787ae5a89f350999701505d78e"
+    }
+  },
+  "replacement_commits": {
+    "c18668ad3cf93ea998bef934396af7bb5c839dc7": "1c37ad07a6a961277cf70c0d37d6f313000f5884",
+    "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+    "183e4297cca2404691e9380e1307288dced5c82a": "1168f6810a3cb30a3514bf5756a3b7f0422c6df8",
+    "00f422f3b19c57bc6338715ebfe3316d38768461": "7f9d0819ca1c008ade73f4b41fa9d258d48f605b",
+    "2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2": "24c54180a607b1449ed407dd24f251e4e9147c8d",
+    "2d1146689b8cda280b9bc96326124645441f03bc": "fa7117db83c52d787ae5a89f350999701505d78e"
+  },
+  "verification": {
+    "workflow_records_sha256": "f9be6bd4357777278f612db9ea9a2542453bf9586d9598cc2daaaee09ecf8f0b",
+    "expected_transform_byteproof": "PASS: all 55 candidate files equal the canonical source (main commit except the five PR278 API overlays) after the seven SHA replacements and uses-line version-comment updates",
+    "actionlint": "PASS with .github/actionlint.yaml",
+    "stale_sha_and_version_comment_scan": "PASS",
+    "pins_checker": "NOT RUN locally: PyYAML unavailable in the existing uv no-project environment; no dependency installation performed; hosted CI required"
+  },
+  "residual_risks": [
+    "The separate Python pin-contract candidate must be reviewed and tested with this workflow-only candidate.",
+    "Final validation must use the accepted PR278/main integration and hosted CI; this directory is not a checkout."
+  ],
+  "workflow_sha256": {
+    ".github/workflows/bench-baseline-capture.yml": "d21443b94eb40fc6470463babac0985a8e44ea40c53cbf39d2fc2ab469824e96",
+    ".github/workflows/ci-platform.yml": "b064181878756ad613eafc94298be4e9bce3931f1eb8f10dc9cb07019b51ab02",
+    ".github/workflows/ci-quality.yml": "88d5739d1dec8556a5ade4b4fd2e3e76a87a36a8a4959ea92640668d16981da6",
+    ".github/workflows/ci-security.yml": "5aa581ee4a67bc7bc561c8579b14d979544982f3c781ec72a1a33db4dc5e1207",
+    ".github/workflows/ci.yml": "01c331521cbff9894e8fb26d4ff649d9b9d511456dd1cbb59f2fe8f7252b0fe7",
+    ".github/workflows/codeql.yml": "62624a262af9cb96b82ee18294463ce5cc3fc6d38217f9adb43fcc0ade6d9ac0",
+    ".github/workflows/corpus-drift-detector.yml": "337e404f2b2294d30c5997807d1be1265ea7398929b03192237f9d540548ccc0",
+    ".github/workflows/coverage.yml": "8ab4a62a7d3dfbd3de6890a3fef356dd083c89ca9538dc9534e14ae6b0b3dd48",
+    ".github/workflows/dashboard.yml": "3274c82c25ed1ee1f9d8fe3e68c364fb41b337d769d8371102b09983b847087e",
+    ".github/workflows/desktop-release-completeness.yml": "1a0caae43a045e58da86fcd469c18e778eb4bc1326e114c5e02d9e28e44d4686",
+    ".github/workflows/godot-crossbuild.yml": "87a18ede449b2534db0bad48bdee1db774dcf8c046c2c4e9b88415a175870854",
+    ".github/workflows/gpu-cuda-rtf.yml": "8d8ef9bd0d104a409f59f37e79723391ab1399992cd1d2fadd63e1db9c92f2ce",
+    ".github/workflows/gpu-vulkan-parity.yml": "51bf2d1d873c29bf9920fd9c924644ee1d8bb3d1bdb693e8a361071559a6e3ec",
+    ".github/workflows/kyutai-candle-applied-advisory.yml": "b9a6f13afd80f0425ab59297962fc089d680e8b805f7c316355cb6e30812b780",
+    ".github/workflows/kyutai-candle-candidate-advisory.yml": "be06a3219193e2bb200005e80533b0dc1ec084820ac10dc6f60cde0a83780183",
+    ".github/workflows/kyutai-candle-cpu-compatibility.yml": "66f09b2d1510aa856de27872351888e929b0c37740e0f7b99d3d5a19c708a4ff",
+    ".github/workflows/kyutai-candle-paste-application.yml": "e5111df8474ed3d27991139dda96c263ccd896e4402304a1775ee18ca2d43f25",
+    ".github/workflows/kyutai-candle-paste-overlay.yml": "0818dbc83715be1517731e47c423ab2d327ab43c9df7d765a12a0f98d976ad21",
+    ".github/workflows/kyutai-candle-pin-remediation.yml": "f97d4ce1209a6ec0a46ef94d2387f66d09e9654f3f61c6050f6500d3fd896462",
+    ".github/workflows/kyutai-candle-source-advisory.yml": "1547e4f66c1bbfbcd7103b803945a0b297055248253ac441425e79db0d393180",
+    ".github/workflows/kyutai-candle-source-metadata.yml": "009ce619307e17cb9d8c57f8a9fc979b5c04a469c8e929ae15797325fffb82bb",
+    ".github/workflows/lightning-checkpoint-security.yml": "abff4114fcd038a822b35dab937171dab721f7db96f6b8ab6bd6f3e0cc26756c",
+    ".github/workflows/nightly-asr-wer.yml": "3711889283938fa71fc6865ec1985bd6b59b84859e235a01d61f091f4b214616",
+    ".github/workflows/nightly-full-parity.yml": "3bde0a84c25105af241528e5c8dd886bd6063f174458493680dfe78b95d5f39c",
+    ".github/workflows/nightly-il2cpp.yml": "0d35ad2390820badfad6f3ba2653d364289c7d83d6b0d150a20d690880a7fcda",
+    ".github/workflows/nightly-tier2-device.yml": "cba91506a04b5510d8c3d2779607a8ebe9203d532ff89042db556cecfc875ab4",
+    ".github/workflows/nightly-webgl.yml": "7a2659b8262e49bf64f32eac4e9cf34d3990b417c35c5d14e2fd5b424663a8b3",
+    ".github/workflows/parity-deberta-v3-large-real.yml": "dec305365621b6045e4bff79de973f996546b49ac733646b169da4501839d165",
+    ".github/workflows/parity-deepfilternet3-real.yml": "77694255e8fdccac616ebe608a511c5819dc23b77965f509292017d3adf66799",
+    ".github/workflows/parity-kokoro-real.yml": "e052420026b2ab8b825e0cea709dd77d2615e1658af0b828e1c1c8972c34236c",
+    ".github/workflows/parity-moshi-real.yml": "fdf58d18bb9a8ce71e8bd44d41f88b8c35f74ad44cc466e0df68c4c65c3a77e2",
+    ".github/workflows/parity-nemo-asr-real.yml": "88261bd3fd0d19efc6ed1ff15ca8d4282adce03805fa41c936f6fb869e8371dc",
+    ".github/workflows/parity-qwen3-tts-real.yml": "cd021aeb336e9ecee4b5c1649de11de4f4251c2de96f4f946edb616cf4710121",
+    ".github/workflows/parity-rvq-real.yml": "b51955a2340fda7c014da3635514d2e6d3185010b8a391a3897c7692a4ae5541",
+    ".github/workflows/parity-sbv2-real.yml": "d0322d912168c4fc1f14885591d89ac1f502cc0a961a06bdebe5965d84fde7a5",
+    ".github/workflows/parity-tts-continuous-vae-real.yml": "56df1e8d562d93d195e919da51d95414f292d6d8db21302c49c0b8ed0c3db4ae",
+    ".github/workflows/parity-tts-dac-real.yml": "e50bac611610d578161d51f013c4fd8160ecde5b99ba3399c5860f5ec8cd7e7c",
+    ".github/workflows/parity-tts-hiftnet-real.yml": "331dabf2b82ba79cd7ce0d030f7314333490b8b506a9cadcfed7bdd7a767be94",
+    ".github/workflows/parity-tts-japanese-real.yml": "6e9bd1512a10859785fb7037f30cee26ea7604b5be38d90fe13b9844bffd1f0c",
+    ".github/workflows/parity-utmos.yml": "2059f8a682ea3be2b6a0e782a798ccaf68e194e4e8ca053a10135e4e8af37618",
+    ".github/workflows/parity-voxtral-real.yml": "6a722077713de1ac5e200710c6e84726f9e26525c7e368593635e219f1e87b5a",
+    ".github/workflows/parity-whisper-extras-real.yml": "709cb28bb983d96b302dc035ff915c4a3ca6fa1d2eba43c63c2e0d0e16c1f4d9",
+    ".github/workflows/parity-whisper-real.yml": "582da323ad48b5680a51b8b9ed1adc3b6913675a4281c606a9107f2ab5b5b425",
+    ".github/workflows/pins-sync-check.yml": "8ee2bd3a56788a90a9352abd25f1a00dd9c61c22dd1f7adb9e90a9a84187c7e6",
+    ".github/workflows/python-wheels.yml": "614facde0a19f01ebe7d0e0d9e25533b4e2b34ec0af7155b8abad0d5380c6f12",
+    ".github/workflows/release-cadence.yml": "c4a14903a9e3fcfc84aa2b21dfb6ea27449d2c88695775caddaa2d8e7afb1473",
+    ".github/workflows/release-candidate-cpu-smoke.yml": "a377599b00ae063d1f5f9a8b977d6f6695a6c6cd24f01e84b625442a5f419506",
+    ".github/workflows/release-candidate-source-tests.yml": "7c627f4b5f8f4fc55300f2cba5d09048bef64703508f59c3676a75f81ebc4067",
+    ".github/workflows/release-desktop-preflight.yml": "f00004eae58d4aad810b7c2bd34856a3a140cd0a70a46f267204acacf218a4eb",
+    ".github/workflows/release-rc1-gh-only.yml": "77b22873e4a847bfae8b9921adfbd0ac795d82b38418058118d35b45c0a72ffd",
+    ".github/workflows/release.yml": "0ffe12118b13ed0aedb956a093db4316d449160eccab961f21875c01518262cc",
+    ".github/workflows/rust-advanced.yml": "e3cd3c5596a99f07e9577ebe15f666dbd80913517a1c395e999c257122dac471",
+    ".github/workflows/scorecard.yml": "b6ae3d3b4239dded0a8ef6cd46b31ed5c5de8a7b4b7df0255745cdbfae1d0c85",
+    ".github/workflows/secret-scan.yml": "9274d19e96728dd4ebda27a6bfdfb6f1cedb3fd7835b05f631de38256272f143",
+    ".github/workflows/web-wasm.yml": "434a77b1b6c9ed57997f1f46d374052f3478c7d196f83d9245f2d00421731c43"
+  }
+}

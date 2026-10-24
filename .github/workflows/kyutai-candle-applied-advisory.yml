@@ -59,7 +59,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.8.17"
 
@@ -80,7 +80,7 @@ jobs:
             tools/parity/kyutai_candle_reference/test_applied_audit_lock.py
 
       - name: Download current-run application producer artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.source-application.outputs.primary_artifact_id }}
           github-token: ${{ github.token }}
@@ -89,7 +89,7 @@ jobs:
           digest-mismatch: error
 
       - name: Download current-run evidence envelope
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.source-application.outputs.envelope_artifact_id }}
           github-token: ${{ github.token }}
@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned cargo-audit without source-build fallback
-        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-audit@0.22.2
           fallback: none
@@ -174,7 +174,7 @@ jobs:
 
       - name: Upload bounded applied advisory evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kyutai-candle-applied-advisory-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vokra-candle-applied-advisory-${{ github.run_id }}-${{ github.run_attempt }}/advisory-report.json
