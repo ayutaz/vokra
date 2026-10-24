@@ -1,5 +1,9 @@
 # CPUプレビュー告知原稿と最終確認 — 2026-10-24
 
+後続のPR処理は[07:44 UTCの記録](pr-processing-readback-2026-10-24.md)を参照。
+以下の03:33–03:38 UTC時点の確認値は、その時点の記録として保持する。
+後続のmain更新は配布済みRC1のsource・モデルidentityや告知範囲を変更しない。
+
 ## 対象と確認結果
 
 既存の [v0.4.0-rc.1](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)

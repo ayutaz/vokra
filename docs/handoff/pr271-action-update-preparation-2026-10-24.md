@@ -1,5 +1,12 @@
 # Production Actions update preparation — 2026-10-24
 
+**Later checkpoint, 07:44 UTC:** #278 has been accepted and the reconciled
+60-workflow candidate has been published to #271. The
+[subsequent PR-processing readback](pr-processing-readback-2026-10-24.md) records
+the accepted base, 58 changed paths and pending fresh CI. The 55-file manifest
+and the preparation-time limitations below remain historical evidence; they
+are not the scope or verification status of the later candidate.
+
 This is a **candidate-only** checkpoint for [PR #271](https://github.com/ayutaz/vokra/pull/271),
 not accepted-main or hosted-integration evidence. Its published head remains
 `d777dd718c48712c8d1c557a7dc7d49d2ce1fcbc` at this checkpoint.
