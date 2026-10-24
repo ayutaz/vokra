@@ -7,6 +7,52 @@ review-start HEAD `3a3fd82281ae3ef9e995cb212ec794531ed13493`, not only the
 26 public files covered by the example checker. Ignored local planning files
 are not forced into Git. A path assignment is not a completed content review.
 
+**2026-10-08 PR147 legal-scope transfer boundary:** The dated 2026-10-06 EU and
+California records, HTML endpoint references, checklist/penalty rows, and
+California source rows originally carried by PR147 are consolidated in the
+PR198 legal review record. This is a responsibility transfer only; it does not
+re-authenticate inaccessible bytes, resolve the HTTP 403 observations, waive
+the `documentation-links` gate, or add owner/legal approval.
+
+**2026-10-07 California legal-source reconciliation boundary:** The legal
+section's 2026-08-30 SB 942 facts and this 2026-10-04 audit remain historical
+records. The [California Secretary of State's 2025 chapter index](https://admin.cdn.sos.ca.gov/bill-chapters/2025/Chapter-Number.pdf)
+(p. 27, row 0674) verifies AB0853 / Chapter 674 enactment metadata; the
+[Governor's 2026-09-30 release](https://www.gov.ca.gov/2026/09/30/californias-nation-leading-ai-framework-just-got-stronger-governor-newsom-signs-more-first-in-the-nation-worker-protections-and-more/)
+lists AB 2713 and SB 1000 as signed California AI Transparency Act bills; and
+the [2026-04-21 Senate Judiciary Committee analysis](https://sjud.senate.ca.gov/system/files/2026-04/sb-1050-ashby-sjud-analysis.pdf)
+(p. 2) is only committee analysis, not enacted/current full text. The required
+[official SB 942 bill-text endpoint](https://leginfo.legislature.ca.gov/faces/billVersionsCompareClient.xhtml?bill_id=202320240SB942)
+returned 403 for the full body on 2026-10-07. These sources do not establish current
+applicability, timetable, compliance, or owner/legal approval. The [official
+2026-08-03 Senate press statement](https://sd13.senate.ca.gov/news/press-release/august-3-2026/californias-landmark-ai-transparency-law-took-effect-august-1)
+says implementation began on August 1 and describes later January 1/2028 phases,
+which differs from the April analysis; neither replaces the chaptered statutory
+body or current AB 2713 / SB 1000 text. Mirrors are not substituted and the
+pending authoritative reconciliation remains fail-closed. The 2026-10-07
+normal-browser read is retained as a separate dated observation for the AB 2713
+chaptered body, the SB 1000 chaptered body, and the current BPC Chapter 25
+display; it is not a fresh current-law reauthentication. The historical SB 942
+403 observation remains unchanged; applicability, compliance, CI gates, and
+owner/legal decisions remain pending.
+
+**2026-10-07 official chaptered-text browser read:** A normal Chrome rendering
+also exposed the official chaptered text for [AB 2713](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2713#93CHP)
+(`09/30/26 - Chaptered`, Chapter 856, approved/filed 2026-09-30; BPC
+§22757.3.1 subdivision (e) operative 2027-01-01), [SB 1000](https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260SB1000#94CHP)
+(`09/30/26 - Chaptered`, Chapter 861, approved/filed 2026-09-30; SEC. 8
+urgency/immediate effect), and the [current BPC Chapter 25 display](https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?article=&chapter=25.&division=8.&lawCode=BPC&part=&title=).
+The rendered text supplies current version and section boundaries, including
+the SB 1000 changes to §§22757.1, 22757.2, 22757.3, 22757.4, 22757.4.1, and
+22757.5 (including deletion of the old one-million threshold and old manifest
+option obligation) and the current display's Stats 2026 Ch. 861 effective
+2026-09-30 / §22757.6 operative 2026-08-02 markers. The same
+code display shows §22757.3.1 as AB 0853 / Stats 2025 Ch. 674, operative
+2027-01-01; that code view must not be conflated with the AB 2713 chaptered
+bill text. This normal browser read does not erase the dated HTTP 403 record,
+waive any CI gate, or establish Vokra applicability, compliance, or
+owner/legal approval; the authoritative legal reconciliation remains pending.
+
 ## Verified current snapshot
 
 - GitHub main: `97447185361a37af64c1b30fe87e8e2618d96e20`, committed
@@ -424,6 +470,52 @@ The legal refresh attempted official-source reads. EU/California texts were
 not revalidated because the official endpoints challenged/timed out. Keep
 their dated legal-source verification and explicit pending current-law
 boundary; do not infer a new legal sign-off from a document refresh.
+
+## 2026-10-08 official bulk-source preservation (dated, source-only)
+
+Without changing the existing 403 and non-reauthentication boundary, the PR198
+bounded source producer read only selected records from the fixed
+[`pubinfo_2025.zip`](https://downloads.leginfo.legislature.ca.gov/pubinfo_2025.zip)
+at the official [California Legislative Information downloads site](https://downloads.leginfo.legislature.ca.gov/).
+The saved archive identity was ETag `4ccaadda-65d10482c8100` and total size
+`1288351194` bytes. The bill receipt is 95,161 bytes with SHA-256
+`33e0853f58e4a8501fec6de4d3d229935049fe8dda1f1bbb5c2e376adea9b11e`; it
+preserves the six selected `BILL_TBL`/`BILL_VERSION_TBL` rows with original
+line terminators and hashes and the source chain AB853 →
+`BILL_VERSION_TBL_9524.lob`, AB2713 → `BILL_VERSION_TBL_19416.lob`, and
+SB1000 → `BILL_VERSION_TBL_19249.lob`. The three referenced bill-text LOBs
+were checked against their captured sizes, SHA-256 values, and CRCs. This is
+source-byte provenance only, not a current-law, applicability, or legal-approval
+finding.
+
+The saved `LAW_SECTION_TBL` receipt is 102,182 bytes with SHA-256
+`26ca867f9ac1a60b62571e597e24ee99819fa348c7fca503dd6470afacb638a3` and
+preserves the selected 18 original rows, row hashes, and the 18 referenced
+LOBs' names, sizes, SHA-256 values, CRCs, and original bytes. The saved loader
+schema source is 504 bytes with SHA-256
+`212274f8ccbc93ea8e48258a0c062ac337c26cce357986912caccef1290329d6`; SQL was
+not executed. Both bounded central-directory scans verified 205,033 entries.
+That is a scanner result, not a direct digest of all central-directory bytes;
+the separate initial 10,985-entry probe remains preserved as an incomplete
+probe and is not substituted for the complete scans.
+
+The selection is BPC §22757 and descendants only. It includes SB53 Chapter 26
+§22757.10–.16 rows, so it does not establish a completed Chapter 25 review or
+a legal conclusion for all 18 selected rows. As dated source observations, the
+preserved base-point records for §§22757.1, .2, .3, .4, .4.1, and .5 correspond
+to 2026 Chapter 861, effective 2026-09-30. The preserved AB853 / 2025 Chapter
+674 record for §22757.3.1 displays effective 2026-01-01 and operative
+2027-01-01, while the preserved AB2713 / Chapter 856 record amends that
+section; these records have not been synthesized into a latest-law
+conclusion. For §22757.6, the section history's 2026-01-01 effective display
+and the LOB rule's 2026-08-02 operative display remain separate observations.
+
+This source-only capture does not reauthenticate the EU corpus or resolve the
+California §22757.3.1 source-display/version mismatch. Applicability, counsel,
+owner/legal approval, current-law status, and the required `documentation-links`
+gate remain pending. Existing 403 URLs, failed-link evidence, and CI boundaries
+remain unchanged; no exclusion, mirror, waiver, compliance conclusion, or
+publication approval is inferred from these receipts.
 
 ## Logical commits
 
