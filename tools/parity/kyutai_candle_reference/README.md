@@ -89,3 +89,18 @@ The remaining Rust/API risks for root review are borrow-checker validation of
 the callback field access, downstream `State` worker `Send` requirements, and
 the exact public API decision for a boxed `FnMut`. Local Cargo and model
 execution are intentionally prohibited.
+
+## Current Candle advisory evidence boundary (2026-10-20)
+
+The applied-advisory and one-shot CPU workflows now create a fresh source-only
+producer in the same workflow run. The producer uploads the historical exact
+eight-member application packet plus a separate bounded envelope containing the
+member byte/hash map, application-receipt self-hash, source checkout head,
+workflow-definition SHA, caller identity, and upload/API artifact digest and
+size. Consumers authenticate the current run through the GitHub REST API: the
+overall run may still be `in_progress`, but the unique producer job must be a
+completed success with the matching run, attempt, head, caller workflow, and
+reusable-workflow reference. Both artifact IDs, names, digests, sizes, expiry,
+and the complete bounded API listings are rechecked before any advisory or CPU
+work. An expired historical packet is never accepted as a fallback, and the
+frozen baseline/candidate/applied profiles remain unchanged.

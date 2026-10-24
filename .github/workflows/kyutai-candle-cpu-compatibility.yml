@@ -6,11 +6,14 @@ on:
     paths:
       - '.github/workflows/kyutai-candle-cpu-compatibility.yml'
       - 'tools/parity/kyutai_candle_reference/check_cpu_compatibility.py'
+      - 'tools/parity/kyutai_candle_reference/audit_lock.py'
       - 'tools/parity/kyutai_candle_reference/test_cpu_compatibility.py'
       - 'tools/parity/kyutai_candle_reference/apply_paste_overlay.py'
       - 'tools/parity/kyutai_candle_reference/collect_metadata.py'
       - 'tools/parity/kyutai_candle_reference/pin_remediation_diagnostic.py'
       - 'tools/parity/kyutai_candle_reference/prepare_paste_overlay.py'
+      - 'tools/parity/kyutai_candle_reference/current_artifact.py'
+      - 'tools/parity/kyutai_candle_reference/test_current_artifact.py'
       - '.github/workflows/kyutai-candle-paste-application.yml'
       - 'docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json'
       - 'docs/handoff/kyutai-candle-pastey-source-2026-10-15.json'
@@ -26,8 +29,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source-application:
+    name: current source-only Candle producer
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'candle-cpu-compatibility-confirm-once-20261016' &&
+      github.event.pull_request.number == 255 &&
+      github.run_attempt == 1 &&
+      github.repository == 'ayutaz/vokra' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/kyutai-candle-paste-application.yml
+    with:
+      caller: cpu-compatibility
+    permissions:
+      contents: read
+      actions: read
+
   cpu-compatibility:
     name: Linux CPU library compatibility (one-shot, no model execution)
+    needs: source-application
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action == 'labeled' &&
@@ -49,11 +70,14 @@ jobs:
             .github/workflows/kyutai-candle-cpu-compatibility.yml
             .github/workflows/kyutai-candle-paste-application.yml
             tools/parity/kyutai_candle_reference/check_cpu_compatibility.py
+            tools/parity/kyutai_candle_reference/audit_lock.py
             tools/parity/kyutai_candle_reference/test_cpu_compatibility.py
             tools/parity/kyutai_candle_reference/apply_paste_overlay.py
             tools/parity/kyutai_candle_reference/collect_metadata.py
             tools/parity/kyutai_candle_reference/pin_remediation_diagnostic.py
             tools/parity/kyutai_candle_reference/prepare_paste_overlay.py
+            tools/parity/kyutai_candle_reference/current_artifact.py
+            tools/parity/kyutai_candle_reference/test_current_artifact.py
             docs/handoff/kyutai-candle-paste-parents-source-2026-10-15.json
             docs/handoff/kyutai-candle-pastey-source-2026-10-15.json
             docs/handoff/kyutai-candle-candidate-2026-10-15.lock
@@ -73,19 +97,28 @@ jobs:
         with:
           toolchain: 1.99.0
 
-      - name: Download authenticated source application evidence
+      - name: Download current-run source application evidence
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           github-token: ${{ github.token }}
           repository: ayutaz/vokra
-          run-id: 38758745134
-          artifact-ids: 11985400172
+          artifact-ids: ${{ needs.source-application.outputs.primary_artifact_id }}
           digest-mismatch: error
           path: ${{ runner.temp }}/candle-application-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Download current-run evidence envelope
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          repository: ayutaz/vokra
+          artifact-ids: ${{ needs.source-application.outputs.envelope_artifact_id }}
+          digest-mismatch: error
+          path: ${{ runner.temp }}/candle-current-envelope-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Recheck authenticated CPU fixture offline
         env:
           VOKRA_CPU_APPLICATION_ROOT: ${{ runner.temp }}/candle-application-${{ github.run_id }}-${{ github.run_attempt }}
+          VOKRA_CPU_APPLICATION_ENVELOPE: ${{ runner.temp }}/candle-current-envelope-${{ github.run_id }}-${{ github.run_attempt }}/envelope.json
           UV_OFFLINE: '1'
           UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
         shell: bash
@@ -98,8 +131,26 @@ jobs:
         env:
           UV_OFFLINE: '1'
           UV_CACHE_DIR: ${{ runner.temp }}/vokra-uv-cache
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           VOKRA_CANDLE_REMOTE_LINUX: '1'
           VOKRA_CANDLE_WORKFLOW_HEAD: ${{ github.event.pull_request.head.sha }}
+          VOKRA_CANDLE_CURRENT_RUN_ID: ${{ github.run_id }}
+          VOKRA_CANDLE_CURRENT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          VOKRA_CANDLE_CURRENT_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          VOKRA_CANDLE_CURRENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          VOKRA_CANDLE_CURRENT_RUN_REF: ${{ github.ref }}
+          VOKRA_CANDLE_CURRENT_CALLER: cpu-compatibility
+          VOKRA_CANDLE_PRODUCER_SOURCE_HEAD: ${{ needs.source-application.outputs.source_head }}
+          VOKRA_CANDLE_PRODUCER_WORKFLOW_SHA: ${{ needs.source-application.outputs.workflow_sha }}
+          VOKRA_CANDLE_PRODUCER_RUN_REF: ${{ needs.source-application.outputs.run_ref }}
+          VOKRA_CANDLE_PRODUCER_CALLER: ${{ needs.source-application.outputs.caller }}
+          VOKRA_CANDLE_CURRENT_ARTIFACT_ID: ${{ needs.source-application.outputs.primary_artifact_id }}
+          VOKRA_CANDLE_CURRENT_ARTIFACT_NAME: ${{ needs.source-application.outputs.primary_artifact_name }}
+          VOKRA_CANDLE_CURRENT_ARTIFACT_DIGEST: ${{ needs.source-application.outputs.primary_artifact_digest }}
+          VOKRA_CANDLE_CURRENT_ENVELOPE_ID: ${{ needs.source-application.outputs.envelope_artifact_id }}
+          VOKRA_CANDLE_CURRENT_ENVELOPE_NAME: ${{ needs.source-application.outputs.envelope_artifact_name }}
+          VOKRA_CANDLE_CURRENT_ENVELOPE_DIGEST: ${{ needs.source-application.outputs.envelope_artifact_digest }}
         shell: bash
         run: |
           set +e
@@ -108,6 +159,7 @@ jobs:
           uv run --no-project --python 3.12 python \
             tools/parity/kyutai_candle_reference/check_cpu_compatibility.py \
             --application-root "$RUNNER_TEMP/candle-application-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --envelope "$RUNNER_TEMP/candle-current-envelope-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/envelope.json" \
             --output "$run_root/compatibility.json" \
             --deadline-seconds 900
           rc=$?
