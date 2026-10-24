@@ -1,5 +1,10 @@
 # Candle current producer evidence readback — 2026-10-24
 
+Later current-head producer/consumer integration succeeded at `7b28175b`.
+See the [separate success record](candle-current-consumer-success-2026-10-24.md)
+and its retained raw JSON. The observations below remain tied to the earlier
+`a4a9c5b0` source; its cancelled consumer is not reclassified as successful.
+
 This record covers the source-only producer at PR [#278](https://github.com/ayutaz/vokra/pull/278)
 head `a4a9c5b09baba4951b3b702066e47e966850abc3`. It does not establish
 consumer success, model execution, numerical parity, publication eligibility,
