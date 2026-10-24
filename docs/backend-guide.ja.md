@@ -137,47 +137,11 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 
 ## 6. owner / contributor 境界
 
-**2026-10-23 current routing:** live な PR と model readiness の台帳は
-[文書マップ](README.md)を起点にする。公開 `main` は
-`151d94a8613d5bd4acb1671a461f59742c37b8fc`、workspace 開発系列は
-`0.4.0-rc.1`、最新安定版は `v0.3.0` である。RC と通常CIは実weight CPU
-parity、Apple CPU/Metal/no-fallback、owner判断や公開許可を確立しない。
-非Apple前提と承認済み実weight CPUを解決後、最終packetとScalewayへ進む。
-CPU fallbackは推定しない。
-
-過去の **2026-10-13 metadata snapshot** は exact GitHub `main` の
-`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` を基準にし、repository 194、
-GGUF repository 193、GGUF file 198 を報告する。CPU は `full=136`、
-`partial=43`、`no-runtime-binder=14`、`not-artifact=1`、Metal は
-`full=136`、`blocked-by-cpu=57`、`not-artifact=1` である。
-これは catalog metadata の値であり、backend 実装や Apple 実機を新たに
-検証した結果ではない。2026-10-13 の VibeVoice VAST audit は private な
-static-only audit で、model/API を実行せず、CPU/Metal/no-fallback parity や
-公開可否を確立しない。[documentation refresh record](handoff/documentation-refresh-2026-10-13.md)
-と [VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) を参照すること。
-
-現行の CPU / Metal compute seam は、汎用の dilated Conv1d、
-ConvTranspose1d、Conv2d、ConvTranspose2d kernel も公開する。モデル経路は Metal
-選択前に learned-op inventory 全体を preflight しなければならず、これらの seam
-は silent CPU fallback を許可しない。source-level contract は監査開始時点の
-PR #79 head `9efcd16eb63b857f48fc00d0b83d1113defd578b` で確認済みである。
-Apple 実行向けの source/readiness-ready な packet contract は、次の 6 件である。
-GigaAM v3、GigaAM Multilingual、OmniASR CTC 1B、ReazonSpeech NeMo v2、BiCodec、
-Voice Gender Classifier。
-旧 immutable packet input は VAST storage とともに全て破棄済みで、保持も直ちに実行可能な
-状態でもない。Scaleway へ転送する直前に、新しい disposable VAST worker 上で各 packet
-再生成する。当時の 0.3.0 release 系列を基準にした、日付付き 2026-09-11 Apple batch では、named scope の
-GigaAM v3、GigaAM Multilingual、OmniASR、ReazonSpeech、BiCodec、Voice Gender
-について approval-bound CPU/Metal check を合格した。これらは exact head と契約に
-限った verdict であり、source-level route の complete を catalog 全体の Apple device
-結果へ一般化しない。
-historical な 2026-10-08 の metadata/card-only public audit（GitHub の exact `main` checkout
-`d100d93778191ccab77bd1c37fe3552e3d889758`）は CPU `full=136`、`partial=43`、
-`no-runtime-binder=14`、`not-artifact=1`、Metal `full=136`、
-`blocked-by-cpu=57`、`not-artifact=1`、source-level CPU-only は 0 で、この snapshot の未解決 public row は58件である。
-`v0.3.0` release tag と GitHub Release は公開済みである。2026-10-04 の修正済み VAST
-source-only audit は固定した Kyutai source input を認証し、worker cleanup を独立に確認した。
-model weight は実行しておらず、CPU parity、Apple hardware、公開 status は進展していない。
+release・PR・モデル/deviceの受入状況は、この実装ガイドへ複製せず
+[現況](current-status.ja.md)で管理します。[実行計画](handoff/mac-cpu-metal-execution-plan-2026-09-07.md)と
+[日付付きApple結果](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)に、対象・前提・実機証拠を
+保持します。古いpacket入力が保存済み・実行可能とは推定せず、新しい許可済み実機検証の際は
+レビュー済みclean HEADから認証packetを再生成します。
 
 本ガイドは*手順*を documentation する。device は回さない: 実機（Apple Neural
 Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak は owner
@@ -189,7 +153,7 @@ check を metal で回して sign-off する。
 ## Keeping this page current
 
 **最終確認日: 2026-10-23 — GitHub の exact `main` checkout
-`151d94a8613d5bd4acb1671a461f59742c37b8fc`、実装済みの 5 計算バックエンド、上記の汎用
+`151d94a8613d5bd4acb1671a461f59742c37b8fc`、実装済みの 5 計算バックエンド、汎用
 convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
 delegate scaffold に対して確認。**
 

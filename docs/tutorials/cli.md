@@ -6,13 +6,13 @@
 subcommands — `run`, `convert`, `bench`, `f0`, and the experimental
 `npu-bakeoff` — over the same native runtime,
 with hand-written argument parsing and no external dependency (`NFR-DS-02`).
-This is the deep dive; for the 5-minute path see
+This is the deep dive; for the source-build introduction see
 [getting-started.md](../getting-started.md).
 
 ## 1. Build
 
 ```sh
-cargo build --release
+cargo build --release -p vokra-cli
 ```
 
 This produces `target/release/vokra-cli`. Run `vokra-cli <subcommand> --help`

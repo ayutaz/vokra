@@ -2,9 +2,11 @@
 
 [English](getting-started.md) | **日本語**
 
-**Vokra** を初めて触る人向けの 5 分クイックスタートです。ここでは VAD →
-ASR → TTS の 3 デモを CPU で動かします。GPU（Metal / CUDA）や配布形態
-（iOS / Unity / Python）は末尾の「次のステップ」を参照してください。
+ソースからのbuildと、VAD・ASR・TTSの変換／実行レシピを説明します。
+検証済みprebuilt CPU配布物を先に試す場合は[preview導入ガイド](release-0.4.0-rc1.ja.md)を
+参照してください。以下はinterfaceの使用例で、すべてのモデル・platformの検証済み動作を
+示すものではありません。検証範囲は[現況](current-status.ja.md)、platform別の統合は
+末尾の「次のステップ」を参照してください。
 
 ## 前提条件
 
@@ -24,7 +26,9 @@ Vokra ランタイムは **zero external dependency**（root `Cargo.lock` は
 `vokra-*` crate のみ）なので、Rust ツールチェイン以外に追加の system
 package は不要です。
 
-## 1 分: ビルド
+<a id="1-分-ビルド"></a>
+
+## 1. ビルド
 
 ```sh
 git clone https://github.com/ayutaz/vokra.git
@@ -33,10 +37,11 @@ cargo build --release -p vokra-cli
 ```
 
 これで CLI（`target/release/vokra-cli`）が生成されます。C ABI が必要な場合
-は `cargo build --release -p vokra-capi` を別に実行します。CLI build 時間の
-目安: MacBook Air M2 で約 2 分（初回）。
+は `cargo build --release -p vokra-capi` を別に実行します。
 
-## 2 分: モデルを GGUF に変換
+<a id="2-分-モデルを-gguf-に変換"></a>
+
+## 2. モデルを GGUF に変換
 
 Vokra ランタイムは **GGUF のみ**をロードします（ONNX グラフはランタイム
 に一切載せません — オフライン変換ツール経由でのみ扱います）。以下はよく
@@ -98,7 +103,9 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/me
   --output en_US-lessac-medium.gguf
 ```
 
-## 3 分: 実行
+<a id="3-分-実行"></a>
+
+## 3. 実行
 
 `vokra-cli run` は GGUF の `vokra.model.arch` メタデータからタスクを自動
 判別します（Whisper→ASR / Silero VAD→VAD / piper-plus→TTS）。
@@ -131,7 +138,9 @@ wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/me
 # 出力: hello.wav（22050 Hz mono PCM）
 ```
 
-## 4 分: パフォーマンス計測
+<a id="4-分-パフォーマンス計測"></a>
+
+## 4. パフォーマンス計測
 
 ```sh
 # CPU RTF
@@ -144,18 +153,16 @@ cargo build --release -p vokra-cli --features cuda    # Linux with system CUDA
   --input speech30s.wav --backend cuda
 ```
 
-RTF < 1.0 がリアルタイムの目安です。以下の値は全環境で保証される結果
-ではなく受入目標です。RTX 4090 の 0.081〜0.115 は 2026-07-07 の
-VAST における single-shot 参照値で、
-[`docs/perf/cuda-large-v3-baseline.json`](perf/cuda-large-v3-baseline.json)
-と[変動レポート](m2-cuda-rtf-variance-2026-07-08.md)に履歴として保存して
-います。現在の CPU/Metal ベンチマーク値ではありません。性能を主張する
-前に、対象 hardware で `bench` を再実行してください。
+RTF < 1.0がリアルタイムの目安です。日付付き測定とhardware・fixtureの制限は
+[baseline索引](bench-baselines/README.md)を参照してください。性能を主張する前に、
+対象hardwareで選んだモデルとbackendを計測してください。
 
-## 5 分: C ABI からの呼び出し
+<a id="5-分-c-abi-からの呼び出し"></a>
 
-`include/vokra.h` を include して `libvokra` にリンクするだけです（詳細は
-[README.md](../README.md#library-integration) の例を参照）。
+## 5. C ABI からの呼び出し
+
+`include/vokra.h`をincludeし、`libvokra`へリンクします。
+生成headerとbindingの参照先は[C ABI reference](api-reference.ja.md#2-c-abi--includevokrah)にまとめています。
 
 ```sh
 cargo build --release -p vokra-capi

@@ -1,19 +1,10 @@
 # M5 (v1.0 GA) Owner Verification Checklist
 
-> **2026-10-23 current routing:** use [current status](current-status.md) for
-> main `151d94a8`, complete source CI, eight open PRs, metadata-only 136/58
-> and the fresh 572 Dependabot / eight Code Scanning snapshot. No checkbox,
-> signed scope, legal/model approval, ABI freeze or GA verdict changes.
-> Dated observations below do not become fresh verification by this pointer.
-
-> **2026-10-17 current routing:** the [current status and remaining tasks](handoff/current-status-and-remaining-tasks-2026-10-17.md)
-> record baseline main `5f1dfc1e`, seven open PRs and original model-free
-> stages 1–2 accepted. Non-Apple/owner, real-weight CPU, final packet,
-> Apple/no-fallback and result audit remain open. No checkbox, signed scope,
-> ABI freeze or GA verdict changes. Earlier alert/finding counts below are
-> dated snapshots, not refreshed security measurements in this update.
-
-> **2026-10-13 current routing / supersession:** The [fresh snapshot](handoff/documentation-refresh-2026-10-13.md) records main `7d38061c`, unchanged metadata-only 136 full / 58 unresolved, 199 Dependabot alerts, eight Code Scanning findings and six open PRs. #199 is merged. The [static audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md) is operationally complete but does not close an owner/legal, runtime, real-weight, Apple, publication, ABI or GA gate. Literal checklist count was rechecked as 53 checked / 29 unchecked; no checkbox or signed scope is changed. Older current-readback notes below remain dated evidence.
+> **Current routing:** [project status](current-status.md) records releases,
+> open PRs and model/device readiness. The checkboxes, signed scopes and dated
+> observations below are retained; this index update supplies no legal/model
+> approval, ABI freeze or GA verdict. See [engineering records](handoff/README.md)
+> for prior routing checkpoints.
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 

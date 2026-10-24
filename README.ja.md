@@ -14,83 +14,11 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **公開済みリリース候補（2026-10-18 JST）:** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1) は
-> GitHub release `416018534` として、exact source/tag
-> `d84d311e98d0abb2987b5c4e96157ae8f2068e1a`から公開済みです（`draft=false`、
-> `prerelease=true`）。Latestは`v0.3.0`のままで、assetは22件です。最終hosted run
-> [`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813) は10 jobすべて成功し、
-> 3 OS producer、転送後のnative CLI `--help`とC ABIのexact version確認、Linux assembled CLIの
-> Whisper/Silero機能smoke、公開byte round-tripを完了しました。回収receiptのSHA-256は
-> `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`で、Linux CLIの
-> `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`（13,344,272 bytes）と
-> manifestの`32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`にbindされています。
-> これはCPU-only previewです。macOS/Windowsのmodel推論、Apple Metal/no-fallback、全catalog完了、
-> performance、数値parityを主張せず、model/Space/HF/registry/X/Scaleway artifactも更新していません。
->
-> **現在のsource checkpoint（2026-10-23 UTC）:** 公開 `main` は
-> `151d94a8613d5bd4acb1671a461f59742c37b8fc` です。workspace は引き続き
-> `0.4.0-rc.1` の開発系列で、最新の安定版releaseは `v0.3.0` です。
-> open PR と model readiness の状況は、このrelease noteから推測せず
-> [文書マップ](docs/README.md)を参照してください。
->
-> **過去の公開前記録（2026-10-17）:** `v0.4.0-rc.1`の配布準備中で、公開済みLatestは
-> 引き続き`v0.3.0`です。source `9ee5834d`では、Whisper base ASRとSilero VAD v5の
-> 音声・無音判定がhosted Linux CPUの機能smokeに成功しました。数値parityや
-> Apple/Metal検証ではありません。[実CPU検証結果](docs/handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)と
-> [候補版の受入計画](docs/handoff/release-0.4.0-rc1-packaging-2026-10-17.md)を参照してください。
-> [候補版の導入ガイド](docs/release-0.4.0-rc1.ja.md)も準備していますが、取得先assetが
-> 既に存在するという意味ではありません。
->
-> **過去の対応状況（2026-10-17、公開済みRCによりsupersede）:** 配布準備のbaseline mainは`fab4638a`です。
-> PR #255のmodel-free CPU/API検証と通常受理は完了しました。PR #259はマージせず
-> closedとなり、追加observerパッチの実upstream compilation/APIの受理結果はありません。
-> このsnapshot時点で他のPRは6件openです。最新の保持inventoryは10月16日の
-> snapshotで、194 repositories、136 code/artifact-full、58 non-fullです。
-> 今回の再取得値でもApple実機の合格数でもありません。モデル別の非Apple前提、
-> owner/legal判断、独立実weight CPU、最終packet、Apple CPU/Metal/no-fallbackは
-> 未完了です。[現況と残タスク](docs/handoff/current-status-and-remaining-tasks-2026-10-17.md)を参照してください。
->
-> **過去の監査スナップショット（2026-10-13）:** workspace は `0.3.0` development です。
-> 最新の VibeVoice Realtime-0.5B closure audit は disposable worker `55648877` 上の
-> static-only VAST audit でした。選定した source、lock、collector、provenance input を
-> 認証し、worker の回収と破棄を確認しました。model weight の取得・実行、model の
-> 実行、package/native API の呼び出し、artifact の upload は行っていません。
-> collector の verdict は `OWNER_REVIEW_REQUIRED_NO_UPLOAD` です。controller は別途
-> 完了しています。owner/legal 承認、license review、
-> provenance review、native runtime status、runtime parity は未解決です。
-> `safetensors` 0.5.3 と `tokenizers` 0.22.2 の bundled license file が不足し、
-> さらに10個の native package が review 対象です。[VibeVoice static-closure audit](docs/handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md)
-> と [documentation refresh record](docs/handoff/documentation-refresh-2026-10-13.md) を参照してください。
-> exact `main` HEAD `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` の fresh metadata/card-only
-> audit は repository 194、GGUF repository 193、GGUF file 198、CPU `136/43/14/1`、
-> Metal `136/57/1`、未解決 public row 58件を報告します。Apple CPU/Metal/no-fallback
-> 検証の完了は主張しません。
->
-> **過去のカタログスナップショット（2026-10-08）:** workspace は `0.3.0` development で、今回の
-> documentation review と read-only 公開 audit は GitHub の exact `main` checkout
-> `d100d93778191ccab77bd1c37fe3552e3d889758` を基準にしています。
-> 2026-10-08 の metadata/card-only 公開 audit は repository 194、GGUF を持つ repository
-> 193、GGUF file 198 を確認しました。model weight の取得・実行は行っていません。CPU code status の内訳は full 136、partial 43、runtime binder なし
-> 14、non-artifact 1、Apple Metal full 136、CPU 起因の block 57、non-artifact 1
-> です。VibeVoice Realtime-0.5B には strict structural `vibevoice_streaming` binder
-> と CLI inspection route が追加され partial のままです。605-tensor の完全な
-> checkpoint は変換済みで、Microsoft source に対する狭い independent reference
-> probe も受理済みですが、full streaming、native CPU parity、Apple CPU/Metal 検証は
-> 未完了です。
-> Qwen3-TTS PR #109 は、公開4 variant と共通12 Hz decoderを対象に、cleanかつ
-> no-uploadのVAST実行を完了しました。strict official-weight reloadと独立CPU parityは
-> 4/4合格し、回収したbatchのchecksumも38/38合格しています。Apple CPU/Metal、
-> no-fallback検証と公開artifactの置換は未完了です。
-> [Apple 検証結果](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)に記録した
-> Apple Silicon batch は named scope のみ合格し、その後、明示的に承認された4件の
-> artifact が公開されました。この snapshot では公開 row は58件未解決でした。
-> 現在値として扱う前に live metadata を再取得してください。
-> 2026-10-04 に修正済みの VAST source-only audit が固定した Kyutai source input を
-> 認証し、worker cleanup を独立に確認しました。model weight の取得・実行は行って
-> おらず、CPU parity、Apple hardware、公開 status は進展していません。0.3.0は最初のGitHub
-> source releaseで、外部package registryは無効のままです。Vokra は pre-1.0 なので、
-> Rust API、C ABI、GGUF metadata、モデル対応範囲は変更される可能性があります。
-> 他プロジェクトで評価するときは正確な `v0.3.0` tagを固定してください。
+> **CPU preview:** [v0.4.0-rc.1](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+> を評価できます。公開済みLinux CLIと固定したWhisper base ASR・Silero VAD v5の
+> 組合せで機能確認済みです。正確な取得先と制限は[導入ガイド](docs/release-0.4.0-rc1.ja.md)を
+> 参照してください。数値parity、性能、他OSでの実モデル動作、全catalogのApple Metal対応を
+> 示すものではありません。release・source・PR・残作業は[現況](docs/current-status.ja.md)で管理します。
 
 ## Vokra の特徴
 
@@ -108,77 +36,24 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 
 ## クイックスタート
 
-Git と Rust 1.89 以降（effective MSRV。CPU backend が 1.89 を要求）が必要です。
-以下のコマンドは手元のsource checkoutからCLIをビルドするもので、公開済みのprebuilt RC1
-binaryではありません。検証済みprebuilt platform assetと正確なrelease確認は
-[v0.4.0-rc.1 preview guide](docs/release-0.4.0-rc1.ja.md)を使用してください。
+目的に応じたガイドを選んでください。
 
-```sh
-git clone https://github.com/ayutaz/vokra.git
-cd vokra
-cargo build --release -p vokra-cli
-```
-
-immutable revisionの修正済み公開 Whisper base GGUF を取得し、CLIを実行する前に検証してから、
-同梱の Public Domain 音声 fixture を実行します。`sha256sum`を使うLinux例です。
-
-```sh
-WHISPER_URL='https://huggingface.co/vokra/whisper-base/resolve/bf440f6064ffc882d53d3694729dc4616dc2cfa7/whisper-base.gguf'
-WHISPER_SHA256='5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014'
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-  "$WHISPER_URL" \
-  -o whisper-base.gguf && \
-printf '%s  %s\n' "$WHISPER_SHA256" whisper-base.gguf | sha256sum -c - && \
-target/release/vokra-cli run \
-  --backend cpu \
-  --model whisper-base.gguf \
-  --input tests/fixtures/audio/jfk-30s.wav
-```
-
-上記のrevisionとhashは修正済み公開modelのidentityであり、公開済みRC1のhosted smokeで使った
-過去のWhisper pinではありません。公開済みRC1 CLIは、修正済みWhisperとSileroの固定pinを使った
-Linux CPU確認に成功しています。[最終組合せの証跡](docs/handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json)を
-参照してください。上記のsource-build例は手元での手順であり、その公開済みCLI receipt自体ではありません。
-
-別の architecture を変換・実行する前に組み込み help を確認してください。
-
-```sh
-target/release/vokra-cli --help
-target/release/vokra-cli convert --help
-target/release/vokra-cli run --help
-```
-
-[Getting Started](docs/getting-started.ja.md) では変換、VAD、TTS、benchmark、
-C ABI を説明しています。
+| 目的 | ガイド |
+|---|---|
+| 検証済みprebuilt CPU previewを試す | [Preview導入](docs/release-0.4.0-rc1.ja.md) |
+| ソースからビルドしcheckpointを変換する | [Getting started](docs/getting-started.ja.md) |
+| モデル固有のCLIオプション・形式を使う | [CLI tutorial](docs/tutorials/cli.ja.md) |
 
 ## モデルとバックエンドの状態
 
-Vokra は ASR、TTS、Speech-to-Speech、VAD / turn-taking、keyword spotting、
-話者処理、pitch、codec / vocoder、音声強調、音源分離、音響理解を対象にします。
-成熟度は architecture ごとに管理され、converter、GGUF loader、native forward、
-numerical parity、公開 artefact はそれぞれ別の到達点です。どれか一つの存在を、
-後続段階の完了とは扱いません。
+converter、GGUF binder、native推論、独立数値parity、公開、実機検証は別々の段階です。
+モデルの掲載やbuild成功だけでは、すべての完了を意味しません。日付付きinventoryと残作業は
+[現況](docs/current-status.ja.md)、artifact別の利用条件は
+[model card](https://huggingface.co/vokra)を参照してください。
 
-コピーされたモデル一覧ではなく、次の情報源を参照してください。
-
-- `vokra-cli convert --help` — converter が受理する identifier
-- `vokra-cli run --help` — CLI の input / output / backend 契約
-- [Vokra model hub](https://huggingface.co/vokra) — 公開 artefact とモデル別
-  license card
-- [`crates/vokra-cli/src/engine.rs`](crates/vokra-cli/src/engine.rs) — 開発者向けの
-  明示的な runtime routing / deferred-operation registry
-
-CPU が既定 backend です。Metal・CUDA・Vulkan・WebGPU は opt-in で、対応 op は
-backend ごとに異なります。CoreML には Whisper encoder 全体を扱う experimental
-whole-submodel delegate 経路があり、QNN は SDK gate 下の experimental delegate
-scaffold のままです。accelerator を選ぶ前に
-[backend guide](docs/backend-guide.ja.md) を確認してください。
-
-現在の coverage は source/runtime readiness、numerical evidence、公開可否を分けて
-管理しています。不完全な経路は fail-closed で、未対応 op が CPU に暗黙 fallback
-することはありません。UTMOS の legacy Lightning checkpoint も制限付き
-`weights_only=True` loader が意図的に拒否するため、UTMOS の numeric parity 結果は
-主張していません。
+CPUが既定です。accelerator対応はoptionalで、演算ごとに異なります。
+[Backend guide](docs/backend-guide.ja.md)と[Architecture](docs/architecture.ja.md)を参照してください。
+未対応演算や利用できないdeviceは、CPUへ暗黙にfallbackせずerrorを返します。
 
 ## ライブラリ統合
 

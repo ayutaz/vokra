@@ -144,53 +144,13 @@ the meta block below).
 
 ## 6. Owner / contributor boundary
 
-**2026-10-23 current routing:** the [documentation map](README.md) is the
-entry point for the live PR and model-readiness ledger. Public `main` is
-`151d94a8613d5bd4acb1671a461f59742c37b8fc` and the workspace line is
-`0.4.0-rc.1`; the latest stable release is `v0.3.0`. The RC and ordinary CI
-do not constitute real-weight CPU parity, Apple CPU/Metal/no-fallback evidence,
-or owner/publication approval. Resolve non-Apple prerequisites and approved
-real-weight CPU before final packets and Scaleway; no CPU fallback is inferred.
-
-The historical **2026-10-13 metadata snapshot** uses exact GitHub `main`
-`7d38061c3dcb56f6a16bcf4b8085d966b3cdab09` and reports 194 repositories,
-193 GGUF-bearing repositories and 198 GGUF files: CPU
-`full=136`, `partial=43`, `no-runtime-binder=14`, `not-artifact=1`; Metal
-`full=136`, `blocked-by-cpu=57`, `not-artifact=1`.
-These are catalog metadata counts, not new backend implementation or Apple
-hardware verification. The separate 2026-10-13 VibeVoice VAST audit was
-private and static-only; it did not execute a model or API and does not
-establish CPU/Metal/no-fallback parity or publication eligibility. See the
-[documentation refresh record](handoff/documentation-refresh-2026-10-13.md)
-and [VibeVoice static-closure audit](handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md).
-
-The current CPU and Metal compute seams also expose generic dilated Conv1d,
-ConvTranspose1d, Conv2d and ConvTranspose2d kernels. Model routes must preflight
-their complete learned-op inventory before selecting Metal; these seams do not
-authorize a silent CPU fallback. Their source-level contracts were verified at
-the audit-start PR #79 head
-`9efcd16eb63b857f48fc00d0b83d1113defd578b`; the six
-source/readiness-ready packet contracts are GigaAM v3, GigaAM Multilingual,
-OmniASR CTC 1B, ReazonSpeech NeMo v2, BiCodec, and Voice Gender Classifier.
-All former immutable packet inputs were destroyed with their VAST storage;
-none is retained or immediately executable. Each packet must be regenerated
-on a new disposable VAST worker immediately before transfer to Scaleway.
-In a dated 2026-09-11 Apple batch recorded against the then-current 0.3.0
-release line, the named GigaAM v3, GigaAM Multilingual, OmniASR, ReazonSpeech,
-BiCodec and Voice Gender scopes passed their exact approval-bound CPU/Metal
-checks. Those verdicts apply
-only to their exact heads and contracts; source-level route completeness does
-not generalize to the catalog. The historical 2026-10-08 metadata/card-only public audit
-at exact GitHub `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`
-reports CPU `full=136`, `partial=43`,
-`no-runtime-binder=14`,
-`not-artifact=1`, and Metal `full=136`, `blocked-by-cpu=57`, `not-artifact=1`,
-with source-level CPU-only coverage at 0, recording 58 unresolved public rows in that snapshot.
-The `v0.3.0` release tag and GitHub release
-are published. On 2026-10-04, a corrected VAST source-only audit authenticated
-fixed Kyutai source inputs and independently verified cleanup; it did not
-execute model weights or advance CPU parity, Apple hardware, or publication
-status.
+Current releases, PRs and model/device acceptance are tracked in
+[current status](current-status.md), not copied into this implementation guide.
+The [execution plan](handoff/mac-cpu-metal-execution-plan-2026-09-07.md) and
+[dated Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
+retain the scope, prerequisites and actual hardware evidence. Old packet inputs
+must not be assumed retained or executable; regenerate authenticated packets
+from a reviewed clean HEAD when a new authorized hardware run is needed.
 
 This guide documents the *procedure*. It does **not** run devices: real GPU /
 NPU parity and soak on physical hardware (an Apple Neural Engine, a Hexagon
@@ -204,7 +164,7 @@ metal and signs off.
 
 **Last verified: 2026-10-23 — against public GitHub `main` checkout
 `151d94a8613d5bd4acb1671a461f59742c37b8fc` and the five implemented compute backends,
-the generic convolution seams above, the CoreML whole-submodel delegate path,
+the generic convolution seams, the CoreML whole-submodel delegate path,
 and the SDK-gated QNN delegate scaffold.**
 
 - **Update responsibility**: whoever lands a new backend (or changes the

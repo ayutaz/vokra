@@ -15,99 +15,13 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Published release candidate (2026-10-18 JST):** [`v0.4.0-rc.1`](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
-> is published as GitHub release `416018534` from exact source/tag
-> `d84d311e98d0abb2987b5c4e96157ae8f2068e1a` (`draft=false`, `prerelease=true`).
-> Latest remains `v0.3.0`; the release has 22 uploaded assets. Final hosted run
-> [`39062234813`](https://github.com/ayutaz/vokra/actions/runs/39062234813) passed
-> all 10 jobs: three-OS producers, fresh transferred native CLI `--help` and
-> C ABI exact-version checks, Linux assembled-CLI Whisper/Silero functional
-> smoke, and publication byte round-trip. The recovered receipt SHA-256 is
-> `d4b4656fbfa67c8f10b7dd5f6642fc896780ab11da4bc4db80d7922bb2348697`, binding
-> the Linux CLI `2a5d4ba5ca543b749f6738bd92d59da0e884a6693ab7e222b8b38ce81a91d8c4`
-> (13,344,272 bytes) and manifest `32b03f537f48ff6f2bb7b12fda1a9426090debbd59da361c0ffa59e8f7a60e92`.
-> This remains a CPU-only preview: it does not claim macOS/Windows model
-> inference, Apple Metal/no-fallback, full-catalog completion, performance or
-> numerical parity, and it does not update model/Space/HF/registry/X/Scaleway
-> artifacts.
->
-> **Current source checkpoint (2026-10-23 UTC):** public `main` is
-> `151d94a8613d5bd4acb1671a461f59742c37b8fc`. The workspace is still on the
-> `0.4.0-rc.1` development line; the latest stable release remains `v0.3.0`.
-> Open pull requests and model-readiness status are tracked in the
-> [documentation map](docs/README.md), not inferred from this release note.
->
-> **Historical prepublication note (2026-10-17):** `v0.4.0-rc.1` packaging was
-> in progress; the published Latest remains `v0.3.0`. At source `9ee5834d`,
-> Whisper base ASR and Silero VAD v5 speech/silence passed hosted Linux CPU
-> functional smoke. This is not numerical parity or Apple/Metal validation.
-> See the [actual CPU results](docs/handoff/release-0.4.0-preview-cpu-results-2026-10-17.md)
-> and [candidate acceptance plan](docs/handoff/release-0.4.0-rc1-packaging-2026-10-17.md).
-> The [candidate installation guide](docs/release-0.4.0-rc1.md) is staged for
-> publication, not a claim that its download assets already exist.
->
-> **Historical campaign snapshot (2026-10-17; superseded by the published RC):** packaging baseline main is
-> `fab4638a`. PR #255's model-free CPU/API and normal acceptance are complete.
-> PR #259 is closed without merge; its additional observer patch has no
-> accepted upstream compilation/API result. Six other PRs remain open at
-> this snapshot. The latest retained inventory is the
-> 2026-10-16 snapshot: 194 repositories, 136 code/artifact-full and 58 non-full;
-> it is not a fresh inventory or an Apple hardware pass count. Per-model
-> non-Apple prerequisites, owner/legal decisions, independent real-weight CPU,
-> final packets and Apple CPU/Metal/no-fallback remain incomplete. See the
-> [current status and remaining tasks](docs/handoff/current-status-and-remaining-tasks-2026-10-17.md).
->
-> **Historical audit snapshot (2026-10-13):** the workspace is `0.3.0` development;
-> the latest VibeVoice Realtime-0.5B closure audit was a static-only VAST
-> audit on disposable worker `55648877`. It authenticated the selected source,
-> lock, collector, and provenance inputs, then verified recovery and destruction
-> of the worker. It did not download or execute model weights, run a model,
-> invoke a package/native API, or upload an artifact.
-> The collector verdict is `OWNER_REVIEW_REQUIRED_NO_UPLOAD`; the controller
-> completed separately. Owner/legal approval, license review,
-> provenance review, native runtime status, and runtime parity are unresolved.
-> The audit found missing bundled license files for `safetensors` 0.5.3 and
-> `tokenizers` 0.22.2, plus ten native packages requiring review. See the
-> [VibeVoice static-closure audit](docs/handoff/vibevoice-realtime-static-closure-audit-2026-10-13.md)
-> and [documentation refresh record](docs/handoff/documentation-refresh-2026-10-13.md).
-> At exact `main` HEAD `7d38061c3dcb56f6a16bcf4b8085d966b3cdab09`, the fresh
-> metadata/card-only audit reports 194 repositories, 193 GGUF-bearing
-> repositories, 198 GGUF files, CPU `136/43/14/1`, and Metal `136/57/1`,
-> leaving 58 unresolved public rows. This audit does not claim Apple
-> CPU/Metal/no-fallback verification.
->
-> **Historical catalog snapshot (2026-10-08):** the workspace is `0.3.0` development;
-> this documentation review and the read-only public audit use exact GitHub
-> `main` checkout `d100d93778191ccab77bd1c37fe3552e3d889758`. The
-> metadata/card-only public audit on 2026-10-08 reports 194 repositories, 193
-> GGUF-bearing repositories and 198
-> GGUF files: CPU code status is 136 full, 43 partial, 14 without a runtime binder and
-> 1 non-artifact. That dated audit recorded these counts; it did not download
-> or execute model weights.
-> Apple Metal is 136 full, 57 blocked by CPU and 1
-> non-artifact. VibeVoice Realtime-0.5B now has a strict structural
-> `vibevoice_streaming` binder and CLI inspection route, so it is partial;
-> its complete 605-tensor checkpoint has been converted and a narrow
-> independent Microsoft-source reference probe is accepted, but full
-> streaming, native CPU parity, and Apple CPU/Metal verification remain
-> pending. Qwen3-TTS PR #109 subsequently completed a clean,
-> no-upload VAST run for all four public variants plus the shared 12 Hz
-> decoder: strict official-weight reload and independent CPU parity passed
-> 4/4, and the recovered batch closed 38/38 checksums. Apple CPU/Metal and
-> no-fallback verification, and any public-artifact replacement, remain
-> pending. The bounded Apple Silicon batch recorded
-> in the [Apple results](docs/handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
-> passed only for its named scopes, and four explicitly approved artifacts
-> were subsequently published. That snapshot recorded 58 unresolved public rows;
-> refresh live metadata before treating these counts as current.
-> On 2026-10-04, a corrected VAST source-only audit authenticated its fixed
-> Kyutai source inputs and independently verified worker cleanup. It did not
-> acquire or execute model weights, and it does not advance CPU parity, Apple
-> hardware, or publication status.
-> Version 0.3.0 is the first GitHub source release; external package registries
-> remain disabled. Vokra remains pre-1.0, so Rust APIs, the C ABI, GGUF metadata
-> and model coverage may change. Pin the exact `v0.3.0` tag when evaluating
-> this release in another project.
+> **CPU preview:** [v0.4.0-rc.1](https://github.com/ayutaz/vokra/releases/tag/v0.4.0-rc.1)
+> is available for evaluation. The published Linux CLI has functional checks for
+> fixed Whisper base ASR and Silero VAD v5 models. See the
+> [installation guide](docs/release-0.4.0-rc1.md) for exact files and limitations.
+> This does not establish numerical parity, performance, other-OS model inference
+> or full-catalog Apple Metal support. [Current project status](docs/current-status.md)
+> tracks releases, source, PRs and remaining work.
 
 ## Why Vokra
 
@@ -125,82 +39,26 @@ runtime. The default runtime has no third-party Cargo dependencies: the root
 
 ## Quick start
 
-You need Git and Rust 1.89 or newer (the effective MSRV; the CPU backend
-requires 1.89). The commands below build the CLI from your source checkout;
-they are not the published prebuilt RC1 binary. For the tested prebuilt
-platform assets and their exact release checks, use the [v0.4.0-rc.1 preview
-guide](docs/release-0.4.0-rc1.md).
+Choose the guide for your task:
 
-```sh
-git clone https://github.com/ayutaz/vokra.git
-cd vokra
-cargo build --release -p vokra-cli
-```
-
-Download the repaired published Whisper base GGUF at its immutable revision,
-verify it before invoking the CLI, and run the included public-domain audio
-fixture. This is a Linux example because it uses `sha256sum`:
-
-```sh
-WHISPER_URL='https://huggingface.co/vokra/whisper-base/resolve/bf440f6064ffc882d53d3694729dc4616dc2cfa7/whisper-base.gguf'
-WHISPER_SHA256='5eea7ff64a6ea80a6145e680e7451dc1fcdc92fe049f8aa96b4c60b8c5b86014'
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-  "$WHISPER_URL" \
-  -o whisper-base.gguf && \
-printf '%s  %s\n' "$WHISPER_SHA256" whisper-base.gguf | sha256sum -c - && \
-target/release/vokra-cli run \
-  --backend cpu \
-  --model whisper-base.gguf \
-  --input tests/fixtures/audio/jfk-30s.wav
-```
-
-The fixed revision and hash above identify the repaired public model, not the
-historical Whisper pin used by the published RC1 hosted smoke. The published
-RC1 CLI was verified with the repaired Whisper and Silero pins in the final
-Linux CPU receipt; see the [final pairing evidence](docs/handoff/evidence/published-rc1-cli-pairing-final-2026-10-23.json).
-These source-build commands are local instructions and are not themselves that
-published-CLI receipt.
-
-Use the built-in help before converting or running another architecture:
-
-```sh
-target/release/vokra-cli --help
-target/release/vokra-cli convert --help
-target/release/vokra-cli run --help
-```
-
-The [getting-started guide](docs/getting-started.md) covers conversion, VAD,
-TTS, benchmarking, and the C ABI.
+| Task | Guide |
+|---|---|
+| Try the verified prebuilt CPU preview | [Preview installation](docs/release-0.4.0-rc1.md) |
+| Build from source and convert checkpoints | [Getting started](docs/getting-started.md) |
+| Use model-specific CLI options and formats | [CLI tutorial](docs/tutorials/cli.md) |
 
 ## Model and backend status
 
-Vokra covers ASR, TTS, speech-to-speech, VAD and turn-taking, keyword
-spotting, speaker processing, pitch, codecs and vocoders, enhancement,
-separation, and audio understanding. Maturity is tracked per architecture:
-a converter, a GGUF loader, a native forward pass, numerical parity, and a
-published artifact are separate milestones. The existence of one does not
-imply the others.
+A converter, a GGUF binder, native inference, independent numerical parity,
+publication and real-device validation are separate milestones. A listed model
+or successful build does not establish all of them. Use
+[current status](docs/current-status.md) for the dated inventory and outstanding
+work, and [model cards](https://huggingface.co/vokra) for artifact-specific terms.
 
-Use these sources instead of a copied model list:
-
-- `vokra-cli convert --help` — accepted converter identifiers;
-- `vokra-cli run --help` — CLI-routed inputs, outputs, and backend options;
-- the [Vokra model hub](https://huggingface.co/vokra) — published artifacts and
-  model-specific licence cards;
-- [`crates/vokra-cli/src/engine.rs`](crates/vokra-cli/src/engine.rs) — explicit
-  runtime routing and deferred-operation registry for developers.
-
-CPU is the default backend. Metal, CUDA, Vulkan, and WebGPU are opt-in and have
-operation-specific coverage. CoreML has an experimental whole-submodel
-delegate path for the Whisper encoder; QNN remains an SDK-gated experimental
-delegate scaffold. See the [backend guide](docs/backend-guide.md) before
-selecting an accelerator.
-
-The current coverage snapshot separates source/runtime readiness from numerical
-evidence and publication. Incomplete routes fail closed; unsupported operations
-never fall back silently to CPU. The UTMOS legacy Lightning checkpoint is also
-intentionally refused by the restricted `weights_only=True` loader, so no
-UTMOS numeric parity result is claimed.
+CPU is the default. Accelerator support is optional and operation-specific;
+see the [backend guide](docs/backend-guide.md) and
+[architecture](docs/architecture.md). Unsupported operations and unavailable
+devices return errors instead of silently falling back to CPU.
 
 ## Library integration
 

@@ -1,12 +1,14 @@
 # Vokra documentation
 
-Start with the current guides below. **Last reviewed: 2026-10-23 UTC**,
-against accepted main `0d51bb01e56da6ce5f72375cc5fdddc599beac3c`.
+Start with the current guides below. **Last reviewed: 2026-10-25 JST**,
+against accepted main `c3e044929a0231fc4eda29aa5f5a34bcf62ea26e`, before this
+documentation update.
 
 [Current project status](current-status.md) / [現状と残作業（日本語）](current-status.ja.md)
 is the canonical current main, release, PR, catalog and security readback.
-The [complete documentation audit](handoff/documentation-refresh-2026-10-23.md)
-records coverage and verification limits.
+The [2026-10-23 complete documentation audit](handoff/documentation-refresh-2026-10-23.md)
+retains its dated coverage and verification limits; this update is a
+scoped status refresh, not a new audit of every document or model.
 
 The previous index's dated checkpoints are preserved in
 [the archived index](handoff/documentation-index-checkpoints-through-2026-10-22.md).
@@ -48,17 +50,17 @@ Use the binding's source documentation for its exact publication state:
 [Swift/XCFramework](../README-swift-package.md),
 [web](../web/pkg/README.md) and
 [isolated server](../integrations/vokra-server/README.md).
-Workspace version `0.4.0-rc.1` does not mean that every package has a new
-published release. The stable `v0.3.0` binding assets and CPU-only desktop RC
-are distinct distributions.
+A workspace version does not mean that every package has a matching published
+release. Use [current status](current-status.md) for release identities and
+each binding's own README for its distribution contract.
 
 ## Reading model status correctly
 
 Conversion, GGUF binding, native forward, independent numerical parity,
 Apple CPU/Metal/no-fallback and publication are separate stages.
-The [fresh complete inventory](handoff/model-inventory-2026-10-23.tsv) is
-metadata/card-only: 194 public repositories, 136 code/artifact-full and 58
-non-full. These are not full-catalog hardware passes.
+The dated inventory and classification are linked from
+[current status](current-status.md#model-and-apple-completion). Metadata/card
+reachability and code coverage are not full-catalog hardware passes.
 
 Use source and generated contracts when prose disagrees:
 the [CLI routing source](../crates/vokra-cli/src/engine.rs),
@@ -72,10 +74,9 @@ For the Mac campaign, use the
 [remaining-task ledger](handoff/mac-pre-scaleway-remaining-tasks-2026-09-05.md),
 [frozen owner packet](handoff/mac-cpu-metal-owner-disposition-packet-2026-09-07.md)
 and [dated Apple results](handoff/mac-cpu-metal-scaleway-results-2026-09-11.md)
-together with the current status. The frozen 63-row decision scope is not
-today's 58-row public classification. BF16, HiFTNet, all four BigVGAN variants,
-non-Apple prerequisites, real-weight CPU and final packets remain explicit
-requirements before the final Scaleway stage.
+together with the current status. Frozen owner-decision scopes and later public
+inventory snapshots have different denominators. Resolve the selected model's
+non-Apple prerequisites before final packets and the Apple hardware stage.
 
 ## Protocols, design and governance
 
@@ -93,7 +94,8 @@ requirements before the final Scaleway stage.
 
 ## Current sources versus dated records
 
-- `handoff/`: dated branch/campaign evidence. Current routing is this index
+- [`handoff/`](handoff/README.md): dated branch/campaign evidence, with a topic
+  index and immutable links to older public-guide checkpoints. Current routing is this index
   and `current-status.md`, not whichever handoff has “current” in its old title.
 - `bench-baselines/`, `benchmarks/`, `perf/`: measurements for their named
   hardware, commits, flags and fixtures. Start with the
@@ -105,7 +107,8 @@ requirements before the final Scaleway stage.
   are not automatically tracked public documentation. Do not force-add them.
 
 The [2026-10-23 audit](handoff/documentation-refresh-2026-10-23.md) links the
-per-file coverage records. Earlier audits and checkpoint failures remain dated;
+per-file coverage records. The [documentation refactor](handoff/documentation-refactor-2026-10-25.md)
+records the later structural review and validation. Earlier audits and checkpoint failures remain dated;
 no sign-off, numerical bound, release, provider inventory or public upload is
 created by updating documentation.
 
