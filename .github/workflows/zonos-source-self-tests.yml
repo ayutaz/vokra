@@ -1,0 +1,63 @@
+name: Zonos source self-tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/zonos-source-self-tests.yml"
+      - "tools/parity/zonos_v0_1_reference/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zonos-source-self-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stdlib-self-tests:
+    name: Zonos source self-tests (stdlib-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout bounded source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          sparse-checkout: |
+            LICENSE
+            tools/parity/zonos_v0_1_reference/README.md
+            tools/parity/zonos_v0_1_reference/pyproject.toml
+            tools/parity/zonos_v0_1_reference/uv.lock
+            tools/parity/zonos_v0_1_reference/dependency_audit.py
+            tools/parity/zonos_v0_1_reference/transformers_compatibility.py
+            tools/parity/zonos_v0_1_reference/prepare_numpy_no_blas.sh
+            tools/parity/zonos_v0_1_reference/numpy-build-constraints.txt
+            scripts/publish/vast-ai/audit-zonos-v0-1-dependencies.sh
+            scripts/publish/vast-ai/run-zonos-transformers-compatibility.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.8.17"
+
+      - name: Run existing stdlib self-tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          UV_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          uv run --no-project --offline --python 3.12 \
+            python tools/parity/zonos_v0_1_reference/dependency_audit.py --self-test
+          uv run --no-project --offline --python 3.12 \
+            python tools/parity/zonos_v0_1_reference/transformers_compatibility.py --self-test

@@ -30,12 +30,13 @@ checkpoint acquisition, and no compatibility result is inferred from the
 lock alone. Torch 2.6.0 is insufficient for Transformers 5.10.4 because its
 `finegrained_fp8` integration references `torch.float8_e8m0fnu`; the dedicated
 environment is resolved with `uv add --no-sync --bounds exact` against the
-official PyTorch CPU index. Torch 2.13.0 CPU wheels exist, but no matching
-torchaudio 2.13.0 release is available, so the synchronized 2.11.0 pair is
-the highest resolvable official CPU pair and avoids an unsupported mixed
-installation.
+official PyTorch CPU index. This candidate intentionally keeps the
+synchronized `torch==2.11.0` / `torchaudio==2.11.0` CPU pair; that is a
+project pin, not a claim that other official pairings are unavailable or have
+been compatibility-tested. Any alternative pair requires its own resolution
+and compatibility review.
 
-The lock also pins `setuptools==84.0.0`, a safe release after the
+The lock also pins `setuptools==84.1.0`, a safe release after the
 `GHSA-h35f-9h28-mq5c` first patched release `83.0.0` (the vulnerable range is
 `<83.0.0`). Torch 2.11.0's published
 wheel metadata still declares `setuptools<82`; the dedicated project records
@@ -59,8 +60,9 @@ updated together after the upstream compatibility and security review.
 
 ## Dependency license closure
 
-`license_gate_manifest.json` records the evidence review for all 34 active
-Linux x86_64 lock rows. The classifications are based on the captured
+The existing `license_gate_manifest.json` records the old evidence review for
+34 active Linux x86_64 lock rows; it is not an audit of this candidate. The
+classifications are based on the captured
 publisher bytes, including the compound `regex` and `typing-extensions`
 notices, the dual-license `packaging` notice, the MPL boundary in `certifi`
 and `tqdm`, Setuptools' vendored notices, and the 21-file no-BLAS NumPy
@@ -74,8 +76,17 @@ publisher archive manifest SHA-256
 `7358b563f1cc6a96c91eef602c432a06fd02f25c84986c368c04f809f8cd4378`.
 The complete evidence archive is bound by SHA-256
 `bd5c4183e5a8b7372869f830efc2843acccf640ae10cb76e8f2d9194ffae2c09`.
-It matches the current `transformers==5.10.4` / Torch 2.11.0 lock. The
-captured head is an exact closure-equivalent side branch, so the gate requires
+That capture is for the old 34-package closure: its project SHA-256 is
+`2c700b2335ae6b09d0e7744b39d3f26d30ded6608e25a36bf444f93eba9c708e` and its
+lock SHA-256 is
+`a056d13d68926d8cc173d94853272d31b23ad6595fcc5cd1ce2bd2a6924675eb`.
+It does not match this candidate's project SHA-256
+`dccb1cde9af2e35cc5f7c7f6dc04f7307ea5fc7c25c970eea028ab23464be379` or lock
+SHA-256
+`acb850895593c6625332d3ad9741d7efadeda1564b27477451454d6e7feb752a`.
+No new installed/native/publisher audit or owner/legal decision has been
+performed for this candidate. The captured head is an exact closure-equivalent
+side branch, so the gate requires
 an explicit ancestor/detached-head opt-in and verifies the commit's project,
 lock, and constraint bytes before accepting the evidence. Owner/legal
 sign-off and publication remain blocked.
