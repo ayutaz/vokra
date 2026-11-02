@@ -50,7 +50,7 @@ jobs:
             tools/release/publish_config.py
             scripts/release/extract-changelog.py
             CHANGELOG.md
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - name: Validate fixed RC tag and source SHA
@@ -103,7 +103,7 @@ jobs:
             /*
             !/tools/parity/cosyvoice2_llm_reference/**
             !/tests/parity/silero_vad/**
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -188,7 +188,7 @@ jobs:
             /*
             !/tools/parity/cosyvoice2_llm_reference/**
             !/tests/parity/silero_vad/**
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -266,7 +266,7 @@ jobs:
           sparse-checkout: |
             tools/release
             include/vokra.h
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -304,7 +304,7 @@ jobs:
           sparse-checkout: |
             tools/release
             include/vokra.h
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -346,7 +346,7 @@ jobs:
           sparse-checkout: |
             tools/release
             include/vokra.h
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - name: Verify uv runtime on Windows
@@ -389,7 +389,7 @@ jobs:
             /*
             !/tools/parity/cosyvoice2_llm_reference/**
             !/tests/parity/silero_vad/**
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.8.22"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
