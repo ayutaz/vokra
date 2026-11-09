@@ -105,7 +105,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           # 2026-07-23 CI 高速化: feature 別 shared-key を明示。Swatinem のデフォルト
           # は workflow + workspace + Cargo.lock hash なので、同一 OS の feature 違い
@@ -274,11 +274,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: Build vokra-capi (CPU + Vulkan-only, audit trail)
         # The printf line makes the feature selection discoverable in the CI
         # log for auditors — same audit-trail pattern as the CPU-only UPM
@@ -383,7 +383,7 @@ jobs:
         with:
           targets: riscv64gc-unknown-linux-gnu
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: Cross-build vokra-backend-cpu (riscv64gc-unknown-linux-gnu)
         # Baseline rv64gc target — shared by BOTH RISC-V vector tiers, no new
         # target needed: RVV 1.0 instructions land only inside the
@@ -534,7 +534,7 @@ jobs:
           # Pin the target explicitly so this exercises aarch64-pc-windows-msvc
           # regardless of what the runner image's default toolchain provides.
           targets: aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: Build vokra-cli (release, aarch64-pc-windows-msvc)
         # Narrow scope on purpose: `-p vokra-cli` exercises the workspace's
         # public consumer surface without pulling every crate through the
@@ -575,7 +575,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: Server-tier differential (runtime-detect gated, --nocapture logs skips)
         run: cargo test --release -p vokra-backend-cpu --test server_tier_parity -- --nocapture
       - name: Full backend-cpu suite on this runner
@@ -672,7 +672,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Verify uv runtime for Apple worker self-tests
         run: uv run --no-project --python 3.12 python -c 'print("uv runtime ready")'
       - name: Check every Apple worker syntax and --self-test contract
@@ -694,9 +694,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - name: Build vokra-cli (release)
         run: cargo build --release -p vokra-cli
       - name: mel-frontend regression check (5% gate, fusion enabled)
@@ -805,7 +805,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           workspaces: |
             .

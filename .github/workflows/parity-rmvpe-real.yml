@@ -87,7 +87,7 @@ jobs:
 
       - name: Rust cache
         if: env.GATE_OPEN == '1'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Run parity_rmvpe (loud-partial — real forward = UnsupportedOp today)
         if: env.GATE_OPEN == '1'

@@ -78,7 +78,7 @@ jobs:
           # Both Cortex-M55 ABIs: hard-float (FP-armv8) and soft-float.
           targets: thumbv8m.main-none-eabihf, thumbv8m.main-none-eabi
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           shared-key: silero-nostd-cross-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
